@@ -185,17 +185,46 @@ export default function ProspectingView() {
   }, [pendingHashProspectId, prospects, loading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Mirror the open prospect into the hash. Skipped in campaigns mode
-  // (numeric segment there belongs to CampaignsView).
+  // (numeric segment there belongs to CampaignsView). In inbox mode a
+  // NON-numeric segment 2 (sub-tab / item ref, e.g. inbox/email/123 or
+  // inbox/activity/e~55) is owned by ProspectingInbox — leave it alone;
+  // only a numeric segment 2 (a stale prospect-drawer id) is ours to trim.
   useEffect(() => {
     if (hashSegment(0) !== 'prospecting' || viewMode === 'campaigns') return;
     if (pendingHashProspectId) return;
-    const base = viewMode === 'pipeline' ? ['prospecting'] : ['prospecting', viewMode];
     const parts = (window.location.hash || '').replace(/^#\/?/, '').split('/').filter(Boolean);
+    if (viewMode === 'inbox' && !selectedProspect && parts[2] && !/^\d+$/.test(parts[2])) return;
+    const base = viewMode === 'pipeline' ? ['prospecting'] : ['prospecting', viewMode];
     const desired = '#/' + base.concat(selectedProspect?.id ? [String(selectedProspect.id)] : []).join('/');
     if (('#/' + parts.join('/')) !== desired) {
       window.history.replaceState(null, '', desired);
     }
   }, [selectedProspect, viewMode, pendingHashProspectId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // In-app deep navigation: react to EXTERNAL hash changes (location.hash
+  // assignment from the notification bell, or a manual URL edit) the same
+  // way a fresh mount would — update the sub-view and open a deep-linked
+  // prospect drawer. Our own writes use history.replaceState, which never
+  // fires 'hashchange', so this cannot loop. Mirrors the App.js pattern
+  // ("Manual hash edits (or programmatic ones) navigate too") one level down.
+  useEffect(() => {
+    const onHashChange = () => {
+      const parts = (window.location.hash || '').replace(/^#\/?/, '').split('/').filter(Boolean).map(s => s.toLowerCase());
+      if (parts[0] !== 'prospecting') return;
+      const mode = parts[1] && PV_HASH_MODES.includes(parts[1]) ? parts[1] : 'pipeline';
+      setViewMode(prev => (prev === mode ? prev : mode));
+      if (mode === 'campaigns') return; // numeric segment there is a campaign id
+      // Prospect id sits at parts[1] (pipeline default) or parts[2] (explicit mode)
+      const candidate = PV_HASH_MODES.includes(parts[1]) ? parts[2] : parts[1];
+      const id = parseInt(candidate, 10);
+      if (Number.isInteger(id) && id > 0 && String(id) === candidate) {
+        fallbackProspectFetched.current = false; // allow a fresh one-shot fetch
+        setPendingHashProspectId(id);
+      }
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
 

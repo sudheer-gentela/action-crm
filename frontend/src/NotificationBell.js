@@ -154,6 +154,21 @@ export default function NotificationBell({ onNavigateToAction }) {
     // Navigate based on entity type. Settings/actions navigation works
     // standalone via the global 'navigate' event App.js listens for, so the
     // bell functions even when no onNavigateToAction prop is wired in.
+    //
+    // Prospecting entities navigate by ASSIGNING location.hash (not
+    // writeHash/replaceState): assignment fires 'hashchange', which App
+    // listens to for the tab switch and ProspectingView/ProspectingInbox
+    // listen to for the deep segments — so the link works whether or not
+    // the target view is currently mounted. Metadata may arrive as a JSON
+    // string depending on the driver, hence the defensive parse.
+    const md = (() => {
+      const m = notif.metadata;
+      if (!m) return {};
+      if (typeof m === 'string') { try { return JSON.parse(m); } catch { return {}; } }
+      return m;
+    })();
+    const goHash = (h) => { window.location.hash = h; setOpen(false); };
+
     if (notif.entity_type === 'prospecting_sender') {
       writeHash(['settings', 'preferences']);
       window.dispatchEvent(new CustomEvent('navigate', { detail: 'settings' }));
@@ -162,7 +177,22 @@ export default function NotificationBell({ onNavigateToAction }) {
       if (onNavigateToAction) onNavigateToAction(notif.entity_id);
       else window.dispatchEvent(new CustomEvent('navigate', { detail: 'actions' }));
       setOpen(false);
-    } else if (notif.metadata?.action_ids?.length) {
+    } else if (notif.entity_type === 'prospect' && notif.entity_id) {
+      // e.g. form_inflow — opens the prospect drawer over the pipeline.
+      goHash(`#/prospecting/${notif.entity_id}`);
+    } else if (notif.entity_type === 'inbox_item' && md.ref_table && md.ref_id) {
+      // Inbox deep link (e.g. a future "new reply" notification): pins the
+      // exact item in the Activity tab. ref_table: emails|prospecting_activities.
+      goHash(`#/prospecting/inbox/activity/${md.ref_table === 'emails' ? 'e' : 'a'}~${md.ref_id}`);
+    } else if (notif.entity_type === 'prospecting_action') {
+      // Immediate overdue alerts carry the prospect in metadata — open its
+      // drawer directly; digests (entity_id null) land on the Work Queue.
+      goHash(md.prospect_id ? `#/prospecting/${md.prospect_id}` : '#/prospecting/work');
+    } else if (notif.entity_type === 'call_inbox') {
+      goHash('#/prospecting/calls');
+    } else if (notif.entity_type === 'network') {
+      goHash('#/prospecting/network');
+    } else if (md.action_ids?.length) {
       // Digest — navigate to actions view
       if (onNavigateToAction) onNavigateToAction(null);
       else window.dispatchEvent(new CustomEvent('navigate', { detail: 'actions' }));

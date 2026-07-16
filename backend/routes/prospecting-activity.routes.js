@@ -569,6 +569,7 @@ router.get('/detail', async (req, res) => {
       const r = await db.query(
         `SELECT e.id, e.subject, e.body, e.direction, e.sent_at,
                 e.from_address, e.to_address, e.user_id,
+                p.id AS prospect_id,
                 p.first_name, p.last_name, p.company_name, p.email AS prospect_email
            FROM emails e
            JOIN prospects p ON p.id = e.prospect_id
@@ -587,13 +588,15 @@ router.get('/detail', async (req, res) => {
         from:       row.from_address || null,
         to:         row.to_address || row.prospect_email || null,
         occurredAt: row.sent_at,
-        prospect: { firstName: row.first_name, lastName: row.last_name, companyName: row.company_name },
+        // prospect.id powers the pinned deep-link card's "Open prospect →"
+        prospect: { id: row.prospect_id, firstName: row.first_name, lastName: row.last_name, companyName: row.company_name },
       });
     }
 
     // prospecting_activities
     const r = await db.query(
       `SELECT a.id, a.activity_type, a.description, a.metadata, a.created_at, a.user_id,
+              p.id AS prospect_id,
               p.first_name, p.last_name, p.company_name
          FROM prospecting_activities a
          JOIN prospects p ON p.id = a.prospect_id
@@ -616,7 +619,7 @@ router.get('/detail', async (req, res) => {
       sentiment:    md.sentiment || null,
       metadata:     md,
       occurredAt:   row.created_at,
-      prospect: { firstName: row.first_name, lastName: row.last_name, companyName: row.company_name },
+      prospect: { id: row.prospect_id, firstName: row.first_name, lastName: row.last_name, companyName: row.company_name },
     });
   } catch (err) {
     console.error('GET /prospecting/activity/detail', err);

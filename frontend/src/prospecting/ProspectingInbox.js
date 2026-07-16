@@ -10,11 +10,71 @@
 //                    honestly labeled (it is email-only).
 //
 // The component still takes a `scope` prop and passes it through to both tabs.
+//
+// ── URL-hash deep links ──────────────────────────────────────────────────────
+// This view owns hash segments 2-3 (App owns segment 0, ProspectingView
+// segment 1 — see hashNav.js for the ownership model):
+//
+//   #/prospecting/inbox                      Activity tab (default = no token)
+//   #/prospecting/inbox/email                Email Inbox tab
+//   #/prospecting/inbox/email/<emailId>      Email tab, that row expanded
+//   #/prospecting/inbox/activity/e~<id>      Activity tab, email item pinned
+//   #/prospecting/inbox/activity/a~<id>      Activity tab, activity item pinned
+//   #/prospecting/inbox/<prospectId>         NOT ours — numeric segment 2 is
+//                                            the prospect drawer, owned by
+//                                            ProspectingView. We never write
+//                                            while it holds the hash.
+//
+// A deep-linked item that isn't in the loaded page (older than the date
+// window, other filters, pagination, other rep's item under team/org scope)
+// is fetched via GET /prospecting/activity/detail and rendered as a PINNED
+// card above the list — the endpoint enforces scope access and handles both
+// refTables, so no separate single-item route is needed.
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { apiFetch } from './prospectingShared';
+import { hashParts } from '../hashNav';
 
 const TEAL = '#0F9D8E';
+
+// Sub-tabs restorable from the hash ('drafts' joins this list when it ships).
+const INBOX_SUBTABS = ['activity', 'email'];
+
+// Item-ref token (hash segment 3 under /activity): e~<emailId> | a~<activityId>.
+// Long forms accepted on read so hand-built links are forgiving.
+function parseRefToken(seg) {
+  const m = /^(e|a|emails|prospecting_activities)~(\d+)$/.exec(seg || '');
+  if (!m) return null;
+  const refTable = (m[1] === 'e' || m[1] === 'emails') ? 'emails' : 'prospecting_activities';
+  return { refTable, refId: parseInt(m[2], 10) };
+}
+function formatRefToken(ref) {
+  return `${ref.refTable === 'emails' ? 'e' : 'a'}~${ref.refId}`;
+}
+
+// Read this view's hash segments. Returns null when the hash isn't ours.
+// drawer:true = numeric segment 2 (ProspectingView's prospect drawer).
+function readInboxHash() {
+  const parts = hashParts();
+  if (parts[0] !== 'prospecting' || parts[1] !== 'inbox') return null;
+  const seg2 = parts[2] || null;
+  if (seg2 && /^\d+$/.test(seg2)) return { drawer: true, tab: null, ref: null, emailId: null };
+  const tab = INBOX_SUBTABS.includes(seg2) ? seg2 : null;
+  let ref = null;
+  let emailId = null;
+  if (tab === 'activity') ref = parseRefToken(parts[3]);
+  if (tab === 'email' && parts[3]) {
+    const id = parseInt(parts[3], 10);
+    if (Number.isInteger(id) && id > 0 && String(id) === parts[3]) emailId = id;
+  }
+  return { drawer: false, tab, ref, emailId };
+}
+
+// Absolute URL for an inbox deep link (per-row copy buttons). Same
+// origin+pathname pattern CampaignsView uses for its inboxHref.
+function inboxItemUrl(hashPath) {
+  return `${window.location.origin}${window.location.pathname}#/prospecting/inbox/${hashPath}`;
+}
 
 // Shared date-range options (used by both tabs).
 const RANGE_OPTS = [
@@ -28,13 +88,31 @@ const RANGE_OPTS = [
 // ─────────────────────────────────────────────────────────────────────────────
 // Shell: sub-tab bar + active tab.
 // ─────────────────────────────────────────────────────────────────────────────
-function ProspectingInbox({ scope: pageScope, onScopeChange, search }) {
-  const [tab, setTab] = useState('activity'); // 'activity' | 'email'
-  const [caps, setCaps] = useState({ hasSubordinates: false, isAdmin: false });
+function ProspectingInbox({ scope: pageScope, onScopeChange, search, initialTab, initialCampaignId }) {
+  // Sub-tab, restored from the hash on mount (refresh/deep-link survival),
+  // falling back to the initialTab prop (in-app handoffs, e.g. from a
+  // campaign card), then to Activity.
+  const [tab, setTab] = useState(() => {
+    const h = readInboxHash();
+    if (h?.tab) return h.tab;
+    if (INBOX_SUBTABS.includes(initialTab)) return initialTab;
+    return 'activity';
+  });
+  // Activity item pinned above the feed — the deep-link target. Set from
+  // the hash on mount, from external hash changes, or by an email deep
+  // link that misses the loaded page (the /activity/detail fetch handles
+  // both refTables).
+  const [pinnedRef, setPinnedRef] = useState(() => readInboxHash()?.ref || null);
+  // Expanded email row. Lifted from EmailInbox so the shell can mirror it
+  // into the hash (that's what makes an expanded reply copy-pasteable).
+  const [emailExpandedId, setEmailExpandedId] = useState(() => readInboxHash()?.emailId || null);
+  // loaded flag gates the pinned-item fetch so team/org deep links don't
+  // fire with a premature scope=mine and 404.
+  const [caps, setCaps] = useState({ hasSubordinates: false, isAdmin: false, loaded: false });
   const [scopeLocal, setScopeLocal] = useState(pageScope || 'mine');
   // Campaign narrow — applies to BOTH tabs (Activity feed + Email Inbox),
   // so it lives here and is threaded down as a prop. null = all campaigns.
-  const [campaignId, setCampaignId] = useState(null);
+  const [campaignId, setCampaignId] = useState(initialCampaignId || null);
   const [campaignList, setCampaignList] = useState([]);
 
   useEffect(() => {
@@ -46,9 +124,85 @@ function ProspectingInbox({ scope: pageScope, onScopeChange, search }) {
   // Server-authoritative scope capabilities (same source the campaign list uses).
   useEffect(() => {
     apiFetch('/prospecting-campaigns/me/context')
-      .then(c => setCaps({ hasSubordinates: !!c?.hasSubordinates, isAdmin: !!c?.isAdmin }))
-      .catch(() => { /* only "Mine" offered */ });
+      .then(c => setCaps({ hasSubordinates: !!c?.hasSubordinates, isAdmin: !!c?.isAdmin, loaded: true }))
+      .catch(() => setCaps(c => ({ ...c, loaded: true }))); // only "Mine" offered
   }, []);
+
+  // ── Hash mirroring (segments 2-3) ─────────────────────────────────────────
+  // Write our segments whenever the sub-tab or deep item changes. Guards:
+  // only while the hash is actually on prospecting/inbox (App/ProspectingView
+  // own tab switches), and never while a numeric prospect-drawer id holds
+  // segment 2. replaceState — no history entries (see hashNav.js).
+  useEffect(() => {
+    const parts = hashParts();
+    if (parts[0] !== 'prospecting' || parts[1] !== 'inbox') return;
+    if (parts[2] && /^\d+$/.test(parts[2])) return; // prospect drawer owns the hash
+    const desired =
+      tab === 'email'
+        ? (emailExpandedId ? `#/prospecting/inbox/email/${emailExpandedId}` : '#/prospecting/inbox/email')
+        : (pinnedRef ? `#/prospecting/inbox/activity/${formatRefToken(pinnedRef)}` : '#/prospecting/inbox');
+    if (window.location.hash !== desired) {
+      window.history.replaceState(null, '', desired);
+    }
+  }, [tab, pinnedRef, emailExpandedId]);
+
+  // External hash changes (notification bell, manual URL edit) re-target
+  // the sub-tab and deep item without a remount. Our own writes use
+  // replaceState, which never fires 'hashchange', so this cannot loop.
+  useEffect(() => {
+    const onHashChange = () => {
+      const h = readInboxHash();
+      if (!h || h.drawer) return;
+      if (h.tab) setTab(h.tab);
+      if (h.tab === 'activity') setPinnedRef(h.ref || null);
+      if (h.tab === 'email') setEmailExpandedId(h.emailId || null);
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  // ── Pinned item fetch ─────────────────────────────────────────────────────
+  // Uses the broadest scope the user's capabilities allow: a deep link is an
+  // explicit pointer (a manager opening a rep's reply), and the endpoint
+  // still enforces access server-side — anything out of reach 404s.
+  const [pinned, setPinned] = useState(null); // { loading, error, detail } | null
+  useEffect(() => {
+    if (!pinnedRef) { setPinned(null); return; }
+    if (!caps.loaded) return;
+    let cancelled = false;
+    setPinned({ loading: true, error: '', detail: null });
+    const fetchScope = caps.isAdmin ? 'org' : caps.hasSubordinates ? 'team' : 'mine';
+    const qs = new URLSearchParams({
+      refTable: pinnedRef.refTable,
+      refId: String(pinnedRef.refId),
+      scope: fetchScope,
+    });
+    apiFetch(`/prospecting/activity/detail?${qs}`)
+      .then(d => { if (!cancelled) setPinned({ loading: false, error: '', detail: d }); })
+      .catch(() => {
+        if (!cancelled) setPinned({
+          loading: false, detail: null,
+          error: 'This item is not visible to you — it may have been removed or belong to someone outside your scope.',
+        });
+      });
+    return () => { cancelled = true; };
+  }, [pinnedRef, caps.loaded, caps.isAdmin, caps.hasSubordinates]);
+
+  const dismissPinned = () => {
+    setPinnedRef(null);
+    // An email deep link that missed the page also holds emailExpandedId —
+    // clear it so the hash trims back to the bare tab.
+    if (tab === 'email') setEmailExpandedId(null);
+  };
+
+  // Switching sub-tabs intentionally drops the other tab's deep item (the
+  // hash follows — a copied URL should describe what's on screen).
+  const switchTab = (t) => {
+    if (t === tab) return;
+    setTab(t);
+    setPinnedRef(null);
+    setEmailExpandedId(null);
+  };
 
   // Follow the page-level scope when it changes, but allow a local override here
   // so this view has its own Mine/Team/Org switch like the campaign list.
@@ -98,7 +252,7 @@ function ProspectingInbox({ scope: pageScope, onScopeChange, search }) {
           return (
             <button
               key={t.value}
-              onClick={() => setTab(t.value)}
+              onClick={() => switchTab(t.value)}
               style={{
                 padding: '11px 14px 9px', fontSize: 13, fontWeight: 600,
                 border: 'none', background: 'transparent', cursor: 'pointer',
@@ -136,11 +290,153 @@ function ProspectingInbox({ scope: pageScope, onScopeChange, search }) {
         )}
       </div>
 
+      {/* ── Pinned deep-linked item (shown above whichever tab is active) ────── */}
+      {pinnedRef && pinned && (
+        <PinnedItemCard state={pinned} onDismiss={dismissPinned} />
+      )}
+
       {/* ── Active tab ───────────────────────────────────────────────────────── */}
       <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         {tab === 'activity'
           ? <ActivityFeed scope={scope} search={search} campaignId={campaignId} />
-          : <EmailInbox scope={scope} search={search} campaignId={campaignId} />}
+          : <EmailInbox
+              scope={scope}
+              search={search}
+              campaignId={campaignId}
+              expandedId={emailExpandedId}
+              onExpandedChange={setEmailExpandedId}
+              onDeepMiss={(id) => setPinnedRef({ refTable: 'emails', refId: id })}
+            />}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Deep-link support components.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Copy-link button — puts the absolute deep-link URL for one inbox item on
+// the clipboard. stopPropagation because it sits inside clickable rows.
+function CopyLinkButton({ hashPath, title }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async (e) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(inboxItemUrl(hashPath));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (_) {
+      // Clipboard API unavailable (non-secure context / permissions) — no-op.
+    }
+  };
+  return (
+    <button
+      onClick={copy}
+      title={title || 'Copy link to this item'}
+      style={{
+        border: 'none', background: 'transparent', cursor: 'pointer',
+        fontSize: 12, padding: '0 4px', color: copied ? '#059669' : '#cbd5e1',
+        lineHeight: 1,
+      }}
+    >
+      {copied ? '✓' : '🔗'}
+    </button>
+  );
+}
+
+// Pinned card for a deep-linked item that isn't (or may not be) in the loaded
+// list — rendered from GET /prospecting/activity/detail, which serves both
+// emails and prospecting_activities with scope checks.
+function PinnedItemCard({ state, onDismiss }) {
+  const { loading, error, detail } = state;
+  const p = detail?.prospect || {};
+  const isEmail = detail?.kind === 'email';
+  const body = detail
+    ? (isEmail ? htmlToText(detail.body) : (detail.body || detail.description || ''))
+    : '';
+
+  return (
+    <div style={{
+      margin: '10px 16px 0', border: `1px solid ${TEAL}`, borderRadius: 10,
+      background: '#f0fdfa', flexShrink: 0, overflow: 'hidden',
+    }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
+        borderBottom: '1px solid #ccfbf1',
+      }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: TEAL, letterSpacing: 0.4 }}>
+          📌 LINKED ITEM
+        </span>
+        {detail && (
+          <span style={{ fontSize: 13, fontWeight: 600, color: '#1a202c' }}>
+            {p.firstName} {p.lastName}
+            {p.companyName && <span style={{ fontWeight: 400, color: '#94a3b8' }}> · {p.companyName}</span>}
+          </span>
+        )}
+        {detail?.prospect?.id && (
+          <button
+            onClick={() => { window.location.hash = `#/prospecting/${detail.prospect.id}`; }}
+            style={{
+              fontSize: 11, fontWeight: 600, color: TEAL, background: 'transparent',
+              border: 'none', cursor: 'pointer', padding: 0,
+            }}
+          >
+            Open prospect →
+          </button>
+        )}
+        <button
+          onClick={onDismiss}
+          title="Dismiss"
+          style={{
+            marginLeft: 'auto', border: 'none', background: 'transparent',
+            cursor: 'pointer', color: '#6b7280', fontSize: 14, lineHeight: 1,
+          }}
+        >
+          ✕
+        </button>
+      </div>
+
+      <div style={{ padding: '10px 12px' }}>
+        {loading && <div style={{ fontSize: 12, color: '#9ca3af' }}>Loading…</div>}
+        {error && <div style={{ fontSize: 12, color: '#b91c1c' }}>{error}</div>}
+        {detail && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {isEmail ? (
+              <div style={{ display: 'flex', gap: 16, fontSize: 11, color: '#6b7280', flexWrap: 'wrap' }}>
+                {detail.from && <span><strong>From:</strong> {detail.from}</span>}
+                {detail.to && <span><strong>To:</strong> {detail.to}</span>}
+                {detail.subject && <span><strong>Subject:</strong> {detail.subject}</span>}
+                {detail.occurredAt && <span>{new Date(detail.occurredAt).toLocaleString()}</span>}
+              </div>
+            ) : (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                {detail.event && (
+                  <span style={{ fontSize: 11, fontWeight: 600, color: TEAL, padding: '1px 8px', borderRadius: 10, background: '#ccfbf1' }}>
+                    {detail.event.replace(/_/g, ' ')}
+                  </span>
+                )}
+                {detail.sentiment && (
+                  <span style={{ fontSize: 11, padding: '1px 8px', borderRadius: 10, background: '#eef2ff', color: '#4338ca', fontWeight: 600 }}>
+                    {detail.sentiment}
+                  </span>
+                )}
+                {detail.occurredAt && (
+                  <span style={{ fontSize: 11, color: '#6b7280' }}>{new Date(detail.occurredAt).toLocaleString()}</span>
+                )}
+              </div>
+            )}
+            <div style={{
+              background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8,
+              padding: '10px 14px', fontSize: 13, color: '#374151',
+              lineHeight: 1.7, whiteSpace: 'pre-wrap', maxHeight: 260, overflowY: 'auto',
+            }}>
+              {body
+                ? body
+                : <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>No further detail stored for this item.</span>}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -564,7 +860,13 @@ function ActivityRow({ item, scope }) {
         {/* Meta */}
         <div style={{ flexShrink: 0, textAlign: 'right' }}>
           <div style={{ fontSize: 12, color: '#6b7280', whiteSpace: 'nowrap' }}>
-            {expandable && <span style={{ color: '#cbd5e1', marginRight: 6 }}>{open ? '▾' : '▸'}</span>}
+            {expandable && (
+              <CopyLinkButton
+                hashPath={`activity/${item.refTable === 'emails' ? 'e' : 'a'}~${item.refId}`}
+                title="Copy link to this activity"
+              />
+            )}
+            {expandable && <span style={{ color: '#cbd5e1', marginRight: 6, marginLeft: 4 }}>{open ? '▾' : '▸'}</span>}
             {when}
           </div>
           {actor && (actor.firstName || actor.lastName) && (
@@ -625,7 +927,11 @@ function ActivityRow({ item, scope }) {
 // Email Inbox — the prior email-only view, preserved verbatim (only renamed
 // from the component default to make the sub-tab honest).
 // ─────────────────────────────────────────────────────────────────────────────
-function EmailInbox({ scope, search, campaignId }) {
+// expandedId/onExpandedChange are lifted to the shell so the expanded row is
+// mirrored into the URL hash (deep-linkable). onDeepMiss(id) fires once when
+// a deep-linked id isn't in the loaded page — the shell then pins the item
+// above the table via /activity/detail instead of leaving a dead link.
+function EmailInbox({ scope, search, campaignId, expandedId, onExpandedChange, onDeepMiss }) {
   const [emails, setEmails]       = useState([]);
   const [stats, setStats]         = useState(null);
   const [loading, setLoading]     = useState(true);
@@ -636,11 +942,22 @@ function EmailInbox({ scope, search, campaignId }) {
   const [total, setTotal]         = useState(0);
   const [syncing, setSyncing]     = useState(false);
   const [syncMsg, setSyncMsg]     = useState('');
-  const [expandedId, setExpandedId] = useState(null); // id of expanded email row
   const [senderId, setSenderId]   = useState(null);   // filter by one team member
   const [bySender, setBySender]   = useState([]);     // per-person counts
 
   const LIMIT = 50;
+
+  // Deep-miss check: once per distinct expandedId, after a load settles, if
+  // the id isn't in the visible page, hand it to the shell to pin. The ref
+  // guard means user-driven expansion of a visible row never re-triggers,
+  // and paging away from an already-checked row doesn't spuriously pin it.
+  const deepCheckedFor = useRef(null);
+  useEffect(() => {
+    if (!expandedId || loading) return;
+    if (deepCheckedFor.current === expandedId) return;
+    deepCheckedFor.current = expandedId;
+    if (!emails.some(e => e.id === expandedId) && onDeepMiss) onDeepMiss(expandedId);
+  }, [expandedId, loading, emails]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Clear the per-person filter whenever the scope changes (Mine/Team/Org).
   useEffect(() => { setSenderId(null); }, [scope]);
@@ -900,7 +1217,7 @@ function EmailInbox({ scope, search, campaignId }) {
                     <React.Fragment key={email.id}>
                     <tr
                       key={`${email.id}-main`}
-                      onClick={() => setExpandedId(expandedId === email.id ? null : email.id)}
+                      onClick={() => onExpandedChange(expandedId === email.id ? null : email.id)}
                       style={{
                         borderBottom: expandedId === email.id ? 'none' : '1px solid #f3f4f6',
                         background: isReply ? '#f0fdf4' : '#fff',
@@ -987,6 +1304,7 @@ function EmailInbox({ scope, search, campaignId }) {
                               Sent
                             </span>
                           )}
+                          <CopyLinkButton hashPath={`email/${email.id}`} title="Copy link to this email" />
                         </div>
                       </td>
                     </tr>
