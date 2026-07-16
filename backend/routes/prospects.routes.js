@@ -1793,6 +1793,100 @@ router.get('/:id/email-engagement', async (req, res) => {
   }
 });
 
+// ── GET /:id/email-replies — inbound email replies from this prospect ─────────
+//
+// One row per received email (emails.direction = received/inbound) for the
+// prospect, newest first. Unlike LinkedIn — where message text is never sent
+// to the server (D12) — inbound email BODIES are stored (syncScheduler
+// storeEmailRow), so real reply content can be shown.
+//
+// Body handling: the stored body is often raw Outlook/Gmail HTML. We strip it
+// to readable text server-side — never trust markup into the drawer — and
+// return both a short preview and the full text so the UI can expand in place.
+// Quoted trailer ("On <date> X wrote:") is trimmed from the preview only, so
+// the collapsed view shows the actual reply rather than the thread history.
+router.get('/:id/email-replies', async (req, res) => {
+  try {
+    const check = await db.query(
+      'SELECT id FROM prospects WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL',
+      [req.params.id, req.orgId]
+    );
+    if (check.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Prospect not found' } });
+    }
+
+    const result = await db.query(
+      `SELECT id, subject, from_address, sent_at, body, conversation_id
+         FROM emails
+        WHERE org_id      = $2
+          AND prospect_id = $1
+          AND direction   IN ('received','inbound')
+          AND deleted_at IS NULL
+        ORDER BY sent_at DESC NULLS LAST
+        LIMIT 25`,
+      [req.params.id, req.orgId]
+    );
+
+    // Minimal, dependency-free HTML → text. Good enough for a drawer preview;
+    // the inbox remains the place for full fidelity rendering.
+    const htmlToText = (raw) => {
+      if (!raw) return '';
+      let t = String(raw);
+      // Drop style/script blocks entirely, then tags, then decode the few
+      // entities that actually show up in email bodies.
+      t = t.replace(/<(style|script)[\s\S]*?<\/\1>/gi, ' ');
+      t = t.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n');
+      t = t.replace(/<[^>]+>/g, '');
+      t = t.replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&')
+           .replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
+           .replace(/&quot;/gi, '"').replace(/&#39;/gi, "'");
+      // Collapse runaway whitespace the tag-stripping leaves behind.
+      return t.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    };
+
+    // Trim the quoted history for the PREVIEW only — keep it in full text.
+    const stripQuoted = (text) => {
+      if (!text) return '';
+      const markers = [
+        /\nOn .+ wrote:/,                 // Gmail / Outlook English
+        /\n-{2,}\s*Original Message\s*-{2,}/i,
+        /\nFrom:\s.+\nSent:\s/i,          // Outlook block quote header
+        /\n_{5,}/,                        // Outlook underscore divider
+      ];
+      let cut = text.length;
+      for (const m of markers) {
+        const idx = text.search(m);
+        if (idx > 0 && idx < cut) cut = idx;
+      }
+      return text.slice(0, cut).trim();
+    };
+
+    res.json({
+      replies: result.rows.map(r => {
+        const fullText = htmlToText(r.body);
+        const reply    = stripQuoted(fullText);
+        const preview  = reply.length > 200 ? reply.slice(0, 200).trimEnd() + '…' : reply;
+        return {
+          id:            r.id,
+          subject:       r.subject || '(no subject)',
+          fromAddress:   r.from_address || null,
+          receivedAt:    r.sent_at,
+          preview,
+          // Full de-quoted reply plus the quoted history beneath it, so
+          // "expand" shows everything without a second fetch.
+          fullText,
+          // True when there was quoted history we trimmed from the preview,
+          // so the UI knows expand reveals more than the preview showed.
+          truncated:     fullText.length > preview.replace(/…$/, '').length,
+        };
+      }),
+    });
+  } catch (error) {
+    console.error('Get prospect email replies error:', error);
+    res.status(500).json({ error: { message: 'Failed to fetch email replies' } });
+  }
+});
+
 // ── POST /:id/research — AI-powered prospect research ────────────────────────
 router.post('/:id/research', async (req, res) => {
   try {

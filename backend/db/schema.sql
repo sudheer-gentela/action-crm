@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict JqoCVDymwIG8G9Nw8Gk4SfoKatdfFiAW3ehjsznYdwSAlrNzqipxL1LGpzXEOV6
+\restrict 18dvw7erS7qKs4nMZvAbggjEHMGUjhhwOXGUupdg6KmuUegXuEIEkJ8TwInp6of
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -4921,6 +4921,7 @@ CREATE TABLE public.prospecting_campaigns (
     tracking_opens boolean DEFAULT false NOT NULL,
     tracking_clicks boolean DEFAULT false NOT NULL,
     activity_type character varying(20) DEFAULT 'outreach'::character varying NOT NULL,
+    stop_on_reply boolean DEFAULT true NOT NULL,
     CONSTRAINT chk_daily_activation_cap CHECK (((daily_activation_cap IS NULL) OR (daily_activation_cap > 0))),
     CONSTRAINT chk_pc_activity_type CHECK (((activity_type)::text = ANY ((ARRAY['outreach'::character varying, 'field_event'::character varying, 'digital'::character varying, 'discovery'::character varying])::text[]))),
     CONSTRAINT chk_pc_cadence_minutes CHECK (((cadence_minutes IS NULL) OR ((cadence_minutes >= 1) AND (cadence_minutes <= 240)))),
@@ -4946,6 +4947,13 @@ COMMENT ON COLUMN public.prospecting_campaigns.tracking_clicks IS 'Per-campaign 
 --
 
 COMMENT ON COLUMN public.prospecting_campaigns.activity_type IS 'Campaign purpose (D16): outreach | field_event | digital | discovery. Metadata only ΓÇö signal-based targeting is activity-agnostic; this drives which Execution fields the staged New Campaign shows (playbook/sequence/schedule are outreach-only). Existing rows default to outreach.';
+
+
+--
+-- Name: COLUMN prospecting_campaigns.stop_on_reply; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.prospecting_campaigns.stop_on_reply IS 'When true (default), an inbound reply (email or LinkedIn) stops active sequence enrollments for prospects in this campaign. Opt-out per campaign.';
 
 
 --
@@ -16615,5 +16623,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict JqoCVDymwIG8G9Nw8Gk4SfoKatdfFiAW3ehjsznYdwSAlrNzqipxL1LGpzXEOV6
+\unrestrict 18dvw7erS7qKs4nMZvAbggjEHMGUjhhwOXGUupdg6KmuUegXuEIEkJ8TwInp6of
 

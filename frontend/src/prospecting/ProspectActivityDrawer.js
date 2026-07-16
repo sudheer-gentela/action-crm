@@ -46,13 +46,19 @@ function urlHost(u) {
   try { return new URL(u).hostname; } catch (_) { return u; }
 }
 
-export default function ProspectActivityDrawer({ fetchPath, emailEngagementPath = null, onClose }) {
+export default function ProspectActivityDrawer({ fetchPath, emailEngagementPath = null, emailRepliesPath = null, inboxHref = null, onClose }) {
   const [detail, setDetail]       = useState({ loading: true });
   const [actFilter, setActFilter] = useState('all');   // all | linkedin | sequence | call | system
   // null = loading/not requested; [] = loaded, none. The email ledger section
   // renders only when there is something to show — the funnel-tab host never
   // passes emailEngagementPath and never carries the section.
   const [emailSends, setEmailSends] = useState(null);
+  // Inbound email replies (real content — unlike LinkedIn, email bodies are
+  // stored). null = not requested; [] = none. Only fetched when the campaign
+  // host passes emailRepliesPath.
+  const [emailReplies, setEmailReplies] = useState(null);
+  // Which reply rows are expanded to full text (by reply id).
+  const [expandedReplies, setExpandedReplies] = useState({});
 
   useEffect(() => {
     let cancelled = false;
@@ -84,6 +90,22 @@ export default function ProspectActivityDrawer({ fetchPath, emailEngagementPath 
     })();
     return () => { cancelled = true; };
   }, [emailEngagementPath]);
+
+  useEffect(() => {
+    if (!emailRepliesPath) { setEmailReplies(null); return; }
+    let cancelled = false;
+    setEmailReplies(null);
+    setExpandedReplies({});
+    (async () => {
+      try {
+        const r = await apiFetch(emailRepliesPath);
+        if (!cancelled) setEmailReplies(r.replies || []);
+      } catch (_) {
+        if (!cancelled) setEmailReplies([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [emailRepliesPath]);
 
   return (
     <div className="lifp-drawer-backdrop" onClick={onClose}>
@@ -197,6 +219,61 @@ export default function ProspectActivityDrawer({ fetchPath, emailEngagementPath 
                 })}
                 <div className="lifp-drawer-note">
                   Opens are directional — mail-client image proxies can auto-load tracking pixels. Sequence emails only.
+                </div>
+              </>
+            )}
+
+            {/* Email replies — inbound messages with real content (email
+                bodies are stored, unlike LinkedIn). Preview collapses the
+                quoted history; expand shows the full text. "Open in inbox"
+                opens a new tab so this drawer is not lost. */}
+            {emailReplies != null && emailReplies.length > 0 && (
+              <>
+                <div className="lifp-drawer-section">
+                  Email replies
+                  {inboxHref && (
+                    <a href={inboxHref} target="_blank" rel="noopener noreferrer"
+                       className="lifp-fact-link" style={{ float: 'right', fontWeight: 500 }}
+                       title="Open the inbox in a new tab">
+                      Open in inbox ↗
+                    </a>
+                  )}
+                </div>
+                {emailReplies.map(rep => {
+                  const expanded = !!expandedReplies[rep.id];
+                  return (
+                    <div key={rep.id} className="lifp-act-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 4 }}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', justifyContent: 'space-between' }}>
+                        <span style={{ fontWeight: 600, fontSize: 12, color: '#16a34a' }}>
+                          ← {rep.subject}
+                        </span>
+                        <span className="lifp-act-date" style={{ flexShrink: 0 }} title={rep.receivedAt}>
+                          {fmtDate(rep.receivedAt)}
+                        </span>
+                      </div>
+                      {rep.fromAddress && (
+                        <div style={{ fontSize: 11, color: '#9ca3af' }}>{rep.fromAddress}</div>
+                      )}
+                      <div style={{ fontSize: 12, color: '#374151', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+                        {expanded ? rep.fullText : rep.preview}
+                      </div>
+                      {rep.truncated && (
+                        <button
+                          onClick={() => setExpandedReplies(prev => ({ ...prev, [rep.id]: !expanded }))}
+                          style={{
+                            alignSelf: 'flex-start', background: 'none', border: 'none',
+                            color: '#0F766E', fontSize: 11, fontWeight: 600, cursor: 'pointer',
+                            padding: '2px 0',
+                          }}>
+                          {expanded ? 'Show less' : 'Show full reply'}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+                <div className="lifp-drawer-note">
+                  Reply text shown as received; quoted history is collapsed in the preview.
+                  Open the inbox for the full formatted thread.
                 </div>
               </>
             )}

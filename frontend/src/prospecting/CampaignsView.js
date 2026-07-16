@@ -1816,6 +1816,8 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
             <ProspectActivityDrawer
               fetchPath={`/prospecting-campaigns/${campaignId}/prospect-activity/${activityProspectId}`}
               emailEngagementPath={`/prospects/${activityProspectId}/email-engagement`}
+              emailRepliesPath={`/prospects/${activityProspectId}/email-replies`}
+              inboxHref={`${window.location.origin}${window.location.pathname}#/prospecting/inbox`}
               onClose={() => setActivityProspectId(null)}
             />
           </div>
