@@ -101,7 +101,10 @@
 }
 .lifp-drawer-empty { font-size: 12.5px; color: #9ca3af; padding: 4px 0; }
 
-.lifp-msg-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 13px; border-bottom: 1px solid #fafafa; }
+.lifp-msg-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 13px; border-bottom: 1px solid #fafafa; text-decoration: none; color: inherit; }
+.lifp-msg-row-link { cursor: pointer; }
+.lifp-msg-row-link:hover { background: #f9fafb; }
+.lifp-msg-open { margin-left: auto; color: #0F9D8E; font-weight: 600; font-size: 12px; }
 .lifp-msg-dir { font-weight: 700; font-size: 12px; min-width: 62px; }
 .lifp-in  { color: #16a34a; }
 .lifp-out { color: #3b82f6; }
@@ -114,3 +117,28 @@
 
 .lifp-act-row { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; font-size: 12.5px; border-bottom: 1px solid #fafafa; }
 .lifp-act-desc { color: #374151; }
+
+
+/* ── v3: uniform left-aligned date column (messages + activity) ── */
+.lifp-act-date {
+  min-width: 52px; flex: 0 0 52px; font-size: 12px; color: #9ca3af;
+  font-variant-numeric: tabular-nums;
+}
+.lifp-act-row { display: flex; align-items: baseline; gap: 10px; padding: 5px 0; font-size: 12.5px; border-bottom: 1px solid #fafafa; }
+.lifp-act-desc { color: #374151; flex: 1; }
+
+/* ── v3: activity filter bar ── */
+.lifp-act-filterbar { display: flex; gap: 6px; flex-wrap: wrap; margin: 2px 0 8px; }
+.lifp-act-tab {
+  font-size: 11.5px; padding: 3px 9px; border-radius: 999px; cursor: pointer;
+  border: 1px solid #e5e7eb; background: #fff; color: #6b7280;
+}
+.lifp-act-tab:hover { background: #f9fafb; }
+.lifp-act-tab-on { background: #0F9D8E; border-color: #0F9D8E; color: #fff; }
+.lifp-act-count { opacity: 0.7; font-weight: 600; }
+.lifp-act-tab-on .lifp-act-count { opacity: 0.9; }
+
+/* ── v3: clickable fact counts ── */
+.lifp-fact-link { display: block; text-decoration: none; color: #0F9D8E; }
+.lifp-fact-link span { color: #0F9D8E; }
+.lifp-fact-link:hover { text-decoration: underline; }

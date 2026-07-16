@@ -48,6 +48,7 @@ export default function LinkedInFunnelPanel() {
   const [genState, setGen]    = useState(null);   // null | 'running' | result string
   const [stageFilter, setStageFilter] = useState(null);   // null | stage key (cumulative)
   const [detail, setDetail]   = useState(null);           // { loading } | { prospect, messages, activities } | { error }
+  const [actFilter, setActFilter] = useState('all');      // all | linkedin | sequence | call | system
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -88,6 +89,7 @@ export default function LinkedInFunnelPanel() {
   const matchesFilter = (r) => !stageFilter || STAGE_RANK[r.stage] >= STAGE_RANK[stageFilter];
 
   const openDetail = async (prospectId) => {
+    setActFilter('all');
     setDetail({ loading: true });
     try {
       const res = await apiFetch(`/linkedin-connections/funnel/${prospectId}`);
@@ -225,39 +227,95 @@ export default function LinkedInFunnelPanel() {
                   </div>
                 </div>
 
-                <div className="lifp-drawer-facts">
-                  <div><span>Requested</span>{fmtDate(detail.prospect.requestSentAt)}</div>
-                  <div><span>Accepted</span>{fmtDate(detail.prospect.connectedAt)}</div>
-                  <div><span>Verified</span>{detail.prospect.verifiedAt ? relTime(detail.prospect.verifiedAt) : '—'}</div>
-                  <div><span>Status</span>{detail.prospect.liStatus || '—'}</div>
-                  <div><span>Messages</span>{detail.prospect.messageCount}</div>
-                  <div><span>Replies</span>{detail.prospect.replyCount}</div>
-                </div>
+                {(() => {
+                  const threadUrn = (detail.messages || []).map(m => m.threadUrn).find(Boolean);
+                  const threadUrl = threadUrn
+                    ? 'https://www.linkedin.com/messaging/thread/' + threadUrn.replace('urn:li:messagingThread:', '') + '/'
+                    : null;
+                  const Count = ({ label, value }) => (
+                    threadUrl
+                      ? <a className="lifp-fact-link" href={threadUrl} target="_blank" rel="noopener noreferrer" title="Open conversation in LinkedIn">
+                          <span>{label} ↗</span>{value}
+                        </a>
+                      : <div><span>{label}</span>{value}</div>
+                  );
+                  return (
+                    <div className="lifp-drawer-facts">
+                      <div><span>Requested</span>{fmtDate(detail.prospect.requestSentAt)}</div>
+                      <div><span>Accepted</span>{fmtDate(detail.prospect.connectedAt)}</div>
+                      <div><span>Verified</span>{detail.prospect.verifiedAt ? relTime(detail.prospect.verifiedAt) : '—'}</div>
+                      <div><span>Status</span>{detail.prospect.liStatus || '—'}</div>
+                      <Count label="Messages" value={detail.prospect.messageCount} />
+                      <Count label="Replies" value={detail.prospect.replyCount} />
+                    </div>
+                  );
+                })()}
 
                 <div className="lifp-drawer-section">Message ledger</div>
                 {(detail.messages || []).length === 0 && (
                   <div className="lifp-drawer-empty">No messages recorded — open the conversation in LinkedIn and click Sync in the extension.</div>
                 )}
-                {(detail.messages || []).map((m, i) => (
-                  <div key={i} className="lifp-msg-row">
-                    <span className={'lifp-msg-dir ' + (m.direction === 'inbound' ? 'lifp-in' : 'lifp-out')}>
-                      {m.direction === 'inbound' ? '← reply' : '→ sent'}
-                    </span>
-                    <span className="lifp-msg-when" title={m.occurredAt}>{relTime(m.occurredAt)} · {fmtDate(m.occurredAt)}</span>
-                    {!m.counted && <span className="lifp-msg-uncounted" title="Pre-acceptance (e.g. connection-request note) — recorded but not counted">not counted</span>}
-                  </div>
-                ))}
+                {(() => {
+                  const threadUrn = (detail.messages || []).map(m => m.threadUrn).find(Boolean);
+                  const threadUrl = threadUrn
+                    ? 'https://www.linkedin.com/messaging/thread/' + threadUrn.replace('urn:li:messagingThread:', '') + '/'
+                    : null;
+                  const RowTag = threadUrl ? 'a' : 'div';
+                  return (detail.messages || []).map((m, i) => (
+                    <RowTag key={i} className={'lifp-msg-row' + (threadUrl ? ' lifp-msg-row-link' : '')}
+                      {...(threadUrl ? { href: threadUrl, target: '_blank', rel: 'noopener noreferrer' } : {})}>
+                      <span className="lifp-act-date" title={m.occurredAt}>{fmtDate(m.occurredAt)}</span>
+                      <span className={'lifp-msg-dir ' + (m.direction === 'inbound' ? 'lifp-in' : 'lifp-out')}>
+                        {m.direction === 'inbound' ? '← reply' : '→ sent'}
+                      </span>
+                      {!m.counted && <span className="lifp-msg-uncounted" title="Pre-acceptance (e.g. connection-request note) — recorded but not counted">not counted</span>}
+                      {threadUrl && <span className="lifp-msg-open">open ↗</span>}
+                    </RowTag>
+                  ));
+                })()}
                 <div className="lifp-drawer-note">
                   Message text is never stored — GoWarm records who messaged whom and when. Open the conversation for content.
                 </div>
 
                 <div className="lifp-drawer-section">Activity</div>
-                {(detail.activities || []).map((a, i) => (
-                  <div key={i} className="lifp-act-row">
-                    <span className="lifp-act-desc">{a.description}</span>
-                    <span className="lifp-msg-when">{fmtDate(a.createdAt)}</span>
-                  </div>
-                ))}
+                {(() => {
+                  const acts = detail.activities || [];
+                  const kindOf = (a) => {
+                    const s = (a.source || '') + ' ' + (a.event || '');
+                    const d = (a.description || '').toLowerCase();
+                    if (/linkedin|connection|member_urn|reply_received|message_sent/.test(s + ' ' + d)) return 'linkedin';
+                    if (/call/.test(d)) return 'call';
+                    if (/sequence|step|auto-send|draft|queued|approved/.test(d)) return 'sequence';
+                    return 'system';
+                  };
+                  const counts = { all: acts.length, linkedin: 0, sequence: 0, call: 0, system: 0 };
+                  acts.forEach(a => { counts[kindOf(a)]++; });
+                  const TABS = [
+                    ['all', 'All'], ['linkedin', 'LinkedIn'], ['sequence', 'Sequence'],
+                    ['call', 'Call'], ['system', 'System'],
+                  ];
+                  const shown = actFilter === 'all' ? acts : acts.filter(a => kindOf(a) === actFilter);
+                  return (
+                    <>
+                      <div className="lifp-act-filterbar">
+                        {TABS.filter(([k]) => k === 'all' || counts[k] > 0).map(([k, label]) => (
+                          <button key={k}
+                            className={'lifp-act-tab' + (actFilter === k ? ' lifp-act-tab-on' : '')}
+                            onClick={() => setActFilter(k)}>
+                            {label} <span className="lifp-act-count">{counts[k]}</span>
+                          </button>
+                        ))}
+                      </div>
+                      {shown.length === 0 && <div className="lifp-drawer-empty">No {actFilter} activity.</div>}
+                      {shown.map((a, i) => (
+                        <div key={i} className="lifp-act-row">
+                          <span className="lifp-act-date">{fmtDate(a.createdAt)}</span>
+                          <span className="lifp-act-desc">{a.description}</span>
+                        </div>
+                      ))}
+                    </>
+                  );
+                })()}
               </>
             )}
           </div>
