@@ -9,9 +9,14 @@
  * resolve live against the function selector ("New {leader} in seat" →
  * "New CFO in seat"). Rep-added signals are tagged.
  *
- * Create is rep-simple: plain questions only (label, Filter/Prioritize/Both,
- * company vs target role, function(s), optional predicate). Type/reliability/
- * source are inferred server-side (createRepSignal) and never asked.
+ * This panel is an ADMIN surface, so:
+ *   • Create asks "Where does this data come from?" — the source sets the
+ *     inferred reliability server-side (POST is role-aware: admin creates are
+ *     catalog signals, not rep-added).
+ *   • Each row has Edit — rep-visible dimensions go through PUT /:key; the
+ *     Data quality block (source, reliability, rep-added) goes through the
+ *     admin-only PUT /:key/inferred. Data quality is saved FIRST so a
+ *     capability change is clamped against the corrected reliability.
  *
  * Matches the existing OA panel conventions (raw fetch + REACT_APP_API_URL +
  * flash). Styling is self-contained in OASignalCatalog.css (sc-* namespace).
@@ -31,6 +36,17 @@ const PREDICATE_LABEL = {
   recency: 'How recently', geo: 'A location',
 };
 
+// Source options for the admin surface. Reliability shown is what the server
+// infers from the source (RELIABILITY_BY_SOURCE_KIND) — kept in sync manually.
+const SOURCE_OPTIONS = [
+  { value: 'list',         label: 'List / import',            reliability: 'high' },
+  { value: 'enrich',       label: 'Enrichment (Apollo etc.)', reliability: 'high' },
+  { value: 'dataset',      label: 'Dataset',                  reliability: 'medium' },
+  { value: 'harvest',      label: 'Page capture (extension)', reliability: 'medium' },
+  { value: 'rep_validate', label: 'Confirmed while working',  reliability: 'low' },
+];
+const RELIABILITY_BY_SOURCE = Object.fromEntries(SOURCE_OPTIONS.map(o => [o.value, o.reliability]));
+
 export default function OASignalCatalog() {
   const API     = process.env.REACT_APP_API_URL;
   const token   = localStorage.getItem('token') || localStorage.getItem('authToken');
@@ -42,6 +58,7 @@ export default function OASignalCatalog() {
   const [loading, setLoading]     = useState(true);
   const [flash, setFlash]         = useState(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [editing, setEditing]     = useState(null);     // signal being edited
 
   const showFlash = (type, msg) => { setFlash({ type, msg }); setTimeout(() => setFlash(null), 4000); };
 
@@ -93,7 +110,7 @@ export default function OASignalCatalog() {
       </div>
 
       {flash && (
-        <div className={`sc-flash sc-flash-${flash.type}`} style={{ margin: '8px 0' }}>{flash.msg}</div>
+        <div className={`sc-flash sc-flash--${flash.type}`} style={{ margin: '8px 0' }}>{flash.msg}</div>
       )}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '12px 0' }}>
@@ -145,9 +162,10 @@ export default function OASignalCatalog() {
                 </td>
                 <td><ReliabilityBadge value={s.reliability} /></td>
                 <td style={{ fontSize: 12, color: '#6b7280' }}>{sourceLabel(s.sourceKind)}</td>
-                <td style={{ textAlign: 'right' }}>
+                <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  <button className="sc-btn-link" onClick={() => setEditing(s)}>Edit</button>
                   {s.active !== false && (
-                    <button className="sc-btn-link sc-btn-link--danger" onClick={() => retire(s.key)}>Retire</button>
+                    <button className="sc-btn-link sc-btn-link--danger" style={{ marginLeft: 10 }} onClick={() => retire(s.key)}>Retire</button>
                   )}
                 </td>
               </tr>
@@ -163,6 +181,17 @@ export default function OASignalCatalog() {
           functions={functions}
           onClose={() => setShowCreate(false)}
           onCreated={() => { setShowCreate(false); showFlash('success', 'Signal created'); load(); }}
+        />
+      )}
+
+      {editing && (
+        <EditSignalModal
+          API={API}
+          headers={headers}
+          functions={functions}
+          signal={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); showFlash('success', 'Signal updated'); load(); }}
         />
       )}
     </div>
@@ -186,8 +215,73 @@ function ReliabilityBadge({ value }) {
   return <span style={{ color, fontWeight: 600, fontSize: 12, textTransform: 'capitalize' }}>{value || '—'}</span>;
 }
 
+// ── Shared field blocks (create + edit) ──────────────────────────────────────
+
+function CapabilityPicker({ capability, setCapability }) {
+  return (
+    <div className="sc-radio-row">
+      {['filter', 'prioritize', 'both'].map(c => (
+        <button
+          key={c} type="button"
+          className={'sc-radio-card' + (capability === c ? ' is-selected' : '')}
+          onClick={() => setCapability(c)}
+        >
+          <span className="sc-radio-title">{CAPABILITY_LABEL[c]}</span>
+          <span className="sc-radio-hint">{CAPABILITY_HINT[c]}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ScopePicker({ scope, setScope }) {
+  return (
+    <div className="sc-radio-row">
+      {['company', 'target_role'].map(sc => (
+        <button
+          key={sc} type="button"
+          className={'sc-radio-card' + (scope === sc ? ' is-selected' : '')}
+          onClick={() => setScope(sc)}
+        >
+          <span className="sc-radio-title">{SCOPE_LABEL[sc]}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function FunctionTagPicker({ functions, tags, toggleTag }) {
+  return (
+    <div className="sc-tag-row">
+      {functions.map(f => (
+        <button
+          key={f.key} type="button"
+          className={'sc-tag' + (tags.includes(f.key) ? ' is-selected' : '')}
+          onClick={() => toggleTag(f.key)}
+        >{f.label}</button>
+      ))}
+    </div>
+  );
+}
+
+function SourcePicker({ sourceKind, setSourceKind }) {
+  const reliability = RELIABILITY_BY_SOURCE[sourceKind] || 'low';
+  return (
+    <>
+      <select value={sourceKind} onChange={e => setSourceKind(e.target.value)}>
+        {SOURCE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+      <p className="sc-hint">
+        Sets reliability to <ReliabilityBadge value={reliability} />
+        {reliability === 'low' && <> — low-reliability signals can only <strong>Prioritize</strong>, never Filter.</>}
+      </p>
+    </>
+  );
+}
+
 // ── Rep-simple create modal ──────────────────────────────────────────────────
-// Plain questions only. No type/reliability/source — inferred server-side.
+// Plain questions + (admin surface) the data source. Type/reliability inferred
+// server-side from the source.
 function CreateSignalModal({ API, headers, functions, onClose, onCreated }) {
   const [label, setLabel]           = useState('');
   const [description, setDesc]      = useState('');
@@ -196,6 +290,7 @@ function CreateSignalModal({ API, headers, functions, onClose, onCreated }) {
   const [predicateType, setPred]    = useState('boolean');
   const [tags, setTags]             = useState([]);      // function keys; [] = Any
   const [defaultHook, setHook]      = useState('');
+  const [sourceKind, setSourceKind] = useState('dataset'); // admin surface default
   const [busy, setBusy]             = useState(false);
   const [error, setError]           = useState('');
   // Light Inference (Q-B): suggestion surfaced when the typed label embeds a
@@ -239,6 +334,7 @@ function CreateSignalModal({ API, headers, functions, onClose, onCreated }) {
         key: derivedKey, label: label.trim(), description: description || null,
         capability, scope, predicate_type: predicateType,
         function_tags: tags, default_hook: defaultHook || null,
+        source_kind: sourceKind,   // honoured for admins; ignored on the rep path
       };
       const r = await fetch(`${API}/signal-catalog`, { method: 'POST', headers, body: JSON.stringify(body) });
       if (!r.ok) { const e = await r.json(); throw new Error(e.error?.message || 'Create failed'); }
@@ -247,6 +343,7 @@ function CreateSignalModal({ API, headers, functions, onClose, onCreated }) {
   };
 
   const isRoleRelative = scope === 'target_role';
+  const willClamp = RELIABILITY_BY_SOURCE[sourceKind] === 'low' && capability !== 'prioritize';
 
   return (
     <div className="sc-modal-overlay" onClick={onClose}>
@@ -303,49 +400,23 @@ function CreateSignalModal({ API, headers, functions, onClose, onCreated }) {
           <label className="sc-field-label">Add a short description (optional)</label>
           <input value={description} onChange={e => setDesc(e.target.value)} placeholder="What it means, in your words" />
 
+          <label className="sc-field-label">Where does this data come from?</label>
+          <SourcePicker sourceKind={sourceKind} setSourceKind={setSourceKind} />
+
           <label className="sc-field-label">How should it be used?</label>
-          <div className="sc-radio-row">
-            {['filter', 'prioritize', 'both'].map(c => (
-              <button
-                key={c} type="button"
-                className={'sc-radio-card' + (capability === c ? ' is-selected' : '')}
-                onClick={() => setCapability(c)}
-              >
-                <span className="sc-radio-title">{CAPABILITY_LABEL[c]}</span>
-                <span className="sc-radio-hint">{CAPABILITY_HINT[c]}</span>
-              </button>
-            ))}
-          </div>
-          {capability !== 'prioritize' && (
+          <CapabilityPicker capability={capability} setCapability={setCapability} />
+          {willClamp && (
             <p className="sc-hint sc-hint--warn">
-              Heads up — some signals can only ever prioritize (never filter) once we see how
-              dependable the data is. If so, we'll switch this to Prioritize automatically.
+              "Confirmed while working" starts at low reliability, so this will be saved as
+              Prioritize-only. Pick a data source above to allow filtering.
             </p>
           )}
 
           <label className="sc-field-label">Is it about the company, or the target role?</label>
-          <div className="sc-radio-row">
-            {['company', 'target_role'].map(sc => (
-              <button
-                key={sc} type="button"
-                className={'sc-radio-card' + (scope === sc ? ' is-selected' : '')}
-                onClick={() => setScope(sc)}
-              >
-                <span className="sc-radio-title">{SCOPE_LABEL[sc]}</span>
-              </button>
-            ))}
-          </div>
+          <ScopePicker scope={scope} setScope={setScope} />
 
           <label className="sc-field-label">Which function(s)? <span style={{ color: '#9ca3af' }}>(none = any)</span></label>
-          <div className="sc-tag-row">
-            {functions.map(f => (
-              <button
-                key={f.key} type="button"
-                className={'sc-tag' + (tags.includes(f.key) ? ' is-selected' : '')}
-                onClick={() => toggleTag(f.key)}
-              >{f.label}</button>
-            ))}
-          </div>
+          <FunctionTagPicker functions={functions} tags={tags} toggleTag={toggleTag} />
 
           <label className="sc-field-label">What kind of answer is it?</label>
           <select value={predicateType} onChange={e => setPred(e.target.value)}>
@@ -363,6 +434,127 @@ function CreateSignalModal({ API, headers, functions, onClose, onCreated }) {
           <button className="sc-btn sc-btn--secondary" onClick={onClose}>Cancel</button>
           <button className="sc-btn sc-btn--primary" disabled={busy} onClick={submit}>
             {busy ? 'Creating…' : 'Create signal'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Edit modal ───────────────────────────────────────────────────────────────
+// Rep-visible dimensions → PUT /:key. Data quality (source/reliability/
+// rep-added) → PUT /:key/inferred, saved FIRST so a capability change is
+// clamped against the corrected reliability, not the stale one. The key is
+// immutable (campaign criteria reference it).
+function EditSignalModal({ API, headers, functions, signal, onClose, onSaved }) {
+  const [label, setLabel]           = useState(signal.label || '');
+  const [description, setDesc]      = useState(signal.description || '');
+  const [capability, setCapability] = useState(signal.capability || 'prioritize');
+  const [scope, setScope]           = useState(signal.scope || 'company');
+  const [predicateType, setPred]    = useState(signal.predicateType || 'boolean');
+  const [tags, setTags]             = useState(Array.isArray(signal.functionTags) ? signal.functionTags : []);
+  const [defaultHook, setHook]      = useState(signal.defaultHook || '');
+  const [sourceKind, setSourceKind] = useState(signal.sourceKind || 'rep_validate');
+  const [clearRepAdded, setClear]   = useState(false);
+  const [busy, setBusy]             = useState(false);
+  const [error, setError]           = useState('');
+
+  const toggleTag = (key) => setTags(prev => prev.includes(key) ? prev.filter(t => t !== key) : [...prev, key]);
+
+  const dataQualityChanged = sourceKind !== signal.sourceKind || clearRepAdded;
+  const effectiveReliability = dataQualityChanged
+    ? (RELIABILITY_BY_SOURCE[sourceKind] || 'low')
+    : (signal.reliability || 'low');
+  const willClamp = effectiveReliability === 'low' && capability !== 'prioritize';
+
+  const submit = async () => {
+    if (!label.trim()) { setError('The signal needs a label.'); return; }
+    setBusy(true); setError('');
+    try {
+      // 1) Data quality first (admin path) so the capability clamp below uses
+      //    the corrected reliability.
+      if (dataQualityChanged) {
+        const r = await fetch(`${API}/signal-catalog/${encodeURIComponent(signal.key)}/inferred`, {
+          method: 'PUT', headers,
+          body: JSON.stringify({
+            source_kind: sourceKind !== signal.sourceKind ? sourceKind : undefined,
+            clear_rep_added: clearRepAdded === true,
+          }),
+        });
+        if (!r.ok) { const e = await r.json(); throw new Error(e.error?.message || 'Failed to update data quality'); }
+      }
+
+      // 2) Rep-visible dimensions.
+      const r2 = await fetch(`${API}/signal-catalog/${encodeURIComponent(signal.key)}`, {
+        method: 'PUT', headers,
+        body: JSON.stringify({
+          label: label.trim(),
+          description: description || null,
+          capability, scope,
+          predicate_type: predicateType,
+          function_tags: tags,
+          default_hook: defaultHook || null,
+        }),
+      });
+      if (!r2.ok) { const e = await r2.json(); throw new Error(e.error?.message || 'Update failed'); }
+      onSaved();
+    } catch (e) { setError(e.message); setBusy(false); }
+  };
+
+  return (
+    <div className="sc-modal-overlay" onClick={onClose}>
+      <div className="sc-modal" onClick={e => e.stopPropagation()}>
+        <div className="sc-modal-header">
+          <h3>Edit signal</h3>
+          <button className="sc-modal-close" onClick={onClose}>×</button>
+        </div>
+        <div className="sc-modal-body">
+          <label className="sc-field-label">Label</label>
+          <input autoFocus value={label} onChange={e => setLabel(e.target.value)} />
+          <p className="sc-hint">Key <code>{signal.key}</code> can't change — campaigns reference it.</p>
+
+          <label className="sc-field-label">Description</label>
+          <input value={description} onChange={e => setDesc(e.target.value)} placeholder="What it means, in your words" />
+
+          <label className="sc-field-label">Where does this data come from?</label>
+          <SourcePicker sourceKind={sourceKind} setSourceKind={setSourceKind} />
+          {signal.repAdded && (
+            <label className="sc-hint" style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, cursor: 'pointer' }}>
+              <input type="checkbox" style={{ width: 'auto', margin: 0 }}
+                checked={clearRepAdded} onChange={e => setClear(e.target.checked)} />
+              Remove the "rep-added" tag (promote to a catalog signal)
+            </label>
+          )}
+
+          <label className="sc-field-label">How should it be used?</label>
+          <CapabilityPicker capability={capability} setCapability={setCapability} />
+          {willClamp && (
+            <p className="sc-hint sc-hint--warn">
+              At low reliability this stays Prioritize-only. Set the data source above to raise it.
+            </p>
+          )}
+
+          <label className="sc-field-label">Is it about the company, or the target role?</label>
+          <ScopePicker scope={scope} setScope={setScope} />
+
+          <label className="sc-field-label">Which function(s)? <span style={{ color: '#9ca3af' }}>(none = any)</span></label>
+          <FunctionTagPicker functions={functions} tags={tags} toggleTag={toggleTag} />
+
+          <label className="sc-field-label">What kind of answer is it?</label>
+          <select value={predicateType} onChange={e => setPred(e.target.value)}>
+            {Object.entries(PREDICATE_LABEL).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+
+          <label className="sc-field-label">Why-now hook (optional)</label>
+          <input value={defaultHook} onChange={e => setHook(e.target.value)}
+            placeholder="e.g. Fresh capital usually means new tooling budgets." />
+
+          {error && <div className="sc-flash sc-flash--error" style={{ marginTop: 8 }}>{error}</div>}
+        </div>
+        <div className="sc-modal-footer">
+          <button className="sc-btn sc-btn--secondary" onClick={onClose}>Cancel</button>
+          <button className="sc-btn sc-btn--primary" disabled={busy} onClick={submit}>
+            {busy ? 'Saving…' : 'Save changes'}
           </button>
         </div>
       </div>

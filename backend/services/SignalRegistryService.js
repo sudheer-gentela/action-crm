@@ -340,8 +340,16 @@ async function updateDef({ orgId, key, patch, client }) {
 /**
  * Admin/system-only: adjust the hidden dimensions (e.g. trust recalibration
  * from per-field sampling, D14). Re-clamps capability if reliability drops.
+ *
+ * If sourceKind changes and reliability isn't given explicitly, reliability is
+ * re-inferred from the new source ("the source decides the trust"), so an
+ * admin correcting "rep_validate" → "list" on a mis-created signal lifts the
+ * Prioritize-only clamp in one call.
+ *
+ * clearCreatedBy=true additionally nulls created_by — the "promote to catalog
+ * signal" path (drops the rep-added badge). Admin-gated by the caller.
  */
-async function setInferred({ orgId, key, reliability = null, sourceKind = null, client }) {
+async function setInferred({ orgId, key, reliability = null, sourceKind = null, clearCreatedBy = false, client }) {
   if (!orgId || !key) throw new Error('SignalRegistryService.setInferred: orgId and key are required');
   if (reliability != null && !VALID_RELIABILITY.has(reliability)) throw new Error(`invalid reliability "${reliability}"`);
   if (sourceKind != null && !VALID_SOURCE_KIND.has(sourceKind)) throw new Error(`invalid source_kind "${sourceKind}"`);
@@ -350,16 +358,20 @@ async function setInferred({ orgId, key, reliability = null, sourceKind = null, 
   const existing = await getDef({ orgId, key, client });
   if (!existing) throw new Error(`signal "${key}" not found in this org's catalog`);
 
-  const nextReliability = reliability || existing.reliability;
   const nextSourceKind  = sourceKind || existing.sourceKind;
+  const nextReliability = reliability
+    || (sourceKind ? inferReliability(sourceKind) : existing.reliability);
   const nextCapability  = clampCapability(existing.capability, nextReliability);
 
   const { rows } = await exec.query(
     `UPDATE signal_defs
-        SET reliability = $3, source_kind = $4, capability = $5
+        SET reliability = $3,
+            source_kind = $4,
+            capability  = $5,
+            created_by  = CASE WHEN $6 THEN NULL ELSE created_by END
       WHERE org_id = $1 AND key = $2
       RETURNING *`,
-    [orgId, key, nextReliability, nextSourceKind, nextCapability]
+    [orgId, key, nextReliability, nextSourceKind, nextCapability, clearCreatedBy === true]
   );
   return rowToDef(rows[0]);
 }

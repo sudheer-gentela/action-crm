@@ -7,9 +7,10 @@
 // Two resources, one router (both are "the catalog surface"):
 //
 //   GET    /api/signal-catalog                list signals (resolved per ?function)
-//   POST   /api/signal-catalog                rep-simple create ("+ Create", D10)
+//   POST   /api/signal-catalog                role-aware create (rep vs admin)
 //   GET    /api/signal-catalog/:key           one signal (resolved per ?function)
 //   PUT    /api/signal-catalog/:key           edit rep-visible dimensions
+//   PUT    /api/signal-catalog/:key/inferred  fix source/reliability/rep-added — admin only
 //   DELETE /api/signal-catalog/:key           retire (soft) — admin only
 //   GET    /api/signal-catalog/functions      the org's effective function taxonomy
 //
@@ -133,28 +134,35 @@ router.get('/functions', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST / — rep-simple create (the "+ Create" surface, D10).
-// Reps answer plain questions; the hidden dimensions are inferred by
-// createRepSignal (source_kind='rep_validate' ⇒ reliability 'low' ⇒ clamped to
-// Prioritize-only + confirm-on-page). The response is the REP view (no hidden
-// fields), resolved against ?function if given.
+// POST / — create a signal. ROLE-AWARE (fix for "admin creates show rep-added"):
+//
+//   • Rep (member): rep-simple create, unchanged. Hidden dimensions inferred by
+//     createRepSignal (source_kind='rep_validate' ⇒ reliability 'low' ⇒ clamped
+//     to Prioritize-only + confirm-on-page). created_by set ⇒ "rep-added".
+//
+//   • Admin/owner: a deliberate CATALOG create via createDef. created_by is NOT
+//     set (no rep-added tag), and the admin may state where the data comes from
+//     (body.source_kind: list|enrich|harvest|dataset|rep_validate). Reliability
+//     is inferred from that source (RULE 1 still clamps — an admin who leaves
+//     source as 'rep_validate' still gets a Prioritize-only signal). Default
+//     source for admins is 'dataset' (medium reliability ⇒ Filter allowed).
 //
 // Body: { key, label, description?, capability?, scope?, function_tags?,
-//         predicate_type?, ttl_days?, default_hook? }
+//         predicate_type?, ttl_days?, default_hook?, source_kind? (admin only) }
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/', async (req, res) => {
   const {
     key, label, description,
     capability, scope, function_tags, predicate_type, ttl_days, default_hook,
+    source_kind,
   } = req.body;
 
   if (!key || !String(key).trim()) return res.status(400).json({ error: { message: 'key is required' } });
   if (!label || !String(label).trim()) return res.status(400).json({ error: { message: 'label is required' } });
 
   try {
-    const def = await SignalRegistry.createRepSignal({
+    const common = {
       orgId: req.orgId,
-      userId: req.user.userId,     // ⇒ "rep-added"
       key: String(key).trim(),
       label: String(label).trim(),
       description: description ?? null,
@@ -164,7 +172,26 @@ router.post('/', async (req, res) => {
       predicateType: predicate_type || 'boolean',
       ttlDays: Number.isInteger(ttl_days) ? ttl_days : null,
       defaultHook: default_hook ?? null,
-    });
+    };
+
+    let def;
+    if (await isCallerAdmin(req)) {
+      const sk = typeof source_kind === 'string' && source_kind.trim()
+        ? source_kind.trim() : 'dataset';
+      if (!SignalRegistry.VALID_SOURCE_KIND.has(sk)) {
+        return res.status(400).json({ error: { message: `invalid source_kind "${sk}"` } });
+      }
+      def = await SignalRegistry.createDef({
+        ...common,
+        sourceKind: sk,            // reliability inferred from source
+        createdBy: null,           // catalog signal — NOT "rep-added"
+      });
+    } else {
+      def = await SignalRegistry.createRepSignal({
+        ...common,
+        userId: req.userId,        // ⇒ "rep-added"
+      });
+    }
 
     const functionKey = typeof req.query.function === 'string' && req.query.function.trim()
       ? req.query.function.trim().toLowerCase() : null;
@@ -247,6 +274,37 @@ router.put('/:key', async (req, res) => {
     if (/invalid/i.test(err.message)) return res.status(400).json({ error: { message: err.message } });
     console.error('signal-catalog PUT /:key', err);
     res.status(500).json({ error: { message: 'Failed to update signal' } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PUT /:key/inferred — admin/owner only: correct the HIDDEN dimensions of an
+// existing signal (the setInferred path, now exposed). Used to rescue signals
+// mis-created through the rep path: fixing source_kind re-infers reliability
+// (unless reliability is given explicitly) and re-clamps capability. Pass
+// clear_rep_added=true to also drop the "rep-added" attribution ("promote to
+// catalog signal").
+//
+// Body: { reliability?, source_kind?, clear_rep_added? }
+// NOTE: declared before nothing that conflicts — PUT '/:key' matches a single
+// path segment only, so '/:key/inferred' is unambiguous either way.
+// ─────────────────────────────────────────────────────────────────────────────
+router.put('/:key/inferred', adminOnly, async (req, res) => {
+  const b = req.body || {};
+  try {
+    const def = await SignalRegistry.setInferred({
+      orgId: req.orgId,
+      key: req.params.key,
+      reliability: typeof b.reliability === 'string' && b.reliability.trim() ? b.reliability.trim() : null,
+      sourceKind: typeof b.source_kind === 'string' && b.source_kind.trim() ? b.source_kind.trim() : null,
+      clearCreatedBy: b.clear_rep_added === true,
+    });
+    res.json({ signal: def });   // admin surface — hidden dimensions included
+  } catch (err) {
+    if (/not found/.test(err.message)) return res.status(404).json({ error: { message: err.message } });
+    if (/invalid/i.test(err.message)) return res.status(400).json({ error: { message: err.message } });
+    console.error('signal-catalog PUT /:key/inferred', err);
+    res.status(500).json({ error: { message: 'Failed to update signal data quality' } });
   }
 });
 
