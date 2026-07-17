@@ -1,5 +1,5 @@
 // ============================================================
-// ActionCRM Playbook Builder — Module B: Routes
+// GoWarmCRM Playbook Builder — Module B: Routes
 // File: backend/routes/playbookBuilder.routes.js
 //
 // Middleware pattern matches orgAdmin.routes.js exactly:

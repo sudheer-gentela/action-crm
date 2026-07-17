@@ -1,5 +1,5 @@
 // ============================================================
-// ActionCRM Playbook Builder — C10: ArchiveModal
+// GoWarmCRM Playbook Builder — C10: ArchiveModal
 // File: frontend/src/ArchiveModal.js
 //
 // ROUTING NOTE (C11) — add to frontend/src/App.js:

@@ -1,6 +1,6 @@
 import { apiService } from './apiService';
 // ============================================================
-// ActionCRM Playbook Builder — C7: PlaybookRegister
+// GoWarmCRM Playbook Builder — C7: PlaybookRegister
 // File: frontend/src/PlaybookRegister.js
 // 4-step wizard: Define → Stages & Plays → Access → Submit
 // ============================================================

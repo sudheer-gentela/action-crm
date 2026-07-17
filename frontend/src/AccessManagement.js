@@ -1,6 +1,6 @@
 import { apiService } from './apiService';
 // ============================================================
-// ActionCRM Playbook Builder — C9: AccessManagement
+// GoWarmCRM Playbook Builder — C9: AccessManagement
 // File: frontend/src/AccessManagement.js
 // Used inside PlaybookDetail's Routing & Roles tab (admin only).
 // ============================================================

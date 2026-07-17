@@ -52,7 +52,7 @@ class EsignProviderBase {
 
   /**
    * Cancel / void an in-progress signing request at the provider.
-   * Called when a contract is recalled or voided in ActionCRM.
+   * Called when a contract is recalled or voided in GoWarmCRM.
    * @param {object} credentials  - org-level provider credentials
    * @param {string} requestId    - the provider's request/envelope ID stored on the contract
    */
@@ -62,7 +62,7 @@ class EsignProviderBase {
 
   /**
    * Parse an inbound webhook payload from the provider into a
-   * normalised ActionCRM event object.
+   * normalised GoWarmCRM event object.
    * Returns:
    *   { event: 'completed', requestId, signedDocumentUrl } — all parties signed
    *   { event: 'declined',  requestId, declinedBy }        — a signer declined

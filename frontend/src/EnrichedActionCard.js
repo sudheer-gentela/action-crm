@@ -1,5 +1,5 @@
 // ============================================================
-// ActionCRM Playbook Builder — D3: ActionsView Integration
+// GoWarmCRM Playbook Builder — D3: ActionsView Integration
 // File: frontend/src/EnrichedActionCard.js
 //
 // HOW TO USE — in ActionsView.js:

@@ -6,13 +6,14 @@ import ExecutionLog from './ExecutionLog';
 import SAAIPlatformSettings from './SAAIPlatformSettings';
 
 // ═══════════════════════════════════════════════════════════════════
-// SUPER ADMIN VIEW — ActionCRM Platform Administration
+// SUPER ADMIN VIEW — GoWarmCRM Platform Administration
 // Only accessible to users in the super_admins table
 // ═══════════════════════════════════════════════════════════════════
 
 const SA_TABS = [
   { id: 'overview',          label: 'Overview',          icon: '📊' },
   { id: 'orgs',              label: 'Organisations',     icon: '🏢' },
+  { id: 'users',             label: 'Users',             icon: '👥' },
   { id: 'admins',            label: 'Super Admins',      icon: '🔐' },
   { id: 'audit',             label: 'Audit Log',         icon: '📋' },
   { id: 'workflows',         label: 'Workflows',         icon: '⚙️'  },
@@ -20,14 +21,22 @@ const SA_TABS = [
 ];
 
 export default function SuperAdminView() {
-  const [tab, setTab] = useState('overview');
+  const [tab, setTab]         = useState('overview');
+  const [tabOpts, setTabOpts] = useState({}); // initial filters when navigating from a tile
+
+  // Tiles (and anything else) navigate with optional initial filters,
+  // e.g. navigate('orgs', { status: 'trial' }) or navigate('users', { new30d: true })
+  const navigate = (tabId, opts = {}) => {
+    setTabOpts(opts);
+    setTab(tabId);
+  };
 
   return (
     <div className="sa-view">
       <div className="sa-header">
         <div className="sa-header-left">
           <div className="sa-badge">⚡ Super Admin</div>
-          <h1>ActionCRM Platform</h1>
+          <h1>GoWarmCRM Platform</h1>
           <p className="sa-subtitle">Platform-level administration — changes affect all organisations</p>
         </div>
       </div>
@@ -37,7 +46,7 @@ export default function SuperAdminView() {
           <button
             key={t.id}
             className={`sa-tab ${tab === t.id ? 'active' : ''}`}
-            onClick={() => setTab(t.id)}
+            onClick={() => navigate(t.id)}
           >
             <span>{t.icon}</span> {t.label}
           </button>
@@ -45,8 +54,9 @@ export default function SuperAdminView() {
       </div>
 
       <div className="sa-body">
-        {tab === 'overview'          && <SAOverview />}
-        {tab === 'orgs'              && <SAOrgs />}
+        {tab === 'overview'          && <SAOverview onNavigate={navigate} />}
+        {tab === 'orgs'              && <SAOrgs initialStatus={tabOpts.status || ''} />}
+        {tab === 'users'             && <SAUsers initialNew30d={!!tabOpts.new30d} />}
         {tab === 'admins'            && <SAAdmins />}
         {tab === 'audit'             && <SAAuditLog />}
         {tab === 'workflows'         && <SAWorkflows />}
@@ -60,7 +70,7 @@ export default function SuperAdminView() {
 // OVERVIEW — key platform metrics
 // ─────────────────────────────────────────────────────────────────
 
-function SAOverview() {
+function SAOverview({ onNavigate }) {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -75,24 +85,30 @@ function SAOverview() {
   if (!stats)  return null;
 
   const cards = [
-    { label: 'Total Orgs',        value: stats.orgs.total_orgs,       sub: `${stats.orgs.new_orgs_30d} new this month`,   icon: '🏢', color: 'blue' },
-    { label: 'Active Orgs',       value: stats.orgs.active_orgs,      sub: `${stats.orgs.suspended_orgs} suspended`,      icon: '✅', color: 'green' },
-    { label: 'Trial Orgs',        value: stats.orgs.trial_orgs,       sub: 'need conversion',                             icon: '⏰', color: 'amber' },
-    { label: 'Total Users',       value: stats.users.total_users,     sub: `${stats.users.active_users} active`,          icon: '👥', color: 'purple' },
-    { label: 'New Users (30d)',    value: stats.users.new_users_30d,   sub: 'recent signups',                              icon: '📈', color: 'teal' },
-    { label: 'Actions (7d)',       value: stats.activity.actions_7d,   sub: `${stats.activity.actions_24h} today`,         icon: '⚡', color: 'indigo' },
+    { label: 'Total Orgs',        value: stats.orgs.total_orgs,       sub: `${stats.orgs.new_orgs_30d} new this month`,   icon: '🏢', color: 'blue',   go: ['orgs']                    },
+    { label: 'Active Orgs',       value: stats.orgs.active_orgs,      sub: `${stats.orgs.suspended_orgs} suspended`,      icon: '✅', color: 'green',  go: ['orgs',  { status: 'active' }] },
+    { label: 'Trial Orgs',        value: stats.orgs.trial_orgs,       sub: 'need conversion',                             icon: '⏰', color: 'amber',  go: ['orgs',  { status: 'trial' }]  },
+    { label: 'Total Users',       value: stats.users.total_users,     sub: `${stats.users.active_users} active`,          icon: '👥', color: 'purple', go: ['users']                   },
+    { label: 'New Users (30d)',    value: stats.users.new_users_30d,   sub: 'recent signups',                              icon: '📈', color: 'teal',   go: ['users', { new30d: true }]     },
+    { label: 'Actions (7d)',       value: stats.activity.actions_7d,   sub: `${stats.activity.actions_24h} today`,         icon: '⚡', color: 'indigo', go: ['audit']                   },
   ];
 
   return (
     <div className="sa-overview">
       <div className="sa-stat-grid">
         {cards.map(c => (
-          <div key={c.label} className={`sa-stat-card sa-stat-card--${c.color}`}>
+          <button
+            key={c.label}
+            type="button"
+            className={`sa-stat-card sa-stat-card--${c.color} sa-stat-card--clickable`}
+            onClick={() => onNavigate && onNavigate(c.go[0], c.go[1] || {})}
+            title={`Open ${c.label}`}
+          >
             <div className="sa-stat-icon">{c.icon}</div>
             <div className="sa-stat-value">{Number(c.value).toLocaleString()}</div>
             <div className="sa-stat-label">{c.label}</div>
             <div className="sa-stat-sub">{c.sub}</div>
-          </div>
+          </button>
         ))}
       </div>
 
@@ -108,12 +124,12 @@ function SAOverview() {
 // ORGS — list, create, edit, suspend, impersonate
 // ─────────────────────────────────────────────────────────────────
 
-function SAOrgs() {
+function SAOrgs({ initialStatus = '' }) {
   const [orgs, setOrgs]           = useState([]);
   const [total, setTotal]         = useState(0);
   const [loading, setLoading]     = useState(true);
   const [search, setSearch]       = useState('');
-  const [statusFilter, setStatus] = useState('');
+  const [statusFilter, setStatus] = useState(initialStatus);
   const [planFilter, setPlan]     = useState('');
   const [page, setPage]           = useState(1);
   const [selectedOrg, setSelected] = useState(null);
@@ -1264,6 +1280,169 @@ function SACreateOrg({ onClose, onCreated }) {
 // ─────────────────────────────────────────────────────────────────
 // SUPER ADMINS TAB — manage who has platform access
 // ─────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────
+// USERS — platform-wide list across all orgs, with impersonation
+// ─────────────────────────────────────────────────────────────────
+
+function SAUsers({ initialNew30d = false }) {
+  const [users, setUsers]     = useState([]);
+  const [total, setTotal]     = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch]   = useState('');
+  const [new30d, setNew30d]   = useState(initialNew30d);
+  const [activeOnly, setActiveOnly] = useState(false);
+  const [page, setPage]       = useState(1);
+  const [error, setError]     = useState('');
+
+  const LIMIT = 20;
+
+  const load = useCallback(async () => {
+    try {
+      setLoading(true);
+      const r = await apiService.superAdmin.getUsers({
+        search,
+        new_30d: new30d ? 'true' : undefined,
+        active:  activeOnly ? 'true' : undefined,
+        page,
+        limit: LIMIT,
+      });
+      setUsers(r.data.users);
+      setTotal(r.data.total);
+    } catch (e) {
+      setError('Failed to load users');
+    } finally {
+      setLoading(false);
+    }
+  }, [search, new30d, activeOnly, page]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleImpersonate = async (u) => {
+    const who = u.name?.trim() || u.email;
+    if (!window.confirm(
+      `Enter READ-ONLY support mode as "${who}"?\n\n` +
+      `You'll see the app exactly as they do. Writes are disabled and this is logged.`
+    )) return;
+    try {
+      setError('');
+      const r = await apiService.superAdmin.impersonateUser(u.user_id);
+      // Stash the real super-admin session, then swap in the impersonated one.
+      localStorage.setItem('sa_token', localStorage.getItem('token'));
+      localStorage.setItem('sa_user',  localStorage.getItem('user'));
+      localStorage.setItem('token', r.data.token);
+      localStorage.setItem('user',  JSON.stringify(r.data.user));
+      // Full reload so the whole app re-initialises as the impersonated user.
+      window.location.reload();
+    } catch (e) {
+      setError(e.response?.data?.error?.message || 'Failed to start impersonation');
+    }
+  };
+
+  const totalPages = Math.max(Math.ceil(total / LIMIT), 1);
+
+  return (
+    <div className="sa-panel">
+      {error && <div className="sa-alert sa-alert--error">⚠️ {error}<button onClick={() => setError('')}>✕</button></div>}
+
+      {/* Toolbar */}
+      <div className="sa-toolbar">
+        <input
+          className="sa-search"
+          placeholder="Search users by name, email, or organisation…"
+          value={search}
+          onChange={e => { setSearch(e.target.value); setPage(1); }}
+        />
+        <label className="sa-check">
+          <input
+            type="checkbox"
+            checked={new30d}
+            onChange={e => { setNew30d(e.target.checked); setPage(1); }}
+          /> New (30d)
+        </label>
+        <label className="sa-check">
+          <input
+            type="checkbox"
+            checked={activeOnly}
+            onChange={e => { setActiveOnly(e.target.checked); setPage(1); }}
+          /> Active only
+        </label>
+      </div>
+
+      {loading ? (
+        <div className="sa-loading">Loading users…</div>
+      ) : (
+        <>
+          <div className="sa-table-wrap">
+            <table className="sa-table">
+              <thead>
+                <tr>
+                  <th>User</th>
+                  <th>Organisations</th>
+                  <th>Joined</th>
+                  <th>Status</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.length === 0 && (
+                  <tr><td colSpan={5} className="sa-empty">No users match.</td></tr>
+                )}
+                {users.map(u => (
+                  <tr key={u.user_id}>
+                    <td>
+                      <div className="sa-user-name">
+                        {u.name?.trim() || '—'}
+                        {u.is_super_admin && <span className="sa-chip sa-chip--admin">Super Admin</span>}
+                      </div>
+                      <div className="sa-user-email">{u.email}</div>
+                    </td>
+                    <td>
+                      {(u.orgs || []).length === 0
+                        ? <span className="sa-muted">No org</span>
+                        : (u.orgs || []).map(o => (
+                            <div key={`${u.user_id}-${o.org_id}`} className="sa-user-org">
+                              {o.org_name} <span className="sa-muted">· {o.role}</span>
+                            </div>
+                          ))}
+                    </td>
+                    <td>{u.joined_at ? new Date(u.joined_at).toLocaleDateString() : '—'}</td>
+                    <td>
+                      <span className={`sa-chip ${u.is_active ? 'sa-chip--active' : 'sa-chip--inactive'}`}>
+                        {u.is_active ? 'Active' : 'Inactive'}
+                      </span>
+                    </td>
+                    <td>
+                      <button
+                        className="sa-btn-secondary"
+                        disabled={u.is_super_admin || (u.orgs || []).length === 0}
+                        title={
+                          u.is_super_admin ? 'Cannot impersonate a super admin'
+                          : (u.orgs || []).length === 0 ? 'User has no organisation context'
+                          : 'Impersonate (read-only)'
+                        }
+                        onClick={() => handleImpersonate(u)}
+                      >
+                        🔧 Impersonate
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Pagination */}
+          <div className="sa-pagination">
+            <button className="sa-btn-secondary" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>← Prev</button>
+            <span>Page {page} of {totalPages} · {total} users</span>
+            <button className="sa-btn-secondary" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next →</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 function SAAdmins() {
   const [admins, setAdmins]   = useState([]);

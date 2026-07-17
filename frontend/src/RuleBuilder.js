@@ -2,7 +2,7 @@ import React, { useState, useCallback } from 'react';
 
 // ═══════════════════════════════════════════════════════════════════
 // RuleBuilder.js
-// Standalone rule authoring component for the ActionCRM Workflow Engine.
+// Standalone rule authoring component for the GoWarmCRM Workflow Engine.
 // Builds the conditions JSONB tree and action JSONB that workflow_rules stores.
 //
 // Props:

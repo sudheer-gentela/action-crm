@@ -20,7 +20,7 @@ export default function OAWorkflows() {
           <h2>⚙️ Workflows</h2>
           <p className="sv-panel-desc">
             Define data-integrity rules for deals, contacts, and accounts.
-            Platform workflows (🔒) are managed by ActionCRM and cannot be modified.
+            Platform workflows (🔒) are managed by GoWarmCRM and cannot be modified.
           </p>
         </div>
       </div>

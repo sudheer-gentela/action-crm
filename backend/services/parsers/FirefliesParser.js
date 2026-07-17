@@ -10,7 +10,7 @@
  *   Org plan (all reps):
  *     1. Fireflies dashboard → Settings → Integrations → Webhooks
  *     2. Add webhook URL: https://your-railway-domain.railway.app/webhooks/transcript/fireflies_org/org/:orgId
- *     3. Copy the webhook token shown → OrgAdmin Meeting Settings in ActionCRM
+ *     3. Copy the webhook token shown → OrgAdmin Meeting Settings in GoWarmCRM
  *
  *   Personal (individual rep):
  *     1. Rep goes to their Fireflies Settings → Integrations → Webhooks

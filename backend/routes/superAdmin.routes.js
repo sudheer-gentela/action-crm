@@ -999,6 +999,90 @@ router.post('/orgs/:orgId/impersonate', async (req, res) => {
 
 const IMPERSONATION_TTL = process.env.IMPERSONATION_TTL || '30m';
 
+// ═════════════════════════════════════════════════════════════════════════════
+// USERS — platform-wide user list (all orgs), for the Users tab
+// ═════════════════════════════════════════════════════════════════════════════
+
+// GET /super/users?search=&active=&new_30d=&page=&limit=
+router.get('/users', async (req, res) => {
+  try {
+    const page   = Math.max(parseInt(req.query.page, 10)  || 1, 1);
+    const limit  = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
+    const offset = (page - 1) * limit;
+
+    const where  = [];
+    const params = [];
+
+    if (req.query.search) {
+      params.push(`%${req.query.search.trim()}%`);
+      where.push(`(
+        u.email ILIKE $${params.length}
+        OR (u.first_name || ' ' || u.last_name) ILIKE $${params.length}
+        OR EXISTS (
+          SELECT 1 FROM org_users oux
+          JOIN organizations ox ON ox.id = oux.org_id
+          WHERE oux.user_id = u.id AND ox.name ILIKE $${params.length}
+        )
+      )`);
+    }
+    if (req.query.active === 'true') {
+      where.push(`EXISTS (SELECT 1 FROM org_users oua WHERE oua.user_id = u.id AND oua.is_active = TRUE)`);
+    }
+    if (req.query.new_30d === 'true') {
+      where.push(`EXISTS (SELECT 1 FROM org_users oun WHERE oun.user_id = u.id AND oun.joined_at > now() - interval '30 days')`);
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    const [listRes, countRes] = await Promise.all([
+      pool.query(
+        `SELECT u.id AS user_id,
+                u.email,
+                u.first_name || ' ' || u.last_name AS name,
+                MIN(ou.joined_at)                  AS joined_at,
+                COALESCE(BOOL_OR(ou.is_active), FALSE) AS is_active,
+                COALESCE(
+                  json_agg(
+                    json_build_object('org_id', o.id, 'org_name', o.name, 'role', ou.role)
+                    ORDER BY ou.joined_at
+                  ) FILTER (WHERE o.id IS NOT NULL),
+                  '[]'
+                ) AS orgs,
+                EXISTS (
+                  SELECT 1 FROM super_admins sa
+                  WHERE sa.user_id = u.id AND sa.revoked_at IS NULL
+                ) AS is_super_admin
+         FROM users u
+         LEFT JOIN org_users ou     ON ou.user_id = u.id
+         LEFT JOIN organizations o  ON o.id = ou.org_id
+         ${whereSql}
+         GROUP BY u.id
+         ORDER BY MIN(ou.joined_at) DESC NULLS LAST, u.id DESC
+         LIMIT ${limit} OFFSET ${offset}`,
+        params
+      ),
+      pool.query(
+        `SELECT COUNT(DISTINCT u.id) AS total
+         FROM users u
+         LEFT JOIN org_users ou    ON ou.user_id = u.id
+         LEFT JOIN organizations o ON o.id = ou.org_id
+         ${whereSql}`,
+        params
+      ),
+    ]);
+
+    res.json({
+      users: listRes.rows,
+      total: parseInt(countRes.rows[0].total, 10),
+      page,
+      limit,
+    });
+  } catch (err) {
+    console.error('GET /super/users error:', err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
 router.post('/users/:userId/impersonate', async (req, res) => {
   try {
     const targetUserId = parseInt(req.params.userId, 10);

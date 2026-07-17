@@ -282,6 +282,7 @@ twilio: {
     suspendOrg: (orgId, data) => api.post(`/super/orgs/${orgId}/suspend`, data),
     impersonateOrg: (orgId) => api.post(`/super/orgs/${orgId}/impersonate`),
     impersonateUser: (userId) => api.post(`/super/users/${userId}/impersonate`),
+    getUsers: (params = {}) => api.get('/super/users', { params }),
     addUserToOrg: (orgId, data) => api.post(`/super/orgs/${orgId}/users`, data),
     createUserForOrg: (orgId, data) => api.post(`/super/orgs/${orgId}/users/create`, data),
     updateUserInOrg: (orgId, userId, data) => api.patch(`/super/orgs/${orgId}/users/${userId}`, data),

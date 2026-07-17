@@ -1,5 +1,5 @@
 // ============================================================
-// ActionCRM Playbook Builder — B4: Registrations Routes
+// GoWarmCRM Playbook Builder — B4: Registrations Routes
 // File: backend/routes/playbookRegistrations.routes.js
 //
 // Middleware pattern matches orgAdmin.routes.js exactly:

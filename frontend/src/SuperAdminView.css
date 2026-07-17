@@ -76,6 +76,21 @@
 .sa-stat-card--teal   { background: #f0fdfa; border-color: #99f6e4; }
 .sa-stat-card--indigo { background: #EEF4FA; border-color: #B0C8E0; }
 
+/* Clickable stat tiles (navigate to their tab on click) */
+.sa-stat-card--clickable {
+  cursor: pointer; text-align: left; font-family: inherit; width: 100%;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
+}
+.sa-stat-card--clickable:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  filter: brightness(0.99);
+}
+.sa-stat-card--clickable:focus-visible {
+  outline: 2px solid #2b6cb0; outline-offset: 2px;
+}
+.sa-stat-card--clickable:active { transform: translateY(0); }
+
 .sa-stat-icon  { font-size: 22px; margin-bottom: 4px; }
 .sa-stat-value { font-size: 28px; font-weight: 700; color: #1a202c; line-height: 1; }
 .sa-stat-label { font-size: 13px; font-weight: 600; color: #374151; }
@@ -307,6 +322,18 @@
 }
 .sa-chip--active   { background: #f0fff4; color: #276749; border: 1px solid #c6f6d5; }
 .sa-chip--inactive { background: #f7fafc; color: #718096; border: 1px solid #e2e8f0; }
+.sa-chip--admin    { background: #fff7ed; color: #9a3412; border: 1px solid #fed7aa; margin-left: 8px; font-size: 11px; padding: 2px 8px; }
+
+/* ── Users tab ────────────────────────────────────────────────── */
+.sa-check {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; color: #374151; white-space: nowrap; cursor: pointer;
+}
+.sa-check input { cursor: pointer; }
+.sa-user-name  { font-weight: 600; color: #1a202c; display: flex; align-items: center; }
+.sa-user-email { font-size: 12px; color: #718096; margin-top: 2px; }
+.sa-user-org   { font-size: 13px; color: #374151; line-height: 1.6; }
+.sa-muted      { color: #a0aec0; font-size: 12px; }
 
 /* ── Modal ────────────────────────────────────────────────────── */
 .sa-modal-backdrop {

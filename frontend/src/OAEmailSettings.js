@@ -74,7 +74,7 @@ function PlatformDefaultsPanel({ defaults }) {
         </button>
       </div>
       <p style={{ fontSize: 12, color: '#6b7280', margin: '6px 0 0' }}>
-        These are managed by ActionCRM and applied to all organisations.
+        These are managed by GoWarmCRM and applied to all organisations.
         Your additions below are applied on top of these.
       </p>
       {expanded && (

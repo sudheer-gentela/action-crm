@@ -69,7 +69,7 @@ export default function OASettings() {
           {org && (
             <div className="sv-card">
               <h3>Plan & Limits</h3>
-              <p className="sv-hint">To upgrade your plan or change seat limits, contact ActionCRM support.</p>
+              <p className="sv-hint">To upgrade your plan or change seat limits, contact GoWarmCRM support.</p>
               <div className="oa-plan-grid">
                 <div className="oa-plan-item">
                   <span className="oa-plan-label">Current plan</span>

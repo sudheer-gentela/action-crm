@@ -1,6 +1,6 @@
 import { apiService } from './apiService';
 // ============================================================
-// ActionCRM Playbook Builder — C5: PlayEditor
+// GoWarmCRM Playbook Builder — C5: PlayEditor
 // File: frontend/src/PlayEditor.js
 // Schema-corrected: priority is text ('high'|'medium'|'low'),
 // action_type removed (column doesn't exist), org_id required.

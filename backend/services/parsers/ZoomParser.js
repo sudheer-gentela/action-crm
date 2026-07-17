@@ -26,7 +26,7 @@
  *   5. Go to your Zoom account → Admin → Webhooks
  *   6. Create webhook endpoint: https://your-railway-domain.railway.app/webhooks/transcript/zoom_org/org/:orgId
  *   7. Subscribe to event: recording.transcript_files.completed
- *   8. Copy the webhook secret token → OrgAdmin Meeting Settings in ActionCRM
+ *   8. Copy the webhook secret token → OrgAdmin Meeting Settings in GoWarmCRM
  */
 
 const https = require('https');

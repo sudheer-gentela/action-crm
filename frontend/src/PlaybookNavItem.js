@@ -1,5 +1,5 @@
 // ============================================================
-// ActionCRM Playbook Builder — D1: PlaybookNavItem
+// GoWarmCRM Playbook Builder — D1: PlaybookNavItem
 // File: frontend/src/PlaybookNavItem.js
 //
 // NOT used directly — Playbooks is already wired into Sidebar.js

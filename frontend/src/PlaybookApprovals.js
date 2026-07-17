@@ -1,6 +1,6 @@
 import { apiService } from './apiService';
 // ============================================================
-// ActionCRM Playbook Builder — C8: PlaybookApprovals (admin)
+// GoWarmCRM Playbook Builder — C8: PlaybookApprovals (admin)
 // File: frontend/src/PlaybookApprovals.js
 // ============================================================
 

@@ -1,5 +1,5 @@
 // ============================================================
-// ActionCRM Playbook Builder — B5: Access Resolver Service
+// GoWarmCRM Playbook Builder — B5: Access Resolver Service
 // File: backend/services/PlaybookAccessResolver.js
 // ============================================================
 

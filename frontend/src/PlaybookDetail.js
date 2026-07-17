@@ -1,6 +1,6 @@
 import { apiService } from './apiService';
 // ============================================================
-// ActionCRM Playbook Builder — C2: PlaybookDetail (full-page)
+// GoWarmCRM Playbook Builder — C2: PlaybookDetail (full-page)
 // File: frontend/src/PlaybookDetail.js
 // ============================================================
 

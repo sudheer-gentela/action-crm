@@ -15,7 +15,7 @@
  *                          You set this up once as the platform operator.
  *
  *  3. null               — neither configured; signing is skipped gracefully,
- *                          manual tracking in ActionCRM still works.
+ *                          manual tracking in GoWarmCRM still works.
  *
  * ── Adding a new provider ───────────────────────────────────────────────
  *  1. Create DocuSignProvider.js extending EsignProviderBase

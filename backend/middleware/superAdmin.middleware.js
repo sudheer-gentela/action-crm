@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // superAdmin.middleware.js
 //
-// Guards platform-level routes that only ActionCRM super admins can access.
+// Guards platform-level routes that only GoWarmCRM super admins can access.
 //
 // USAGE — stack after authenticateToken (no orgContext needed — super admins
 // operate across orgs and don't belong to a single org context):

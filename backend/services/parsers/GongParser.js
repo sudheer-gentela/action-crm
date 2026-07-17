@@ -12,7 +12,7 @@
  *     2. Add webhook URL:
  *          https://your-railway-domain.railway.app/webhooks/transcript/gong/org/:orgId
  *     3. Select event: call.completed
- *     4. Copy the signing key shown → OrgAdmin Meeting Settings in ActionCRM
+ *     4. Copy the signing key shown → OrgAdmin Meeting Settings in GoWarmCRM
  *     5. Store as GONG_WEBHOOK_SECRET in org_integrations.credentials->>'webhook_secret'
  *
  *   Note: Gong webhooks require ISV/partner registration for production access.

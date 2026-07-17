@@ -3,7 +3,7 @@ import { apiService } from './apiService';
 
 // ═══════════════════════════════════════════════════════════════════
 // ExecutionLog.js
-// Execution history and violation viewer for the ActionCRM Workflow Engine.
+// Execution history and violation viewer for the GoWarmCRM Workflow Engine.
 //
 // Shows:
 //   - Workflow execution history with per-step drill-down

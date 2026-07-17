@@ -1,5 +1,5 @@
 // ============================================================
-// ActionCRM Playbook Builder — Module B: Service Layer
+// GoWarmCRM Playbook Builder — Module B: Service Layer
 // File: backend/services/PlaybookBuilderService.js
 // Schema-verified against live \d output, March 2026.
 // ============================================================

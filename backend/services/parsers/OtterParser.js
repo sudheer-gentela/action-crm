@@ -11,7 +11,7 @@
  *     1. otter.ai → Settings → Developer → Webhooks → Add Endpoint
  *     2. Add webhook URL:
  *          https://your-railway-domain.railway.app/webhooks/transcript/otter_org/org/:orgId
- *     3. Copy the webhook secret shown → OrgAdmin Meeting Settings in ActionCRM
+ *     3. Copy the webhook secret shown → OrgAdmin Meeting Settings in GoWarmCRM
  *     4. Store as OTTER_WEBHOOK_SECRET in org_integrations.credentials->>'webhook_secret'
  *
  *   Personal (individual rep):

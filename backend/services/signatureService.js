@@ -26,7 +26,7 @@
  *    - platformAvailable: true    — whether a platform account is configured
  *                                   (so the UI can show "using platform default")
  *
- *  This lets the OrgAdmin UI show a clear "You are using the ActionCRM shared
+ *  This lets the OrgAdmin UI show a clear "You are using the GoWarmCRM shared
  *  signing account" message, with an option to override with their own.
  */
 
@@ -392,7 +392,7 @@ async function cancelSigning(orgId, contractId) {
 }
 
 /**
- * Parse an inbound webhook from a provider into a normalised ActionCRM event.
+ * Parse an inbound webhook from a provider into a normalised GoWarmCRM event.
  */
 async function handleWebhook(providerId, rawBody, headers) {
   const { getProvider } = require('./EsignProviderFactory');

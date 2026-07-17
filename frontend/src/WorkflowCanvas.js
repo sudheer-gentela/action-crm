@@ -4,7 +4,7 @@ import RuleBuilder from './RuleBuilder';
 
 // ═══════════════════════════════════════════════════════════════════
 // WorkflowCanvas.js
-// Full workflow management UI for the ActionCRM Workflow Engine.
+// Full workflow management UI for the GoWarmCRM Workflow Engine.
 //
 // Renders two panels side-by-side:
 //   Left  — workflow list (create, toggle active, delete)

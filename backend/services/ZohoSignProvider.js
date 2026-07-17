@@ -273,7 +273,7 @@ class ZohoSignProvider extends EsignProviderBase {
       requests: {
         request_name:    contract.title,
         actions,
-        notes:           `ActionCRM Contract #${contract.id}`,
+        notes:           `GoWarmCRM Contract #${contract.id}`,
         expiration_days: 30,
         is_sequential:   false,
         email_reminders: true,
@@ -298,19 +298,19 @@ class ZohoSignProvider extends EsignProviderBase {
 
   /**
    * Revoke an in-progress signing request.
-   * Called when a contract is recalled or voided in ActionCRM.
+   * Called when a contract is recalled or voided in GoWarmCRM.
    * Non-fatal by convention — signatureService wraps this in try/catch.
    */
   async cancelSigningRequest(orgId, credentials, requestId, onTokenRefresh) {
     const token = await this._getValidToken(credentials, onTokenRefresh);
     await this._request('POST', `${ZOHO_SIGN_BASE}/requests/${requestId}/revoke`, {
       headers: { Authorization: `Zoho-oauthtoken ${token}` },
-      body:    { requests: { notes: 'Cancelled from ActionCRM' } },
+      body:    { requests: { notes: 'Cancelled from GoWarmCRM' } },
     });
   }
 
   /**
-   * Parse an inbound Zoho Sign webhook into a normalised ActionCRM event.
+   * Parse an inbound Zoho Sign webhook into a normalised GoWarmCRM event.
    *
    * Zoho Sign sends webhook events as:
    *   Content-Type: application/x-www-form-urlencoded
