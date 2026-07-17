@@ -722,3 +722,19 @@
 
 
 /* Role switching is now handled in Sidebar.css */
+
+/* =========================
+   Impersonation banner offset
+   Pushes the fixed sidebar and main-container below the 40px read-only
+   support bar rendered by ImpersonationBanner.js. The `impersonating` class
+   is toggled on <body> by that component. Keep 40px in sync with its
+   BANNER_HEIGHT constant.
+   ========================= */
+body.impersonating .sb-sidebar {
+  top: 40px;
+  height: calc(100vh - 40px);
+}
+body.impersonating .main-container {
+  box-sizing: border-box;
+  padding-top: 40px;
+}

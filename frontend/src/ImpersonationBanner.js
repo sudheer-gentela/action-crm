@@ -19,6 +19,10 @@ import React, { useEffect, useState } from 'react';
 
 const IDLE_MS = 30 * 60 * 1000; // 30 minutes of inactivity → auto-exit
 
+// Height of the fixed banner. Must match the offset in App.css
+// (body.impersonating .sb-sidebar / .main-container). Change both together.
+const BANNER_HEIGHT = 40;
+
 export function isImpersonating() {
   return !!localStorage.getItem('sa_token');
 }
@@ -70,6 +74,10 @@ export default function ImpersonationBanner() {
   useEffect(() => {
     if (!active) return undefined;
 
+    // Flag on <body> so App.css can push the fixed sidebar + main-container
+    // down by BANNER_HEIGHT while the bar is shown.
+    document.body.classList.add('impersonating');
+
     const expMs = getTokenExpMs(localStorage.getItem('token')); // absolute cap
     let last = Date.now();                                       // idle tracker
 
@@ -96,6 +104,7 @@ export default function ImpersonationBanner() {
     return () => {
       clearInterval(iv);
       events.forEach((e) => window.removeEventListener(e, bump));
+      document.body.classList.remove('impersonating');
     };
   }, [active]);
 
@@ -112,14 +121,19 @@ export default function ImpersonationBanner() {
     <div
       role="status"
       style={{
-        position: 'sticky',
+        position: 'fixed',
         top: 0,
-        zIndex: 9999,
+        left: 0,
+        right: 0,
+        width: '100%',
+        height: BANNER_HEIGHT,
+        boxSizing: 'border-box',
+        zIndex: 10000,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         gap: 12,
-        padding: '8px 16px',
+        padding: '0 16px',
         background: '#7c2d12',
         color: '#fff',
         fontSize: 13,
