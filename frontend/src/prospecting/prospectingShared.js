@@ -130,6 +130,19 @@ export function apiFetch(path, options = {}, _isRetry = false) {
         await _refreshToken();
         return apiFetch(path, options, true);
       } catch {
+        // If this is an impersonation session, the refused/expired token means
+        // the support window is over. Drop back to the stashed super-admin
+        // session instead of bouncing to /login.
+        const saToken = localStorage.getItem('sa_token');
+        const saUser  = localStorage.getItem('sa_user');
+        if (saToken && saUser) {
+          localStorage.setItem('token', saToken);
+          localStorage.setItem('user', saUser);
+          localStorage.removeItem('sa_token');
+          localStorage.removeItem('sa_user');
+          window.location.reload();
+          return new Promise(() => {});
+        }
         localStorage.removeItem('token');
         localStorage.removeItem('authToken');
         localStorage.removeItem('user');
