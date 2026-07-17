@@ -47,9 +47,35 @@ function normaliseModules(raw) {
 // ROLE DEFINITIONS
 // ─────────────────────────────────────────────────────────────
 
+// Sub-navigation for the Prospecting module. Rendered by Sidebar.js as an
+// inline tree under the pinned Prospecting item. Each child maps to one or
+// more ProspectingView hash modes (#/prospecting/<mode>):
+//   • modes[0] is the navigation target on click
+//   • the FULL modes list drives active-state highlighting, so views without
+//     their own menu item (list, account, research) light up their parent
+//   • rememberKey (optional) restores the user's last display within the
+//     child's modes — Prospect List remembers Board vs Table vs By-account
+// The parent item's childBareMode is the mode written as a BARE hash
+// (#/prospecting, no second segment) to match ProspectingView's convention
+// that pipeline is the default and is represented by no segment.
+const PROSPECTING_CHILDREN = [
+  { id: 'plist',     label: 'Prospect List',     icon: '▦',  modes: ['pipeline', 'list', 'account'], rememberKey: 'gw:prospecting:plistDisplay' },
+  { id: 'campaigns', label: 'Campaigns',         icon: '🚀', modes: ['campaigns', 'research'] },
+  { id: 'sequences', label: 'Sequences',         icon: '📨', modes: ['sequences'] },
+  { id: 'inbox',     label: 'Prospecting Inbox', icon: '📥', modes: ['inbox'] },
+  { id: 'calls',     label: 'Calls',             icon: '📞', modes: ['calls'] },
+  { id: 'work',      label: 'Work Queue',        icon: '⚡', modes: ['work'] },
+  { id: 'network',   label: 'Network',           icon: '🕸️', modes: ['network'] },
+];
+
 // Modules not in the sidebar nav — accessible only via the launcher
 const ALL_MODULE_ITEMS = [
-  { id: 'prospecting', label: 'Prospecting', icon: '🎯' },
+  {
+    id: 'prospecting', label: 'Prospecting', icon: '🎯',
+    children:      PROSPECTING_CHILDREN,
+    childBareMode: 'pipeline',
+    rememberKey:   'gw:prospecting:lastMode',
+  },
   { id: 'contracts',   label: 'Contracts',   icon: '📄' },
   { id: 'handovers',   label: 'Handovers',   icon: '🤝' },
   { id: 'service',     label: 'Service',     icon: '🎧' },

@@ -193,6 +193,83 @@
 }
 
 /* ── Collapsed sidebar — nav items ───────────────────────────── */
+/* ── Inline sub-navigation tree (nav items with children) ────── */
+.sb-nav-tree {
+  display: flex;
+  flex-direction: column;
+}
+/* Parent whose tree is open while its tab is active: quiet emphasis —
+   the ACTIVE CHILD carries the orange pill, so the parent just goes
+   ember-tinted text. When the tree is closed, the parent keeps the
+   normal full .active pill so state never disappears. */
+.sb-nav-parent.tab-active {
+  color: #E8630A;
+  font-weight: 600;
+}
+.sb-nav-chevron {
+  margin-left: auto;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  font-size: 12px;
+  color: #94a3b8;
+  transition: all 0.15s;
+}
+.sb-nav-chevron:hover {
+  background: #e8eaee;
+  color: #0f172a;
+}
+.sb-nav-item.active .sb-nav-chevron,
+.sb-nav-parent.tab-active .sb-nav-chevron {
+  color: #E8630A;
+}
+.sb-nav-children {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 1px 0 3px;
+}
+.sb-nav-child {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 24px;
+  border-radius: 7px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+  color: #64748b;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+  width: 100%;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.sb-nav-child:hover {
+  background: #f0f1f3;
+  color: #0f172a;
+}
+.sb-nav-child.active {
+  background: #fff4ed;
+  color: #E8630A;
+  font-weight: 600;
+}
+.sb-nav-child-icon {
+  width: 16px;
+  text-align: center;
+  font-size: 12px;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+.sb-collapsed .sb-nav-children { display: none; }
+.sb-collapsed .sb-nav-chevron { display: none; }
+
 .sb-collapsed .sb-section-header { display: none; }
 .sb-collapsed .sb-nav-label { display: none; }
 .sb-collapsed .sb-nav-badge { display: none; }

@@ -1,6 +1,152 @@
 import React, { useState, useEffect, useRef } from 'react';
 import NotificationBell from './NotificationBell';
+import { hashParts, writeHash } from './hashNav';
 import './Sidebar.css';
+
+// ─────────────────────────────────────────────────────────────
+// SUB-NAVIGATION (inline tree) — generic support for nav items
+// that carry `children` (currently only the Prospecting module;
+// see PROSPECTING_CHILDREN in App.js).
+//
+// Contract with the owning view:
+//   • Navigation writes the hash (#/<tab>/<mode>, or #/<tab> for the
+//     item's childBareMode) with replaceState — same no-history-spam
+//     philosophy as the rest of the app — then dispatches a
+//     'module-nav' CustomEvent so an ALREADY-MOUNTED view can react
+//     (replaceState fires no hashchange), then switches the tab.
+//     App.js's tab↔hash effect sees the segments already in place and
+//     leaves them alone.
+//   • The view reports its current mode by dispatching
+//     'module-viewmode' ({ module, mode }) whenever it changes —
+//     that's what keeps the active child highlighted, including on
+//     first mount and on in-view pill clicks.
+// ─────────────────────────────────────────────────────────────
+
+const safeStorage = {
+  get(key) { try { return window.localStorage.getItem(key); } catch (e) { return null; } },
+  set(key, val) { try { window.localStorage.setItem(key, val); } catch (e) {} },
+};
+
+const allModesOf = (item) => (item.children || []).flatMap(c => c.modes || []);
+
+// The mode a click on the PARENT row (or its collapsed icon) opens:
+// the user's last-used mode when it's still valid, else the bare default.
+function parentTargetMode(item) {
+  const remembered = item.rememberKey ? safeStorage.get(item.rememberKey) : null;
+  if (remembered && allModesOf(item).includes(remembered)) return remembered;
+  return item.childBareMode || (item.children?.[0]?.modes?.[0] ?? null);
+}
+
+// The mode a click on a CHILD row opens: its remembered display when the
+// child has one (Prospect List → Board/Table/By-account), else modes[0].
+function childTargetMode(item, child) {
+  const remembered = child.rememberKey ? safeStorage.get(child.rememberKey) : null;
+  if (remembered && (child.modes || []).includes(remembered)) return remembered;
+  return child.modes?.[0] ?? null;
+}
+
+function navigateToMode(item, mode, onNavClick) {
+  writeHash([item.id, mode === item.childBareMode ? null : mode]);
+  window.dispatchEvent(new CustomEvent('module-nav', { detail: { module: item.id, mode } }));
+  onNavClick(item.id);
+}
+
+// Tracks which of an item's modes is current, fed by the owning view's
+// 'module-viewmode' events (+ hashchange for manual URL edits).
+function useModuleMode(item) {
+  const [mode, setMode] = useState(() => {
+    const parts = hashParts();
+    if (parts[0] === item.id) return parts[1] || item.childBareMode || null;
+    return parentTargetMode(item);
+  });
+  useEffect(() => {
+    const onViewMode = (e) => {
+      if (e.detail?.module === item.id && e.detail.mode) setMode(e.detail.mode);
+    };
+    const onHash = () => {
+      const parts = hashParts();
+      if (parts[0] === item.id) setMode(parts[1] || item.childBareMode || null);
+    };
+    window.addEventListener('module-viewmode', onViewMode);
+    window.addEventListener('hashchange', onHash);
+    return () => {
+      window.removeEventListener('module-viewmode', onViewMode);
+      window.removeEventListener('hashchange', onHash);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item.id, item.childBareMode]);
+  return mode;
+}
+
+// Parent row + expandable child list for a nav item with `children`.
+function NavItemTree({ item, currentTab, onNavClick, collapsed }) {
+  const isTabActive = currentTab === item.id;
+  const currentMode = useModuleMode(item);
+  const expandKey   = `gw:sbnav:expanded:${item.id}`;
+  const [expanded, setExpanded] = useState(() => safeStorage.get(expandKey) !== '0');
+
+  const toggleExpanded = (e) => {
+    e.stopPropagation();
+    setExpanded(prev => { safeStorage.set(expandKey, prev ? '0' : '1'); return !prev; });
+  };
+
+  const handleParentClick = () => {
+    navigateToMode(item, parentTargetMode(item), onNavClick);
+    if (!expanded) { safeStorage.set(expandKey, '1'); setExpanded(true); }
+  };
+
+  // Collapsed sidebar: icon only, click opens the default/last-used view.
+  // (No flyout in v1 — sub-views are reachable via the in-view toggle.)
+  if (collapsed) {
+    return (
+      <button
+        className={`sb-nav-item ${isTabActive ? 'active' : ''}`}
+        onClick={handleParentClick}
+        title={item.label}
+      >
+        <span className="sb-nav-icon">{item.icon}</span>
+      </button>
+    );
+  }
+
+  return (
+    <div className="sb-nav-tree">
+      <button
+        className={`sb-nav-item sb-nav-parent ${isTabActive ? (expanded ? 'tab-active' : 'active') : ''}`}
+        onClick={handleParentClick}
+      >
+        <span className="sb-nav-icon">{item.icon}</span>
+        <span className="sb-nav-label">{item.label}</span>
+        {item.badge && <span className="sb-nav-badge">{item.badge}</span>}
+        <span
+          className="sb-nav-chevron"
+          onClick={toggleExpanded}
+          role="button"
+          aria-label={expanded ? `Collapse ${item.label} menu` : `Expand ${item.label} menu`}
+        >
+          {expanded ? '▾' : '›'}
+        </span>
+      </button>
+      {expanded && (
+        <div className="sb-nav-children">
+          {item.children.map(child => {
+            const isChildActive = isTabActive && (child.modes || []).includes(currentMode);
+            return (
+              <button
+                key={child.id}
+                className={`sb-nav-child ${isChildActive ? 'active' : ''}`}
+                onClick={() => navigateToMode(item, childTargetMode(item, child), onNavClick)}
+              >
+                <span className="sb-nav-child-icon">{child.icon}</span>
+                <span className="sb-nav-label">{child.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ─────────────────────────────────────────────────────────────
 // ROLE DISPLAY CONFIG
@@ -51,6 +197,17 @@ function NavSection({ section, navItemMap, currentTab, onNavClick, collapsed: si
         {section.items.map(id => {
           const item = navItemMap[id];
           if (!item) return null;
+          if (item.children) {
+            return (
+              <NavItemTree
+                key={id}
+                item={item}
+                currentTab={currentTab}
+                onNavClick={onNavClick}
+                collapsed
+              />
+            );
+          }
           return (
             <button
               key={id}
@@ -77,6 +234,17 @@ function NavSection({ section, navItemMap, currentTab, onNavClick, collapsed: si
           {section.items.map(id => {
             const item = navItemMap[id];
             if (!item) return null;
+            if (item.children) {
+              return (
+                <NavItemTree
+                  key={id}
+                  item={item}
+                  currentTab={currentTab}
+                  onNavClick={onNavClick}
+                  collapsed={false}
+                />
+              );
+            }
             return (
               <button
                 key={id}

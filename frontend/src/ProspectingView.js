@@ -80,6 +80,36 @@ export default function ProspectingView() {
   });
   const [searchQuery, setSearchQuery] = useState('');
 
+  // ── Sidebar sub-navigation contract (see Sidebar.js) ─────────────────
+  // Persist the current mode so the sidebar's "Prospecting" parent (and
+  // the Prospect List child) can reopen where the user last was, and
+  // broadcast it so the sidebar highlights the right child — including on
+  // mount and on in-view pill clicks.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('gw:prospecting:lastMode', viewMode);
+      if (['pipeline', 'list', 'account'].includes(viewMode)) {
+        window.localStorage.setItem('gw:prospecting:plistDisplay', viewMode);
+      }
+    } catch (e) { /* storage unavailable — non-fatal */ }
+    window.dispatchEvent(new CustomEvent('module-viewmode', {
+      detail: { module: 'prospecting', mode: viewMode },
+    }));
+  }, [viewMode]);
+
+  // Sidebar clicks write the hash with replaceState (no hashchange event),
+  // then dispatch 'module-nav' so we react when already mounted.
+  useEffect(() => {
+    const onModuleNav = (e) => {
+      const d = e.detail;
+      if (!d || d.module !== 'prospecting') return;
+      if (!PV_HASH_MODES.includes(d.mode)) return;
+      setViewMode(prev => (prev === d.mode ? prev : d.mode));
+    };
+    window.addEventListener('module-nav', onModuleNav);
+    return () => window.removeEventListener('module-nav', onModuleNav);
+  }, []);
+
   // Write the second hash segment when the sub-view changes. Guard: only
   // while the tab segment is ours (App.js owns tab switches), and skip the
   // write when the segment already matches — that's what preserves a
@@ -892,11 +922,11 @@ export default function ProspectingView() {
               { key: 'list',      icon: '≡',  label: 'List' },
               { key: 'account',   icon: '🏢', label: 'Accounts' },
               { key: 'campaigns', icon: '🚀', label: 'Campaigns' },
-              { key: 'work',      icon: '⚡', label: 'Work Queue' },
               { key: 'research',  icon: '🔬', label: 'Research Queue' },
-              { key: 'inbox',     icon: '📥', label: 'Inbox' },
               { key: 'sequences', icon: '📨', label: 'Sequences' },
+              { key: 'inbox',     icon: '📥', label: 'Inbox' },
               { key: 'calls',     icon: '📞', label: 'Calls' },
+              { key: 'work',      icon: '⚡', label: 'Work Queue' },
               { key: 'network',   icon: '🕸️', label: 'Network' },
             ].map(v => (
               <button
