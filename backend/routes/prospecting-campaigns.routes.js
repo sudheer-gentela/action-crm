@@ -2356,6 +2356,77 @@ router.put('/:id', async (req, res) => {
   }
 });
 
+// ── PUT /:id/sending — pause / resume ALL sending for a campaign ──────────────
+// Operational brake, distinct from the lifecycle `status` column. Body:
+//   { "paused": true }   → stop; { "paused": false } → resume.
+//
+// Pausing does NOT touch enrollment status. It flips prospecting_campaigns
+// .sending_paused, which the firer's due query AND its materializeRows top-up
+// both guard on (2026_51), so no new step fires and none is re-materialized.
+// Any rows already 'scheduled'/'sending' for this campaign are marked 'skipped'
+// in the same txn so the Scheduled tab reflects reality immediately.
+//
+// Resuming clears the flag. Because enrollments stayed 'active' with their
+// (now overdue) next_step_due intact, the next in-window tick re-selects them
+// and the top-up rebuilds fresh scheduled rows — no re-stamp, no bulk write.
+router.put('/:id/sending', async (req, res) => {
+  const paused = req.body?.paused;
+  if (typeof paused !== 'boolean') {
+    return res.status(400).json({ error: { message: 'Body must include { paused: true | false }' } });
+  }
+
+  const client = await pool.connect();
+  try {
+    const existing = await loadCampaign(req.orgId, req.params.id);
+    if (!existing) return res.status(404).json({ error: { message: 'Campaign not found' } });
+    if (!(await CampaignAccess.requireCanMutate(req, res, existing))) return;
+
+    await client.query('BEGIN');
+
+    const { rows } = await client.query(
+      `UPDATE prospecting_campaigns
+          SET sending_paused = $1, updated_at = NOW()
+        WHERE id = $2 AND org_id = $3
+      RETURNING id, sending_paused`,
+      [paused, req.params.id, req.orgId]
+    );
+
+    // When pausing, cancel pending auto-send rows for this campaign's prospects
+    // so nothing that was already materialized fires, and the queue reflects the
+    // pause at once. Mirrors the enrollment pause/stop routes' row-skip step.
+    // 'sending' rows mid-flight are best-effort: if the provider call already
+    // returned, confirmSent will log NOT_CLAIMABLE and move on.
+    let skipped = 0;
+    if (paused) {
+      const skip = await client.query(
+        `UPDATE sequence_step_logs ssl
+            SET status = 'skipped'
+           FROM sequence_enrollments se, prospects p
+          WHERE se.id = ssl.enrollment_id
+            AND p.id  = ssl.prospect_id
+            AND ssl.org_id = $1
+            AND p.campaign_id = $2
+            AND ssl.status IN ('scheduled','sending')`,
+        [req.orgId, req.params.id]
+      );
+      skipped = skip.rowCount;
+    }
+
+    await client.query('COMMIT');
+    res.json({
+      campaign_id: rows[0].id,
+      sending_paused: rows[0].sending_paused,
+      rows_skipped: skipped,
+    });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('campaigns PUT /:id/sending', err);
+    res.status(500).json({ error: { message: 'Failed to update campaign sending state' } });
+  } finally {
+    client.release();
+  }
+});
+
 // ── DELETE /:id — archive (default) or hard-delete (?hard=true) ───────────────
 // Archive keeps the campaign + un-assigns nothing (members stay linked).
 // Hard delete relies on the FK ON DELETE SET NULL to un-assign prospects.

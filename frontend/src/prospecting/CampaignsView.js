@@ -545,6 +545,16 @@ function CampaignRow({ campaign: c, isLast, onClick, onConfigClick, currentUserI
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
           <span style={{ fontSize: 14, fontWeight: 600, color: '#1A3A5C' }}>{c.name}</span>
           <StatusPill status={c.status} />
+          {c.sending_paused && (
+            <span title="Sending is paused for this campaign"
+              style={{
+                fontSize: 11, fontWeight: 600, color: '#b45309',
+                background: '#fffbeb', border: '1px solid #fde68a',
+                borderRadius: 10, padding: '1px 8px',
+              }}>
+              ⏸ Sending paused
+            </span>
+          )}
         </div>
         <div style={{ fontSize: 12, color: '#6b7280' }}>
           {c.solution && <span style={{ marginRight: 10 }}>💡 {c.solution}</span>}
@@ -846,6 +856,40 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
     }
   };
 
+  // Operational "pause all sending" brake (2026_51) — distinct from the
+  // lifecycle status pause above, which the firer does NOT read. This flips
+  // prospecting_campaigns.sending_paused, which halts the firer's due query AND
+  // its re-materialize top-up, and skips already-queued rows. Resuming clears
+  // it; enrollments stayed active, so the next in-window tick resumes on its
+  // own with no re-stamp. When pausing we confirm first, since it stops every
+  // in-flight enrollment in the campaign at once.
+  const toggleSending = async () => {
+    if (!data) return;
+    const nextPaused = !data.campaign.sending_paused;
+    if (nextPaused && !window.confirm(
+      'Pause ALL sending for this campaign?\n\n' +
+      'No further emails or LinkedIn steps will fire, and anything already ' +
+      'queued will be cleared. Enrollments are not stopped — resume any time ' +
+      'and sending picks up where it left off.'
+    )) return;
+    setBusy(true);
+    try {
+      const r = await apiFetch(`/prospecting-campaigns/${campaignId}/sending`, {
+        method: 'PUT', body: JSON.stringify({ paused: nextPaused }),
+      });
+      await load(channelFilter);
+      onChanged?.();
+      if (nextPaused && r?.rows_skipped != null) {
+        // Brief, non-modal confirmation of what was cleared.
+        setError('');
+      }
+    } catch (err) {
+      setError('Could not update sending state: ' + err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleImport = async (rows, opts = {}) => {
     // Reuse the bulk endpoint, scoped to this campaign. opts.moveExistingIds
     // carries any existing prospects the user chose (in the conflicts step) to
@@ -989,6 +1033,21 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
               <button className="pv-btn-secondary" disabled={busy} onClick={togglePause}>
                 {data.campaign.status === 'active' ? '⏸ Pause' : '▶ Resume'}
               </button>
+              <button
+                disabled={busy}
+                onClick={toggleSending}
+                title={data.campaign.sending_paused
+                  ? 'Resume firing sequence steps for this campaign'
+                  : 'Immediately stop all sending for this campaign (reversible)'}
+                style={{
+                  padding: '6px 12px', borderRadius: 6, fontSize: 13, fontWeight: 600,
+                  cursor: busy ? 'default' : 'pointer',
+                  border: '1px solid ' + (data.campaign.sending_paused ? '#10b981' : '#f59e0b'),
+                  color: data.campaign.sending_paused ? '#047857' : '#b45309',
+                  background: data.campaign.sending_paused ? '#ecfdf5' : '#fffbeb',
+                }}>
+                {data.campaign.sending_paused ? '▶ Resume sending' : '⏸ Pause sending'}
+              </button>
               <button className="pv-btn-secondary" onClick={() => setShowImport(true)}>
                 ⬆ Import prospects
               </button>
@@ -1028,6 +1087,23 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
                 🗑 Delete campaign
               </button>
             </div>
+
+            {/* Sending-paused banner — makes the brake state unmistakable
+                across the whole drawer, not just the button label. */}
+            {data.campaign.sending_paused && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                fontSize: 13, color: '#92400e', background: '#fffbeb',
+                border: '1px solid #fde68a', borderRadius: 8,
+                padding: '10px 14px', marginBottom: 16,
+              }}>
+                <span style={{ fontSize: 16 }}>⏸</span>
+                <span>
+                  <strong>Sending is paused for this campaign.</strong> No sequence
+                  steps will fire until you resume. Enrollments are preserved.
+                </span>
+              </div>
+            )}
 
             {/* Lock error (if a lock/unlock attempt failed) */}
             {lockErr && (

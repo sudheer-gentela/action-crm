@@ -588,12 +588,18 @@ async function materializeRows(client, enrollmentIds = null) {
        JOIN sequence_steps ss ON ss.id = se.current_step_id
        JOIN prospects p       ON p.id  = se.prospect_id
   LEFT JOIN accounts a        ON a.id  = p.account_id
+  LEFT JOIN prospecting_campaigns pc ON pc.id = p.campaign_id
   LEFT JOIN sequence_step_variants sv
          ON sv.experiment_id     = se.experiment_id
         AND sv.sequence_step_id  = ss.id
         AND sv.variant_key       = se.variant_key
       WHERE se.status = 'active'
         AND se.next_step_due IS NOT NULL
+        -- Campaign-level "pause all sending" brake (2026_51). Without this the
+        -- top-up would re-create a fresh 'scheduled' row every tick for paused
+        -- campaigns, defeating the due-query guard. LEFT JOIN means a NULL
+        -- campaign is never paused (NULL IS NOT TRUE evaluates TRUE).
+        AND pc.sending_paused IS NOT TRUE
         AND ${AUTO_SEND_PREDICATE}
         AND s.ai_enabled = false
         -- Has this (enrollment, step) EVER produced a log row?
@@ -938,6 +944,14 @@ const SequenceStepFirer = {
       LEFT JOIN prospecting_campaigns pc ON pc.id = p.campaign_id
           WHERE se.status = 'active'
             AND se.next_step_due <= NOW()
+            -- Campaign-level "pause all sending" brake (2026_51). When a
+            -- campaign is paused, none of its enrollments are claimed here —
+            -- across ALL channels, since this is the shared claim query. pc is
+            -- LEFT JOINed, so campaign_id IS NULL yields pc.sending_paused NULL
+            -- and NULL IS NOT TRUE evaluates TRUE: unattributed prospects go on.
+            -- Enrollment status is untouched, so clearing the flag resumes on
+            -- the next in-window tick with no re-stamp.
+            AND pc.sending_paused IS NOT TRUE
             -- Park enrollments whose current step already has a draft awaiting
             -- the rep (manual channels, or approval-required email). Creating a
             -- draft does NOT advance the enrollment, so without this they stay
