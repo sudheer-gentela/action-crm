@@ -1,0 +1,926 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Chrome Extension Guide · GoWarmCRM Help</title>
+<meta name="robots" content="noindex" />
+<style>
+/* ============================================================
+   GoWarmCRM — Help Center shared theme
+   Self-contained. No external fonts or CDNs (CSP-safe drop-in).
+   Palette: Ember #E8630A · Navy #1A3A5C
+   ============================================================ */
+
+:root {
+  /* Brand */
+  --ember:        #E8630A;
+  --ember-dark:   #C9540A;
+  --ember-soft:   #FDEFE4;
+  --ember-line:   #F6C9A6;
+  --navy:         #1A3A5C;
+  --navy-700:     #234a73;
+  --navy-soft:    #EAF0F6;
+
+  /* Neutrals */
+  --paper:        #FFFFFF;
+  --canvas:       #F6F7F9;
+  --line:         #E5E7EB;
+  --line-soft:    #EEF0F3;
+  --text:         #2B3340;
+  --muted:        #6B7280;
+  --faint:        #9CA3AF;
+
+  /* Semantic */
+  --green:        #0F9D6E;
+  --green-soft:   #E7F6EF;
+  --amber:        #B7791F;
+  --amber-soft:   #FBF3E2;
+  --red:          #DC2626;
+  --red-soft:     #FBEAEA;
+  --blue:         #2563EB;
+  --blue-soft:    #E8EFFE;
+
+  /* Geometry */
+  --radius:       12px;
+  --radius-sm:    8px;
+  --shadow:       0 1px 2px rgba(16,24,40,.05), 0 8px 24px rgba(16,24,40,.06);
+  --shadow-sm:    0 1px 2px rgba(16,24,40,.06);
+
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --sidebar-w: 280px;
+  --maxw: 860px;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  color: var(--text);
+  background: var(--canvas);
+  font-size: 15px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ------------------------------------------------------------
+   App shell: fixed sidebar + scrolling content
+   ------------------------------------------------------------ */
+.help-shell { display: flex; min-height: 100vh; }
+
+.help-sidebar {
+  width: var(--sidebar-w);
+  flex: 0 0 var(--sidebar-w);
+  background: var(--navy);
+  color: #fff;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 22px 0 28px;
+}
+
+.help-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 0 96px;
+}
+
+.help-content-inner {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 0 40px;
+}
+
+/* ------------------------------------------------------------
+   Brand block in sidebar
+   ------------------------------------------------------------ */
+.help-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 0 22px 18px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid rgba(255,255,255,.10);
+}
+.help-brand-mark {
+  width: 34px; height: 34px;
+  border-radius: 9px;
+  background: var(--ember);
+  display: grid; place-items: center;
+  flex: 0 0 34px;
+}
+.help-brand-name { font-weight: 700; font-size: 15px; letter-spacing: .2px; line-height: 1.15; }
+.help-brand-name .warm { color: var(--ember); }
+.help-brand-sub { font-size: 11.5px; color: rgba(255,255,255,.55); margin-top: 1px; }
+
+/* role pill on sidebar */
+.help-role-pill {
+  margin: 14px 22px 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: #fff;
+  background: rgba(232,99,10,.20);
+  border: 1px solid rgba(232,99,10,.5);
+  padding: 5px 11px;
+  border-radius: 999px;
+}
+.help-role-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ember); }
+
+/* ------------------------------------------------------------
+   Sidebar nav (table of contents)
+   ------------------------------------------------------------ */
+.help-nav { padding: 10px 14px 0; }
+.help-nav-group-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,.40);
+  padding: 16px 10px 6px;
+}
+.help-nav a {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 11px;
+  border-radius: var(--radius-sm);
+  color: rgba(255,255,255,.78);
+  text-decoration: none;
+  font-size: 13.5px;
+  line-height: 1.35;
+  transition: background .12s, color .12s;
+}
+.help-nav a .ic { width: 17px; text-align: center; flex: 0 0 17px; opacity: .9; }
+.help-nav a:hover { background: rgba(255,255,255,.07); color: #fff; }
+.help-nav a.active {
+  background: var(--ember);
+  color: #fff;
+  font-weight: 600;
+}
+.help-nav a.active .ic { opacity: 1; }
+
+.help-nav-foot {
+  margin: 22px 22px 0;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255,255,255,.10);
+  font-size: 11.5px;
+  color: rgba(255,255,255,.45);
+}
+.help-nav-foot a { color: rgba(255,255,255,.75); }
+
+/* ------------------------------------------------------------
+   Top bar inside content (search + breadcrumb)
+   ------------------------------------------------------------ */
+.help-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(246,247,249,.86);
+  backdrop-filter: saturate(140%) blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+.help-topbar-inner {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 13px 40px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.help-crumb { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.help-crumb b { color: var(--navy); font-weight: 600; }
+.help-search {
+  margin-left: auto;
+  position: relative;
+  width: 270px;
+  max-width: 45vw;
+}
+.help-search input {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 12px 8px 32px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--text);
+}
+.help-search input:focus {
+  outline: none;
+  border-color: var(--ember);
+  box-shadow: 0 0 0 3px var(--ember-soft);
+}
+.help-search .mag {
+  position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
+  color: var(--faint); font-size: 13px; pointer-events: none;
+}
+
+/* ------------------------------------------------------------
+   Hero
+   ------------------------------------------------------------ */
+.help-hero { padding: 44px 0 8px; }
+.help-eyebrow {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 11.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--ember);
+}
+.help-eyebrow::before {
+  content: ""; width: 22px; height: 2px; background: var(--ember); border-radius: 2px;
+}
+.help-hero h1 {
+  font-size: 33px;
+  line-height: 1.12;
+  margin: 14px 0 10px;
+  color: var(--navy);
+  letter-spacing: -.02em;
+  font-weight: 800;
+}
+.help-hero p { font-size: 16px; color: var(--muted); max-width: 60ch; margin: 0; }
+
+/* ------------------------------------------------------------
+   Sections
+   ------------------------------------------------------------ */
+.help-section { padding-top: 52px; scroll-margin-top: 70px; }
+.help-section > h2 {
+  font-size: 23px;
+  color: var(--navy);
+  letter-spacing: -.01em;
+  font-weight: 800;
+  margin: 0 0 4px;
+  display: flex; align-items: baseline; gap: 10px;
+}
+.help-section > h2 .num {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ember);
+  font-variant-numeric: tabular-nums;
+  background: var(--ember-soft);
+  border-radius: 6px;
+  padding: 2px 8px;
+  align-self: center;
+}
+.help-section > .lead { font-size: 15.5px; color: var(--muted); margin: 6px 0 22px; max-width: 64ch; }
+
+.help-section h3 {
+  font-size: 17px; color: var(--navy); font-weight: 700;
+  margin: 30px 0 8px; letter-spacing: -.01em;
+}
+.help-section h4 {
+  font-size: 14px; color: var(--navy); font-weight: 700;
+  margin: 20px 0 4px; text-transform: none;
+}
+.help-section p { margin: 0 0 13px; }
+.help-section a { color: var(--ember-dark); text-decoration: none; border-bottom: 1px solid var(--ember-line); }
+.help-section a:hover { border-bottom-color: var(--ember); }
+.help-section ul, .help-section ol { margin: 0 0 14px; padding-left: 22px; }
+.help-section li { margin: 5px 0; }
+.help-section strong { color: var(--navy); font-weight: 650; }
+code, .kbd {
+  font-family: var(--mono);
+  font-size: .86em;
+  background: var(--navy-soft);
+  color: var(--navy-700);
+  padding: 1.5px 6px;
+  border-radius: 5px;
+}
+
+/* ------------------------------------------------------------
+   Figure / screen-map
+   ------------------------------------------------------------ */
+.help-figure {
+  margin: 8px 0 22px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.help-figure-bar {
+  display: flex; align-items: center; gap: 7px;
+  padding: 9px 14px;
+  background: var(--navy-soft);
+  border-bottom: 1px solid var(--line);
+}
+.help-figure-bar .tl { display: flex; gap: 6px; }
+.help-figure-bar .tl i { width: 10px; height: 10px; border-radius: 50%; display: block; }
+.help-figure-bar .tl i:nth-child(1){ background:#F56C6C; }
+.help-figure-bar .tl i:nth-child(2){ background:#F5B942; }
+.help-figure-bar .tl i:nth-child(3){ background:#3CC97B; }
+.help-figure-bar .tt { font-size: 12px; color: var(--muted); font-weight: 600; margin-left: 4px; }
+.help-figure svg { display: block; width: 100%; height: auto; }
+.help-figure-cap {
+  padding: 9px 14px;
+  font-size: 12.5px;
+  color: var(--muted);
+  border-top: 1px solid var(--line-soft);
+  background: #FCFCFD;
+}
+.help-figure-cap b { color: var(--navy); }
+
+/* numbered callout list paired with a figure */
+.help-steps { counter-reset: step; list-style: none; padding-left: 0; margin: 6px 0 16px; }
+.help-steps > li {
+  position: relative;
+  padding-left: 38px;
+  margin: 12px 0;
+  min-height: 26px;
+}
+.help-steps > li::before {
+  counter-increment: step;
+  content: counter(step);
+  position: absolute; left: 0; top: 0;
+  width: 26px; height: 26px;
+  background: var(--ember);
+  color: #fff;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 13px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------
+   Callouts
+   ------------------------------------------------------------ */
+.note {
+  display: flex; gap: 11px;
+  padding: 13px 15px;
+  border-radius: var(--radius-sm);
+  margin: 16px 0;
+  font-size: 14px;
+  border: 1px solid;
+  line-height: 1.55;
+}
+.note .ic { flex: 0 0 auto; font-size: 15px; line-height: 1.5; }
+.note p { margin: 0 0 6px; }
+.note p:last-child { margin: 0; }
+.note--tip   { background: var(--ember-soft); border-color: var(--ember-line); color: #7a3a08; }
+.note--info  { background: var(--blue-soft);  border-color: #c5d7fb; color: #1e3a8a; }
+.note--warn  { background: var(--amber-soft); border-color: #f0dca8; color: #7a5a13; }
+.note--danger{ background: var(--red-soft);   border-color: #f3c9c9; color: #991b1b; }
+.note b { color: inherit; }
+
+/* ------------------------------------------------------------
+   Tables (reference)
+   ------------------------------------------------------------ */
+.help-table-wrap { overflow-x: auto; margin: 6px 0 18px; border: 1px solid var(--line); border-radius: var(--radius); }
+table.ref {
+  width: 100%; border-collapse: collapse; font-size: 13.5px; background: var(--paper);
+}
+table.ref th, table.ref td { text-align: left; padding: 10px 14px; vertical-align: top; }
+table.ref thead th {
+  background: var(--navy-soft); color: var(--navy);
+  font-size: 11px; letter-spacing: .05em; text-transform: uppercase; font-weight: 700;
+  border-bottom: 1px solid var(--line);
+}
+table.ref tbody tr + tr td { border-top: 1px solid var(--line-soft); }
+table.ref td code { white-space: nowrap; }
+
+/* status / plan pills used in tables */
+.pill { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+.pill--green { background: var(--green-soft); color: var(--green); }
+.pill--amber { background: var(--amber-soft); color: var(--amber); }
+.pill--red   { background: var(--red-soft);   color: var(--red); }
+.pill--grey  { background: #EEF0F3; color: #5b6471; }
+.pill--navy  { background: var(--navy-soft);  color: var(--navy); }
+.pill--ember { background: var(--ember-soft); color: var(--ember-dark); }
+
+/* ------------------------------------------------------------
+   Action chip (for "what each button does" rows)
+   ------------------------------------------------------------ */
+.chip-row { display: flex; align-items: flex-start; gap: 12px; margin: 9px 0; }
+.chip-glyph {
+  flex: 0 0 auto;
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  display: grid; place-items: center;
+  font-size: 15px;
+  background: var(--navy-soft);
+  border: 1px solid var(--line);
+}
+.chip-glyph.is-blue  { background: var(--blue-soft);  border-color:#c5d7fb; }
+.chip-glyph.is-green { background: var(--green-soft); border-color:#bfe7d4; }
+.chip-glyph.is-red   { background: var(--red-soft);   border-color:#f3c9c9; }
+.chip-body { font-size: 14px; padding-top: 2px; }
+.chip-body b { color: var(--navy); }
+
+/* ------------------------------------------------------------
+   Landing (index) cards
+   ------------------------------------------------------------ */
+.lp { max-width: 980px; margin: 0 auto; padding: 64px 32px 80px; }
+.lp-hero { text-align: center; margin-bottom: 46px; }
+.lp-hero .help-brand-mark { width: 52px; height: 52px; border-radius: 13px; margin: 0 auto 20px; }
+.lp-hero h1 { font-size: 38px; color: var(--navy); font-weight: 800; letter-spacing: -.02em; margin: 0 0 12px; }
+.lp-hero p { font-size: 17px; color: var(--muted); margin: 0 auto; max-width: 56ch; }
+.lp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
+.lp-card {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 26px 24px;
+  box-shadow: var(--shadow-sm);
+  transition: transform .14s, box-shadow .14s, border-color .14s;
+  position: relative;
+}
+.lp-card:hover { transform: translateY(-3px); box-shadow: var(--shadow); border-color: var(--ember-line); }
+.lp-card .ic {
+  width: 46px; height: 46px; border-radius: 11px; display: grid; place-items: center;
+  font-size: 22px; margin-bottom: 16px; background: var(--ember-soft);
+}
+.lp-card h3 { font-size: 18px; color: var(--navy); font-weight: 700; margin: 0 0 6px; }
+.lp-card p { font-size: 13.5px; color: var(--muted); margin: 0 0 14px; line-height: 1.5; }
+.lp-card .who { font-size: 11.5px; font-weight: 600; color: var(--ember-dark); text-transform: uppercase; letter-spacing: .05em; }
+.lp-card .arrow { position: absolute; top: 24px; right: 24px; color: var(--faint); font-size: 18px; transition: transform .14s, color .14s; }
+.lp-card:hover .arrow { transform: translateX(3px); color: var(--ember); }
+.lp-card.is-soon { opacity: .72; }
+.lp-card.is-soon .badge-soon {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); background: #EEF0F3; padding: 3px 8px; border-radius: 6px;
+}
+.lp-foot { text-align: center; margin-top: 46px; font-size: 13px; color: var(--faint); }
+
+/* ------------------------------------------------------------
+   Search "no results" + hidden state
+   ------------------------------------------------------------ */
+.help-section.is-hidden { display: none; }
+.search-empty {
+  display: none;
+  padding: 40px 0; text-align: center; color: var(--muted); font-size: 15px;
+}
+.search-empty.show { display: block; }
+
+/* back to top */
+.to-top {
+  position: fixed; right: 22px; bottom: 22px;
+  width: 42px; height: 42px; border-radius: 50%;
+  background: var(--navy); color: #fff; border: none; cursor: pointer;
+  font-size: 18px; box-shadow: var(--shadow); opacity: 0; pointer-events: none;
+  transition: opacity .2s; z-index: 40;
+}
+.to-top.show { opacity: 1; pointer-events: auto; }
+.to-top:hover { background: var(--ember); }
+
+/* ------------------------------------------------------------
+   Mobile
+   ------------------------------------------------------------ */
+.help-menu-btn {
+  display: none;
+  background: var(--navy); color:#fff; border:none; border-radius: 8px;
+  width: 38px; height: 38px; font-size: 18px; cursor: pointer;
+}
+.help-scrim { display:none; }
+
+@media (max-width: 900px) {
+  :root { --sidebar-w: 256px; }
+  .help-content-inner, .help-topbar-inner { padding-left: 22px; padding-right: 22px; }
+  .help-sidebar {
+    position: fixed; left: 0; top: 0; z-index: 60;
+    transform: translateX(-100%); transition: transform .22s ease;
+    box-shadow: 0 0 40px rgba(0,0,0,.3);
+  }
+  .help-shell.nav-open .help-sidebar { transform: translateX(0); }
+  .help-shell.nav-open .help-scrim {
+    display: block; position: fixed; inset: 0; background: rgba(15,23,42,.5); z-index: 55;
+  }
+  .help-menu-btn { display: grid; place-items: center; }
+  .help-search { width: auto; flex: 1; max-width: none; }
+  .help-hero h1 { font-size: 27px; }
+  .help-crumb { display: none; }
+}
+
+@media (max-width: 560px) {
+  .help-content-inner, .help-topbar-inner { padding-left: 16px; padding-right: 16px; }
+  .lp { padding: 40px 18px 60px; }
+  .lp-hero h1 { font-size: 29px; }
+}
+
+</style>
+</head>
+<body>
+<div class="help-shell">
+
+  <!-- ───────────────────────── SIDEBAR ───────────────────────── -->
+  <aside class="help-sidebar">
+    <div class="help-brand">
+      <div class="help-brand-mark" aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 72 72" xmlns="http://www.w3.org/2000/svg">
+          <path d="M36 6 C26 18 12 26 14 44 C16 58 26 68 36 72 C46 68 56 58 58 44 C60 26 46 18 36 6Z" fill="#FDE68A"/>
+          <path d="M36 22 C31 30 26 36 28 46 C30 53 33 58 36 62 C39 58 42 53 44 46 C46 36 41 30 36 22Z" fill="#fff"/>
+        </svg>
+      </div>
+      <div>
+        <div class="help-brand-name">Go<span class="warm">Warm</span> CRM</div>
+        <div class="help-brand-sub">Help Center</div>
+      </div>
+    </div>
+
+    <div class="help-role-pill"><span class="dot"></span> Chrome Extension</div>
+
+    <nav class="help-nav">
+      <div class="help-nav-group-label">Getting started</div>
+      <a href="#overview"><span class="ic">🧩</span> What the extension does</a>
+      <a href="#install"><span class="ic">📦</span> Install &amp; connect</a>
+      <a href="#popup"><span class="ic">🎛️</span> The toolbar popup</a>
+
+      <div class="help-nav-group-label">Capturing</div>
+      <a href="#capture-profile"><span class="ic">👤</span> Capture a profile</a>
+      <a href="#capture-company"><span class="ic">🏢</span> Capture a company page</a>
+
+      <div class="help-nav-group-label">Working LinkedIn</div>
+      <a href="#panel"><span class="ic">📌</span> The on-page panel</a>
+      <a href="#connection-sync"><span class="ic">🔄</span> Connection sync</a>
+      <a href="#message-sync"><span class="ic">💬</span> Message sync &amp; replies</a>
+      <a href="#auto-send"><span class="ic">🤖</span> Connection auto-send</a>
+
+      <div class="help-nav-group-label">Housekeeping</div>
+      <a href="#defaults"><span class="ic">🎯</span> Push defaults</a>
+      <a href="#updating"><span class="ic">⬆️</span> Updating</a>
+      <a href="#troubleshooting"><span class="ic">🧯</span> Troubleshooting</a>
+
+      <div class="help-nav-foot">
+        <a href="index.html">← All guides</a>
+      </div>
+    </nav>
+  </aside>
+
+  <div class="help-scrim"></div>
+
+  <!-- ───────────────────────── CONTENT ───────────────────────── -->
+  <main class="help-content">
+
+    <div class="help-topbar">
+      <div class="help-topbar-inner">
+        <button class="help-menu-btn" aria-label="Open navigation">☰</button>
+        <span class="help-crumb">Help Center · <b>Chrome Extension Guide</b></span>
+        <div class="help-search">
+          <span class="mag">🔍</span>
+          <input type="search" placeholder="Search this guide…" aria-label="Search this guide" />
+        </div>
+      </div>
+    </div>
+
+    <div class="help-content-inner">
+
+      <header class="help-hero">
+        <span class="help-eyebrow">For everyone using LinkedIn outreach</span>
+        <h1>Chrome Extension Guide</h1>
+        <p>The GoWarmCRM extension is the bridge between LinkedIn and your pipeline — capture profiles and companies, log every touch, keep connections and messages in sync, and (where your org allows it) let connection requests send themselves, safely.</p>
+      </header>
+
+      <div class="search-empty">No sections match your search. Try a different term.</div>
+
+      <!-- ════════════════ OVERVIEW ════════════════ -->
+      <section class="help-section" id="overview">
+        <h2><span class="num">01</span> What the extension does</h2>
+        <p class="lead">Everything the extension does keeps you on LinkedIn while GoWarmCRM stays current behind the scenes. No copy-pasting profiles, no manually logging "sent a request", no wondering whether someone replied.</p>
+        <div class="chip-row"><span class="chip-glyph">👤</span><div class="chip-body"><b>Capture</b> — turn the profile or company page you're looking at into a prospect (or a batch of them) in your pipeline, in a couple of clicks.</div></div>
+        <div class="chip-row"><span class="chip-glyph">📌</span><div class="chip-body"><b>Log</b> — a floating panel on every profile shows the person's status and timeline, with one-tap logging for requests, connections, messages, and replies.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🔄</span><div class="chip-body"><b>Sync</b> — one click reconciles your sent requests, acceptances, and LinkedIn conversations with GoWarmCRM, so sequences react to what actually happened.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🤖</span><div class="chip-body"><b>Automate</b> — opt-in connection-request auto-send with hard caps, randomized pacing, working-hours gating, and an instant stop on any LinkedIn security prompt.</div></div>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>The extension works on <code>linkedin.com</code> profile and company pages and talks only to GoWarmCRM. Your session stays in your browser — it reads the pages you visit and logs to your workspace, nowhere else.</p></div></div>
+      </section>
+
+      <!-- ════════════════ INSTALL ════════════════ -->
+      <section class="help-section" id="install">
+        <h2><span class="num">02</span> Install &amp; connect</h2>
+        <p class="lead">Installation takes about a minute, and connecting takes zero — the extension picks up your GoWarmCRM session automatically. No token to copy, nothing to paste.</p>
+        <h3>Install</h3>
+        <ol class="help-steps">
+          <li>Get the extension folder from your install page or admin, and unzip it if needed — you want the folder containing <code>manifest.json</code>.</li>
+          <li>Open <code>chrome://extensions</code>, switch on <strong>Developer mode</strong> (top-right toggle), click <strong>Load unpacked</strong>, and select the folder.</li>
+          <li>The GoWarmCRM flame appears in your toolbar. <strong>Pin it</strong> (puzzle-piece icon → pin) so it's always one click away.</li>
+        </ol>
+        <h3>Connect</h3>
+        <ol class="help-steps">
+          <li>Open <code>app.gowarmcrm.com</code> in any Chrome tab and sign in.</li>
+          <li>The extension detects your session automatically. Click the toolbar icon — the popup should show <strong>Connected</strong> with your account.</li>
+          <li>If it says <em>Not connected</em>, sign in to GoWarmCRM, then reopen the popup (there's a <em>Try connecting now</em> button if it needs a nudge).</li>
+        </ol>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>Works in any Chromium browser — Chrome, Edge, Brave. There's no server setup on your side; the extension talks to the live GoWarmCRM API.</p></div></div>
+      </section>
+
+      <!-- ════════════════ POPUP ════════════════ -->
+      <section class="help-section" id="popup">
+        <h2><span class="num">03</span> The toolbar popup</h2>
+        <p class="lead">The popup is the extension's control room — your connection status, the sync actions, and the defaults that decide where captures land.</p>
+
+        <div class="help-figure">
+          <div class="help-figure-bar"><span class="tl"><i></i><i></i><i></i></span><span class="tt">GoWarmCRM · extension popup</span></div>
+          <svg viewBox="0 0 720 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The extension popup: a connected status row, connection request check buttons, LinkedIn message sync buttons, and the settings area with default campaign and sequence.">
+            <rect width="720" height="300" fill="#F6F7F9"/>
+            <rect x="200" y="14" width="320" height="272" rx="14" fill="#fff" stroke="#E5E7EB"/>
+            <rect x="200" y="14" width="320" height="42" rx="14" fill="#1A3A5C"/>
+            <rect x="200" y="42" width="320" height="14" fill="#1A3A5C"/>
+            <rect x="216" y="26" width="18" height="18" rx="5" fill="#E8630A"/>
+            <text x="242" y="40" fill="#fff" font-family="sans-serif" font-size="12" font-weight="700">GoWarmCRM</text>
+            <g font-family="sans-serif" font-size="10">
+              <text x="216" y="76" fill="#6B7280">Status</text>
+              <circle cx="300" cy="72" r="4" fill="#0F9D6E"/><text x="308" y="76" fill="#0F9D6E" font-weight="700">Connected</text>
+              <text x="216" y="94" fill="#374151">sudheer@yourco.com · Acme workspace</text>
+
+              <text x="216" y="122" fill="#1A3A5C" font-weight="700">Connection requests</text>
+              <rect x="216" y="130" width="138" height="24" rx="7" fill="#FDEFE4" stroke="#E8630A"/><text x="285" y="146" fill="#7a3a08" text-anchor="middle">Check &amp; update sent</text>
+              <rect x="362" y="130" width="142" height="24" rx="7" fill="#FDEFE4" stroke="#E8630A"/><text x="433" y="146" fill="#7a3a08" text-anchor="middle">Check &amp; update accepted</text>
+
+              <text x="216" y="182" fill="#1A3A5C" font-weight="700">LinkedIn messages</text>
+              <rect x="216" y="190" width="138" height="24" rx="7" fill="#EAF0F6" stroke="#1A3A5C"/><text x="285" y="206" fill="#1A3A5C" text-anchor="middle">Resolve identities</text>
+              <rect x="362" y="190" width="142" height="24" rx="7" fill="#EAF0F6" stroke="#1A3A5C"/><text x="433" y="206" fill="#1A3A5C" text-anchor="middle">Sync messages</text>
+
+              <text x="216" y="242" fill="#1A3A5C" font-weight="700">Push defaults</text>
+              <rect x="216" y="250" width="138" height="20" rx="6" fill="#F6F7F9" stroke="#E5E7EB"/><text x="224" y="264" fill="#374151">Q3 Enterprise CROs ▾</text>
+              <rect x="362" y="250" width="142" height="20" rx="6" fill="#F6F7F9" stroke="#E5E7EB"/><text x="370" y="264" fill="#374151">Enterprise Outbound ▾</text>
+            </g>
+            <g font-family="sans-serif" font-weight="700" font-size="12">
+              <circle cx="330" cy="72" r="11" fill="#E8630A" opacity="0"/>
+              <circle cx="200" cy="72" r="11" fill="#E8630A"/><text x="200" y="76" fill="#fff" text-anchor="middle">1</text>
+              <circle cx="200" cy="142" r="11" fill="#E8630A"/><text x="200" y="146" fill="#fff" text-anchor="middle">2</text>
+              <circle cx="200" cy="202" r="11" fill="#E8630A"/><text x="200" y="206" fill="#fff" text-anchor="middle">3</text>
+              <circle cx="200" cy="260" r="11" fill="#E8630A"/><text x="200" y="264" fill="#fff" text-anchor="middle">4</text>
+            </g>
+          </svg>
+          <div class="help-figure-cap"><b>The popup at a glance</b> — status, sync actions, and your capture defaults.</div>
+        </div>
+
+        <ol class="help-steps">
+          <li><strong>Status</strong> — who you're signed in as, and the workspace captures are saved to. There's a quick <em>Open GoWarmCRM</em> link, and the popup will tell you when a new extension version is available.</li>
+          <li><strong>Connection requests</strong> — the <em>Check &amp; update</em> buttons reconcile sent and accepted requests with GoWarmCRM (<a href="#connection-sync">details below</a>).</li>
+          <li><strong>LinkedIn messages</strong> — <em>Resolve identities</em> and <em>Sync messages</em> harvest your conversations with tracked prospects (<a href="#message-sync">details below</a>).</li>
+          <li><strong>Push defaults</strong> — the campaign and sequence new captures land in, plus account and workspace details under Settings.</li>
+        </ol>
+      </section>
+
+      <!-- ════════════════ CAPTURE PROFILE ════════════════ -->
+      <section class="help-section" id="capture-profile">
+        <h2><span class="num">04</span> Capture a profile</h2>
+        <p class="lead">On any <code>linkedin.com/in/…</code> page, the GoWarm panel appears on the right. If the person isn't in your CRM yet, capturing them takes seconds.</p>
+        <ol class="help-steps">
+          <li>Open the profile. The panel loads and checks whether the person is already a prospect (matched by their LinkedIn URL).</li>
+          <li>Hit <strong>Capture</strong> — the extension reads the profile (name, title, company, location, and more) and shows you the fields to review. Edit anything inline before saving.</li>
+          <li>Save. The prospect lands in your <strong>research queue</strong>, added to your default campaign and enrolled in your default sequence — or standalone, if you've left the defaults blank.</li>
+        </ol>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>Already-captured profiles can be <strong>refreshed</strong> to pull updates — useful when someone changes roles. The panel shows their current status and full outreach timeline either way.</p></div></div>
+        <div class="note note--tip"><span class="ic">💡</span><div><p><b>Capture while you browse.</b> The best time to capture is the moment you're already reading someone's profile and know why they're interesting — add a note with the why-now while it's fresh.</p></div></div>
+      </section>
+
+      <!-- ════════════════ CAPTURE COMPANY ════════════════ -->
+      <section class="help-section" id="capture-company">
+        <h2><span class="num">05</span> Capture a company page</h2>
+        <p class="lead">Company pages (<code>linkedin.com/company/…</code>) can be captured too — turning a company you're researching into an account with people and signals attached, instead of one prospect at a time.</p>
+        <ol class="help-steps">
+          <li>Open the company page — the capture control appears just like on profiles.</li>
+          <li><strong>Capture the company</strong> — firmographics flow into GoWarmCRM as an account, and employees visible on the page can come along as prospect candidates.</li>
+          <li>What you capture also feeds the <strong>signal store</strong> — company activity you observed becomes a why-now your campaigns can gate or rank on.</li>
+        </ol>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>Company captures are one of the sources behind signal-driven campaigns and the Work Queue — see <em>Signals &amp; the Work Queue</em> in the End-User Guide.</p></div></div>
+      </section>
+
+      <!-- ════════════════ PANEL ════════════════ -->
+      <section class="help-section" id="panel">
+        <h2><span class="num">06</span> The on-page panel</h2>
+        <p class="lead">For prospects already in your CRM, the panel is a live timeline and a logging pad — you never leave the profile to keep GoWarmCRM accurate.</p>
+
+        <div class="help-figure">
+          <div class="help-figure-bar"><span class="tl"><i></i><i></i><i></i></span><span class="tt">linkedin.com/in/ana-ng</span></div>
+          <svg viewBox="0 0 720 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A LinkedIn profile with the GoWarm panel on the right: prospect status, an outreach timeline, one-tap event logging buttons, and a note field.">
+            <rect width="720" height="280" fill="#F6F7F9"/>
+            <!-- profile mock -->
+            <rect x="24" y="20" width="420" height="240" rx="12" fill="#fff" stroke="#E5E7EB"/>
+            <rect x="24" y="20" width="420" height="64" rx="12" fill="#EAF0F6"/>
+            <rect x="24" y="70" width="420" height="14" fill="#EAF0F6"/>
+            <circle cx="80" cy="92" r="30" fill="#1A3A5C"/><text x="80" y="98" fill="#fff" font-family="sans-serif" font-size="16" text-anchor="middle">AN</text>
+            <text x="124" y="94" fill="#1A3A5C" font-family="sans-serif" font-size="15" font-weight="800">Ana Ng</text>
+            <text x="124" y="112" fill="#6B7280" font-family="sans-serif" font-size="10.5">VP Sales · Northwind · Singapore</text>
+            <rect x="44" y="140" width="380" height="12" rx="6" fill="#EEF1F4"/>
+            <rect x="44" y="160" width="340" height="12" rx="6" fill="#EEF1F4"/>
+            <rect x="44" y="180" width="360" height="12" rx="6" fill="#EEF1F4"/>
+            <rect x="44" y="212" width="180" height="12" rx="6" fill="#EEF1F4"/>
+            <!-- panel -->
+            <rect x="468" y="20" width="228" height="240" rx="12" fill="#fff" stroke="#E8630A"/>
+            <rect x="468" y="20" width="228" height="34" rx="12" fill="#E8630A"/>
+            <rect x="468" y="42" width="228" height="12" fill="#E8630A"/>
+            <text x="484" y="42" fill="#fff" font-family="sans-serif" font-size="11" font-weight="700">🔥 GoWarm · In your CRM</text>
+            <g font-family="sans-serif" font-size="9.5">
+              <text x="484" y="74" fill="#0F9D6E" font-weight="700">● Connected · 3d ago</text>
+              <text x="484" y="96" fill="#6B7280">Request sent · Jul 2</text>
+              <text x="484" y="112" fill="#6B7280">Connected · Jul 5</text>
+              <text x="484" y="128" fill="#6B7280">Message sent · Jul 6</text>
+              <rect x="484" y="142" width="94" height="22" rx="7" fill="#FDEFE4" stroke="#E8630A"/><text x="531" y="157" fill="#7a3a08" text-anchor="middle">Message sent</text>
+              <rect x="586" y="142" width="94" height="22" rx="7" fill="#FDEFE4" stroke="#E8630A"/><text x="633" y="157" fill="#7a3a08" text-anchor="middle">Reply received</text>
+              <rect x="484" y="172" width="196" height="48" rx="7" fill="#F6F7F9" stroke="#E5E7EB"/><text x="492" y="188" fill="#9CA3AF">Add a note…</text>
+              <rect x="484" y="228" width="196" height="22" rx="7" fill="#E8630A"/><text x="582" y="243" fill="#fff" text-anchor="middle" font-weight="600">Log to GoWarmCRM</text>
+            </g>
+            <g font-family="sans-serif" font-weight="700" font-size="12">
+              <circle cx="468" cy="74" r="11" fill="#E8630A"/><text x="468" y="78" fill="#fff" text-anchor="middle">1</text>
+              <circle cx="468" cy="153" r="11" fill="#E8630A"/><text x="468" y="157" fill="#fff" text-anchor="middle">2</text>
+              <circle cx="468" cy="196" r="11" fill="#E8630A"/><text x="468" y="200" fill="#fff" text-anchor="middle">3</text>
+            </g>
+          </svg>
+          <div class="help-figure-cap"><b>The panel on a tracked prospect.</b> Status, timeline, one-tap logging.</div>
+        </div>
+
+        <ol class="help-steps">
+          <li><strong>Status &amp; timeline</strong> — the person's current LinkedIn status and every touch so far, straight from GoWarmCRM.</li>
+          <li><strong>One-tap logging</strong> — record the funnel as it happens: <em>Request sent → Connected → Message sent → Reply received</em>. Each tap updates GoWarmCRM instantly.</li>
+          <li><strong>Notes</strong> — paste the message you sent or the gist of their reply, so the context lives on the prospect, not in your memory.</li>
+        </ol>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>Matching is by the <strong>LinkedIn URL</strong> on the prospect record. If the panel says "Not in GoWarmCRM" for someone you know is there, their record is probably missing the URL — add it in the prospect's detail panel.</p></div></div>
+      </section>
+
+      <!-- ════════════════ CONNECTION SYNC ════════════════ -->
+      <section class="help-section" id="connection-sync">
+        <h2><span class="num">07</span> Connection sync</h2>
+        <p class="lead">You don't have to log every request by hand. The popup's <strong>Check &amp; update</strong> buttons read your own sent-invitations and connections lists and reconcile them with GoWarmCRM in bulk.</p>
+        <ol class="help-steps">
+          <li><strong>Check &amp; update sent</strong> — marks prospects whose connection requests you've sent, so the funnel reflects reality even for requests sent outside GoWarmCRM.</li>
+          <li><strong>Check &amp; update accepted</strong> — detects acceptances and updates each prospect's status. If a sequence is set to <em>stop on connection accept</em>, this is what triggers it.</li>
+        </ol>
+        <div class="note note--tip"><span class="ic">💡</span><div><p><b>End your LinkedIn session with a sync.</b> Two clicks, and every acceptance you collected that day flows into the funnel, your reporting, and your sequences' stop rules.</p></div></div>
+      </section>
+
+      <!-- ════════════════ MESSAGE SYNC ════════════════ -->
+      <section class="help-section" id="message-sync">
+        <h2><span class="num">08</span> Message sync &amp; replies</h2>
+        <p class="lead">LinkedIn replies matter as much as email replies — they should stop sequences and show up in your prospect timelines. Message sync makes that happen.</p>
+        <ol class="help-steps">
+          <li><strong>Resolve identities</strong> first — this maps your LinkedIn conversation threads to the prospects GoWarmCRM tracks. It runs in batches (accepted prospects go first); re-click to continue through your list.</li>
+          <li><strong>Sync messages</strong> — harvests the conversations with those prospects into GoWarmCRM's message ledger. Each message is recorded exactly once, so re-running is always safe.</li>
+          <li>Replies detected here behave like email replies: the prospect's <strong>sequence stops</strong> (unless the campaign opted out), and the conversation is on their timeline for whoever picks it up.</li>
+        </ol>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>Only conversations with prospects <em>you're tracking in GoWarmCRM</em> are synced — the rest of your inbox is never read into the system. Connection-request notes are recorded but not counted as messages, so message and reply counts stay honest.</p></div></div>
+        <div class="note note--tip"><span class="ic">💡</span><div><p><b>Sync before you plan the day.</b> Replies only stop sequences once GoWarmCRM has seen them — a morning sync means nobody gets step 3 after they already answered step 2.</p></div></div>
+      </section>
+
+      <!-- ════════════════ AUTO-SEND ════════════════ -->
+      <section class="help-section" id="auto-send">
+        <h2><span class="num">09</span> Connection auto-send</h2>
+        <p class="lead">When your org enables it and you opt in, the extension can send your queued connection requests for you — paced and gated to look, and behave, like a human.</p>
+        <h3>How it stays safe</h3>
+        <div class="chip-row"><span class="chip-glyph">🎚️</span><div class="chip-body"><b>Double opt-in</b> — your org admin turns on the capability and sets the guardrails; you opt in yourself in Settings → <em>LinkedIn Auto-Connect</em>, where you can also set a personal daily cap. Nothing sends unless both are on.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🧮</span><div class="chip-body"><b>Hard daily cap</b> — a rolling-24-hour ceiling per rep. When it's reached, sending stops until headroom returns.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🎲</span><div class="chip-body"><b>Randomized pacing</b> — a jittered delay between every send, so there's no mechanical rhythm.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🕗</span><div class="chip-body"><b>Human hours</b> — sends only fire inside the working days and hours your admin configured.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🛑</span><div class="chip-body"><b>Challenge abort</b> — if LinkedIn shows any security prompt, auto-send halts immediately. No retries; a human resolves it first.</div></div>
+        <div class="note note--warn"><span class="ic">⚠️</span><div><p><b>Understand the risk.</b> Automating actions on LinkedIn is against LinkedIn's terms of service and carries account risk regardless of guardrails. Keep your cap conservative, keep LinkedIn open in a normal tab while it runs, and treat a security challenge as a signal to slow down.</p></div></div>
+      </section>
+
+      <!-- ════════════════ DEFAULTS ════════════════ -->
+      <section class="help-section" id="defaults">
+        <h2><span class="num">10</span> Push defaults</h2>
+        <p class="lead">Defaults decide where captures land, so a capture is two clicks instead of five. Set them once in the popup's Settings.</p>
+        <ol class="help-steps">
+          <li><strong>Default campaign</strong> — new captures are added here automatically.</li>
+          <li><strong>Default sequence</strong> — captures are enrolled here on activation.</li>
+          <li>Leave both blank to save captures as <strong>standalone prospects</strong> you'll organise later.</li>
+        </ol>
+        <div class="note note--tip"><span class="ic">💡</span><div><p><b>Match your defaults to your current motion.</b> Running a CRO campaign this month? Point the defaults at it, and every profile you capture during research is already in the right place.</p></div></div>
+      </section>
+
+      <!-- ════════════════ UPDATING ════════════════ -->
+      <section class="help-section" id="updating">
+        <h2><span class="num">11</span> Updating</h2>
+        <p class="lead">The popup tells you when a new version is available — a banner appears with a link to the install page.</p>
+        <ol class="help-steps">
+          <li>Download the new build from the install page and replace your extension folder with it.</li>
+          <li>Open <code>chrome://extensions</code> and click the <strong>reload</strong> icon on the GoWarmCRM card (or use the popup's <em>Reload extension</em> button).</li>
+          <li>Reopen the popup — the version in the footer should now match the latest.</li>
+        </ol>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>Updating never touches your connection or defaults — they carry over.</p></div></div>
+      </section>
+
+      <!-- ════════════════ TROUBLESHOOTING ════════════════ -->
+      <section class="help-section" id="troubleshooting">
+        <h2><span class="num">12</span> Troubleshooting</h2>
+        <p class="lead">Most issues come down to one of four things — the page, the match, the session, or the version.</p>
+        <div class="help-table-wrap">
+          <table class="ref">
+            <thead><tr><th>Symptom</th><th>Fix</th></tr></thead>
+            <tbody>
+              <tr><td><b>Panel doesn't appear</b></td><td>Make sure you're on a <code>linkedin.com/in/…</code> profile (not search or the feed), refresh the page, and check the extension is enabled at <code>chrome://extensions</code>.</td></tr>
+              <tr><td><b>"Not in GoWarmCRM"</b> for someone who is</td><td>The prospect record is missing its LinkedIn URL, or the URL doesn't match (watch for trailing slashes). Add or fix it on the prospect, then refresh.</td></tr>
+              <tr><td><b>"Sign in to GoWarmCRM first"</b></td><td>Open <code>app.gowarmcrm.com</code> in a tab, sign in, then reopen the popup. Use <em>Try connecting now</em> if needed.</td></tr>
+              <tr><td><b>Logged an event, panel didn't update</b></td><td>It re-renders after about a second — give it a moment.</td></tr>
+              <tr><td><b>Sync buttons seem to do nothing</b></td><td>Identity resolution runs in batches — re-click <em>Resolve identities</em> to continue through your list, then run <em>Sync messages</em>.</td></tr>
+              <tr><td><b>Behaving oddly after an update</b></td><td>Reload the extension at <code>chrome://extensions</code> and hard-refresh the LinkedIn tab.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p><b>Need to dig deeper?</b> The build ships with debug hooks. On any profile page, open DevTools (F12) → Console and run <code>await __gowarmCaptureDebug()</code> — copy the output and share it with support.</p></div></div>
+        <div class="note note--tip"><span class="ic">🧭</span><div><p><b>Where this fits.</b> Captures land in your research queue, syncs drive your sequences' stop rules, and everything shows up in Reporting — the day-to-day side is covered in the <em>End-User Guide</em>.</p></div></div>
+      </section>
+
+    
+    </div>
+  </main>
+</div>
+
+<button class="to-top" aria-label="Back to top">↑</button>
+<script>
+/* ============================================================
+   GoWarmCRM — Help Center shared behavior
+   Vanilla JS, no dependencies. Safe to drop in under any CSP.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  /* ---------- Mobile nav toggle ---------- */
+  var shell   = document.querySelector('.help-shell');
+  var menuBtn = document.querySelector('.help-menu-btn');
+  var scrim   = document.querySelector('.help-scrim');
+  function closeNav() { if (shell) shell.classList.remove('nav-open'); }
+  if (menuBtn && shell) {
+    menuBtn.addEventListener('click', function () { shell.classList.toggle('nav-open'); });
+  }
+  if (scrim) scrim.addEventListener('click', closeNav);
+
+  /* ---------- Section nav: smooth scroll + close mobile ---------- */
+  var navLinks = Array.prototype.slice.call(document.querySelectorAll('.help-nav a[href^="#"]'));
+  navLinks.forEach(function (a) {
+    a.addEventListener('click', function () { closeNav(); });
+  });
+
+  /* ---------- Scroll-spy: highlight active section in nav ---------- */
+  var sections = Array.prototype.slice.call(document.querySelectorAll('.help-section[id]'));
+  var byId = {};
+  navLinks.forEach(function (a) {
+    var id = a.getAttribute('href').slice(1);
+    byId[id] = a;
+  });
+
+  function setActive(id) {
+    navLinks.forEach(function (a) { a.classList.remove('active'); });
+    if (byId[id]) byId[id].classList.add('active');
+  }
+
+  if ('IntersectionObserver' in window && sections.length) {
+    var visible = {};
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) { visible[e.target.id] = e.isIntersecting ? e.intersectionRatio : 0; });
+      var best = null, bestR = 0;
+      sections.forEach(function (s) {
+        var r = visible[s.id] || 0;
+        if (r > bestR) { bestR = r; best = s.id; }
+      });
+      if (best) setActive(best);
+    }, { rootMargin: '-64px 0px -55% 0px', threshold: [0, .15, .35, .6, 1] });
+    sections.forEach(function (s) { io.observe(s); });
+  }
+
+  /* ---------- Search / filter sections ---------- */
+  var search = document.querySelector('.help-search input');
+  var empty  = document.querySelector('.search-empty');
+  if (search && sections.length) {
+    var debounce;
+    search.addEventListener('input', function () {
+      clearTimeout(debounce);
+      debounce = setTimeout(runFilter, 120);
+    });
+    function runFilter() {
+      var q = search.value.trim().toLowerCase();
+      var anyVisible = false;
+      sections.forEach(function (s) {
+        if (!q) { s.classList.remove('is-hidden'); anyVisible = true; return; }
+        var hit = (s.textContent || '').toLowerCase().indexOf(q) !== -1;
+        s.classList.toggle('is-hidden', !hit);
+        if (hit) anyVisible = true;
+      });
+      // dim nav items whose section is hidden
+      navLinks.forEach(function (a) {
+        var id = a.getAttribute('href').slice(1);
+        var sec = document.getElementById(id);
+        a.style.display = (!q || (sec && !sec.classList.contains('is-hidden'))) ? '' : 'none';
+      });
+      if (empty) empty.classList.toggle('show', !!q && !anyVisible);
+    }
+  }
+
+  /* ---------- Back to top ---------- */
+  var toTop = document.querySelector('.to-top');
+  if (toTop) {
+    window.addEventListener('scroll', function () {
+      toTop.classList.toggle('show', window.scrollY > 600);
+    }, { passive: true });
+    toTop.addEventListener('click', function () {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  }
+})();
+
+</script>
+</body>
+</html>

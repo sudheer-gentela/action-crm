@@ -298,6 +298,15 @@ twilio: {
     getOrgModules:    (orgId)          => api.get(`/super/orgs/${orgId}/modules`),
     updateOrgModules: (orgId, modules) => api.patch(`/super/orgs/${orgId}/modules`, { modules }),
 
+    // ── LinkedIn seats (user_linkedin_seats) ────────────────────────────────
+    // Seats are created lazily by the extension; superadmin can only view,
+    // reassign within the org, or unbind. DELETE returns 409
+    // SEAT_HAS_ACTIVE_LEASES unless force=true.
+    getOrgLinkedInSeats:     (orgId)                 => api.get(`/super/orgs/${orgId}/linkedin-seats`),
+    reassignLinkedInSeat:    (orgId, seatId, userId) => api.patch(`/super/orgs/${orgId}/linkedin-seats/${seatId}`, { user_id: userId }),
+    deleteLinkedInSeat:      (orgId, seatId, force = false) =>
+      api.delete(`/super/orgs/${orgId}/linkedin-seats/${seatId}`, { params: force ? { force: 'true' } : {} }),
+
     // ── Workflow engine (platform-scoped) ───────────────────────────────────
     getWorkflows:        ()                  => api.get('/super/workflows'),
     createWorkflow:      (data)              => api.post('/super/workflows', data),

@@ -564,6 +564,8 @@ table.ref td code { white-space: nowrap; }
       <a href="#workflows"><span class="ic">⚙️</span> Workflows</a>
       <a href="#email-settings"><span class="ic">📧</span> Email Settings</a>
       <a href="#tracking-domain"><span class="ic">🔗</span> Tracking Domain</a>
+      <a href="#tracking-health"><span class="ic">🩺</span> Tracking Health</a>
+      <a href="#bounce-cleanup"><span class="ic">📮</span> Bounce Cleanup</a>
       <a href="#custom-fields"><span class="ic">🧱</span> Custom Fields</a>
 
       <div class="help-nav-group-label">Connections</div>
@@ -574,6 +576,11 @@ table.ref td code { white-space: nowrap; }
       <div class="help-nav-group-label">Modules</div>
       <a href="#modules"><span class="ic">🧩</span> Enabling modules</a>
       <a href="#module-config"><span class="ic">🛠️</span> Configuring a module</a>
+
+      <div class="help-nav-group-label">Prospecting controls</div>
+      <a href="#sending-schedule"><span class="ic">📆</span> Sending schedule &amp; capacity</a>
+      <a href="#linkedin-automation"><span class="ic">🤝</span> LinkedIn automation</a>
+      <a href="#signals"><span class="ic">📡</span> Signals &amp; targeting</a>
 
       <div class="help-nav-group-label">Reference</div>
       <a href="#reference"><span class="ic">📖</span> Roles &amp; sync timing</a>
@@ -664,7 +671,7 @@ table.ref td code { white-space: nowrap; }
 
         <ol class="help-steps">
           <li>Switch your role to <strong>Org Admin</strong> from the user card at the bottom of the main sidebar, then open <strong>Org Admin</strong> (🔑). Only members with the Owner or Admin role see this option.</li>
-          <li>The <strong>grouped left nav</strong> organises every setting into sections — Team, Sales Process, Sales Execution Insights, Auto Action Execution, Data Quality, General, and Modules.</li>
+          <li>The <strong>grouped left nav</strong> organises every setting into sections — Team, Sales Process, Sales Execution Insights, Auto Action Execution, Data Quality, General, and Modules (each enabled module adds its own settings screen).</li>
           <li>The <strong>content panel</strong> shows the screen you've selected, with a title and one-line description at the top so you always know where you are.</li>
         </ol>
 
@@ -1144,9 +1151,29 @@ table.ref td code { white-space: nowrap; }
         <div class="note note--warn"><span class="ic">⚠️</span><div><p>DNS changes can take time to propagate. If verification doesn't pass immediately, wait and retry rather than re-creating the record. Until it's verified, tracking still works on the default domain.</p></div></div>
       </section>
 
+      <!-- ════════════════ TRACKING HEALTH ════════════════ -->
+      <section class="help-section" id="tracking-health">
+        <h2><span class="num">21</span> Tracking Health</h2>
+        <p class="lead">A read-only diagnostic that verifies open/click tracking <em>end to end</em> — so when the numbers look off, you can see exactly which link in the chain is broken instead of guessing.</p>
+        <p>It walks the full path: the gates that decide whether a message is trackable, pixel injection into outbound emails, click-link rewriting through your tracking domain, the engagement events coming back, and the rollup into reports. Each stage shows a clear pass/fail, so a DNS problem, a gating rule, and a rollup issue all look different.</p>
+        <div class="note note--tip"><span class="ic">💡</span><div><p><b>Check here first.</b> If a rep says "my opens are zero", Tracking Health tells you in one screen whether it's the domain, the injection, or simply a campaign where tracking is off — before anyone files a bug.</p></div></div>
+      </section>
+
+      <!-- ════════════════ BOUNCE CLEANUP ════════════════ -->
+      <section class="help-section" id="bounce-cleanup">
+        <h2><span class="num">22</span> Bounce Cleanup</h2>
+        <p class="lead">Bounce notifications (NDRs) occasionally arrive looking like replies — a "delivery failed" email lands in the thread and gets stored as a prospect response. Bounce Cleanup finds and repairs those.</p>
+        <ol class="help-steps">
+          <li><strong>Scan</strong> — the tool finds undeliverable messages that were stored as prospect replies.</li>
+          <li><strong>Review</strong> the candidates — each shows the message and why it was classified as a bounce.</li>
+          <li><strong>Repair</strong> — the phantom reply is removed, the prospect's stage is reverted, and a proper <em>bounce</em> is recorded instead.</li>
+        </ol>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>This keeps your reply metrics honest — a campaign's reply rate should never be inflated by mail-server error messages, and a bounced address should read as a delivery problem, not engagement.</p></div></div>
+      </section>
+
       <!-- ════════════════ CUSTOM FIELDS ════════════════ -->
       <section class="help-section" id="custom-fields">
-        <h2><span class="num">21</span> Custom Fields</h2>
+        <h2><span class="num">23</span> Custom Fields</h2>
         <p class="lead">Custom fields let you capture data unique to your business on the records you care about. Definitions are scoped — they can apply to an entity type or to a specific campaign — so you only see the fields that are relevant where you are.</p>
         <p>Create field definitions, import options in bulk by CSV, and the fields become available in the relevant record views and column pickers. Custom field values also feed the personalization context, so the data you capture here can flow into outreach.</p>
         <div class="note note--info"><span class="ic">ℹ️</span><div><p>Because custom fields can power both reporting and personalization, name them clearly and consistently — future-you (and your reps) will thank you.</p></div></div>
@@ -1154,7 +1181,7 @@ table.ref td code { white-space: nowrap; }
 
       <!-- ════════════════ INTEGRATIONS ════════════════ -->
       <section class="help-section" id="integrations">
-        <h2><span class="num">22</span> Integrations</h2>
+        <h2><span class="num">24</span> Integrations</h2>
         <p class="lead">Connect the tools your team already lives in — email, calendar, cloud files, and meeting transcripts — so GoWarmCRM can sync the right context automatically.</p>
 
         <h3>Email &amp; Calendar</h3>
@@ -1162,11 +1189,14 @@ table.ref td code { white-space: nowrap; }
 
         <h3>Meeting &amp; Transcript Integrations</h3>
         <p>Configure transcript providers — such as Zoom, Teams, and Fireflies — so meeting recordings and transcripts flow into the relevant deals and contacts, ready for analysis.</p>
+
+        <h3>Slack</h3>
+        <p>Connect your Slack workspace and GoWarmCRM notifications can reach your team where they already work. Once connected, each member controls what they're notified about in their own settings; if a member's Slack account uses a different email than their GoWarmCRM login, they can set the Slack email there too, and send themselves a test message to confirm delivery.</p>
       </section>
 
       <!-- ════════════════ CRM SYNC ════════════════ -->
       <section class="help-section" id="crm-sync">
-        <h2><span class="num">23</span> Salesforce &amp; HubSpot</h2>
+        <h2><span class="num">25</span> Salesforce &amp; HubSpot</h2>
         <p class="lead">GoWarmCRM sits on top of your existing CRM. Connect Salesforce or HubSpot to keep records in sync, and map your stages and fields so data lands where you expect.</p>
 
         <h3>☁️ Salesforce</h3>
@@ -1181,7 +1211,7 @@ table.ref td code { white-space: nowrap; }
 
       <!-- ════════════════ ORG SETTINGS ════════════════ -->
       <section class="help-section" id="settings">
-        <h2><span class="num">24</span> Org Settings</h2>
+        <h2><span class="num">26</span> Org Settings</h2>
         <p class="lead">The organisation's basics — its name, your plan and limits, and ownership.</p>
         <ul>
           <li><strong>Organisation Name</strong> — your org's display name across the product.</li>
@@ -1194,7 +1224,7 @@ table.ref td code { white-space: nowrap; }
 
       <!-- ════════════════ MODULES ════════════════ -->
       <section class="help-section" id="modules">
-        <h2><span class="num">25</span> Enabling modules</h2>
+        <h2><span class="num">27</span> Enabling modules</h2>
         <p class="lead">Modules are the major capability areas — Prospecting, CLM, Handover, Service, and Agency. The Modules screen is where you turn on the ones your team uses.</p>
 
         <div class="help-figure">
@@ -1235,7 +1265,7 @@ table.ref td code { white-space: nowrap; }
 
       <!-- ════════════════ MODULE CONFIG ════════════════ -->
       <section class="help-section" id="module-config">
-        <h2><span class="num">26</span> Configuring a module</h2>
+        <h2><span class="num">28</span> Configuring a module</h2>
         <p class="lead">Once enabled, each module gets its own settings screen. They share a common shape — a <strong>General</strong> area and a <strong>Seed</strong> panel — plus settings specific to that module.</p>
 
         <div class="chip-row"><span class="chip-glyph">⚙️</span><div class="chip-body"><b>General</b> — turn the module on/off and set module-wide options. Prospecting's General also includes policies like <em>campaign deletion by owners</em> and <em>whether managers can edit team members' items</em>.</div></div>
@@ -1246,7 +1276,7 @@ table.ref td code { white-space: nowrap; }
           <table class="ref">
             <thead><tr><th>Module</th><th>Extra settings</th></tr></thead>
             <tbody>
-              <tr><td>🎯 <b>Prospecting</b></td><td>Skill inputs, sending schedule, prospecting playbook, <b>Call Settings</b> &amp; <b>Twilio</b> calling setup, escalation policy, and enrichment.</td></tr>
+              <tr><td>🎯 <b>Prospecting</b></td><td>AI settings &amp; skill inputs, <b>Call Settings</b> &amp; <b>Twilio</b> calling setup, <b>LinkedIn automation</b>, <b>sending schedule</b>, <b>Signals</b>, escalation policy, enrichment, and the prospecting playbook.</td></tr>
               <tr><td>📄 <b>CLM</b></td><td>E-signature configuration and contract templates.</td></tr>
               <tr><td>🤝 <b>Handover</b></td><td>Handover workflow options.</td></tr>
               <tr><td>🎧 <b>Service</b></td><td>General configuration and <b>SLA tiers</b>.</td></tr>
@@ -1255,11 +1285,90 @@ table.ref td code { white-space: nowrap; }
           </table>
         </div>
         <div class="note note--tip"><span class="ic">💡</span><div><p><b>Setting up calling?</b> Prospecting's Twilio panel provisions a calling subaccount and a browser softphone for your org. Pair it with Call Settings to choose how calls connect (bridge, softphone, or both).</p></div></div>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>Three of Prospecting's panels deserve their own walkthrough — the <a href="#sending-schedule">sending schedule &amp; capacity model</a>, <a href="#linkedin-automation">LinkedIn automation</a>, and <a href="#signals">Signals &amp; targeting</a> — covered next.</p></div></div>
+      </section>
+
+      <!-- ════════════════ SENDING SCHEDULE ════════════════ -->
+      <section class="help-section" id="sending-schedule">
+        <h2><span class="num">29</span> Sending schedule &amp; capacity</h2>
+        <p class="lead">The sending schedule is the org-wide rhythm your outreach follows — when sends may fire, how they're paced through the day, and how much volume each mailbox carries.</p>
+        <div class="chip-row"><span class="chip-glyph">🕗</span><div class="chip-body"><b>Send window</b> — start and end hours, weekdays, and the timezone that governs all the window math. Nothing fires outside it.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🚦</span><div class="chip-body"><b>Pacing</b> — <em>cadence</em> (one send every N minutes) or <em>spread</em> (even across the send window). Cadence is the safer default for sender reputation.</div></div>
+        <div class="chip-row"><span class="chip-glyph">▶️</span><div class="chip-body"><b>Start mode</b> — whether a campaign starts immediately on activation, at a fixed time, or "fixed, or now if the time has passed".</div></div>
+        <div class="chip-row"><span class="chip-glyph">💼</span><div class="chip-body"><b>LinkedIn release cap</b> — a daily ceiling on how many LinkedIn steps are released, separate from email volume.</div></div>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p><b>How capacity works now.</b> Capacity is no longer reserved when prospects are activated — it's enforced <em>at fire time, per mailbox</em>. Each sender's daily limit lives with the sender (a rep's Settings → Outreach), and every send checks live headroom when it's due. Activating a big batch is safe: the schedule simply spreads it over the days it takes.</p></div></div>
+        <div class="note note--tip"><span class="ic">💡</span><div><p>Campaigns can override the org schedule with their own — useful when one campaign targets a different timezone or needs a gentler ramp.</p></div></div>
+      </section>
+
+      <!-- ════════════════ LINKEDIN AUTOMATION ════════════════ -->
+      <section class="help-section" id="linkedin-automation">
+        <h2><span class="num">30</span> LinkedIn automation</h2>
+        <p class="lead">The master switch and guardrails for LinkedIn <strong>connection-request auto-send</strong>. Turning it on doesn't automate anyone by itself — a rep is only ever auto-sending when this org toggle is on <em>and</em> they've opted in themselves.</p>
+
+        <div class="help-figure">
+          <div class="help-figure-bar"><span class="tl"><i></i><i></i><i></i></span><span class="tt">Org Admin · Prospecting · LinkedIn</span></div>
+          <svg viewBox="0 0 720 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The LinkedIn automation panel: an org master toggle, a daily cap per rep, a randomized delay range, a working-hours window with weekday pills, and a challenge auto-stop notice.">
+            <rect width="720" height="250" fill="#F6F7F9"/>
+            <rect x="24" y="18" width="672" height="44" rx="10" fill="#fff" stroke="#E5E7EB"/>
+            <text x="40" y="45" fill="#1A3A5C" font-family="sans-serif" font-size="12" font-weight="700">Enable connection-request auto-send for this org</text>
+            <rect x="632" y="28" width="44" height="24" rx="12" fill="#0F9D6E"/><circle cx="664" cy="40" r="9" fill="#fff"/>
+            <g font-family="sans-serif" font-size="10.5">
+              <rect x="24" y="74" width="328" height="52" rx="10" fill="#fff" stroke="#E5E7EB"/>
+              <text x="40" y="95" fill="#6B7280">Daily cap per rep (rolling 24h)</text>
+              <rect x="40" y="102" width="70" height="18" rx="5" fill="#F6F7F9" stroke="#E5E7EB"/><text x="75" y="115" fill="#374151" text-anchor="middle">15</text>
+              <rect x="368" y="74" width="328" height="52" rx="10" fill="#fff" stroke="#E5E7EB"/>
+              <text x="384" y="95" fill="#6B7280">Delay between sends (randomized)</text>
+              <rect x="384" y="102" width="56" height="18" rx="5" fill="#F6F7F9" stroke="#E5E7EB"/><text x="412" y="115" fill="#374151" text-anchor="middle">45s</text>
+              <text x="452" y="115" fill="#9CA3AF">–</text>
+              <rect x="464" y="102" width="56" height="18" rx="5" fill="#F6F7F9" stroke="#E5E7EB"/><text x="492" y="115" fill="#374151" text-anchor="middle">180s</text>
+              <rect x="24" y="138" width="672" height="52" rx="10" fill="#fff" stroke="#E5E7EB"/>
+              <text x="40" y="159" fill="#6B7280">Human-hours window</text>
+              <rect x="40" y="166" width="52" height="18" rx="5" fill="#F6F7F9" stroke="#E5E7EB"/><text x="66" y="179" fill="#374151" text-anchor="middle">09:00</text>
+              <text x="100" y="179" fill="#9CA3AF">–</text>
+              <rect x="112" y="166" width="52" height="18" rx="5" fill="#F6F7F9" stroke="#E5E7EB"/><text x="138" y="179" fill="#374151" text-anchor="middle">18:00</text>
+              <g text-anchor="middle">
+                <rect x="190" y="166" width="34" height="18" rx="9" fill="#FDEFE4" stroke="#E8630A"/><text x="207" y="179" fill="#7a3a08">Mon</text>
+                <rect x="230" y="166" width="34" height="18" rx="9" fill="#FDEFE4" stroke="#E8630A"/><text x="247" y="179" fill="#7a3a08">Tue</text>
+                <rect x="270" y="166" width="34" height="18" rx="9" fill="#FDEFE4" stroke="#E8630A"/><text x="287" y="179" fill="#7a3a08">Wed</text>
+                <rect x="310" y="166" width="34" height="18" rx="9" fill="#FDEFE4" stroke="#E8630A"/><text x="327" y="179" fill="#7a3a08">Thu</text>
+                <rect x="350" y="166" width="34" height="18" rx="9" fill="#FDEFE4" stroke="#E8630A"/><text x="367" y="179" fill="#7a3a08">Fri</text>
+                <rect x="390" y="166" width="34" height="18" rx="9" fill="#fff" stroke="#E5E7EB"/><text x="407" y="179" fill="#9CA3AF">Sat</text>
+                <rect x="430" y="166" width="34" height="18" rx="9" fill="#fff" stroke="#E5E7EB"/><text x="447" y="179" fill="#9CA3AF">Sun</text>
+              </g>
+            </g>
+            <rect x="24" y="202" width="672" height="32" rx="9" fill="#FDEFE4" stroke="#F6C9A6"/>
+            <text x="40" y="222" fill="#7a3a08" font-family="sans-serif" font-size="10.5">🛑 Auto-send halts immediately on any LinkedIn security challenge — no retries, a human resolves it first.</text>
+            <g font-family="sans-serif" font-weight="700" font-size="12">
+              <circle cx="654" cy="18" r="11" fill="#E8630A"/><text x="654" y="22" fill="#fff" text-anchor="middle">1</text>
+              <circle cx="24" cy="100" r="11" fill="#E8630A"/><text x="24" y="104" fill="#fff" text-anchor="middle">2</text>
+              <circle cx="24" cy="164" r="11" fill="#E8630A"/><text x="24" y="168" fill="#fff" text-anchor="middle">3</text>
+            </g>
+          </svg>
+          <div class="help-figure-cap"><b>The guardrails are the feature.</b> Every one of them exists to keep automation looking — and behaving — human.</div>
+        </div>
+
+        <ol class="help-steps">
+          <li>The <strong>master toggle</strong> enables auto-send for the org. Each rep then opts in individually (Settings → LinkedIn Auto-Connect) and can set a personal cap below yours — <em>both</em> switches must be on before anything sends.</li>
+          <li><strong>Daily cap per rep</strong> is a hard ceiling per rolling 24 hours, and the <strong>randomized delay</strong> jitters the gap between sends so the pattern never looks mechanical.</li>
+          <li>The <strong>human-hours window</strong> keeps sends inside working days and hours — requests at 3 a.m. on a Sunday are exactly the pattern that gets accounts flagged.</li>
+        </ol>
+        <div class="note note--warn"><span class="ic">⚠️</span><div><p><b>Be conservative.</b> LinkedIn automation carries real account risk for your reps regardless of guardrails. Start with low caps, watch the <em>LinkedIn risk</em> tab in Reporting, and treat the challenge auto-stop as a signal to slow down, not an obstacle to work around.</p></div></div>
+      </section>
+
+      <!-- ════════════════ SIGNALS ════════════════ -->
+      <section class="help-section" id="signals">
+        <h2><span class="num">31</span> Signals &amp; targeting</h2>
+        <p class="lead">Signals are the structured <em>why-now</em> facts your campaigns can run on — job changes, form fills, funding, hiring, captured pages. The Signals panel is where you curate the catalog and decide how each signal is allowed to influence a campaign.</p>
+        <div class="chip-row"><span class="chip-glyph">🚧</span><div class="chip-body"><b>Gate</b> — the signal must be true for a prospect to be in the campaign's pool at all. Use sparingly: every gate shrinks the pool.</div></div>
+        <div class="chip-row"><span class="chip-glyph">📈</span><div class="chip-body"><b>Rank</b> — the signal boosts priority and picks the messaging angle, but excludes nobody. The safe default for most signals.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🎛️</span><div class="chip-body"><b>Per-campaign</b> — the signal can be used either way, decided campaign by campaign.</div></div>
+        <p>Signals arrive from several sources — <strong>lists and imports</strong>, <strong>enrichment providers</strong> (Apollo and similar, on your own keys), <strong>page captures</strong> from the Chrome extension, and <strong>inbound form fills</strong> flowing in from HubSpot. Alongside the catalog, the <strong>function taxonomy</strong> classifies job titles into functions and seniorities, so targeting rules like "decision-makers in engineering" resolve consistently no matter how creative the title.</p>
+        <div class="note note--info"><span class="ic">ℹ️</span><div><p>What reps see downstream is the <em>Work Queue</em> — a prioritised list of signal actions with the why-now hook and a ready draft. The quality of that queue is set here: a tight catalog with honest gate/rank choices beats a long list of weak signals every time.</p></div></div>
       </section>
 
       <!-- ════════════════ REFERENCE ════════════════ -->
       <section class="help-section" id="reference">
-        <h2><span class="num">27</span> Reference</h2>
+        <h2><span class="num">32</span> Reference</h2>
         <p class="lead">Quick lookups for values used across Org Admin.</p>
 
         <h3>System roles (permissions)</h3>
@@ -1281,7 +1390,7 @@ table.ref td code { white-space: nowrap; }
         <h3>CRM sync timing</h3>
         <p>Salesforce and HubSpot both sync <strong>nightly at 04:00 UTC</strong>. Stage and field mapping is configured per org under <a href="#crm-sync">Salesforce &amp; HubSpot</a>.</p>
 
-        <div class="note note--tip"><span class="ic">🧭</span><div><p><b>Where reps take over.</b> Once you've configured the org, your team works the action queue, prospecting sequences, calls, and meeting insights day to day — that's covered in the <em>End-User Guide</em> (coming next).</p></div></div>
+        <div class="note note--tip"><span class="ic">🧭</span><div><p><b>Where reps take over.</b> Once you've configured the org, your team works the action queue, prospecting sequences, calls, and meeting insights day to day — that's covered in the <em>End-User Guide</em> — and the LinkedIn side of their day in the <em>Chrome Extension Guide</em>.</p></div></div>
       </section>
 
     </div>

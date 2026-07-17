@@ -1160,5 +1160,157 @@ router.get('/enrichment-usage', requireSuperAdmin, async (req, res) => {
   }
 });
 
+// ═════════════════════════════════════════════════════════════════════════════
+// LINKEDIN SEATS — view / reassign / unbind user_linkedin_seats per org
+//
+// Seats are normally created LAZILY by the Chrome extension (bindSeat in
+// LinkedInConnectionSyncService) the first time a user runs a connection sync
+// while logged into a LinkedIn account. There is deliberately no "create"
+// route here — a superadmin cannot invent a binding the extension hasn't
+// verified. This panel exists for the two operational cases:
+//
+//   1. Wrong binding — a user synced while logged into a shared / company /
+//      someone else's LinkedIn account. Fix: DELETE, then have the user
+//      re-sync from the correct account.
+//   2. Handover — a departed rep's LinkedIn account (e.g. a company page
+//      admin seat) is being taken over by another user. Fix: PATCH reassign,
+//      which preserves the slug binding and avoids a SEAT_CONFLICT when the
+//      new owner syncs.
+//
+// NOTE ON DELETE SEMANTICS: deleting a seat only removes the binding. If the
+// same LinkedIn account runs a sync again, the seat re-creates lazily and
+// binds to WHOEVER ran that sync. Historical rows keyed by the slug
+// (sequence_step_logs.claimed_by_seat, linkedin_message_events.seat) are
+// intentionally left untouched — they are an activity ledger, not ownership.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// List seats for an org, joined to their bound user, with in-flight
+// auto-send lease counts so the superadmin can see if a seat is "hot".
+router.get('/orgs/:orgId/linkedin-seats', async (req, res) => {
+  try {
+    const { orgId } = req.params;
+
+    const r = await pool.query(`
+      SELECT s.id, s.user_id, s.public_identifier, s.display_name,
+             s.member_urn, s.first_seen_at, s.last_seen_at,
+             u.email                                    AS user_email,
+             TRIM(u.first_name || ' ' || u.last_name)   AS user_name,
+             ou.is_active                               AS user_is_active,
+             COALESCE(l.active_leases, 0)               AS active_leases
+      FROM   user_linkedin_seats s
+      LEFT JOIN users u      ON u.id = s.user_id
+      LEFT JOIN org_users ou ON ou.org_id = s.org_id AND ou.user_id = s.user_id
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*) AS active_leases
+        FROM   sequence_step_logs ssl
+        WHERE  ssl.org_id = s.org_id
+          AND  ssl.channel = 'linkedin'
+          AND  ssl.status  = 'sending'
+          AND  lower(ssl.claimed_by_seat) = lower(s.public_identifier)
+          AND  ssl.lease_expires_at > now()
+      ) l ON TRUE
+      WHERE  s.org_id = $1
+      ORDER  BY s.last_seen_at DESC
+    `, [orgId]);
+
+    res.json({ seats: r.rows });
+  } catch (err) {
+    console.error(`GET /super/orgs/${req.params.orgId}/linkedin-seats error:`, err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+// Reassign a seat to a different user in the same org.
+router.patch('/orgs/:orgId/linkedin-seats/:seatId', async (req, res) => {
+  try {
+    const { orgId, seatId } = req.params;
+    const newUserId = parseInt(req.body.user_id, 10);
+    if (!Number.isInteger(newUserId)) {
+      return res.status(400).json({ error: { message: 'user_id (integer) is required' } });
+    }
+
+    // Target user must be an active member of this org.
+    const member = await pool.query(`
+      SELECT 1 FROM org_users
+      WHERE  org_id = $1 AND user_id = $2 AND is_active = TRUE
+    `, [orgId, newUserId]);
+    if (member.rows.length === 0) {
+      return res.status(422).json({ error: { message: 'Target user is not an active member of this org' } });
+    }
+
+    const upd = await pool.query(`
+      UPDATE user_linkedin_seats
+         SET user_id = $3
+       WHERE id = $2 AND org_id = $1
+       RETURNING id, user_id, public_identifier
+    `, [orgId, seatId, newUserId]);
+    if (upd.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Seat not found in this org' } });
+    }
+
+    await auditLog(req, 'reassign_linkedin_seat', 'linkedin_seat', seatId, {
+      orgId, newUserId, publicIdentifier: upd.rows[0].public_identifier,
+    });
+    res.json({ message: 'Seat reassigned', seat: upd.rows[0] });
+  } catch (err) {
+    console.error(`PATCH /super/orgs/${req.params.orgId}/linkedin-seats/${req.params.seatId} error:`, err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+// Unbind (delete) a seat. Refuses while auto-send leases are in flight so we
+// never strand a claimed sequence_step_logs row without its seat context —
+// pass ?force=true to override after the caller has acknowledged the warning.
+router.delete('/orgs/:orgId/linkedin-seats/:seatId', async (req, res) => {
+  try {
+    const { orgId, seatId } = req.params;
+    const force = req.query.force === 'true';
+
+    const seat = await pool.query(`
+      SELECT id, user_id, public_identifier FROM user_linkedin_seats
+      WHERE  id = $2 AND org_id = $1
+    `, [orgId, seatId]);
+    if (seat.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'Seat not found in this org' } });
+    }
+
+    if (!force) {
+      const leases = await pool.query(`
+        SELECT COUNT(*) AS n FROM sequence_step_logs
+        WHERE  org_id = $1
+          AND  channel = 'linkedin'
+          AND  status  = 'sending'
+          AND  lower(claimed_by_seat) = lower($2)
+          AND  lease_expires_at > now()
+      `, [orgId, seat.rows[0].public_identifier]);
+      const n = parseInt(leases.rows[0].n, 10);
+      if (n > 0) {
+        return res.status(409).json({
+          error: {
+            code: 'SEAT_HAS_ACTIVE_LEASES',
+            message: `Seat has ${n} in-flight auto-send lease(s). Retry with force=true to unbind anyway.`,
+            activeLeases: n,
+          },
+        });
+      }
+    }
+
+    await pool.query(`
+      DELETE FROM user_linkedin_seats WHERE id = $2 AND org_id = $1
+    `, [orgId, seatId]);
+
+    await auditLog(req, 'delete_linkedin_seat', 'linkedin_seat', seatId, {
+      orgId,
+      userId: seat.rows[0].user_id,
+      publicIdentifier: seat.rows[0].public_identifier,
+      forced: force,
+    });
+    res.json({ message: 'Seat unbound', seat: seat.rows[0] });
+  } catch (err) {
+    console.error(`DELETE /super/orgs/${req.params.orgId}/linkedin-seats/${req.params.seatId} error:`, err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
 
 module.exports = router;

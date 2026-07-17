@@ -45,6 +45,7 @@ const FILES = {
   superadmin: 'superadmin.html',
   orgadmin:   'orgadmin.html',
   enduser:    'enduser.html',
+  extension:  'extension.html',
 };
 
 // Map an app "active role" slug to the guide it should open.
@@ -64,7 +65,9 @@ async function isSuperAdmin(userId) {
 
 // Same access model as the soft gate / App.js role derivation.
 function guidesFor(orgRole, superAdmin) {
-  const g = ['enduser'];
+  // 'extension' first so the fallback primary (last element) stays a role guide.
+  // Every role gets the Chrome Extension guide.
+  const g = ['extension', 'enduser'];
   if (orgRole === 'owner' || orgRole === 'admin') g.push('orgadmin');
   if (superAdmin) { g.push('orgadmin', 'superadmin'); }
   return Array.from(new Set(g));

@@ -780,6 +780,12 @@ function SAOrgDetail({ orgId, onClose }) {
               </div>
             </section>
 
+            {/* LinkedIn Seats */}
+            <section className="sa-drawer-section">
+              <h3>LinkedIn Seats</h3>
+              <SALinkedInSeats orgId={orgId} members={data.members} />
+            </section>
+
             {/* Integrations */}
             <section className="sa-drawer-section">
               <h3>Integrations</h3>
@@ -810,6 +816,175 @@ function SAOrgDetail({ orgId, onClose }) {
 }
 
 
+
+// ─────────────────────────────────────────────────────────────────
+// LINKEDIN SEATS — view / reassign / unbind user_linkedin_seats
+//
+// Seats bind lazily via the Chrome extension (bindSeat on first
+// connection sync). This panel covers the two manual-fix cases:
+// wrong-account binding (unbind → user re-syncs from the right
+// account) and handover (reassign, preserving the slug binding so
+// the new owner doesn't hit SEAT_CONFLICT).
+// ─────────────────────────────────────────────────────────────────
+
+function SALinkedInSeats({ orgId, members }) {
+  const [seats, setSeats]       = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState('');
+  const [success, setSuccess]   = useState('');
+  const [reassigning, setReassigning] = useState(null); // seat id with reassign picker open
+  const [reassignTo, setReassignTo]   = useState('');
+  const [busySeat, setBusySeat]       = useState(null); // seat id with request in flight
+
+  const load = useCallback(async () => {
+    try {
+      setLoading(true);
+      const r = await apiService.superAdmin.getOrgLinkedInSeats(orgId);
+      setSeats(r.data.seats || []);
+    } catch (e) {
+      setError(e.response?.data?.error?.message || 'Failed to load LinkedIn seats');
+    } finally { setLoading(false); }
+  }, [orgId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const flash = (msg) => { setSuccess(msg); setTimeout(() => setSuccess(''), 3000); };
+
+  const handleReassign = async (seat) => {
+    const userId = parseInt(reassignTo, 10);
+    if (!Number.isInteger(userId)) return;
+    try {
+      setBusySeat(seat.id); setError('');
+      await apiService.superAdmin.reassignLinkedInSeat(orgId, seat.id, userId);
+      setReassigning(null); setReassignTo('');
+      flash(`Seat "${seat.public_identifier}" reassigned`);
+      load();
+    } catch (e) {
+      setError(e.response?.data?.error?.message || 'Failed to reassign seat');
+    } finally { setBusySeat(null); }
+  };
+
+  const handleUnbind = async (seat) => {
+    if (!window.confirm(
+      `Unbind LinkedIn seat "${seat.public_identifier}" from ${seat.user_name || seat.user_email || 'this user'}?\n\n` +
+      `This only removes the binding — if the same LinkedIn account runs a sync again, ` +
+      `the seat re-creates and binds to whoever ran that sync.`
+    )) return;
+    try {
+      setBusySeat(seat.id); setError('');
+      await apiService.superAdmin.deleteLinkedInSeat(orgId, seat.id);
+      flash(`Seat "${seat.public_identifier}" unbound`);
+      load();
+    } catch (e) {
+      if (e.response?.status === 409 && e.response?.data?.error?.code === 'SEAT_HAS_ACTIVE_LEASES') {
+        const n = e.response.data.error.activeLeases;
+        if (window.confirm(
+          `This seat has ${n} in-flight LinkedIn auto-send lease(s).\n\n` +
+          `Unbinding now will not stop them, but the seat context will be gone. Unbind anyway?`
+        )) {
+          try {
+            await apiService.superAdmin.deleteLinkedInSeat(orgId, seat.id, true);
+            flash(`Seat "${seat.public_identifier}" unbound (forced)`);
+            load();
+          } catch (e2) {
+            setError(e2.response?.data?.error?.message || 'Failed to unbind seat');
+          }
+        }
+      } else {
+        setError(e.response?.data?.error?.message || 'Failed to unbind seat');
+      }
+    } finally { setBusySeat(null); }
+  };
+
+  const activeMembers = (members || []).filter(m => m.is_active);
+
+  if (loading) return <div className="sa-loading">Loading seats…</div>;
+
+  return (
+    <div className="sa-linkedin-seats">
+      {error   && <div className="sa-alert sa-alert--error">⚠️ {error}<button onClick={() => setError('')}>✕</button></div>}
+      {success && <div className="sa-alert sa-alert--success">✅ {success}</div>}
+
+      {seats.length === 0 ? (
+        <p className="sa-sub-text">
+          No LinkedIn seats bound yet. Seats are created automatically the first time a user
+          runs a connection sync from the Chrome extension while logged into LinkedIn.
+        </p>
+      ) : (
+        <div className="sa-member-list">
+          {seats.map(s => (
+            <div key={s.id} className={`sa-member-row ${s.user_is_active === false ? 'sa-member-row--inactive' : ''}`}>
+              <div className="sa-member-info">
+                <div className="sa-member-name">
+                  <a href={`https://www.linkedin.com/in/${encodeURIComponent(s.public_identifier)}/`}
+                     target="_blank" rel="noopener noreferrer">
+                    /in/{s.public_identifier}
+                  </a>
+                  {s.display_name ? ` — ${s.display_name}` : ''}
+                </div>
+                <div className="sa-sub-text">
+                  Bound to {s.user_name || s.user_email || `user #${s.user_id}`}
+                  {s.user_is_active === false ? ' (inactive member)' : ''}
+                  {' · '}last seen {new Date(s.last_seen_at).toLocaleDateString()}
+                  {Number(s.active_leases) > 0 ? ` · 🔥 ${s.active_leases} in-flight lease(s)` : ''}
+                </div>
+              </div>
+
+              {reassigning === s.id ? (
+                <>
+                  <select
+                    className="sa-select-inline"
+                    value={reassignTo}
+                    onChange={e => setReassignTo(e.target.value)}
+                  >
+                    <option value="">Reassign to…</option>
+                    {activeMembers
+                      .filter(m => m.user_id !== s.user_id)
+                      .map(m => (
+                        <option key={m.user_id} value={m.user_id}>{m.name || m.email}</option>
+                      ))}
+                  </select>
+                  <button
+                    className="sa-btn-sm sa-btn-sm--blue"
+                    onClick={() => handleReassign(s)}
+                    disabled={!reassignTo || busySeat === s.id}
+                  >
+                    {busySeat === s.id ? '…' : '✓'}
+                  </button>
+                  <button className="sa-btn-sm" onClick={() => { setReassigning(null); setReassignTo(''); }}>✕</button>
+                </>
+              ) : (
+                <>
+                  <button
+                    className="sa-btn-sm"
+                    onClick={() => { setReassigning(s.id); setReassignTo(''); }}
+                    title="Reassign seat to another member"
+                    disabled={busySeat === s.id}
+                  >
+                    ↔️ Reassign
+                  </button>
+                  <button
+                    className="sa-btn-sm sa-btn-sm--red"
+                    onClick={() => handleUnbind(s)}
+                    title="Unbind seat"
+                    disabled={busySeat === s.id}
+                  >
+                    ✕
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p className="sa-form-hint" style={{ marginTop: 8 }}>
+        Seats bind lazily on first extension sync — one LinkedIn account per org can bind to only
+        one user. Unbinding does not stop a logged-in extension from re-binding on its next sync.
+      </p>
+    </div>
+  );
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
 // CHANGE 1 — NEW COMPONENT: SAOrgModules
