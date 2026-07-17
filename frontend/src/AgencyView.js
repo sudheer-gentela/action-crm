@@ -445,6 +445,7 @@ function ClientDetail({ clientId, onBack }) {
   const TABS = [
     { key: 'overview',  label: '📊 Overview'  },
     { key: 'pipeline',  label: '🎯 Pipeline'  },
+    { key: 'campaigns', label: '🚀 Campaigns' },
     { key: 'outreach',  label: '✉️ Outreach'  },
     { key: 'sequences', label: '📋 Sequences' },
     { key: 'prospects', label: '👥 Prospects' },
@@ -565,6 +566,10 @@ function ClientDetail({ clientId, onBack }) {
 
         {tab === 'sequences' && (
           <SequencesTab clientId={clientId} sequences={sequences} prospects={prospects || []} onRefresh={loadDashboard} />
+        )}
+
+        {tab === 'campaigns' && (
+          <ClientCampaignsTab clientId={clientId} />
         )}
 
         {tab === 'prospects' && (
@@ -980,6 +985,86 @@ function SequencesTab({ clientId, sequences, prospects, onRefresh }) {
         </div>
       )}
       {showEnroll && <EnrollSequenceModal clientId={clientId} prospects={prospects} onSave={() => { setShowEnroll(false); onRefresh(); }} onClose={() => setShowEnroll(false)} />}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CAMPAIGNS TAB (per-client) — Agency Phase 1
+//
+// Campaigns carry client_id since 2026_52_campaign_client_scoping.sql; this
+// tab lists the ones scoped to this client via GET /clients/:id/campaigns.
+// Fetched on tab open (not part of the dashboard payload) so the existing
+// dashboard endpoint stays untouched.
+// ─────────────────────────────────────────────────────────────────────────────
+function ClientCampaignsTab({ clientId }) {
+  const [campaigns, setCampaigns] = useState(null);   // null = loading
+  const [error,     setError]     = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch(`/clients/${clientId}/campaigns`)
+      .then(r => { if (!cancelled) setCampaigns(r.campaigns || []); })
+      .catch(err => { if (!cancelled) { setError(err.message); setCampaigns([]); } });
+    return () => { cancelled = true; };
+  }, [clientId]);
+
+  if (campaigns === null) {
+    return <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>Loading campaigns…</div>;
+  }
+  if (error) {
+    return <div style={{ padding: 20, color: '#dc2626', fontSize: 13 }}>⚠️ {error}</div>;
+  }
+  if (!campaigns.length) {
+    return (
+      <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af', fontSize: 13, lineHeight: 1.7 }}>
+        No campaigns for this client yet.<br />
+        Create one in <strong style={{ color: '#6b7280' }}>Prospecting → Campaigns</strong> and pick this
+        client in the campaign form — prospects added to it (including Chrome-extension captures)
+        are tagged to this client automatically.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+        <thead>
+          <tr style={{ background: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
+            {['Campaign','Status','Sequence','Owner','Prospects','Active','Qualified'].map(h => (
+              <th key={h} style={{ padding: '9px 14px', textAlign: 'left', fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.5 }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {campaigns.map(c => {
+            const owner = [c.owner_first_name, c.owner_last_name].filter(Boolean).join(' ');
+            const st = STATUS_CFG[c.status] || null;
+            return (
+              <tr key={c.id} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                <td style={{ padding: '10px 14px', fontWeight: 600, color: '#111827' }}>
+                  {c.name}
+                  {c.solution && <div style={{ fontSize: 11, fontWeight: 400, color: '#9ca3af' }}>{c.solution}</div>}
+                </td>
+                <td style={{ padding: '10px 14px' }}>
+                  {st ? (
+                    <span style={{ padding: '2px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600, ...st }}>{st.label}</span>
+                  ) : (
+                    <span style={{ fontSize: 12, color: '#6b7280', textTransform: 'capitalize' }}>{c.status}</span>
+                  )}
+                </td>
+                <td style={{ padding: '10px 14px', color: '#374151' }}>{c.default_sequence_name || '—'}</td>
+                <td style={{ padding: '10px 14px', color: '#6b7280' }}>{owner || '—'}</td>
+                <td style={{ padding: '10px 14px', color: '#374151' }}>{c.prospect_count}</td>
+                <td style={{ padding: '10px 14px', color: '#3b82f6' }}>{c.active_count}</td>
+                <td style={{ padding: '10px 14px', color: '#059669', fontWeight: 600 }}>
+                  {c.goal_qualified ? `${c.qualified_count}/${c.goal_qualified}` : c.qualified_count}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

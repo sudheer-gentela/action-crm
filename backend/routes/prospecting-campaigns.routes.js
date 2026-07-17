@@ -96,11 +96,13 @@ async function loadCampaign(orgId, id) {
             pb.name AS playbook_name,
             sq.name AS default_sequence_name,
             u.first_name AS owner_first_name,
-            u.last_name  AS owner_last_name
+            u.last_name  AS owner_last_name,
+            cl.name AS client_name
        FROM prospecting_campaigns c
        LEFT JOIN playbooks  pb ON pb.id = c.playbook_id
        LEFT JOIN sequences  sq ON sq.id = c.default_sequence_id
        LEFT JOIN users      u  ON u.id  = c.owner_id
+       LEFT JOIN clients    cl ON cl.id = c.client_id
       WHERE c.id = $1 AND c.org_id = $2`,
     [id, orgId]
   );
@@ -600,6 +602,7 @@ router.get('/', async (req, res) => {
               sq.name AS default_sequence_name,
               u.first_name AS owner_first_name,
               u.last_name  AS owner_last_name,
+              cl.name AS client_name,
               COUNT(p.id) FILTER (WHERE p.deleted_at IS NULL)                                    AS prospect_count,
               COUNT(p.id) FILTER (WHERE p.deleted_at IS NULL AND p.stage = 'qualified_sal')       AS qualified_count,
               COUNT(p.id) FILTER (WHERE p.deleted_at IS NULL AND p.stage NOT IN
@@ -623,9 +626,10 @@ router.get('/', async (req, res) => {
          LEFT JOIN playbooks pb ON pb.id = c.playbook_id
          LEFT JOIN sequences sq ON sq.id = c.default_sequence_id
          LEFT JOIN users     u  ON u.id  = c.owner_id
+         LEFT JOIN clients   cl ON cl.id = c.client_id
          LEFT JOIN prospects p  ON p.campaign_id = c.id AND p.org_id = c.org_id
         WHERE c.org_id = $1 ${statusFilter} ${ownerFilter}
-     GROUP BY c.id, pb.name, sq.name, u.first_name, u.last_name
+     GROUP BY c.id, pb.name, sq.name, u.first_name, u.last_name, cl.name
      ORDER BY c.created_at DESC`,
       params
     );
@@ -696,6 +700,10 @@ router.post('/', async (req, res) => {
     // (template semantics — no live link to the profile).
     target_profile_id: bodyProfileId,
     targeting: bodyTargeting,
+    // Agency Phase 1 (2026_52): a campaign may run for one agency client.
+    // Accept both naming styles, same as the schedule fields below.
+    client_id: bodyClientIdSnake,
+    clientId:  bodyClientIdCamel,
   } = req.body;
 
   if (!name || !name.trim()) {
@@ -765,6 +773,27 @@ router.post('/', async (req, res) => {
       }
     }
 
+    // Agency Phase 1 (2026_52): validate client belongs to this org and is
+    // not archived. NULL/absent → ordinary (non-client) campaign, unchanged.
+    let resolvedClientId = null;
+    {
+      const rawClientId = bodyClientIdSnake ?? bodyClientIdCamel;
+      if (rawClientId !== undefined && rawClientId !== null && rawClientId !== '') {
+        const cid = parseInt(rawClientId, 10);
+        if (!Number.isFinite(cid)) {
+          return res.status(400).json({ error: { message: 'client_id must be a valid client id' } });
+        }
+        const cl = await pool.query(
+          `SELECT id FROM clients WHERE id = $1 AND org_id = $2 AND archived_at IS NULL`,
+          [cid, req.orgId]
+        );
+        if (!cl.rows.length) {
+          return res.status(400).json({ error: { message: 'Client not found in this org (or archived)' } });
+        }
+        resolvedClientId = cid;
+      }
+    }
+
     // Validate share_weight (0..100) if provided.
     let shareWeightVal = null;
     if (bodyShareWeight !== undefined && bodyShareWeight !== null && bodyShareWeight !== '') {
@@ -817,8 +846,8 @@ router.post('/', async (req, res) => {
               daily_activation_cap, send_window_start_hour, send_window_end_hour,
               send_window_days, send_window_timezone,
               send_window_start_minute, start_mode, pacing_mode, cadence_minutes,
-              share_weight, sender_account_ids, prospecting_config_override)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+              share_weight, sender_account_ids, prospecting_config_override, client_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
        RETURNING *`,
       [
         req.orgId, name.trim(), description || null, solution || null,
@@ -840,6 +869,7 @@ router.post('/', async (req, res) => {
         shareWeightVal,
         senderSel.ids,      // sender_account_ids — NULL = all senders
         configOverride ? JSON.stringify(configOverride) : null,
+        resolvedClientId,   // client_id — Agency Phase 1; NULL = ordinary campaign
       ]
     );
 
@@ -2290,6 +2320,31 @@ router.put('/:id', async (req, res) => {
     }
     const senderIdsUpd = senderSel.provided ? senderSel.ids : existing.sender_account_ids;
 
+    // ── Agency Phase 1 (2026_52): client_id — 3-way semantics like the
+    // schedule fields: absent → keep existing; present null/'' → clear;
+    // present value → validate (org + not archived) and set.
+    const incomingClientId = has('client_id') || has('clientId');
+    let clientIdUpd = existing.client_id;
+    if (incomingClientId) {
+      const rawClientId = req.body.client_id ?? req.body.clientId;
+      if (rawClientId === null || rawClientId === '' || rawClientId === undefined) {
+        clientIdUpd = null;   // explicit clear → ordinary campaign again
+      } else {
+        const cid = parseInt(rawClientId, 10);
+        if (!Number.isFinite(cid)) {
+          return res.status(400).json({ error: { message: 'client_id must be a valid client id' } });
+        }
+        const cl = await pool.query(
+          `SELECT id FROM clients WHERE id = $1 AND org_id = $2 AND archived_at IS NULL`,
+          [cid, req.orgId]
+        );
+        if (!cl.rows.length) {
+          return res.status(400).json({ error: { message: 'Client not found in this org (or archived)' } });
+        }
+        clientIdUpd = cid;
+      }
+    }
+
     // Build a COALESCE-style partial update: only provided fields change.
     const { rows } = await pool.query(
       `UPDATE prospecting_campaigns SET
@@ -2314,7 +2369,8 @@ router.put('/:id', async (req, res) => {
          pacing_mode            = $20,
          cadence_minutes        = $21,
          share_weight           = $22,
-         sender_account_ids     = $23
+         sender_account_ids     = $23,
+         client_id              = $25
        WHERE id = $1 AND org_id = $2
        RETURNING id`,
       [
@@ -2344,12 +2400,37 @@ router.put('/:id', async (req, res) => {
         shareWeightUpd,
         senderIdsUpd,       // sender_account_ids — NULL = all senders
         activity_type !== undefined ? activity_type : null,  // $24 — COALESCE keeps existing when null
+        clientIdUpd,        // $25 — client_id (Agency Phase 1); NULL = ordinary campaign
       ]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Campaign not found' } });
 
+    // ── Agency Phase 1: stamp EXISTING member prospects when this campaign
+    // carries a client. The DB trigger (2026_52) only fires on writes that
+    // touch prospects.campaign_id, so prospects already sitting in the
+    // campaign need this pass. Same rules as the trigger: set-if-null only
+    // (never reassigns a prospect that already belongs to a client), and
+    // clearing a campaign's client does NOT strip membership from prospects.
+    //
+    // Deliberately NOT gated on "client changed": the statement is idempotent
+    // (client_id IS NULL predicate), so running it on every save that carries
+    // a non-null client makes a partially-failed earlier save retryable by
+    // simply re-saving, and heals any members that entered the campaign
+    // through a path that predates the trigger.
+    let prospectsStamped = 0;
+    if (incomingClientId && clientIdUpd != null) {
+      const stampRes = await pool.query(
+        `UPDATE prospects
+            SET client_id = $1, updated_at = CURRENT_TIMESTAMP
+          WHERE campaign_id = $2 AND org_id = $3
+            AND client_id IS NULL AND deleted_at IS NULL`,
+        [clientIdUpd, req.params.id, req.orgId]
+      );
+      prospectsStamped = stampRes.rowCount;
+    }
+
     const campaign = await loadCampaign(req.orgId, req.params.id);
-    res.json({ campaign });
+    res.json({ campaign, prospectsStamped });
   } catch (err) {
     console.error('campaigns PUT /:id', err);
     res.status(500).json({ error: { message: 'Failed to update campaign' } });

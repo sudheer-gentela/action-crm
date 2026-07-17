@@ -91,6 +91,11 @@ export default function StagedCampaignModal({ onSaved, onClose }) {
   const [activityType, setActivityType] = useState('outreach');
   const [solution, setSolution] = useState('');
   const [description, setDescription] = useState('');
+  // Agency Phase 1: optional client this campaign runs for. clients=[] hides
+  // the picker entirely (non-agency orgs, or /clients unavailable), so the
+  // modal is unchanged for everyone who doesn't use the agency module.
+  const [clients, setClients] = useState([]);
+  const [clientId, setClientId] = useState('');
 
   // Step 2 — targeting
   const [profiles, setProfiles] = useState([]);
@@ -137,6 +142,12 @@ export default function StagedCampaignModal({ onSaved, onClose }) {
         const sq = await apiFetch('/sequences');
         setSequences((sq.sequences || []).filter(s => s.status === 'active'));
       } catch { setSequences([]); }
+      // Agency clients — best-effort like everything above. Empty/failed →
+      // the client picker simply doesn't render.
+      try {
+        const cl = await apiFetch('/clients');
+        setClients(cl.clients || []);
+      } catch { setClients([]); }
     })();
   }, []);
 
@@ -204,6 +215,10 @@ export default function StagedCampaignModal({ onSaved, onClose }) {
       activity_type: activityType,
       status: 'active',
     };
+    // Agency Phase 1: campaign runs for this client. Prospects added to the
+    // campaign inherit the client (DB trigger, 2026_52) — this is what routes
+    // extension captures + their outgoing email to the right client mailbox.
+    if (clientId) payload.client_id = parseInt(clientId, 10);
     // Targeting seed: profile id (server copies its criteria) + any inline block.
     if (profileId) payload.target_profile_id = parseInt(profileId, 10);
     const targeting = buildTargeting();
@@ -273,6 +288,22 @@ export default function StagedCampaignModal({ onSaved, onClose }) {
                   onChange={e => setDescription(e.target.value)}
                   rows={2}
                 />
+                {clients.length > 0 && (
+                  <>
+                    <select value={clientId} onChange={e => setClientId(e.target.value)}>
+                      <option value="">No client (internal campaign)</option>
+                      {clients.map(c => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+                    {clientId && (
+                      <p className="pv-help">
+                        Prospects added to this campaign (including Chrome-extension captures)
+                        are tagged to this client and send from the client's connected mailboxes.
+                      </p>
+                    )}
+                  </>
+                )}
               </div>
               <div className="pv-form-section">
                 <h4>Purpose</h4>

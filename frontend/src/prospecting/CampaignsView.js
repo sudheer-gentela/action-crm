@@ -557,6 +557,15 @@ function CampaignRow({ campaign: c, isLast, onClick, onConfigClick, currentUserI
           )}
         </div>
         <div style={{ fontSize: 12, color: '#6b7280' }}>
+          {c.client_name && (
+            <span style={{
+              marginRight: 10, fontWeight: 600, color: '#0F766E',
+              background: '#F0FDFA', border: '1px solid #CCFBF1',
+              borderRadius: 10, padding: '1px 8px',
+            }}>
+              🏢 {c.client_name}
+            </span>
+          )}
           {c.solution && <span style={{ marginRight: 10 }}>💡 {c.solution}</span>}
           📋 {c.playbook_name || 'No playbook'}
           {'  ·  '}
@@ -2800,6 +2809,12 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
     status:              campaign?.status || 'active',
     activity_type:       campaign?.activity_type || 'outreach',
   });
+  // Agency Phase 1: the client this campaign runs for. Initialised from the
+  // campaign so an edit that never touches the picker preserves the saved
+  // value (payload always sends client_id — see handleSubmit). clients=[]
+  // hides the picker for non-agency orgs; the initial value still round-trips.
+  const [clients, setClients]   = useState([]);
+  const [clientId, setClientId] = useState(campaign?.client_id != null ? String(campaign.client_id) : '');
   // Schedule override state. Each field is null when the campaign inherits
   // the org default, or a value when it overrides. The campaign object from
   // the backend has snake_case column names; map them in here.
@@ -2857,6 +2872,11 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
         const sd = await apiFetch('/prospecting-senders');
         setSenders((sd.senders || []).filter(s => s.isActive));
       } catch { setSenders([]); }
+      // Agency clients (Phase 1) — best-effort; empty/failed hides the picker.
+      try {
+        const cl = await apiFetch('/clients');
+        setClients(cl.clients || []);
+      } catch { setClients([]); }
       // Org defaults for the schedule section. Best-effort — if the user
       // isn't admin, the endpoint 403s and we just show "—" for defaults.
       try {
@@ -2926,6 +2946,10 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
       // Per-campaign sender selection (Phase 2). Empty array → backend stores
       // NULL = "all senders". Always sent so a cleared selection persists.
       sender_account_ids:       Array.isArray(selectedSenderIds) ? selectedSenderIds : [],
+      // Agency Phase 1: always sent (PUT treats present-null as an explicit
+      // clear). State is initialised from campaign.client_id, so an edit that
+      // never opens the picker round-trips the saved value unchanged.
+      client_id:                clientId ? parseInt(clientId, 10) : null,
     };
     try {
       if (isEdit) {
@@ -2976,6 +3000,20 @@ function CampaignFormModal({ campaign, onSaved, onClose }) {
               <option value="digital">Purpose: Digital</option>
               <option value="discovery">Purpose: Discovery</option>
             </select>
+            {(clients.length > 0 || clientId) && (
+              <select value={clientId} onChange={e => setClientId(e.target.value)}>
+                <option value="">No client (internal campaign)</option>
+                {clients.map(c => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+                {/* Saved client not in the (active) list — e.g. archived, or
+                    /clients failed to load. Keep it selectable so the payload
+                    round-trips instead of silently clearing on save. */}
+                {clientId && !clients.some(c => String(c.id) === clientId) && (
+                  <option value={clientId}>{campaign?.client_name || `Client #${clientId}`}</option>
+                )}
+              </select>
+            )}
           </div>
 
           <div className="pv-form-section">

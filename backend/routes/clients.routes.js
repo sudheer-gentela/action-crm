@@ -708,6 +708,58 @@ router.get('/all/sequences', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GET /:id/campaigns — campaigns scoped to this client (Agency Phase 1)
+//
+// Campaigns carry client_id since 2026_52_campaign_client_scoping.sql.
+// Archived campaigns are hidden by default (?status=all to include them),
+// matching GET /api/prospecting-campaigns semantics. Counts mirror the main
+// campaign list: prospect_count / qualified_count / active_count over live
+// (non-deleted) prospects tagged with the campaign.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/:id/campaigns', async (req, res) => {
+  try {
+    const client = await requireClient(req, res, req.params.id);
+    if (!client) return;
+
+    const { status } = req.query;
+    const params = [req.orgId, req.params.id];
+    let statusFilter = `AND c.status <> 'archived'`;
+    if (status && status !== 'all') {
+      params.push(status);
+      statusFilter = `AND c.status = $${params.length}`;
+    } else if (status === 'all') {
+      statusFilter = '';
+    }
+
+    const { rows } = await pool.query(
+      `SELECT c.id, c.name, c.description, c.solution, c.status, c.activity_type,
+              c.goal_qualified, c.start_date, c.end_date, c.created_at,
+              c.default_sequence_id, c.owner_id,
+              sq.name AS default_sequence_name,
+              u.first_name AS owner_first_name,
+              u.last_name  AS owner_last_name,
+              COUNT(p.id) FILTER (WHERE p.deleted_at IS NULL)::int                              AS prospect_count,
+              COUNT(p.id) FILTER (WHERE p.deleted_at IS NULL AND p.stage = 'qualified_sal')::int AS qualified_count,
+              COUNT(p.id) FILTER (WHERE p.deleted_at IS NULL AND p.stage NOT IN
+                    ('qualified_sal','disqualified','nurture'))::int                            AS active_count
+         FROM prospecting_campaigns c
+         LEFT JOIN sequences sq ON sq.id = c.default_sequence_id
+         LEFT JOIN users     u  ON u.id  = c.owner_id
+         LEFT JOIN prospects p  ON p.campaign_id = c.id AND p.org_id = c.org_id
+        WHERE c.org_id = $1 AND c.client_id = $2 ${statusFilter}
+     GROUP BY c.id, sq.name, u.first_name, u.last_name
+     ORDER BY c.created_at DESC`,
+      params
+    );
+
+    res.json({ campaigns: rows });
+  } catch (err) {
+    console.error('GET /clients/:id/campaigns', err);
+    res.status(500).json({ error: { message: 'Failed to load client campaigns' } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // GET /:id/available-members
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/:id/available-members', async (req, res) => {
