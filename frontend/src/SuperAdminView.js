@@ -523,6 +523,27 @@ function SAOrgDetail({ orgId, onClose }) {
     }
   };
 
+  const handleImpersonateUser = async (m) => {
+    const who = m.name || m.email;
+    if (!window.confirm(
+      `Enter READ-ONLY support mode as "${who}"?\n\n` +
+      `You'll see the app exactly as they do. Writes are disabled and this is logged.`
+    )) return;
+    try {
+      setError('');
+      const r = await apiService.superAdmin.impersonateUser(m.user_id);
+      // Stash the real super-admin session, then swap in the impersonated one.
+      localStorage.setItem('sa_token', localStorage.getItem('token'));
+      localStorage.setItem('sa_user',  localStorage.getItem('user'));
+      localStorage.setItem('token', r.data.token);
+      localStorage.setItem('user',  JSON.stringify(r.data.user));
+      // Full reload so the whole app re-initialises as the impersonated user.
+      window.location.reload();
+    } catch (e) {
+      setError(e.response?.data?.error?.message || 'Failed to start impersonation');
+    }
+  };
+
   const handleRemoveUser = async (userId) => {
     if (!window.confirm('Remove this user from the org?')) return;
     try {
@@ -774,6 +795,13 @@ function SAOrgDetail({ orgId, onClose }) {
                       <option value="viewer">Viewer</option>
                     </select>
                     <span className={`sa-active-dot ${m.is_active ? 'active' : 'inactive'}`} title={m.is_active ? 'Active' : 'Inactive'} />
+                    {m.is_active && (
+                      <button
+                        className="sa-btn-sm sa-btn-sm--blue"
+                        onClick={() => handleImpersonateUser(m)}
+                        title="View as this user (read-only support session)"
+                      >🔍</button>
+                    )}
                     <button className="sa-btn-sm sa-btn-sm--red" onClick={() => handleRemoveUser(m.user_id)} title="Remove">✕</button>
                   </div>
                 ))}

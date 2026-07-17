@@ -10,6 +10,7 @@ import CalendarView from './CalendarView';
 import FilesView from './FilesView';
 import SettingsView from './SettingsView';
 import SuperAdminView from './SuperAdminView';
+import ImpersonationBanner from './ImpersonationBanner';
 import OrgAdminView from './OrgAdminView';
 import ActionContextPanel from './ActionContextPanel';
 import AgentInboxView from './AgentInboxView';
@@ -240,6 +241,10 @@ const useAuth = () => {
   const logout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
+    // Clear any stashed super-admin session from an impersonation flow so it
+    // never leaks into the next login.
+    localStorage.removeItem('sa_token');
+    localStorage.removeItem('sa_user');
     sessionStorage.removeItem('activeRole');
     setUser(null);
   };
@@ -849,6 +854,7 @@ function Dashboard({ user, onLogout }) {
 
   return (
     <div className="dashboard">
+      <ImpersonationBanner />
       <Sidebar
         user={user}
         navItems={navItems}

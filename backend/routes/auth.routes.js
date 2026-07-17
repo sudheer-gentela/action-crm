@@ -330,6 +330,17 @@ router.post('/refresh', async (req, res) => {
       return res.status(401).json({ error: { message: 'Session expired. Please log in again.', code: 'TOKEN_EXPIRED' } });
     }
 
+    // Impersonation tokens are intentionally short-lived and MUST NOT be
+    // refreshed. Refreshing here would re-sign a normal 7-day token for the
+    // impersonated user, silently dropping the `imp` flag (defeating the
+    // read-only guard) and laundering a support session into a full one.
+    // The frontend keys on this code to drop back to the super-admin session.
+    if (decoded.imp === true) {
+      return res.status(401).json({
+        error: { message: 'Impersonation sessions cannot be refreshed.', code: 'IMPERSONATION_NO_REFRESH' },
+      });
+    }
+
     const userId = decoded.userId || decoded.id || decoded.sub;
     if (!userId) {
       return res.status(401).json({ error: { message: 'Invalid token', code: 'TOKEN_INVALID' } });

@@ -11,6 +11,7 @@ const express = require('express');
 const router  = express.Router();
 const bcrypt  = require('bcryptjs');
 const crypto  = require('crypto');
+const jwt     = require('jsonwebtoken');
 const { pool } = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { requireSuperAdmin, auditLog } = require('../middleware/superAdmin.middleware');
@@ -968,6 +969,133 @@ router.post('/orgs/:orgId/impersonate', async (req, res) => {
   } catch (err) {
     console.error(`POST /super/orgs/${req.params.orgId}/impersonate error:`, err);
     res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// USER-LEVEL IMPERSONATION (read-only)
+//
+// POST /api/super/users/:userId/impersonate
+//
+// Mints a SHORT-LIVED JWT that carries the target user's identity, so the whole
+// app transparently renders as that user (authenticateToken + orgContext both
+// read identity/org straight from the token). The token is stamped `imp: true`,
+// which:
+//   • flips the app into read-only mode via blockImpersonatedWrites, and
+//   • makes the session identifiable everywhere (refresh refuses to extend it).
+//
+// The token also carries impersonator_id / impersonator_email so a future,
+// narrowly-scoped write path could attribute the true actor into an audit
+// overlay without changing per-row ownership. For now writes are blocked.
+//
+// Guard rails:
+//   • target must exist and have an active org membership
+//   • cannot impersonate yourself (pointless)
+//   • cannot impersonate another super admin (privilege-safety)
+//
+// Response shape mirrors /api/auth/login so the frontend can swap it in:
+//   { token, user }
+// ─────────────────────────────────────────────────────────────────────────────
+
+const IMPERSONATION_TTL = process.env.IMPERSONATION_TTL || '30m';
+
+router.post('/users/:userId/impersonate', async (req, res) => {
+  try {
+    const targetUserId = parseInt(req.params.userId, 10);
+    if (!Number.isInteger(targetUserId)) {
+      return res.status(400).json({ error: { message: 'Invalid user id' } });
+    }
+
+    // Can't impersonate yourself.
+    if (targetUserId === req.userId) {
+      return res.status(400).json({ error: { message: 'You cannot impersonate yourself' } });
+    }
+
+    // Target must exist.
+    const userRes = await pool.query(
+      `SELECT id, email, first_name, last_name, timezone
+         FROM users WHERE id = $1`,
+      [targetUserId]
+    );
+    if (userRes.rows.length === 0) {
+      return res.status(404).json({ error: { message: 'User not found' } });
+    }
+    const target = userRes.rows[0];
+
+    // Cannot impersonate another (active) super admin.
+    const saRes = await pool.query(
+      `SELECT 1 FROM super_admins WHERE user_id = $1 AND revoked_at IS NULL`,
+      [targetUserId]
+    );
+    if (saRes.rows.length > 0) {
+      return res.status(403).json({ error: { message: 'Cannot impersonate a super admin' } });
+    }
+
+    // Resolve the target's active org context (mirrors auth.routes getOrgPayload).
+    const orgRes = await pool.query(
+      `SELECT ou.org_id, ou.role, o.name AS org_name, o.slug AS org_slug
+         FROM org_users ou
+         LEFT JOIN organizations o ON o.id = ou.org_id
+        WHERE ou.user_id = $1 AND ou.is_active = TRUE
+        ORDER BY ou.joined_at ASC
+        LIMIT 1`,
+      [targetUserId]
+    );
+    if (orgRes.rows.length === 0 || !orgRes.rows[0].org_id) {
+      return res.status(400).json({
+        error: { message: 'Target user has no active organisation context to impersonate' },
+      });
+    }
+    const org = orgRes.rows[0];
+
+    // Mint the short-lived impersonation token.
+    const token = jwt.sign(
+      {
+        userId:             target.id,          // identity the whole app renders as
+        email:              target.email,
+        org_id:             org.org_id,
+        role:               org.role,
+        imp:                true,               // impersonation marker (read-only + refresh-guard)
+        impersonator_id:    req.userId,         // real super admin (for audit / future write path)
+        impersonator_email: req.user?.email || null,
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: IMPERSONATION_TTL }
+    );
+
+    // Audit the start of the session.
+    await auditLog(req, 'impersonate_user', 'user', target.id, {
+      org_id:   org.org_id,
+      ttl:      IMPERSONATION_TTL,
+      readonly: true,
+    });
+
+    return res.json({
+      token,
+      user: {
+        id:             target.id,
+        email:          target.email,
+        firstName:      target.first_name,
+        lastName:       target.last_name,
+        role:           org.role,
+        timezone:       target.timezone,
+        org_id:         org.org_id,
+        org_role:       org.role,
+        org_name:       org.org_name,
+        org_slug:       org.org_slug,
+        is_super_admin: false,               // the impersonated user is NOT a super admin
+        impersonation: {
+          active:             true,
+          readonly:           true,
+          impersonator_id:    req.userId,
+          impersonator_email: req.user?.email || null,
+          expires_in:         IMPERSONATION_TTL,
+        },
+      },
+    });
+  } catch (err) {
+    console.error(`POST /super/users/${req.params.userId}/impersonate error:`, err);
+    return res.status(500).json({ error: { message: err.message } });
   }
 });
 

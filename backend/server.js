@@ -160,6 +160,12 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
+// ── Impersonation read-only guard ─────────────────────────────────────────────
+// Must run AFTER body parsing and BEFORE any /api route mount. Blocks all
+// state-changing requests when the caller presents an impersonation token
+// (imp:true). Reads and /api/auth/* pass through. See middleware for rationale.
+app.use(require('./middleware/impersonation.middleware').blockImpersonatedWrites);
+
 if (process.env.NODE_ENV === 'development') app.use(morgan('dev'));
 
 
