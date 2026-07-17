@@ -924,8 +924,14 @@ const SequenceStepFirer = {
                 p.campaign_id AS prospect_campaign_id,
                 pc.stop_on_reply AS camp_stop_on_reply,
                 p.channel_data->'linkedin'->>'connection_status' AS li_connection_status,
-                p.channel_data->'linkedin'->>'connected_at'      AS li_connected_at,
-                se.current_step_channel AS current_step_channel
+                p.channel_data->'linkedin'->>'connected_at'      AS li_connected_at
+                -- NOTE: current_step_channel is intentionally NOT re-selected here.
+                -- It is a real column on sequence_enrollments, so se.* above already
+                -- provides it. Selecting it a second time made the due CTE expose
+                -- two identically-named columns, and the later PARTITION BY
+                -- due.current_step_channel then failed with "column reference
+                -- current_step_channel is ambiguous", throwing the entire
+                -- fireDueSteps query on every tick.
            FROM sequence_enrollments se
            JOIN sequences  s ON s.id = se.sequence_id
            JOIN prospects  p ON p.id = se.prospect_id
