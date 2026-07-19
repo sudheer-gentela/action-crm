@@ -16,6 +16,9 @@
  * POST   /:id/team                  assign team member
  * DELETE /:id/team/:userId          remove team member
  *
+ * GET    /:id/escalation-overrides  per-client SLA overrides + org policy + effective (Phase 5)
+ * PUT    /:id/escalation-overrides  set/clear per-client tier thresholds (Phase 5)
+ *
  * POST   /:id/prospects/assign      bulk-assign prospects to client
  * POST   /:id/accounts/assign       bulk-assign accounts to client
  *
@@ -45,6 +48,7 @@ const { pool }          = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext }    = require('../middleware/orgContext.middleware');
 const requireModule     = require('../middleware/requireModule.middleware');
+const ProspectingEscalationService = require('../services/prospectingEscalation.service');
 
 // Google + Outlook OAuth helpers (reuse existing services)
 const { getAuthUrl: getGoogleAuthUrl }  = require('../services/googleService');
@@ -300,6 +304,63 @@ router.delete('/:id/team/:userId', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: { message: 'Failed to remove team member' } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ESCALATION SLA OVERRIDES (Agency Phase 5, 2026_54)
+//
+// Per-client tier thresholds that override the org escalation policy. Only the
+// tier hours are overridable; everything else stays org-level. The merge order
+// is client → org → SYSTEM_DEFAULTS, resolved in ProspectingEscalationService.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GET /:id/escalation-overrides — the client's raw override (or null), the org
+// policy it sits on top of, the merged effective policy, and system defaults.
+router.get('/:id/escalation-overrides', async (req, res) => {
+  const client = await requireClient(req, res, req.params.id);
+  if (!client) return;
+  try {
+    const [overrides, orgPolicy, effective] = await Promise.all([
+      ProspectingEscalationService.getClientOverrides(req.orgId, req.params.id),
+      ProspectingEscalationService.getForOrg(req.orgId),
+      ProspectingEscalationService.getEffectiveForClient(req.orgId, req.params.id),
+    ]);
+    res.json({
+      overrides,
+      orgPolicy,
+      effective,
+      defaults: ProspectingEscalationService.SYSTEM_DEFAULTS,
+    });
+  } catch (err) {
+    console.error('GET /clients/:id/escalation-overrides', err);
+    res.status(500).json({ error: { message: 'Failed to load escalation overrides' } });
+  }
+});
+
+// PUT /:id/escalation-overrides — set or clear the per-client tier thresholds.
+// Body: { overrides: { tier1_hours, tier2_hours, tier3_hours } } — any subset;
+// send { overrides: null } (or {}) to clear and revert to the org policy.
+// Validation (in the service) rejects unknown keys, out-of-range hours, and any
+// override that would make the EFFECTIVE (merged) tiers non-monotonic.
+router.put('/:id/escalation-overrides', async (req, res) => {
+  const client = await requireClient(req, res, req.params.id);
+  if (!client) return;
+  try {
+    const patch = req.body?.overrides !== undefined ? req.body.overrides : req.body;
+    const saved = await ProspectingEscalationService.setClientOverrides(
+      req.orgId, req.params.id, patch
+    );
+    res.json(saved);   // { overrides, effective }
+  } catch (err) {
+    if (err.code === 'INVALID_POLICY') {
+      return res.status(400).json({ error: { message: err.message, code: err.code } });
+    }
+    if (err.status === 404) {
+      return res.status(404).json({ error: { message: 'Client not found' } });
+    }
+    console.error('PUT /clients/:id/escalation-overrides', err);
+    res.status(500).json({ error: { message: 'Failed to save escalation overrides' } });
   }
 });
 

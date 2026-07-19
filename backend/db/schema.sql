@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 18dvw7erS7qKs4nMZvAbggjEHMGUjhhwOXGUupdg6KmuUegXuEIEkJ8TwInp6of
+\restrict cNaqlcmJxMhH9KlhXmtqP36jnx8K5zTT48lYIODSBBkjBfRK1yHQTG9rb6AWeIG
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -93,6 +93,35 @@ CREATE FUNCTION public.trg_linkedin_profiles_set_updated_at() RETURNS trigger
     AS $$
 BEGIN
   NEW.updated_at = CURRENT_TIMESTAMP;
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: trg_prospects_inherit_campaign_client(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.trg_prospects_inherit_campaign_client() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  v_client_id integer;
+BEGIN
+  -- Only act when the prospect is being placed into a campaign and does not
+  -- already belong to a client. Set-if-null; never overwrite; never clear.
+  IF NEW.campaign_id IS NOT NULL AND NEW.client_id IS NULL THEN
+    SELECT client_id
+      INTO v_client_id
+      FROM prospecting_campaigns
+     WHERE id     = NEW.campaign_id
+       AND org_id = NEW.org_id;          -- org-checked: no cross-org leak
+
+    IF v_client_id IS NOT NULL THEN
+      NEW.client_id := v_client_id;
+    END IF;
+  END IF;
+
   RETURN NEW;
 END;
 $$;
@@ -1247,8 +1276,16 @@ CREATE TABLE public.clients (
     created_by integer,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    archived_at timestamp with time zone
+    archived_at timestamp with time zone,
+    require_client_sender boolean DEFAULT false NOT NULL
 );
+
+
+--
+-- Name: COLUMN clients.require_client_sender; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.clients.require_client_sender IS 'Agency Phase 3 (2026_53): when true, email steps for this client''s prospects may ONLY use a client-owned sender (prospecting_sender_accounts.client_id = clients.id). No active client sender ΓåÆ auto-send fails the step visibly (failAndPause) and manual draft-send is blocked, instead of falling back to the rep''s personal mailbox. Default false = legacy fallback behaviour.';
 
 
 --
@@ -4922,6 +4959,8 @@ CREATE TABLE public.prospecting_campaigns (
     tracking_clicks boolean DEFAULT false NOT NULL,
     activity_type character varying(20) DEFAULT 'outreach'::character varying NOT NULL,
     stop_on_reply boolean DEFAULT true NOT NULL,
+    sending_paused boolean DEFAULT false NOT NULL,
+    client_id integer,
     CONSTRAINT chk_daily_activation_cap CHECK (((daily_activation_cap IS NULL) OR (daily_activation_cap > 0))),
     CONSTRAINT chk_pc_activity_type CHECK (((activity_type)::text = ANY ((ARRAY['outreach'::character varying, 'field_event'::character varying, 'digital'::character varying, 'discovery'::character varying])::text[]))),
     CONSTRAINT chk_pc_cadence_minutes CHECK (((cadence_minutes IS NULL) OR ((cadence_minutes >= 1) AND (cadence_minutes <= 240)))),
@@ -4954,6 +4993,20 @@ COMMENT ON COLUMN public.prospecting_campaigns.activity_type IS 'Campaign purpos
 --
 
 COMMENT ON COLUMN public.prospecting_campaigns.stop_on_reply IS 'When true (default), an inbound reply (email or LinkedIn) stops active sequence enrollments for prospects in this campaign. Opt-out per campaign.';
+
+
+--
+-- Name: COLUMN prospecting_campaigns.sending_paused; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.prospecting_campaigns.sending_paused IS 'Operational brake. When true, SequenceStepFirer neither fires due steps nor materializes new scheduled rows for enrollments in this campaign; enrollment status is untouched so clearing the flag resumes immediately. Independent of the lifecycle status column.';
+
+
+--
+-- Name: COLUMN prospecting_campaigns.client_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.prospecting_campaigns.client_id IS 'Agency module: the client this campaign runs for. NULL = ordinary campaign. Prospects placed into a client campaign inherit client_id (set-if-null) via trg_prospects_inherit_campaign_client ΓÇö see 2026_52_campaign_client_scoping.sql.';
 
 
 --
@@ -5941,6 +5994,13 @@ CREATE TABLE public.sequences (
     CONSTRAINT chk_seq_ab_max_varied CHECK (((ab_max_varied_steps IS NULL) OR ((ab_max_varied_steps >= 1) AND (ab_max_varied_steps <= 10)))),
     CONSTRAINT sequences_visibility_chk CHECK ((visibility = ANY (ARRAY['shared'::text, 'private'::text])))
 );
+
+
+--
+-- Name: COLUMN sequences.client_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sequences.client_id IS 'RESERVED ΓÇö not read or written by any code path as of 2026_53. Per-client sequence attribution is DERIVED via enrollments ΓåÆ prospects.client_id (see GET /clients/all/sequences). Kept for a possible future client-private sequence-template feature; do not assume it is populated.';
 
 
 --
@@ -10073,6 +10133,13 @@ CREATE INDEX idx_calls_user ON public.calls USING btree (user_id, occurred_at DE
 
 
 --
+-- Name: idx_campaigns_client_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_campaigns_client_id ON public.prospecting_campaigns USING btree (client_id) WHERE (client_id IS NOT NULL);
+
+
+--
 -- Name: idx_campaigns_with_config_override; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -13132,6 +13199,13 @@ CREATE TRIGGER trg_prospecting_campaigns_updated_at BEFORE UPDATE ON public.pros
 
 
 --
+-- Name: prospects trg_prospects_inherit_campaign_client; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_prospects_inherit_campaign_client BEFORE INSERT OR UPDATE OF campaign_id ON public.prospects FOR EACH ROW EXECUTE FUNCTION public.trg_prospects_inherit_campaign_client();
+
+
+--
 -- Name: signal_defs trg_signal_defs_updated_at; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -15503,6 +15577,14 @@ ALTER TABLE ONLY public.prospecting_activities
 
 
 --
+-- Name: prospecting_campaigns prospecting_campaigns_client_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.prospecting_campaigns
+    ADD CONSTRAINT prospecting_campaigns_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.clients(id) ON DELETE SET NULL;
+
+
+--
 -- Name: prospecting_campaigns prospecting_campaigns_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -16623,5 +16705,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 18dvw7erS7qKs4nMZvAbggjEHMGUjhhwOXGUupdg6KmuUegXuEIEkJ8TwInp6of
+\unrestrict cNaqlcmJxMhH9KlhXmtqP36jnx8K5zTT48lYIODSBBkjBfRK1yHQTG9rb6AWeIG
 

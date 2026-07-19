@@ -555,6 +555,22 @@ async function markNotificationsRead(userId, notificationIds) {
 
 const ProspectingEscalationService = require('./prospectingEscalation.service');
 
+// ── Agency Phase 5 client-name text helpers ──────────────────────────────────
+// Appended to notification titles when the underlying action's prospect belongs
+// to an agency client. Both return '' for a null/blank client name, so alerts
+// for non-agency prospects (and every action in a non-agency org) render
+// BYTE-IDENTICALLY to the pre-Phase-5 output.
+function _clientTitleSuffix(clientName) {
+  const name = (clientName || '').trim();
+  return name ? ` · ${name}` : '';
+}
+// Group label for the digest's per-client sections. Prospects with no client
+// fall into the "No client" bucket (matches the reporting rollup convention).
+function _clientGroupLabel(clientName) {
+  const name = (clientName || '').trim();
+  return name || 'No client';
+}
+
 // ── Find prospecting actions eligible for an IMMEDIATE alert ─────────────────
 // Past due by more than the org's immediate_hours threshold AND not yet
 // notified. User-level toggle is `prospecting_immediate_alert` in
@@ -578,6 +594,8 @@ async function findProspectingActionsForImmediateNotification(orgId, policy) {
       p.first_name    AS prospect_first_name,
       p.last_name     AS prospect_last_name,
       p.company_name  AS prospect_company,
+      p.client_id,
+      c.name          AS client_name,
       u.first_name,
       u.last_name,
       u.email,
@@ -585,6 +603,7 @@ async function findProspectingActionsForImmediateNotification(orgId, policy) {
     FROM prospecting_actions pa
     JOIN prospects p ON p.id = pa.prospect_id
     JOIN users     u ON u.id = pa.user_id
+    LEFT JOIN clients c ON c.id = p.client_id
     LEFT JOIN user_preferences up
            ON up.user_id = pa.user_id AND up.org_id = pa.org_id
     WHERE pa.org_id              = $1
@@ -618,6 +637,8 @@ async function findProspectingActionsForDailyDigest(orgId, policy) {
       p.first_name    AS prospect_first_name,
       p.last_name     AS prospect_last_name,
       p.company_name  AS prospect_company,
+      p.client_id,
+      c.name          AS client_name,
       u.first_name,
       u.last_name,
       u.email,
@@ -625,6 +646,7 @@ async function findProspectingActionsForDailyDigest(orgId, policy) {
     FROM prospecting_actions pa
     JOIN prospects p ON p.id = pa.prospect_id
     JOIN users     u ON u.id = pa.user_id
+    LEFT JOIN clients c ON c.id = p.client_id
     LEFT JOIN user_preferences up
            ON up.user_id = pa.user_id AND up.org_id = pa.org_id
     WHERE pa.org_id   = $1
@@ -648,41 +670,65 @@ async function findProspectingActionsForDailyDigest(orgId, policy) {
 // the highest-eligible tier for each row in one pass, rather than running
 // three separate queries — this is what the CASE expression in the SELECT
 // does.
+//
+// Agency Phase 5: tier thresholds are resolved PER CLIENT. A client may
+// override tier{1,2,3}_hours via clients.escalation_overrides (2026_54); the
+// `eligible` CTE COALESCEs each override over the org policy value ($2/$3/$4),
+// so different clients in the same org climb the ladder at their own pace in
+// ONE query. A prospect with no client (client_id NULL) LEFT-JOINs to no
+// client row → every COALESCE falls through to the org value → BYTE-IDENTICAL
+// to the pre-Phase-5 scan for non-agency orgs and client-less prospects.
+// client_id / client_name ride along for the notification text + the
+// recipient resolver (client-lead loop-in).
 async function findProspectingActionsForEscalation(orgId, policy) {
   if (!policy.enabled) return [];
 
   const { rows } = await pool.query(`
+    WITH eligible AS (
+      SELECT
+        pa.id              AS action_id,
+        pa.title           AS action_title,
+        pa.due_date,
+        pa.escalation_tier AS current_tier,
+        pa.user_id,
+        pa.org_id,
+        pa.prospect_id,
+        p.first_name    AS prospect_first_name,
+        p.last_name     AS prospect_last_name,
+        p.company_name  AS prospect_company,
+        p.client_id,
+        cl.name         AS client_name,
+        u.first_name,
+        u.last_name,
+        COALESCE((cl.escalation_overrides->>'tier1_hours')::int, $2::int) AS t1,
+        COALESCE((cl.escalation_overrides->>'tier2_hours')::int, $3::int) AS t2,
+        COALESCE((cl.escalation_overrides->>'tier3_hours')::int, $4::int) AS t3
+      FROM prospecting_actions pa
+      JOIN prospects p ON p.id = pa.prospect_id
+      JOIN users     u ON u.id = pa.user_id
+      LEFT JOIN clients cl ON cl.id = p.client_id
+      WHERE pa.org_id   = $1
+        AND pa.status   = 'pending'
+        AND pa.due_date IS NOT NULL
+        AND pa.escalation_tier < 3
+    )
     SELECT
-      pa.id           AS action_id,
-      pa.title        AS action_title,
-      pa.due_date,
-      pa.escalation_tier AS current_tier,
-      pa.user_id,
-      pa.org_id,
-      pa.prospect_id,
-      p.first_name    AS prospect_first_name,
-      p.last_name     AS prospect_last_name,
-      p.company_name  AS prospect_company,
-      u.first_name,
-      u.last_name,
+      action_id, action_title, due_date, current_tier,
+      user_id, org_id, prospect_id,
+      prospect_first_name, prospect_last_name, prospect_company,
+      client_id, client_name, first_name, last_name,
       CASE
-        WHEN pa.due_date < NOW() - ($4::int * INTERVAL '1 hour')
-             AND pa.escalation_tier < 3 THEN 3
-        WHEN pa.due_date < NOW() - ($3::int * INTERVAL '1 hour')
-             AND pa.escalation_tier < 2 THEN 2
-        WHEN pa.due_date < NOW() - ($2::int * INTERVAL '1 hour')
-             AND pa.escalation_tier < 1 THEN 1
+        WHEN due_date < NOW() - (t3 * INTERVAL '1 hour')
+             AND current_tier < 3 THEN 3
+        WHEN due_date < NOW() - (t2 * INTERVAL '1 hour')
+             AND current_tier < 2 THEN 2
+        WHEN due_date < NOW() - (t1 * INTERVAL '1 hour')
+             AND current_tier < 1 THEN 1
         ELSE 0
       END AS target_tier
-    FROM prospecting_actions pa
-    JOIN prospects p ON p.id = pa.prospect_id
-    JOIN users     u ON u.id = pa.user_id
-    WHERE pa.org_id   = $1
-      AND pa.status   = 'pending'
-      AND pa.due_date IS NOT NULL
-      AND pa.escalation_tier < 3
-      AND pa.due_date < NOW() - ($2::int * INTERVAL '1 hour')
-    ORDER BY pa.due_date ASC
+    FROM eligible
+    WHERE due_date < NOW() - (t1 * INTERVAL '1 hour')
+    ORDER BY due_date ASC
   `, [orgId, policy.tier1_hours, policy.tier2_hours, policy.tier3_hours]);
 
   // Drop rows where target_tier = 0 (would happen if a row's tier already
@@ -718,11 +764,14 @@ async function processProspectingImmediateNotification(orgId, actionId) {
            p.first_name   AS prospect_first_name,
            p.last_name    AS prospect_last_name,
            p.company_name AS prospect_company,
+           p.client_id    AS client_id,
+           cl.name        AS client_name,
            u.first_name,
            u.last_name
     FROM prospecting_actions pa
     JOIN prospects p ON p.id = pa.prospect_id
     JOIN users     u ON u.id = pa.user_id
+    LEFT JOIN clients cl ON cl.id = p.client_id
     WHERE pa.id = $1 AND pa.org_id = $2
   `, [actionId, orgId]);
 
@@ -738,16 +787,21 @@ async function processProspectingImmediateNotification(orgId, actionId) {
   const overdueHours  = Math.round((Date.now() - new Date(action.due_date).getTime()) / 3600000);
   const dueStr        = new Date(action.due_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
   const prospectCtx   = prospectName ? ` for ${prospectName}` : '';
+  // Agency Phase 5: append the client name when the prospect belongs to one.
+  // Empty string for non-client prospects → title is byte-identical to before.
+  const clientCtx     = _clientTitleSuffix(action.client_name);
 
   await createNotification(
     orgId, action.user_id,
     'prospecting_immediate',
-    `Overdue prospecting action: ${action.title}${prospectCtx}`,
+    `Overdue prospecting action: ${action.title}${prospectCtx}${clientCtx}`,
     `This action was due on ${dueStr} (${overdueHours}h ago) and hasn't been completed.`,
     'prospecting_action', action.id,
     {
       action_user_id: action.user_id,
       prospect_id:    action.prospect_id,
+      client_id:      action.client_id || null,
+      client_name:    action.client_name || null,
       overdue_hours:  overdueHours,
       channel:        action.channel,
     }
@@ -768,17 +822,52 @@ async function processProspectingImmediateNotification(orgId, actionId) {
 async function processProspectingDailyDigest(orgId, userId, overdueActions) {
   if (!overdueActions.length) return { skipped: true, reason: 'no_overdue' };
 
-  const ownerName = `${overdueActions[0].first_name} ${overdueActions[0].last_name}`;
-  const count     = overdueActions.length;
+  const count = overdueActions.length;
 
-  const preview = overdueActions
-    .slice(0, 5)
-    .map(a => {
-      const who = `${a.prospect_first_name || ''} ${a.prospect_last_name || ''}`.trim() || 'prospect';
-      return `• ${a.action_title} — ${who}${a.prospect_company ? ` (${a.prospect_company})` : ''} (due ${new Date(a.due_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })})`;
-    })
-    .join('\n');
-  const moreCount = count > 5 ? `\n…and ${count - 5} more` : '';
+  // Format one overdue line, identical wording in both the flat and grouped
+  // layouts so nothing shifts for existing readers.
+  const fmtLine = (a) => {
+    const who = `${a.prospect_first_name || ''} ${a.prospect_last_name || ''}`.trim() || 'prospect';
+    const when = new Date(a.due_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    return `• ${a.action_title} — ${who}${a.prospect_company ? ` (${a.prospect_company})` : ''} (due ${when})`;
+  };
+
+  // Agency Phase 5: if ANY overdue action belongs to a client, render the
+  // digest grouped client-by-client (with a "No client" bucket). If NONE do —
+  // i.e. a non-agency org, or an agency org whose overdue items are all
+  // client-less — fall back to the ORIGINAL flat top-5 preview, byte-for-byte,
+  // so nothing changes for those orgs.
+  const hasClient = overdueActions.some(a => a.client_id != null);
+
+  let body;
+  if (!hasClient) {
+    const preview = overdueActions.slice(0, 5).map(fmtLine).join('\n');
+    const moreCount = count > 5 ? `\n…and ${count - 5} more` : '';
+    body = `${preview}${moreCount}`;
+  } else {
+    // Bucket by client_id. Named clients first (alphabetical), "No client"
+    // last — matches the reporting rollup's ORDER BY (client_id IS NULL) ASC.
+    const groups = new Map();  // key: client_id ?? '__none__' → { label, items }
+    for (const a of overdueActions) {
+      const key = a.client_id != null ? `c${a.client_id}` : '__none__';
+      if (!groups.has(key)) {
+        groups.set(key, { label: _clientGroupLabel(a.client_name), isNone: a.client_id == null, items: [] });
+      }
+      groups.get(key).items.push(a);
+    }
+    const ordered = [...groups.values()].sort((x, y) => {
+      if (x.isNone !== y.isNone) return x.isNone ? 1 : -1;   // "No client" last
+      return x.label.localeCompare(y.label);
+    });
+
+    const PER_GROUP = 4;   // cap lines per client so the digest stays scannable
+    const sections = ordered.map(g => {
+      const shown = g.items.slice(0, PER_GROUP).map(fmtLine).join('\n');
+      const more  = g.items.length > PER_GROUP ? `\n…and ${g.items.length - PER_GROUP} more` : '';
+      return `${g.label} (${g.items.length})\n${shown}${more}`;
+    });
+    body = sections.join('\n\n');
+  }
 
   // Digest only goes to the rep. Manager-level digest is a separate concern
   // we'd add later; today's design is: rep sees digest, manager sees
@@ -787,12 +876,14 @@ async function processProspectingDailyDigest(orgId, userId, overdueActions) {
     orgId, userId,
     'prospecting_digest',
     `You have ${count} overdue prospecting action${count > 1 ? 's' : ''}`,
-    `${preview}${moreCount}`,
+    body,
     'prospecting_action', null,
     {
       action_user_id: userId,
       action_ids:     overdueActions.map(a => a.action_id),
       count,
+      // Per-client counts for downstream consumers (best-effort, cheap to add).
+      client_ids:     [...new Set(overdueActions.map(a => a.client_id).filter(v => v != null))],
     }
   );
 
@@ -815,11 +906,14 @@ async function processProspectingEscalation(orgId, actionId, targetTier) {
            p.first_name   AS prospect_first_name,
            p.last_name    AS prospect_last_name,
            p.company_name AS prospect_company,
+           p.client_id    AS client_id,
+           cl.name        AS client_name,
            u.first_name,
            u.last_name
     FROM prospecting_actions pa
     JOIN prospects p ON p.id = pa.prospect_id
     JOIN users     u ON u.id = pa.user_id
+    LEFT JOIN clients cl ON cl.id = p.client_id
     WHERE pa.id = $1 AND pa.org_id = $2
   `, [actionId, orgId]);
 
@@ -827,8 +921,11 @@ async function processProspectingEscalation(orgId, actionId, targetTier) {
   if (action.status !== 'pending') return { skipped: true, reason: 'not_pending' };
   if (action.escalation_tier >= targetTier) return { skipped: true, reason: 'already_at_tier' };
 
+  // Agency Phase 5: pass the action's client_id so the resolver additively
+  // loops in the client team lead(s) from tier 2. Null for non-agency
+  // prospects → recipient set is identical to the pre-Phase-5 ladder.
   const recipients = await ProspectingEscalationService.resolveEscalationRecipients(
-    orgId, action.user_id, targetTier
+    orgId, action.user_id, targetTier, action.client_id || null
   );
 
   const ownerName     = `${action.first_name} ${action.last_name}`;
@@ -836,6 +933,7 @@ async function processProspectingEscalation(orgId, actionId, targetTier) {
   const overdueHours  = Math.round((Date.now() - new Date(action.due_date).getTime()) / 3600000);
   const dueStr        = new Date(action.due_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
   const prospectCtx   = prospectName ? ` for ${prospectName}${action.prospect_company ? ` (${action.prospect_company})` : ''}` : '';
+  const clientCtx     = _clientTitleSuffix(action.client_name);
 
   // Tier text in the notification — helps the recipient understand why
   // they're being told now rather than at the original overdue point.
@@ -847,8 +945,8 @@ async function processProspectingEscalation(orgId, actionId, targetTier) {
   for (const recipientId of recipients) {
     const isOwner = recipientId === action.user_id;
     const title = isOwner
-      ? `${tierLabel}: ${action.title}${prospectCtx}`
-      : `${tierLabel} — ${ownerName}'s action: ${action.title}${prospectCtx}`;
+      ? `${tierLabel}: ${action.title}${prospectCtx}${clientCtx}`
+      : `${tierLabel} — ${ownerName}'s action: ${action.title}${prospectCtx}${clientCtx}`;
     const body = isOwner
       ? `This action was due on ${dueStr} (${overdueHours}h ago) and hasn't been completed.`
       : `${ownerName}'s action "${action.title}" was due on ${dueStr} (${overdueHours}h ago) and is now at escalation tier ${targetTier}.`;
@@ -861,6 +959,8 @@ async function processProspectingEscalation(orgId, actionId, targetTier) {
       {
         action_user_id: action.user_id,
         prospect_id:    action.prospect_id,
+        client_id:      action.client_id || null,
+        client_name:    action.client_name || null,
         overdue_hours:  overdueHours,
         tier:           targetTier,
         channel:        action.channel,

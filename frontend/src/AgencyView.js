@@ -519,6 +519,8 @@ function ClientDetail({ clientId, onBack }) {
                 ))}
               </div>
             )}
+            {/* Agency Phase 5: per-client escalation SLA overrides. Self-hides if the endpoint 404s. */}
+            <EscalationSlaCard clientId={clientId} />
           </div>
         )}
 
@@ -624,6 +626,165 @@ function ClientDetail({ clientId, onBack }) {
           <SendersTab clientId={clientId} />
         )}
 
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ESCALATION SLA CARD (Agency Phase 5)
+//
+// Per-client override of the org escalation tier thresholds. Lazy-loads its own
+// data from GET /clients/:id/escalation-overrides and HIDES itself if that call
+// fails or 404s (module off / older backend) — same self-contained pattern as
+// SendersTab and the Phase 3 "Require client mailbox" card. Only the three tier
+// hours are editable here; the rest of the policy stays org-level.
+// ─────────────────────────────────────────────────────────────────────────────
+function EscalationSlaCard({ clientId }) {
+  const [loaded,     setLoaded]     = useState(null);   // full payload, or null → hidden
+  const [orgPolicy,  setOrgPolicy]  = useState(null);
+  const [customized, setCustomized] = useState(false);  // does an override exist?
+  const [hours,      setHours]      = useState({ tier1_hours: '', tier2_hours: '', tier3_hours: '' });
+  const [dirty,      setDirty]      = useState(false);
+  const [saving,     setSaving]     = useState(false);
+  const [error,      setError]      = useState('');
+
+  const applyEffective = (eff) => {
+    setHours({
+      tier1_hours: eff?.tier1_hours ?? '',
+      tier2_hours: eff?.tier2_hours ?? '',
+      tier3_hours: eff?.tier3_hours ?? '',
+    });
+  };
+
+  useEffect(() => {
+    apiFetch(`/clients/${clientId}/escalation-overrides`)
+      .then(r => {
+        setLoaded(r);
+        setOrgPolicy(r.orgPolicy || null);
+        setCustomized(!!r.overrides);
+        applyEffective(r.effective || r.orgPolicy || {});
+      })
+      .catch(() => setLoaded(null));   // hide on 404 / failure
+  }, [clientId]);
+
+  if (!loaded) return null;
+
+  const setTier = (key, val) => {
+    setHours(prev => ({ ...prev, [key]: val }));
+    setDirty(true);
+    setError('');
+  };
+
+  const handleSave = async () => {
+    const t1 = parseInt(hours.tier1_hours), t2 = parseInt(hours.tier2_hours), t3 = parseInt(hours.tier3_hours);
+    if ([t1, t2, t3].some(n => !Number.isInteger(n) || n < 1 || n > 720)) {
+      setError('Each tier must be a whole number of hours between 1 and 720.');
+      return;
+    }
+    if (!(t1 < t2 && t2 < t3)) {
+      setError('Tier hours must be strictly increasing: Tier 1 < Tier 2 < Tier 3.');
+      return;
+    }
+    setSaving(true); setError('');
+    try {
+      const r = await apiFetch(`/clients/${clientId}/escalation-overrides`, {
+        method: 'PUT',
+        body: JSON.stringify({ overrides: { tier1_hours: t1, tier2_hours: t2, tier3_hours: t3 } }),
+      });
+      setCustomized(!!r.overrides);
+      applyEffective(r.effective || {});
+      setDirty(false);
+    } catch (err) { setError(err.message); }
+    finally { setSaving(false); }
+  };
+
+  const handleReset = async () => {
+    setSaving(true); setError('');
+    try {
+      const r = await apiFetch(`/clients/${clientId}/escalation-overrides`, {
+        method: 'PUT',
+        body: JSON.stringify({ overrides: null }),
+      });
+      setCustomized(false);
+      applyEffective(r.effective || orgPolicy || {});
+      setDirty(false);
+    } catch (err) { setError(err.message); }
+    finally { setSaving(false); }
+  };
+
+  const tierInput = (key, label) => (
+    <div key={key} style={{ flex: 1 }}>
+      <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 5 }}>{label}</label>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <input
+          type="number" min={1} max={720}
+          value={hours[key]}
+          onChange={e => setTier(key, e.target.value)}
+          style={{ width: 76, padding: '7px 9px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, fontFamily: 'inherit', color: '#111', background: '#fff', outline: 'none' }}
+        />
+        <span style={{ fontSize: 11, color: '#9ca3af' }}>hrs</span>
+      </div>
+      {orgPolicy && (
+        <div style={{ fontSize: 10.5, color: '#9ca3af', marginTop: 3 }}>org: {orgPolicy[key]}h</div>
+      )}
+    </div>
+  );
+
+  return (
+    <div style={{
+      background: customized ? '#F0FDFA' : '#fff',
+      border: `1px solid ${customized ? '#CCFBF1' : '#e5e7eb'}`,
+      borderRadius: 12, padding: '16px 18px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 12 }}>
+        <div style={{ paddingRight: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#111827' }}>
+            Escalation SLA
+            <span style={{
+              marginLeft: 8, fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 10,
+              background: customized ? TEAL : '#f3f4f6', color: customized ? '#fff' : '#6b7280',
+            }}>
+              {customized ? 'Custom' : 'Org default'}
+            </span>
+          </div>
+          <div style={{ fontSize: 11.5, color: '#6b7280', marginTop: 3, lineHeight: 1.5 }}>
+            How fast this client's overdue actions climb the escalation tiers. Tier 2 loops in the reporting
+            manager and this client's team lead; Tier 3 adds the skip-level manager (or org admins). Leave as
+            org default unless this client needs tighter or looser timing.
+          </div>
+        </div>
+      </div>
+
+      {error && <div style={{ fontSize: 12, color: '#dc2626', marginBottom: 10 }}>⚠️ {error}</div>}
+
+      <div style={{ display: 'flex', gap: 16, marginBottom: 14 }}>
+        {tierInput('tier1_hours', 'Tier 1 — rep nudge')}
+        {tierInput('tier2_hours', 'Tier 2 — manager + lead')}
+        {tierInput('tier3_hours', 'Tier 3 — skip-level')}
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        {customized && (
+          <button
+            onClick={handleReset}
+            disabled={saving}
+            style={{ ...ghostBtn, fontSize: 12, padding: '7px 14px' }}
+          >
+            Reset to org policy
+          </button>
+        )}
+        <button
+          onClick={handleSave}
+          disabled={saving || !dirty}
+          style={{
+            padding: '7px 16px', borderRadius: 8, border: 'none', fontSize: 12, fontWeight: 600,
+            background: (saving || !dirty) ? '#9ca3af' : TEAL, color: '#fff',
+            cursor: (saving || !dirty) ? 'default' : 'pointer', fontFamily: 'inherit',
+          }}
+        >
+          {saving ? 'Saving…' : 'Save SLA'}
+        </button>
       </div>
     </div>
   );
