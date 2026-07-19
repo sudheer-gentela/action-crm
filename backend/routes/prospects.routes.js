@@ -2225,10 +2225,33 @@ router.post('/', async (req, res) => {
       // vanity-slug change updates the existing prospect's URL instead of
       // creating a duplicate. Absent (manual/email creation) → unchanged path.
       memberUrn = null,
+      // Agency Phase 2: direct client assignment at creation, independent of
+      // any campaign. Validated below (org-owned, not archived). When BOTH
+      // clientId and a client-tagged campaignId are sent, the explicit
+      // clientId wins — the 2026_52 trigger is set-if-null, so it never
+      // overrides a value that is already on the row.
+      clientId = null,
     } = req.body;
 
     if (!firstName || !lastName) {
       return res.status(400).json({ error: { message: 'firstName and lastName are required' } });
+    }
+
+    // Agency Phase 2: validate clientId up front, before any writes.
+    let resolvedClientId = null;
+    if (clientId !== null && clientId !== undefined && clientId !== '') {
+      const cid = parseInt(clientId, 10);
+      if (!Number.isFinite(cid)) {
+        return res.status(400).json({ error: { message: 'clientId must be a valid client id' } });
+      }
+      const cl = await db.query(
+        `SELECT id FROM clients WHERE id = $1 AND org_id = $2 AND archived_at IS NULL`,
+        [cid, req.orgId]
+      );
+      if (!cl.rows.length) {
+        return res.status(400).json({ error: { message: 'Client not found in this org (or archived)' } });
+      }
+      resolvedClientId = cid;
     }
 
     if (email) {
@@ -2291,11 +2314,13 @@ router.post('/', async (req, res) => {
              linkedin_headline = COALESCE(linkedin_headline, $3),
              location          = COALESCE(location, $4),
              company_name      = COALESCE(company_name, $5),
+             client_id         = COALESCE(client_id, $8),
              updated_at        = CURRENT_TIMESTAMP
            WHERE id = $6 AND org_id = $7
            RETURNING *`,
           [linkedinUrl || null, memberUrn, linkedinHeadline || null,
-           location || null, companyName || null, match.id, req.orgId]
+           location || null, companyName || null, match.id, req.orgId,
+           resolvedClientId]
         );
         const prospectRow = upd.rows[0] || match;
 
@@ -2383,11 +2408,13 @@ router.post('/', async (req, res) => {
          org_id, owner_id, created_by, first_name, last_name, email, phone, linkedin_url,
          title, linkedin_headline, location, company_name, company_domain, company_size,
          company_industry, account_id, source, playbook_id, tags, member_urn,
+         client_id,
          stage, stage_changed_at
        ) VALUES (
          $1, $2, $2, $3, $4, $5, $6, $7,
          $8, $9, $10, $11, $12, $13,
          $14, $15, $16, $17, $18, $19,
+         $20,
          'target', CURRENT_TIMESTAMP
        ) RETURNING *`,
       [
@@ -2395,6 +2422,7 @@ router.post('/', async (req, res) => {
         title, linkedinHeadline || null, location, companyName, prospectCompanyDomain, companySize,
         companyIndustry, resolvedAccountId, source || 'manual', resolvedPlaybookId,
         JSON.stringify(tags || []), memberUrn || null,
+        resolvedClientId,   // Agency Phase 2 — explicit client; trigger fills from campaign when null
       ]
     );
 

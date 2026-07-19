@@ -1000,14 +1000,15 @@ function SequencesTab({ clientId, sequences, prospects, onRefresh }) {
 function ClientCampaignsTab({ clientId }) {
   const [campaigns, setCampaigns] = useState(null);   // null = loading
   const [error,     setError]     = useState('');
+  const [showNew,   setShowNew]   = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
+  const loadCampaigns = useCallback(() => {
     apiFetch(`/clients/${clientId}/campaigns`)
-      .then(r => { if (!cancelled) setCampaigns(r.campaigns || []); })
-      .catch(err => { if (!cancelled) { setError(err.message); setCampaigns([]); } });
-    return () => { cancelled = true; };
+      .then(r => { setCampaigns(r.campaigns || []); setError(''); })
+      .catch(err => { setError(err.message); setCampaigns([]); });
   }, [clientId]);
+
+  useEffect(() => { setCampaigns(null); loadCampaigns(); }, [loadCampaigns]);
 
   if (campaigns === null) {
     return <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af' }}>Loading campaigns…</div>;
@@ -1015,19 +1016,22 @@ function ClientCampaignsTab({ clientId }) {
   if (error) {
     return <div style={{ padding: 20, color: '#dc2626', fontSize: 13 }}>⚠️ {error}</div>;
   }
-  if (!campaigns.length) {
-    return (
-      <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af', fontSize: 13, lineHeight: 1.7 }}>
-        No campaigns for this client yet.<br />
-        Create one in <strong style={{ color: '#6b7280' }}>Prospecting → Campaigns</strong> and pick this
-        client in the campaign form — prospects added to it (including Chrome-extension captures)
-        are tagged to this client automatically.
-      </div>
-    );
-  }
 
   return (
-    <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+        <button onClick={() => setShowNew(true)} style={primaryBtn(false)}>
+          + New Campaign
+        </button>
+      </div>
+      {!campaigns.length ? (
+        <div style={{ textAlign: 'center', padding: 40, color: '#9ca3af', fontSize: 13, lineHeight: 1.7 }}>
+          No campaigns for this client yet.<br />
+          Create one here — prospects added to it (including Chrome-extension captures)
+          are tagged to this client automatically and send from the client's connected mailboxes.
+        </div>
+      ) : (
+        <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
         <thead>
           <tr style={{ background: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
@@ -1065,7 +1069,102 @@ function ClientCampaignsTab({ clientId }) {
           })}
         </tbody>
       </table>
+        </div>
+      )}
+      {showNew && (
+        <NewClientCampaignModal
+          clientId={clientId}
+          onSave={() => { setShowNew(false); loadCampaigns(); }}
+          onClose={() => setShowNew(false)}
+        />
+      )}
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NEW CLIENT CAMPAIGN MODAL — Agency Phase 2
+//
+// Thin front door to the existing POST /api/prospecting-campaigns with
+// client_id pre-bound to this client — no new backend surface, so every
+// validation (client org-check, sequence org-check) and the 2026_52 trigger
+// behave identically to a campaign created from Prospecting → Campaigns.
+// Advanced options (targeting, schedule overrides, sender selection) stay in
+// the main campaign screens; this covers the common agency case.
+// ─────────────────────────────────────────────────────────────────────────────
+function NewClientCampaignModal({ clientId, onSave, onClose }) {
+  const [name,        setName]        = useState('');
+  const [solution,    setSolution]    = useState('');
+  const [description, setDescription] = useState('');
+  const [sequences,   setSequences]   = useState([]);
+  const [sequenceId,  setSequenceId]  = useState('');
+  const [goal,        setGoal]        = useState('');
+  const [saving,      setSaving]      = useState(false);
+  const [error,       setError]       = useState('');
+
+  useEffect(() => {
+    apiFetch('/sequences')
+      .then(r => setSequences((r.sequences || []).filter(s => s.status === 'active')))
+      .catch(() => setSequences([]));
+  }, []);
+
+  const handleSave = async () => {
+    if (!name.trim()) { setError('Campaign name is required'); return; }
+    setSaving(true); setError('');
+    try {
+      await apiFetch('/prospecting-campaigns', {
+        method: 'POST',
+        body: JSON.stringify({
+          name:                name.trim(),
+          solution:            solution || null,
+          description:         description || null,
+          default_sequence_id: sequenceId ? parseInt(sequenceId, 10) : null,
+          goal_qualified:      goal ? parseInt(goal, 10) : null,
+          activity_type:       'outreach',
+          status:              'active',
+          client_id:           clientId,
+        }),
+      });
+      onSave();
+    } catch (err) { setError(err.message); setSaving(false); }
+  };
+
+  return (
+    <Modal title="New Campaign for this Client" onClose={onClose}>
+      {error && <ErrorBox msg={error} />}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div>
+          <label style={labelStyle}>Campaign name *</label>
+          <input value={name} onChange={e => setName(e.target.value)} style={inputStyle} placeholder="e.g. Acme — Q3 CRO Outreach" autoFocus />
+        </div>
+        <div>
+          <label style={labelStyle}>Solution</label>
+          <input value={solution} onChange={e => setSolution(e.target.value)} style={inputStyle} placeholder="What is being sold (optional)" />
+        </div>
+        <div>
+          <label style={labelStyle}>Description</label>
+          <input value={description} onChange={e => setDescription(e.target.value)} style={inputStyle} placeholder="Optional" />
+        </div>
+        <div>
+          <label style={labelStyle}>Default sequence</label>
+          <select value={sequenceId} onChange={e => setSequenceId(e.target.value)} style={inputStyle}>
+            <option value="">— none —</option>
+            {sequences.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label style={labelStyle}>Qualified goal</label>
+          <input type="number" min="0" value={goal} onChange={e => setGoal(e.target.value)} style={inputStyle} placeholder="Optional target #" />
+        </div>
+        <div style={{ fontSize: 11, color: '#9ca3af', lineHeight: 1.6 }}>
+          Prospects added to this campaign — including Chrome-extension captures with this
+          campaign as the push default — are tagged to this client and send from the client's
+          connected mailboxes. Targeting, schedule and sender options can be edited later in
+          Prospecting → Campaigns.
+        </div>
+      </div>
+      <ModalFooter onClose={onClose} onSave={handleSave} saving={saving} saveLabel="Create Campaign" />
+    </Modal>
   );
 }
 
