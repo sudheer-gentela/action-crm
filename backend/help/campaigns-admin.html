@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Campaign Setup · GoWarmCRM Help</title>
+<meta name="robots" content="noindex" />
+<style>
+/* ============================================================
+   GoWarmCRM — Help Center shared theme
+   Self-contained. No external fonts or CDNs (CSP-safe drop-in).
+   Palette: Ember #E8630A · Navy #1A3A5C
+   ============================================================ */
+
+:root {
+  /* Brand */
+  --ember:        #E8630A;
+  --ember-dark:   #C9540A;
+  --ember-soft:   #FDEFE4;
+  --ember-line:   #F6C9A6;
+  --navy:         #1A3A5C;
+  --navy-700:     #234a73;
+  --navy-soft:    #EAF0F6;
+
+  /* Neutrals */
+  --paper:        #FFFFFF;
+  --canvas:       #F6F7F9;
+  --line:         #E5E7EB;
+  --line-soft:    #EEF0F3;
+  --text:         #2B3340;
+  --muted:        #6B7280;
+  --faint:        #9CA3AF;
+
+  /* Semantic */
+  --green:        #0F9D6E;
+  --green-soft:   #E7F6EF;
+  --amber:        #B7791F;
+  --amber-soft:   #FBF3E2;
+  --red:          #DC2626;
+  --red-soft:     #FBEAEA;
+  --blue:         #2563EB;
+  --blue-soft:    #E8EFFE;
+
+  /* Geometry */
+  --radius:       12px;
+  --radius-sm:    8px;
+  --shadow:       0 1px 2px rgba(16,24,40,.05), 0 8px 24px rgba(16,24,40,.06);
+  --shadow-sm:    0 1px 2px rgba(16,24,40,.06);
+
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --sidebar-w: 280px;
+  --maxw: 860px;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  color: var(--text);
+  background: var(--canvas);
+  font-size: 15px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ------------------------------------------------------------
+   App shell: fixed sidebar + scrolling content
+   ------------------------------------------------------------ */
+.help-shell { display: flex; min-height: 100vh; }
+
+.help-sidebar {
+  width: var(--sidebar-w);
+  flex: 0 0 var(--sidebar-w);
+  background: var(--navy);
+  color: #fff;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 22px 0 28px;
+}
+
+.help-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 0 96px;
+}
+
+.help-content-inner {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 0 40px;
+}
+
+/* ------------------------------------------------------------
+   Brand block in sidebar
+   ------------------------------------------------------------ */
+.help-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 0 22px 18px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid rgba(255,255,255,.10);
+}
+.help-brand-mark {
+  width: 34px; height: 34px;
+  border-radius: 9px;
+  background: var(--ember);
+  display: grid; place-items: center;
+  flex: 0 0 34px;
+}
+.help-brand-name { font-weight: 700; font-size: 15px; letter-spacing: .2px; line-height: 1.15; }
+.help-brand-name .warm { color: var(--ember); }
+.help-brand-sub { font-size: 11.5px; color: rgba(255,255,255,.55); margin-top: 1px; }
+
+/* role pill on sidebar */
+.help-role-pill {
+  margin: 14px 22px 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: #fff;
+  background: rgba(232,99,10,.20);
+  border: 1px solid rgba(232,99,10,.5);
+  padding: 5px 11px;
+  border-radius: 999px;
+}
+.help-role-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ember); }
+
+/* ------------------------------------------------------------
+   Sidebar nav (table of contents)
+   ------------------------------------------------------------ */
+.help-nav { padding: 10px 14px 0; }
+.help-nav-group-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,.40);
+  padding: 16px 10px 6px;
+}
+.help-nav a {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 11px;
+  border-radius: var(--radius-sm);
+  color: rgba(255,255,255,.78);
+  text-decoration: none;
+  font-size: 13.5px;
+  line-height: 1.35;
+  transition: background .12s, color .12s;
+}
+.help-nav a .ic { width: 17px; text-align: center; flex: 0 0 17px; opacity: .9; }
+.help-nav a:hover { background: rgba(255,255,255,.07); color: #fff; }
+.help-nav a.active {
+  background: var(--ember);
+  color: #fff;
+  font-weight: 600;
+}
+.help-nav a.active .ic { opacity: 1; }
+
+.help-nav-foot {
+  margin: 22px 22px 0;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255,255,255,.10);
+  font-size: 11.5px;
+  color: rgba(255,255,255,.45);
+}
+.help-nav-foot a { color: rgba(255,255,255,.75); }
+
+/* ------------------------------------------------------------
+   Top bar inside content (search + breadcrumb)
+   ------------------------------------------------------------ */
+.help-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(246,247,249,.86);
+  backdrop-filter: saturate(140%) blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+.help-topbar-inner {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 13px 40px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.help-crumb { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.help-crumb b { color: var(--navy); font-weight: 600; }
+.help-search {
+  margin-left: auto;
+  position: relative;
+  width: 270px;
+  max-width: 45vw;
+}
+.help-search input {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 12px 8px 32px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--text);
+}
+.help-search input:focus {
+  outline: none;
+  border-color: var(--ember);
+  box-shadow: 0 0 0 3px var(--ember-soft);
+}
+.help-search .mag {
+  position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
+  color: var(--faint); font-size: 13px; pointer-events: none;
+}
+
+/* ------------------------------------------------------------
+   Hero
+   ------------------------------------------------------------ */
+.help-hero { padding: 44px 0 8px; }
+.help-eyebrow {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 11.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--ember);
+}
+.help-eyebrow::before {
+  content: ""; width: 22px; height: 2px; background: var(--ember); border-radius: 2px;
+}
+.help-hero h1 {
+  font-size: 33px;
+  line-height: 1.12;
+  margin: 14px 0 10px;
+  color: var(--navy);
+  letter-spacing: -.02em;
+  font-weight: 800;
+}
+.help-hero p { font-size: 16px; color: var(--muted); max-width: 60ch; margin: 0; }
+
+/* ------------------------------------------------------------
+   Sections
+   ------------------------------------------------------------ */
+.help-section { padding-top: 52px; scroll-margin-top: 70px; }
+.help-section > h2 {
+  font-size: 23px;
+  color: var(--navy);
+  letter-spacing: -.01em;
+  font-weight: 800;
+  margin: 0 0 4px;
+  display: flex; align-items: baseline; gap: 10px;
+}
+.help-section > h2 .num {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ember);
+  font-variant-numeric: tabular-nums;
+  background: var(--ember-soft);
+  border-radius: 6px;
+  padding: 2px 8px;
+  align-self: center;
+}
+.help-section > .lead { font-size: 15.5px; color: var(--muted); margin: 6px 0 22px; max-width: 64ch; }
+
+.help-section h3 {
+  font-size: 17px; color: var(--navy); font-weight: 700;
+  margin: 30px 0 8px; letter-spacing: -.01em;
+}
+.help-section h4 {
+  font-size: 14px; color: var(--navy); font-weight: 700;
+  margin: 20px 0 4px; text-transform: none;
+}
+.help-section p { margin: 0 0 13px; }
+.help-section a { color: var(--ember-dark); text-decoration: none; border-bottom: 1px solid var(--ember-line); }
+.help-section a:hover { border-bottom-color: var(--ember); }
+.help-section ul, .help-section ol { margin: 0 0 14px; padding-left: 22px; }
+.help-section li { margin: 5px 0; }
+.help-section strong { color: var(--navy); font-weight: 650; }
+code, .kbd {
+  font-family: var(--mono);
+  font-size: .86em;
+  background: var(--navy-soft);
+  color: var(--navy-700);
+  padding: 1.5px 6px;
+  border-radius: 5px;
+}
+
+/* ------------------------------------------------------------
+   Figure / screen-map
+   ------------------------------------------------------------ */
+.help-figure {
+  margin: 8px 0 22px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.help-figure-bar {
+  display: flex; align-items: center; gap: 7px;
+  padding: 9px 14px;
+  background: var(--navy-soft);
+  border-bottom: 1px solid var(--line);
+}
+.help-figure-bar .tl { display: flex; gap: 6px; }
+.help-figure-bar .tl i { width: 10px; height: 10px; border-radius: 50%; display: block; }
+.help-figure-bar .tl i:nth-child(1){ background:#F56C6C; }
+.help-figure-bar .tl i:nth-child(2){ background:#F5B942; }
+.help-figure-bar .tl i:nth-child(3){ background:#3CC97B; }
+.help-figure-bar .tt { font-size: 12px; color: var(--muted); font-weight: 600; margin-left: 4px; }
+.help-figure svg { display: block; width: 100%; height: auto; }
+.help-figure-cap {
+  padding: 9px 14px;
+  font-size: 12.5px;
+  color: var(--muted);
+  border-top: 1px solid var(--line-soft);
+  background: #FCFCFD;
+}
+.help-figure-cap b { color: var(--navy); }
+
+/* numbered callout list paired with a figure */
+.help-steps { counter-reset: step; list-style: none; padding-left: 0; margin: 6px 0 16px; }
+.help-steps > li {
+  position: relative;
+  padding-left: 38px;
+  margin: 12px 0;
+  min-height: 26px;
+}
+.help-steps > li::before {
+  counter-increment: step;
+  content: counter(step);
+  position: absolute; left: 0; top: 0;
+  width: 26px; height: 26px;
+  background: var(--ember);
+  color: #fff;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 13px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------
+   Callouts
+   ------------------------------------------------------------ */
+.note {
+  display: flex; gap: 11px;
+  padding: 13px 15px;
+  border-radius: var(--radius-sm);
+  margin: 16px 0;
+  font-size: 14px;
+  border: 1px solid;
+  line-height: 1.55;
+}
+.note .ic { flex: 0 0 auto; font-size: 15px; line-height: 1.5; }
+.note p { margin: 0 0 6px; }
+.note p:last-child { margin: 0; }
+.note--tip   { background: var(--ember-soft); border-color: var(--ember-line); color: #7a3a08; }
+.note--info  { background: var(--blue-soft);  border-color: #c5d7fb; color: #1e3a8a; }
+.note--warn  { background: var(--amber-soft); border-color: #f0dca8; color: #7a5a13; }
+.note--danger{ background: var(--red-soft);   border-color: #f3c9c9; color: #991b1b; }
+.note b { color: inherit; }
+
+/* ------------------------------------------------------------
+   Tables (reference)
+   ------------------------------------------------------------ */
+.help-table-wrap { overflow-x: auto; margin: 6px 0 18px; border: 1px solid var(--line); border-radius: var(--radius); }
+table.ref {
+  width: 100%; border-collapse: collapse; font-size: 13.5px; background: var(--paper);
+}
+table.ref th, table.ref td { text-align: left; padding: 10px 14px; vertical-align: top; }
+table.ref thead th {
+  background: var(--navy-soft); color: var(--navy);
+  font-size: 11px; letter-spacing: .05em; text-transform: uppercase; font-weight: 700;
+  border-bottom: 1px solid var(--line);
+}
+table.ref tbody tr + tr td { border-top: 1px solid var(--line-soft); }
+table.ref td code { white-space: nowrap; }
+
+/* status / plan pills used in tables */
+.pill { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+.pill--green { background: var(--green-soft); color: var(--green); }
+.pill--amber { background: var(--amber-soft); color: var(--amber); }
+.pill--red   { background: var(--red-soft);   color: var(--red); }
+.pill--grey  { background: #EEF0F3; color: #5b6471; }
+.pill--navy  { background: var(--navy-soft);  color: var(--navy); }
+.pill--ember { background: var(--ember-soft); color: var(--ember-dark); }
+
+/* ------------------------------------------------------------
+   Action chip (for "what each button does" rows)
+   ------------------------------------------------------------ */
+.chip-row { display: flex; align-items: flex-start; gap: 12px; margin: 9px 0; }
+.chip-glyph {
+  flex: 0 0 auto;
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  display: grid; place-items: center;
+  font-size: 15px;
+  background: var(--navy-soft);
+  border: 1px solid var(--line);
+}
+.chip-glyph.is-blue  { background: var(--blue-soft);  border-color:#c5d7fb; }
+.chip-glyph.is-green { background: var(--green-soft); border-color:#bfe7d4; }
+.chip-glyph.is-red   { background: var(--red-soft);   border-color:#f3c9c9; }
+.chip-body { font-size: 14px; padding-top: 2px; }
+.chip-body b { color: var(--navy); }
+
+/* ------------------------------------------------------------
+   Landing (index) cards
+   ------------------------------------------------------------ */
+.lp { max-width: 980px; margin: 0 auto; padding: 64px 32px 80px; }
+.lp-hero { text-align: center; margin-bottom: 46px; }
+.lp-hero .help-brand-mark { width: 52px; height: 52px; border-radius: 13px; margin: 0 auto 20px; }
+.lp-hero h1 { font-size: 38px; color: var(--navy); font-weight: 800; letter-spacing: -.02em; margin: 0 0 12px; }
+.lp-hero p { font-size: 17px; color: var(--muted); margin: 0 auto; max-width: 56ch; }
+.lp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
+.lp-card {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 26px 24px;
+  box-shadow: var(--shadow-sm);
+  transition: transform .14s, box-shadow .14s, border-color .14s;
+  position: relative;
+}
+.lp-card:hover { transform: translateY(-3px); box-shadow: var(--shadow); border-color: var(--ember-line); }
+.lp-card .ic {
+  width: 46px; height: 46px; border-radius: 11px; display: grid; place-items: center;
+  font-size: 22px; margin-bottom: 16px; background: var(--ember-soft);
+}
+.lp-card h3 { font-size: 18px; color: var(--navy); font-weight: 700; margin: 0 0 6px; }
+.lp-card p { font-size: 13.5px; color: var(--muted); margin: 0 0 14px; line-height: 1.5; }
+.lp-card .who { font-size: 11.5px; font-weight: 600; color: var(--ember-dark); text-transform: uppercase; letter-spacing: .05em; }
+.lp-card .arrow { position: absolute; top: 24px; right: 24px; color: var(--faint); font-size: 18px; transition: transform .14s, color .14s; }
+.lp-card:hover .arrow { transform: translateX(3px); color: var(--ember); }
+.lp-card.is-soon { opacity: .72; }
+.lp-card.is-soon .badge-soon {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); background: #EEF0F3; padding: 3px 8px; border-radius: 6px;
+}
+.lp-foot { text-align: center; margin-top: 46px; font-size: 13px; color: var(--faint); }
+
+/* ------------------------------------------------------------
+   Search "no results" + hidden state
+   ------------------------------------------------------------ */
+.help-section.is-hidden { display: none; }
+.search-empty {
+  display: none;
+  padding: 40px 0; text-align: center; color: var(--muted); font-size: 15px;
+}
+.search-empty.show { display: block; }
+
+/* back to top */
+.to-top {
+  position: fixed; right: 22px; bottom: 22px;
+  width: 42px; height: 42px; border-radius: 50%;
+  background: var(--navy); color: #fff; border: none; cursor: pointer;
+  font-size: 18px; box-shadow: var(--shadow); opacity: 0; pointer-events: none;
+  transition: opacity .2s; z-index: 40;
+}
+.to-top.show { opacity: 1; pointer-events: auto; }
+.to-top:hover { background: var(--ember); }
+
+/* ------------------------------------------------------------
+   Mobile
+   ------------------------------------------------------------ */
+.help-menu-btn {
+  display: none;
+  background: var(--navy); color:#fff; border:none; border-radius: 8px;
+  width: 38px; height: 38px; font-size: 18px; cursor: pointer;
+}
+.help-scrim { display:none; }
+
+@media (max-width: 900px) {
+  :root { --sidebar-w: 256px; }
+  .help-content-inner, .help-topbar-inner { padding-left: 22px; padding-right: 22px; }
+  .help-sidebar {
+    position: fixed; left: 0; top: 0; z-index: 60;
+    transform: translateX(-100%); transition: transform .22s ease;
+    box-shadow: 0 0 40px rgba(0,0,0,.3);
+  }
+  .help-shell.nav-open .help-sidebar { transform: translateX(0); }
+  .help-shell.nav-open .help-scrim {
+    display: block; position: fixed; inset: 0; background: rgba(15,23,42,.5); z-index: 55;
+  }
+  .help-menu-btn { display: grid; place-items: center; }
+  .help-search { width: auto; flex: 1; max-width: none; }
+  .help-hero h1 { font-size: 27px; }
+  .help-crumb { display: none; }
+}
+
+@media (max-width: 560px) {
+  .help-content-inner, .help-topbar-inner { padding-left: 16px; padding-right: 16px; }
+  .lp { padding: 40px 18px 60px; }
+  .lp-hero h1 { font-size: 29px; }
+}
+
+</style>
+</head>
+<body>
+<div class="help-shell">
+  <aside class="help-sidebar">
+    <div class="help-brand"><div class="help-brand-mark" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 72 72" xmlns="http://www.w3.org/2000/svg"><path d="M36 6 C26 18 12 26 14 44 C16 58 26 68 36 72 C46 68 56 58 58 44 C60 26 46 18 36 6Z" fill="#FDE68A"/><path d="M36 22 C31 30 26 36 28 46 C30 53 33 58 36 62 C39 58 42 53 44 46 C46 36 41 30 36 22Z" fill="#fff"/></svg></div><div><div class="help-brand-name">Go<span class="warm">Warm</span> CRM</div><div class="help-brand-sub">Help Center</div></div></div>
+    <div class="help-role-pill"><span class="dot"></span> Owner / Admin</div>
+    <nav class="help-nav">
+<div class="help-nav-group-label">Getting started</div>
+<a href="#overview"><span class="ic">🧭</span> Overview</a>
+<a href="#checklist"><span class="ic">✅</span> Setup checklist</a>
+<div class="help-nav-group-label">Email & sending</div>
+<a href="#email-access"><span class="ic">✉️</span> Email access & senders</a>
+<a href="#schedule"><span class="ic">🕑</span> Sending schedule</a>
+<div class="help-nav-group-label">Personalization</div>
+<a href="#ai"><span class="ic">✨</span> AI & the skill</a>
+<div class="help-nav-group-label">Signals</div>
+<a href="#enrichment"><span class="ic">🔌</span> Enrichment keys</a>
+<a href="#targeting"><span class="ic">🎯</span> Target Profiles & signals</a>
+<div class="help-nav-group-label">Channels</div>
+<a href="#linkedin"><span class="ic">🔗</span> LinkedIn auto-send</a>
+<a href="#calling"><span class="ic">📞</span> Calling (Twilio)</a>
+<div class="help-nav-group-label">Rollout</div>
+<a href="#extension"><span class="ic">🧩</span> Chrome extension</a>
+<a href="#access"><span class="ic">🔒</span> Access & visibility</a>
+<a href="#map"><span class="ic">🗺️</span> What you unlocked</a>
+<div class="help-nav-foot"><a href="index.html">← All guides</a></div>
+</nav>
+  </aside>
+  <div class="help-scrim"></div>
+  <main class="help-content">
+    <div class="help-topbar">
+      <div class="help-topbar-inner">
+        <button class="help-menu-btn" aria-label="Open navigation">☰</button>
+        <span class="help-crumb">Help Center · <b>Campaign Setup</b></span>
+        <div class="help-search">
+          <span class="mag">🔍</span>
+          <input type="search" placeholder="Search this guide…" aria-label="Search this guide" />
+        </div>
+      </div>
+    </div>
+    <div class="help-content-inner">
+      <header class="help-hero">
+        <span class="help-eyebrow">For Owners &amp; Admins</span>
+        <h1>Campaign Setup Guide</h1>
+        <p>The one-time org configuration that makes campaigns runnable — email access, sending schedule, AI, enrichment, LinkedIn auto-send, calling, and the extension. Companion to the rep-facing Running Campaigns guide.</p>
+      </header>
+      <section class="help-section" id="overview">
+        <h2><span class="num">01</span> Overview</h2>
+        <p class="lead">This guide covers the one-time org configuration that makes campaigns runnable. Do these once; your reps then work day to day inside the guardrails you set here.</p>        <p>Each section ends with a <b>→ Unlocks for reps</b> note so you can see exactly what each switch enables downstream. The rep-facing companion is the <a href="campaigns-user.html">Running Campaigns</a> guide, which opens with a checklist mirroring what you set up here.</p>        <div class="note note--info"><span class="ic">ℹ️</span><div><p>The help center is <b>role-gated</b>: reps see the Running Campaigns guide, owners and admins additionally see this one. You don't have to distribute anything — the right guide appears for each role.</p></div></div>
+      </section>
+      <section class="help-section" id="checklist">
+        <h2><span class="num">02</span> Setup checklist</h2>
+        <p class="lead">In rough order. Only the email-access and (optionally) schedule pieces affect whether email can send at all; everything else unlocks a specific capability.</p>        <div class="help-table-wrap">
+          <table class="ref">
+            <thead><tr><th>Task</th><th>Required?</th><th>Where</th></tr></thead>
+            <tbody>
+<tr><td>Enable email access & org outreach limits</td><td>Access <b>required</b>; reps connect their own mailbox</td><td>Org Admin (module access + limits)</td></tr>
+<tr><td>Org-wide sending schedule</td><td>Optional — a default exists; campaigns can override</td><td>Org Admin → Sending Schedule</td></tr>
+<tr><td>Prospect stages</td><td>Recommended</td><td>Org Admin → Prospect Stages</td></tr>
+<tr><td>AI provider + personalization skill</td><td>Only for AI drafting</td><td>Org Admin → AI Provider / Skill Config</td></tr>
+<tr><td>Enrichment keys (Apollo / CoreSignal)</td><td>Only for signal campaigns</td><td>Org Admin → Prospecting → Enrichment</td></tr>
+<tr><td>LinkedIn connection auto-send</td><td>Only if reps auto-send</td><td>Org Admin → Prospecting → LinkedIn</td></tr>
+<tr><td>Calling (Twilio)</td><td>Only if reps call</td><td>Org Admin → Twilio / Calling</td></tr>
+<tr><td>Distribute the Chrome extension</td><td>For LinkedIn outreach</td><td>Share the build</td></tr>
+<tr><td>Target Profiles & signal catalog</td><td>Optional curation</td><td>Prospecting → Targeting</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <section class="help-section" id="email-access">
+        <h2><span class="num">03</span> Email access &amp; org outreach limits</h2>
+        <p class="lead">Each rep connects their <b>own</b> sending mailbox — this is self-service, not something you do for them. Your job is to make sure they can, and to set the org-wide ceilings.</p>        <h3>What the admin does</h3>        <ol class="help-steps">
+          <li>Ensure the <strong>prospecting module is enabled</strong> for the reps who need it — that is the access gate. Without it, the sender-accounts screen won't work for them.</li>
+          <li>(Optional) Set <strong>org-wide outreach limits</strong> under Org Admin → Sending Schedule / outreach limits — ceilings that apply on top of each rep's own sender caps.</li>
+        </ol>        <h3>What the rep does (for reference)</h3>        <div class="chip-row-wrap">
+        <div class="chip-row"><span class="chip-glyph">🔗</span><div class="chip-body">Goes to <b>Settings → My Preferences → sender accounts</b>, clicks <b>Connect</b>, authorizes Gmail or Outlook.</div></div>
+        <div class="chip-row"><span class="chip-glyph">♻️</span><div class="chip-body"><b>Reconnects it themselves</b> if it ever shows <b>Disconnected</b> — you are not involved in the refresh.</div></div>
+        <div class="chip-row"><span class="chip-glyph">➕</span><div class="chip-body">Can connect <b>multiple mailboxes</b>; the step firer round-robins across all active ones.</div></div>
+        </div>        <div class="note note--info"><span class="ic">ℹ️</span><div><p><b>Where the daily cap lives:</b> the per-mailbox daily send limit is a property of <b>each sender account</b> (rep-owned), and a campaign's email capacity is the sum of its active senders' limits. You set <em>org-wide</em> limits, not individual mailbox caps.</p></div></div>        <p><b>→ Unlocks for reps:</b> the ability to connect a mailbox and send email. If a rep can't see the sender-accounts screen, they're missing module access — the one thing only you can grant.</p>
+      </section>
+      <section class="help-section" id="schedule">
+        <h2><span class="num">04</span> Org-wide sending schedule</h2>
+        <p class="lead">Optional — a default already exists. Campaigns resolve their schedule as <b>campaign → org → built-in default</b>, so outreach still sends sensibly even if you never touch this, and a rep can override the window per campaign.</p>        <ol class="help-steps">
+          <li>Open <strong>Org Admin → Sending Schedule</strong>.</li>
+          <li>Set the org-wide <strong>working days and hours</strong>, <strong>timezone</strong>, and <strong>pacing</strong> (a fixed interval between sends, or spread across the window). Steps due outside the window wait for the next open slot.</li>
+          <li>(Optional) Set org <strong>outreach limits</strong> — org-wide ceilings, in addition to each sender's own daily cap.</li>
+        </ol>        <p><b>→ Unlocks for reps:</b> a good default window. Reps who need something different set a per-campaign schedule themselves — you don't do it for them.</p>
+      </section>
+      <section class="help-section" id="ai">
+        <h2><span class="num">05</span> AI &amp; the personalization skill</h2>
+        <p class="lead">Only needed if your reps use AI drafting. Skip entirely for manual/template-only sequences.</p>        <ol class="help-steps">
+          <li><strong>Org Admin → AI Provider Settings</strong> — configure a provider/model. Required for any AI drafting.</li>
+          <li><strong>Org Admin → Prospecting Skill Config</strong> — set the guardrails the skill obeys: products, hook ordering, banned phrasings, required disclaimers.</li>
+          <li>(Optional) <strong>Prospecting → Fit Gate Config</strong> — restrict AI drafting to prospects that meet your ICP.</li>
+        </ol>        <div class="note note--info"><span class="ic">ℹ️</span><div><p>If you enable the org policy flags for it, reps can set a <b>personal provider/model or bring their own key</b>; leave those off to keep everyone on the org default.</p></div></div>        <p><b>→ Unlocks for reps:</b> the ability to set sequence steps to <b>AI mode</b>. With no provider configured, AI steps can't draft.</p>
+      </section>
+      <section class="help-section" id="enrichment">
+        <h2><span class="num">06</span> Enrichment keys</h2>
+        <p class="lead">Only for signal-based campaigns and auto-research. This is the one true admin dependency for signal campaigns.</p>        <p><b>Org Admin → Prospecting → Enrichment.</b> Add <b>BYOK</b> keys for <b>Apollo</b> and/or <b>CoreSignal</b>. Enrichment fills titles and company data and produces the signals that power signal-based targeting and the Research Queue.</p>        <p><b>→ Unlocks for reps:</b> decision-ready Research Queue entries and signal-based targeting.</p>
+      </section>
+      <section class="help-section" id="linkedin">
+        <h2><span class="num">07</span> LinkedIn connection auto-send</h2>
+        <p class="lead">Only if reps will auto-send connection requests. Auto-send is <b>double opt-in</b>: this org switch is step one; each rep must also opt in. Nothing auto-sends unless both are on.</p>        <ol class="help-steps">
+          <li>Open <strong>Org Admin → Prospecting → LinkedIn</strong>.</li>
+          <li>Turn on <strong>connection-request auto-send</strong>.</li>
+          <li>Set the guardrails: the hard <strong>rolling-24h daily cap</strong> per rep, the <strong>working days/hours</strong> it may run, and pacing.</li>
+        </ol>        <div class="note note--danger"><span class="ic">⛔</span><div><p><b>Account risk.</b> Automating LinkedIn actions is against LinkedIn's Terms of Service and carries account risk regardless of guardrails. Keep caps conservative. If you'd rather not take this on, leave it off — reps can still use <b>manual</b> LinkedIn steps (the extension logs everything; they click send themselves).</p></div></div>        <p><b>→ Unlocks for reps:</b> the option to opt in at Settings → LinkedIn Auto-Connect and have queued requests send automatically, with jittered pacing, human-hours gating, and instant challenge-abort.</p>
+      </section>
+      <section class="help-section" id="calling">
+        <h2><span class="num">08</span> Calling (Twilio)</h2>
+        <p class="lead">Only if reps will call. Calling runs on a <b>per-org Twilio subaccount</b>; provisioning it is a one-time step that gates all calling. After that you give each rep a caller-ID number and enable calling for them.</p>        <div class="note note--warn"><span class="ic">⚠️</span><div><p>Calling is a <b>paid/entitled</b> capability: it stands up a Twilio subaccount and each phone number costs roughly <b>$1/month</b> plus per-minute usage. Confirm calling is in your plan before provisioning.</p></div></div>        <h3>Provision the subaccount (one-time)</h3>        <ol class="help-steps">
+          <li>Go to <strong>Org Admin → Twilio / Calling Settings</strong>.</li>
+          <li>Click <strong>Set up calling</strong> (provisions the subaccount + the browser voice app). If it later shows <em>softphone not fully configured</em>, re-run setup to finish enabling the browser softphone.</li>
+        </ol>        <h3>Choose the calling mode</h3>        <div class="chip-row-wrap">
+        <div class="chip-row"><span class="chip-glyph">💻</span><div class="chip-body"><b>Browser softphone only</b> (default) — reps talk through the computer over WebRTC; needs only a microphone. No personal phone required.</div></div>
+        <div class="chip-row"><span class="chip-glyph">📱</span><div class="chip-body"><b>Phone bridge only</b> — Twilio rings the rep's own phone and bridges the prospect. Each rep must add a personal phone in My Preferences.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🔀</span><div class="chip-body"><b>Both</b> — the rep chooses per call.</div></div>
+        </div>        <h3>Recording &amp; per-rep numbers</h3>        <ol class="help-steps">
+          <li>Toggle <strong>Enable recording</strong> and <strong>Play disclosure announcement</strong> (plays a spoken disclosure at call start — leave on where consent requires it). Set rate limits and phone-number format here too.</li>
+          <li>Give each rep a caller-ID number: <strong>Provision</strong> a new number by area code (~$1/mo), or <strong>Claim</strong> an existing Twilio number by its <code>PN…</code> SID (this rewires that number's voice routing to GoWarmCRM).</li>
+          <li><strong>Enable calling</strong> for the rep in the reps table. In bridge/both mode, confirm they've set a personal phone. <strong>Release</strong> a number when a rep leaves to stop the charge.</li>
+        </ol>        <p><b>→ Unlocks for reps:</b> click-to-dial from any prospect (<b>Call via Twilio</b>), call tasks from sequence Call steps, and outcome logging. Without the subaccount + a rep's number + the per-rep toggle, the calling UI stays unavailable for that rep.</p>
+      </section>
+      <section class="help-section" id="extension">
+        <h2><span class="num">09</span> Distribute the Chrome extension</h2>
+        <p class="lead">For any LinkedIn outreach. The extension (Manifest V3) lets reps capture profiles/companies, log touches, sync connections/messages, and — where enabled — auto-send. Reps install it themselves; your job is to make the build available.</p>        <div class="chip-row-wrap">
+        <div class="chip-row"><span class="chip-glyph">📦</span><div class="chip-body"><b>Share</b> the extension build (the folder / zip containing <code>manifest.json</code>) via your install page or directly.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🧩</span><div class="chip-body">Reps <b>Load unpacked</b> at <code>chrome://extensions</code> — full steps are in the Running Campaigns guide.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🔐</span><div class="chip-body">The extension talks only to your GoWarmCRM app/API and reads the LinkedIn pages the rep visits. <b>No server-side setup</b> on your end.</div></div>
+        </div>        <p><b>→ Unlocks for reps:</b> profile/company capture, one-tap logging, and connection/message sync (so LinkedIn replies stop sequences like email replies do).</p>
+      </section>
+      <section class="help-section" id="targeting">
+        <h2><span class="num">10</span> Target Profiles &amp; signal catalog</h2>
+        <p class="lead">For signal-based campaigns — but <b>reps can create Target Profiles and add signals themselves</b>, so this is optional curation, not a hard prerequisite. The real dependency is enrichment keys (§06).</p>        <div class="chip-row-wrap">
+        <div class="chip-row"><span class="chip-glyph">📇</span><div class="chip-body"><b>Target Profiles</b> — a reusable, org-shared library of ICP definitions under Prospecting → Targeting. Any rep can create one; you may want to <b>seed a few canonical profiles</b> so the team starts from vetted definitions.</div></div>
+        <div class="chip-row"><span class="chip-glyph">📡</span><div class="chip-body"><b>Signal catalog</b> — the triggers reps Filter/Prioritize on (a prospect's post, an account event like funding or a leadership change, tech-stack overlap, role + stage curiosity). Reps can pick and add signals; <b>editing inferred mappings and deleting entries are admin-only</b>, so you keep the list clean.</div></div>
+        </div>        <p><b>→ Unlocks for reps:</b> vetted starting points in the staged campaign's Targeting step. Reps aren't blocked without your curation — they just build from scratch.</p>
+      </section>
+      <section class="help-section" id="access">
+        <h2><span class="num">11</span> Access &amp; visibility policies</h2>
+        <p class="lead">Optional. Under Org Admin you can also shape who sees and edits what.</p>        <div class="chip-row-wrap">
+        <div class="chip-row"><span class="chip-glyph">👁️</span><div class="chip-body"><b>Prospect ownership / visibility</b> — who can see whose prospects (Mine / Team / Org scope).</div></div>
+        <div class="chip-row"><span class="chip-glyph">✏️</span><div class="chip-body"><b>Campaign delete &amp; manager-edit policies</b> — who can delete campaigns or edit others' campaigns.</div></div>
+        <div class="chip-row"><span class="chip-glyph">⤴️</span><div class="chip-body"><b>Escalation rules</b> — how stalled prospecting work escalates.</div></div>
+        </div>        <p><b>→ Unlocks for reps:</b> the correct scope filters (Mine / Team / Org) and edit permissions across campaign views.</p>
+      </section>
+      <section class="help-section" id="map">
+        <h2><span class="num">12</span> What you unlocked — a map for your reps</h2>
+        <p class="lead">Hand your reps the Running Campaigns guide next; its opening checklist mirrors this table.</p>        <div class="help-table-wrap">
+          <table class="ref">
+            <thead><tr><th>If a rep wants to…</th><th>You must have done…</th></tr></thead>
+            <tbody>
+<tr><td>Connect a mailbox &amp; send email</td><td>Enabled the <b>prospecting module</b> (they connect the mailbox themselves)</td></tr>
+<tr><td>Send inside a good default window</td><td>Nothing — defaults apply; set an org schedule only to change the default</td></tr>
+<tr><td>Draft steps with AI</td><td>§05 (provider + skill)</td></tr>
+<tr><td>Auto-send LinkedIn requests</td><td>§07 (org enable) — rep then opts in</td></tr>
+<tr><td>Call prospects</td><td>§08 (subaccount + rep's number + per-rep toggle)</td></tr>
+<tr><td>Capture from LinkedIn / sync replies</td><td>§09 (extension distributed)</td></tr>
+<tr><td>Build a signal-based audience</td><td>§06 (enrichment keys) — Target Profiles/signals are rep-creatable</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <div class="search-empty">No sections match your search. Try a different term.</div>
+    </div>
+  </main>
+</div>
+<button class="to-top" aria-label="Back to top">↑</button>
+<script>
+/* ============================================================
+   GoWarmCRM — Help Center shared behavior
+   Vanilla JS, no dependencies. Safe to drop in under any CSP.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  /* ---------- Mobile nav toggle ---------- */
+  var shell   = document.querySelector('.help-shell');
+  var menuBtn = document.querySelector('.help-menu-btn');
+  var scrim   = document.querySelector('.help-scrim');
+  function closeNav() { if (shell) shell.classList.remove('nav-open'); }
+  if (menuBtn && shell) {
+    menuBtn.addEventListener('click', function () { shell.classList.toggle('nav-open'); });
+  }
+  if (scrim) scrim.addEventListener('click', closeNav);
+
+  /* ---------- Section nav: smooth scroll + close mobile ---------- */
+  var navLinks = Array.prototype.slice.call(document.querySelectorAll('.help-nav a[href^="#"]'));
+  navLinks.forEach(function (a) {
+    a.addEventListener('click', function () { closeNav(); });
+  });
+
+  /* ---------- Scroll-spy: highlight active section in nav ---------- */
+  var sections = Array.prototype.slice.call(document.querySelectorAll('.help-section[id]'));
+  var byId = {};
+  navLinks.forEach(function (a) {
+    var id = a.getAttribute('href').slice(1);
+    byId[id] = a;
+  });
+
+  function setActive(id) {
+    navLinks.forEach(function (a) { a.classList.remove('active'); });
+    if (byId[id]) byId[id].classList.add('active');
+  }
+
+  if ('IntersectionObserver' in window && sections.length) {
+    var visible = {};
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) { visible[e.target.id] = e.isIntersecting ? e.intersectionRatio : 0; });
+      var best = null, bestR = 0;
+      sections.forEach(function (s) {
+        var r = visible[s.id] || 0;
+        if (r > bestR) { bestR = r; best = s.id; }
+      });
+      if (best) setActive(best);
+    }, { rootMargin: '-64px 0px -55% 0px', threshold: [0, .15, .35, .6, 1] });
+    sections.forEach(function (s) { io.observe(s); });
+  }
+
+  /* ---------- Search / filter sections ---------- */
+  var search = document.querySelector('.help-search input');
+  var empty  = document.querySelector('.search-empty');
+  if (search && sections.length) {
+    var debounce;
+    search.addEventListener('input', function () {
+      clearTimeout(debounce);
+      debounce = setTimeout(runFilter, 120);
+    });
+    function runFilter() {
+      var q = search.value.trim().toLowerCase();
+      var anyVisible = false;
+      sections.forEach(function (s) {
+        if (!q) { s.classList.remove('is-hidden'); anyVisible = true; return; }
+        var hit = (s.textContent || '').toLowerCase().indexOf(q) !== -1;
+        s.classList.toggle('is-hidden', !hit);
+        if (hit) anyVisible = true;
+      });
+      // dim nav items whose section is hidden
+      navLinks.forEach(function (a) {
+        var id = a.getAttribute('href').slice(1);
+        var sec = document.getElementById(id);
+        a.style.display = (!q || (sec && !sec.classList.contains('is-hidden'))) ? '' : 'none';
+      });
+      if (empty) empty.classList.toggle('show', !!q && !anyVisible);
+    }
+  }
+
+  /* ---------- Back to top ---------- */
+  var toTop = document.querySelector('.to-top');
+  if (toTop) {
+    window.addEventListener('scroll', function () {
+      toTop.classList.toggle('show', window.scrollY > 600);
+    }, { passive: true });
+    toTop.addEventListener('click', function () {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  }
+})();
+
+</script>
+</body>
+</html>

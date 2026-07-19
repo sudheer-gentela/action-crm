@@ -233,7 +233,12 @@ async function enqueueProspectingImmediateNotifications() {
     for (const orgId of orgIds) {
       try {
         const policy = await ProspectingEscalationService.getForOrg(orgId);
-        if (!policy.enabled || !policy.immediate_alert_enabled) continue;
+        // Agency Phase 6: gate only on the master kill-switch. The scan itself
+        // still self-gates the ordinary owner alert on immediate_alert_enabled
+        // (branch a); the client-sender-missing fast-path (branch b) must run
+        // even when an org has turned routine immediate alerts OFF, so a
+        // client-wide sending block still reaches the client lead.
+        if (!policy.enabled) continue;
 
         const overdueActions = await notificationService
           .findProspectingActionsForImmediateNotification(orgId, policy);

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict cNaqlcmJxMhH9KlhXmtqP36jnx8K5zTT48lYIODSBBkjBfRK1yHQTG9rb6AWeIG
+\restrict uw1SWIGbygdn0qyygrAe5gcvTWocRFOii0kqZGIYPUpGa24ajeuk1zTAss1z2eu
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -1277,7 +1277,8 @@ CREATE TABLE public.clients (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     archived_at timestamp with time zone,
-    require_client_sender boolean DEFAULT false NOT NULL
+    require_client_sender boolean DEFAULT false NOT NULL,
+    escalation_overrides jsonb
 );
 
 
@@ -1286,6 +1287,13 @@ CREATE TABLE public.clients (
 --
 
 COMMENT ON COLUMN public.clients.require_client_sender IS 'Agency Phase 3 (2026_53): when true, email steps for this client''s prospects may ONLY use a client-owned sender (prospecting_sender_accounts.client_id = clients.id). No active client sender ΓåÆ auto-send fails the step visibly (failAndPause) and manual draft-send is blocked, instead of falling back to the rep''s personal mailbox. Default false = legacy fallback behaviour.';
+
+
+--
+-- Name: COLUMN clients.escalation_overrides; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.clients.escalation_overrides IS 'Agency Phase 5 (2026_54): OPTIONAL partial escalation policy for this client. Overrides org_action_config.prospecting_escalation, which overrides ProspectingEscalationService.SYSTEM_DEFAULTS. Only the tier thresholds are overridable (tier1_hours/tier2_hours/tier3_hours); the merged tiers must stay strictly increasing. NULL or {} = no override (use org policy). Read by the escalation scan via COALESCE(escalation_overrides->>''tierN_hours'', org tierN) so client-less prospects are unaffected. See 2026_54_client_escalation_overrides.sql.';
 
 
 --
@@ -16705,5 +16713,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict cNaqlcmJxMhH9KlhXmtqP36jnx8K5zTT48lYIODSBBkjBfRK1yHQTG9rb6AWeIG
+\unrestrict uw1SWIGbygdn0qyygrAe5gcvTWocRFOii0kqZGIYPUpGa24ajeuk1zTAss1z2eu
 

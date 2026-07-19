@@ -579,42 +579,83 @@ function _clientGroupLabel(clientName) {
 //
 // Filter logic intentionally mirrors findActionsForImmediateNotification —
 // any future change there should be considered for this function too.
+// Agency Phase 6: this scan now surfaces rows via TWO branches (see WHERE):
+//   (a) the ordinary owner immediate alert (opted in + past immediate_hours) —
+//       gated on the org's immediate_alert_enabled toggle, BYTE-IDENTICAL to
+//       the pre-Phase-6 behaviour; and
+//   (b) the client-sender-missing fast-path — a `sequence_send_failed` action
+//       whose client requires its own mailbox and has no active client sender
+//       RIGHT NOW (live re-derivation, self-healing). This fires as soon as the
+//       action is overdue at all, INDEPENDENT of the owner's opt-in AND the
+//       org's immediate_alert_enabled toggle, because a client-wide sending
+//       block is a config gap that must reach the client lead fast — only the
+//       master `enabled` kill-switch suppresses it. A client-less prospect /
+//       non-agency org never satisfies branch (b), so its result set is
+//       byte-identical to before. The processor RE-DERIVES the condition, so
+//       `client_sender_missing` here is a scan filter, not the authority.
 async function findProspectingActionsForImmediateNotification(orgId, policy) {
-  if (!policy.enabled || !policy.immediate_alert_enabled) return [];
+  if (!policy.enabled) return [];
 
   const { rows } = await pool.query(`
+    WITH scanned AS (
+      SELECT
+        pa.id           AS action_id,
+        pa.title        AS action_title,
+        pa.due_date,
+        pa.status,
+        pa.user_id,
+        pa.org_id,
+        pa.prospect_id,
+        p.first_name    AS prospect_first_name,
+        p.last_name     AS prospect_last_name,
+        p.company_name  AS prospect_company,
+        p.client_id,
+        c.name          AS client_name,
+        u.first_name,
+        u.last_name,
+        u.email,
+        COALESCE(up.preferences->'notifications', '{}'::jsonb) AS esc_prefs,
+        COALESCE((up.preferences->'notifications'->>'prospecting_immediate_alert')::boolean, true)
+          AS owner_immediate_opt_in,
+        (
+          pa.source = 'sequence_send_failed'
+          AND p.client_id IS NOT NULL
+          AND c.require_client_sender = true
+          AND NOT EXISTS (
+            SELECT 1 FROM prospecting_sender_accounts psa
+             WHERE psa.org_id    = pa.org_id
+               AND psa.client_id = p.client_id
+               AND psa.is_active = true
+          )
+        ) AS client_sender_missing
+      FROM prospecting_actions pa
+      JOIN prospects p ON p.id = pa.prospect_id
+      JOIN users     u ON u.id = pa.user_id
+      LEFT JOIN clients c ON c.id = p.client_id
+      LEFT JOIN user_preferences up
+             ON up.user_id = pa.user_id AND up.org_id = pa.org_id
+      WHERE pa.org_id              = $1
+        AND pa.status              = 'pending'
+        AND pa.due_date IS NOT NULL
+        AND pa.due_date            < NOW()
+        AND pa.notification_sent_at IS NULL
+    )
     SELECT
-      pa.id           AS action_id,
-      pa.title        AS action_title,
-      pa.due_date,
-      pa.status,
-      pa.user_id,
-      pa.org_id,
-      pa.prospect_id,
-      p.first_name    AS prospect_first_name,
-      p.last_name     AS prospect_last_name,
-      p.company_name  AS prospect_company,
-      p.client_id,
-      c.name          AS client_name,
-      u.first_name,
-      u.last_name,
-      u.email,
-      COALESCE(up.preferences->'notifications', '{}'::jsonb) AS esc_prefs
-    FROM prospecting_actions pa
-    JOIN prospects p ON p.id = pa.prospect_id
-    JOIN users     u ON u.id = pa.user_id
-    LEFT JOIN clients c ON c.id = p.client_id
-    LEFT JOIN user_preferences up
-           ON up.user_id = pa.user_id AND up.org_id = pa.org_id
-    WHERE pa.org_id              = $1
-      AND pa.status              = 'pending'
-      AND pa.due_date IS NOT NULL
-      AND pa.due_date            < NOW()
-      AND pa.notification_sent_at IS NULL
-      AND COALESCE((up.preferences->'notifications'->>'prospecting_immediate_alert')::boolean, true) = true
-      AND pa.due_date < NOW() - ($2::int * INTERVAL '1 hour')
-    ORDER BY pa.user_id, pa.due_date ASC
-  `, [orgId, policy.immediate_hours]);
+      action_id, action_title, due_date, status, user_id, org_id, prospect_id,
+      prospect_first_name, prospect_last_name, prospect_company,
+      client_id, client_name, first_name, last_name, email, esc_prefs,
+      owner_immediate_opt_in, client_sender_missing
+    FROM scanned
+    WHERE
+      -- (a) ordinary owner immediate alert (pre-Phase-6 gate, unchanged)
+      ( $3::boolean = true
+        AND owner_immediate_opt_in = true
+        AND due_date < NOW() - ($2::int * INTERVAL '1 hour') )
+      OR
+      -- (b) client-sender-missing fast-path (overdue at all; opt-in/toggle-independent)
+      client_sender_missing = true
+    ORDER BY user_id, due_date ASC
+  `, [orgId, policy.immediate_hours, policy.immediate_alert_enabled]);
 
   return rows;
 }
@@ -758,6 +799,14 @@ async function markProspectingActionEscalated(actionId, tier) {
 }
 
 // ── Process an immediate alert for a single prospecting action ───────────────
+// Agency Phase 6: two concerns handled here, both keyed off the ONE
+// notification_sent_at guard so each fires at most once per action:
+//   • Owner's ordinary immediate alert (existing type/copy) — respects the org
+//     immediate_alert_enabled toggle AND the owner's opt-in, byte-identical to
+//     before for non-sender-missing actions.
+//   • Client team lead(s) fast-path alert (new type 'prospecting_client_sender_
+//     blocked') — fires when the client-sender-missing condition is TRUE right
+//     now (re-derived live, self-healing), independent of the owner's opt-in.
 async function processProspectingImmediateNotification(orgId, actionId) {
   const { rows: [action] } = await pool.query(`
     SELECT pa.*,
@@ -767,11 +816,26 @@ async function processProspectingImmediateNotification(orgId, actionId) {
            p.client_id    AS client_id,
            cl.name        AS client_name,
            u.first_name,
-           u.last_name
+           u.last_name,
+           COALESCE((up.preferences->'notifications'->>'prospecting_immediate_alert')::boolean, true)
+             AS owner_immediate_opt_in,
+           (
+             pa.source = 'sequence_send_failed'
+             AND p.client_id IS NOT NULL
+             AND cl.require_client_sender = true
+             AND NOT EXISTS (
+               SELECT 1 FROM prospecting_sender_accounts psa
+                WHERE psa.org_id    = pa.org_id
+                  AND psa.client_id = p.client_id
+                  AND psa.is_active = true
+             )
+           ) AS client_sender_missing
     FROM prospecting_actions pa
     JOIN prospects p ON p.id = pa.prospect_id
     JOIN users     u ON u.id = pa.user_id
     LEFT JOIN clients cl ON cl.id = p.client_id
+    LEFT JOIN user_preferences up
+           ON up.user_id = pa.user_id AND up.org_id = pa.org_id
     WHERE pa.id = $1 AND pa.org_id = $2
   `, [actionId, orgId]);
 
@@ -779,41 +843,101 @@ async function processProspectingImmediateNotification(orgId, actionId) {
   if (action.status !== 'pending') return { skipped: true, reason: 'not_pending' };
   if (action.notification_sent_at) return { skipped: true, reason: 'already_notified' };
 
-  // For immediate alerts on prospecting we notify only the owner (the rep).
-  // Manager loops happen at tier 2 of the escalation path, not at the
-  // immediate-alert step.
-  const ownerName     = `${action.first_name} ${action.last_name}`;
-  const prospectName  = `${action.prospect_first_name} ${action.prospect_last_name}`.trim();
-  const overdueHours  = Math.round((Date.now() - new Date(action.due_date).getTime()) / 3600000);
-  const dueStr        = new Date(action.due_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
-  const prospectCtx   = prospectName ? ` for ${prospectName}` : '';
-  // Agency Phase 5: append the client name when the prospect belongs to one.
-  // Empty string for non-client prospects → title is byte-identical to before.
-  const clientCtx     = _clientTitleSuffix(action.client_name);
+  // Re-derive LIVE (never from a stored tag). If a mailbox was connected since
+  // the scan surfaced this row, the condition is now false and the fast-path
+  // self-heals — no lead alert fires.
+  const senderMissing = action.client_sender_missing === true;
+  const ownerOptedIn  = action.owner_immediate_opt_in === true;
 
-  await createNotification(
-    orgId, action.user_id,
-    'prospecting_immediate',
-    `Overdue prospecting action: ${action.title}${prospectCtx}${clientCtx}`,
-    `This action was due on ${dueStr} (${overdueHours}h ago) and hasn't been completed.`,
-    'prospecting_action', action.id,
-    {
-      action_user_id: action.user_id,
-      prospect_id:    action.prospect_id,
-      client_id:      action.client_id || null,
-      client_name:    action.client_name || null,
-      overdue_hours:  overdueHours,
-      channel:        action.channel,
+  // immediate_hours governs the OWNER's ordinary alert only.
+  const policy             = await ProspectingEscalationService.getForOrg(orgId);
+  const dueMs              = new Date(action.due_date).getTime();
+  const overdueHours       = Math.round((Date.now() - dueMs) / 3600000);
+  const ownerPastImmediate = (Date.now() - dueMs) >= policy.immediate_hours * 3600000;
+
+  const ownerName    = `${action.first_name} ${action.last_name}`;
+  const prospectName = `${action.prospect_first_name} ${action.prospect_last_name}`.trim();
+  const dueStr       = new Date(action.due_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  const prospectCtx  = prospectName ? ` for ${prospectName}` : '';
+  const clientCtx    = _clientTitleSuffix(action.client_name);
+
+  const notified = new Set();
+
+  // ── Fast-path: notify the client team lead(s) about the client-wide block ──
+  // Distinct type + actionable copy. Independent of the owner's opt-in (this
+  // row was surfaced by the scan's branch (b)). Deduped for free by the shared
+  // notification_sent_at guard below → the lead is told exactly once.
+  if (senderMissing && action.client_id) {
+    const leadIds   = await ProspectingEscalationService.resolveClientLeads(orgId, action.client_id);
+    const clientLbl = (action.client_name || '').trim() || 'this client';
+    for (const leadId of leadIds) {
+      await createNotification(
+        orgId, leadId,
+        'prospecting_client_sender_blocked',
+        `Sending blocked for ${clientLbl}: no mailbox connected`,
+        `${prospectName || 'A prospect'}'s sequence step can't send — ${clientLbl} requires its own sender mailbox `
+          + `and none is connected. Connect Gmail or Outlook for the client in Agency → ${clientLbl} → Senders `
+          + `(or disable "Require client mailbox"). Sending stays paused for ${clientLbl} until a mailbox is connected.`,
+        'prospecting_action', action.id,
+        {
+          action_user_id: action.user_id,
+          prospect_id:    action.prospect_id,
+          client_id:      action.client_id,
+          client_name:    action.client_name || null,
+          fail_reason:    'client_sender_required',
+          overdue_hours:  overdueHours,
+          channel:        action.channel,
+        }
+      );
+      notified.add(leadId);
     }
-  );
+  }
 
-  await markProspectingActionNotified(action.id);
+  // ── Owner's ordinary immediate alert (existing type + copy) ────────────────
+  // Fires when the org has immediate alerts on AND the owner is opted in AND
+  // either the action is past immediate_hours [pre-Phase-6 behaviour] OR it's a
+  // client-sender-missing block [tell the owner early too, per fast #2].
+  // Skipped if the owner is already being notified as a client lead.
+  const notifyOwner =
+    policy.immediate_alert_enabled === true &&
+    ownerOptedIn &&
+    (senderMissing || ownerPastImmediate);
+
+  if (notifyOwner && !notified.has(action.user_id)) {
+    await createNotification(
+      orgId, action.user_id,
+      'prospecting_immediate',
+      `Overdue prospecting action: ${action.title}${prospectCtx}${clientCtx}`,
+      `This action was due on ${dueStr} (${overdueHours}h ago) and hasn't been completed.`,
+      'prospecting_action', action.id,
+      {
+        action_user_id: action.user_id,
+        prospect_id:    action.prospect_id,
+        client_id:      action.client_id || null,
+        client_name:    action.client_name || null,
+        overdue_hours:  overdueHours,
+        channel:        action.channel,
+      }
+    );
+    notified.add(action.user_id);
+  }
+
+  // Trip the once-only guard ONLY if someone was actually notified. Keeps the
+  // path self-healing: a sender-missing row that healed before this job ran
+  // (and whose owner isn't otherwise due) notifies no one and stays eligible
+  // for a later legitimate alert. A persistent block with no client lead is
+  // still backstopped by the tier ladder (org admins at tier 3).
+  if (notified.size > 0) {
+    await markProspectingActionNotified(action.id);
+  }
 
   return {
     actionId,
-    recipientCount: 1,
-    recipients:     [action.user_id],
+    senderMissing,
+    recipientCount: notified.size,
+    recipients:     [...notified],
     overdueHours,
+    marked:         notified.size > 0,
   };
 }
 

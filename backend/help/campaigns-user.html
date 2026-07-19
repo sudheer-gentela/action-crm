@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Running Campaigns · GoWarmCRM Help</title>
+<meta name="robots" content="noindex" />
+<style>
+/* ============================================================
+   GoWarmCRM — Help Center shared theme
+   Self-contained. No external fonts or CDNs (CSP-safe drop-in).
+   Palette: Ember #E8630A · Navy #1A3A5C
+   ============================================================ */
+
+:root {
+  /* Brand */
+  --ember:        #E8630A;
+  --ember-dark:   #C9540A;
+  --ember-soft:   #FDEFE4;
+  --ember-line:   #F6C9A6;
+  --navy:         #1A3A5C;
+  --navy-700:     #234a73;
+  --navy-soft:    #EAF0F6;
+
+  /* Neutrals */
+  --paper:        #FFFFFF;
+  --canvas:       #F6F7F9;
+  --line:         #E5E7EB;
+  --line-soft:    #EEF0F3;
+  --text:         #2B3340;
+  --muted:        #6B7280;
+  --faint:        #9CA3AF;
+
+  /* Semantic */
+  --green:        #0F9D6E;
+  --green-soft:   #E7F6EF;
+  --amber:        #B7791F;
+  --amber-soft:   #FBF3E2;
+  --red:          #DC2626;
+  --red-soft:     #FBEAEA;
+  --blue:         #2563EB;
+  --blue-soft:    #E8EFFE;
+
+  /* Geometry */
+  --radius:       12px;
+  --radius-sm:    8px;
+  --shadow:       0 1px 2px rgba(16,24,40,.05), 0 8px 24px rgba(16,24,40,.06);
+  --shadow-sm:    0 1px 2px rgba(16,24,40,.06);
+
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --sidebar-w: 280px;
+  --maxw: 860px;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  color: var(--text);
+  background: var(--canvas);
+  font-size: 15px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ------------------------------------------------------------
+   App shell: fixed sidebar + scrolling content
+   ------------------------------------------------------------ */
+.help-shell { display: flex; min-height: 100vh; }
+
+.help-sidebar {
+  width: var(--sidebar-w);
+  flex: 0 0 var(--sidebar-w);
+  background: var(--navy);
+  color: #fff;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 22px 0 28px;
+}
+
+.help-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 0 96px;
+}
+
+.help-content-inner {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 0 40px;
+}
+
+/* ------------------------------------------------------------
+   Brand block in sidebar
+   ------------------------------------------------------------ */
+.help-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 0 22px 18px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid rgba(255,255,255,.10);
+}
+.help-brand-mark {
+  width: 34px; height: 34px;
+  border-radius: 9px;
+  background: var(--ember);
+  display: grid; place-items: center;
+  flex: 0 0 34px;
+}
+.help-brand-name { font-weight: 700; font-size: 15px; letter-spacing: .2px; line-height: 1.15; }
+.help-brand-name .warm { color: var(--ember); }
+.help-brand-sub { font-size: 11.5px; color: rgba(255,255,255,.55); margin-top: 1px; }
+
+/* role pill on sidebar */
+.help-role-pill {
+  margin: 14px 22px 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: #fff;
+  background: rgba(232,99,10,.20);
+  border: 1px solid rgba(232,99,10,.5);
+  padding: 5px 11px;
+  border-radius: 999px;
+}
+.help-role-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ember); }
+
+/* ------------------------------------------------------------
+   Sidebar nav (table of contents)
+   ------------------------------------------------------------ */
+.help-nav { padding: 10px 14px 0; }
+.help-nav-group-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,.40);
+  padding: 16px 10px 6px;
+}
+.help-nav a {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 11px;
+  border-radius: var(--radius-sm);
+  color: rgba(255,255,255,.78);
+  text-decoration: none;
+  font-size: 13.5px;
+  line-height: 1.35;
+  transition: background .12s, color .12s;
+}
+.help-nav a .ic { width: 17px; text-align: center; flex: 0 0 17px; opacity: .9; }
+.help-nav a:hover { background: rgba(255,255,255,.07); color: #fff; }
+.help-nav a.active {
+  background: var(--ember);
+  color: #fff;
+  font-weight: 600;
+}
+.help-nav a.active .ic { opacity: 1; }
+
+.help-nav-foot {
+  margin: 22px 22px 0;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255,255,255,.10);
+  font-size: 11.5px;
+  color: rgba(255,255,255,.45);
+}
+.help-nav-foot a { color: rgba(255,255,255,.75); }
+
+/* ------------------------------------------------------------
+   Top bar inside content (search + breadcrumb)
+   ------------------------------------------------------------ */
+.help-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(246,247,249,.86);
+  backdrop-filter: saturate(140%) blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+.help-topbar-inner {
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 13px 40px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.help-crumb { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.help-crumb b { color: var(--navy); font-weight: 600; }
+.help-search {
+  margin-left: auto;
+  position: relative;
+  width: 270px;
+  max-width: 45vw;
+}
+.help-search input {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 12px 8px 32px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--text);
+}
+.help-search input:focus {
+  outline: none;
+  border-color: var(--ember);
+  box-shadow: 0 0 0 3px var(--ember-soft);
+}
+.help-search .mag {
+  position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
+  color: var(--faint); font-size: 13px; pointer-events: none;
+}
+
+/* ------------------------------------------------------------
+   Hero
+   ------------------------------------------------------------ */
+.help-hero { padding: 44px 0 8px; }
+.help-eyebrow {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 11.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--ember);
+}
+.help-eyebrow::before {
+  content: ""; width: 22px; height: 2px; background: var(--ember); border-radius: 2px;
+}
+.help-hero h1 {
+  font-size: 33px;
+  line-height: 1.12;
+  margin: 14px 0 10px;
+  color: var(--navy);
+  letter-spacing: -.02em;
+  font-weight: 800;
+}
+.help-hero p { font-size: 16px; color: var(--muted); max-width: 60ch; margin: 0; }
+
+/* ------------------------------------------------------------
+   Sections
+   ------------------------------------------------------------ */
+.help-section { padding-top: 52px; scroll-margin-top: 70px; }
+.help-section > h2 {
+  font-size: 23px;
+  color: var(--navy);
+  letter-spacing: -.01em;
+  font-weight: 800;
+  margin: 0 0 4px;
+  display: flex; align-items: baseline; gap: 10px;
+}
+.help-section > h2 .num {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ember);
+  font-variant-numeric: tabular-nums;
+  background: var(--ember-soft);
+  border-radius: 6px;
+  padding: 2px 8px;
+  align-self: center;
+}
+.help-section > .lead { font-size: 15.5px; color: var(--muted); margin: 6px 0 22px; max-width: 64ch; }
+
+.help-section h3 {
+  font-size: 17px; color: var(--navy); font-weight: 700;
+  margin: 30px 0 8px; letter-spacing: -.01em;
+}
+.help-section h4 {
+  font-size: 14px; color: var(--navy); font-weight: 700;
+  margin: 20px 0 4px; text-transform: none;
+}
+.help-section p { margin: 0 0 13px; }
+.help-section a { color: var(--ember-dark); text-decoration: none; border-bottom: 1px solid var(--ember-line); }
+.help-section a:hover { border-bottom-color: var(--ember); }
+.help-section ul, .help-section ol { margin: 0 0 14px; padding-left: 22px; }
+.help-section li { margin: 5px 0; }
+.help-section strong { color: var(--navy); font-weight: 650; }
+code, .kbd {
+  font-family: var(--mono);
+  font-size: .86em;
+  background: var(--navy-soft);
+  color: var(--navy-700);
+  padding: 1.5px 6px;
+  border-radius: 5px;
+}
+
+/* ------------------------------------------------------------
+   Figure / screen-map
+   ------------------------------------------------------------ */
+.help-figure {
+  margin: 8px 0 22px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.help-figure-bar {
+  display: flex; align-items: center; gap: 7px;
+  padding: 9px 14px;
+  background: var(--navy-soft);
+  border-bottom: 1px solid var(--line);
+}
+.help-figure-bar .tl { display: flex; gap: 6px; }
+.help-figure-bar .tl i { width: 10px; height: 10px; border-radius: 50%; display: block; }
+.help-figure-bar .tl i:nth-child(1){ background:#F56C6C; }
+.help-figure-bar .tl i:nth-child(2){ background:#F5B942; }
+.help-figure-bar .tl i:nth-child(3){ background:#3CC97B; }
+.help-figure-bar .tt { font-size: 12px; color: var(--muted); font-weight: 600; margin-left: 4px; }
+.help-figure svg { display: block; width: 100%; height: auto; }
+.help-figure-cap {
+  padding: 9px 14px;
+  font-size: 12.5px;
+  color: var(--muted);
+  border-top: 1px solid var(--line-soft);
+  background: #FCFCFD;
+}
+.help-figure-cap b { color: var(--navy); }
+
+/* numbered callout list paired with a figure */
+.help-steps { counter-reset: step; list-style: none; padding-left: 0; margin: 6px 0 16px; }
+.help-steps > li {
+  position: relative;
+  padding-left: 38px;
+  margin: 12px 0;
+  min-height: 26px;
+}
+.help-steps > li::before {
+  counter-increment: step;
+  content: counter(step);
+  position: absolute; left: 0; top: 0;
+  width: 26px; height: 26px;
+  background: var(--ember);
+  color: #fff;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: 13px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------
+   Callouts
+   ------------------------------------------------------------ */
+.note {
+  display: flex; gap: 11px;
+  padding: 13px 15px;
+  border-radius: var(--radius-sm);
+  margin: 16px 0;
+  font-size: 14px;
+  border: 1px solid;
+  line-height: 1.55;
+}
+.note .ic { flex: 0 0 auto; font-size: 15px; line-height: 1.5; }
+.note p { margin: 0 0 6px; }
+.note p:last-child { margin: 0; }
+.note--tip   { background: var(--ember-soft); border-color: var(--ember-line); color: #7a3a08; }
+.note--info  { background: var(--blue-soft);  border-color: #c5d7fb; color: #1e3a8a; }
+.note--warn  { background: var(--amber-soft); border-color: #f0dca8; color: #7a5a13; }
+.note--danger{ background: var(--red-soft);   border-color: #f3c9c9; color: #991b1b; }
+.note b { color: inherit; }
+
+/* ------------------------------------------------------------
+   Tables (reference)
+   ------------------------------------------------------------ */
+.help-table-wrap { overflow-x: auto; margin: 6px 0 18px; border: 1px solid var(--line); border-radius: var(--radius); }
+table.ref {
+  width: 100%; border-collapse: collapse; font-size: 13.5px; background: var(--paper);
+}
+table.ref th, table.ref td { text-align: left; padding: 10px 14px; vertical-align: top; }
+table.ref thead th {
+  background: var(--navy-soft); color: var(--navy);
+  font-size: 11px; letter-spacing: .05em; text-transform: uppercase; font-weight: 700;
+  border-bottom: 1px solid var(--line);
+}
+table.ref tbody tr + tr td { border-top: 1px solid var(--line-soft); }
+table.ref td code { white-space: nowrap; }
+
+/* status / plan pills used in tables */
+.pill { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+.pill--green { background: var(--green-soft); color: var(--green); }
+.pill--amber { background: var(--amber-soft); color: var(--amber); }
+.pill--red   { background: var(--red-soft);   color: var(--red); }
+.pill--grey  { background: #EEF0F3; color: #5b6471; }
+.pill--navy  { background: var(--navy-soft);  color: var(--navy); }
+.pill--ember { background: var(--ember-soft); color: var(--ember-dark); }
+
+/* ------------------------------------------------------------
+   Action chip (for "what each button does" rows)
+   ------------------------------------------------------------ */
+.chip-row { display: flex; align-items: flex-start; gap: 12px; margin: 9px 0; }
+.chip-glyph {
+  flex: 0 0 auto;
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  display: grid; place-items: center;
+  font-size: 15px;
+  background: var(--navy-soft);
+  border: 1px solid var(--line);
+}
+.chip-glyph.is-blue  { background: var(--blue-soft);  border-color:#c5d7fb; }
+.chip-glyph.is-green { background: var(--green-soft); border-color:#bfe7d4; }
+.chip-glyph.is-red   { background: var(--red-soft);   border-color:#f3c9c9; }
+.chip-body { font-size: 14px; padding-top: 2px; }
+.chip-body b { color: var(--navy); }
+
+/* ------------------------------------------------------------
+   Landing (index) cards
+   ------------------------------------------------------------ */
+.lp { max-width: 980px; margin: 0 auto; padding: 64px 32px 80px; }
+.lp-hero { text-align: center; margin-bottom: 46px; }
+.lp-hero .help-brand-mark { width: 52px; height: 52px; border-radius: 13px; margin: 0 auto 20px; }
+.lp-hero h1 { font-size: 38px; color: var(--navy); font-weight: 800; letter-spacing: -.02em; margin: 0 0 12px; }
+.lp-hero p { font-size: 17px; color: var(--muted); margin: 0 auto; max-width: 56ch; }
+.lp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
+.lp-card {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 26px 24px;
+  box-shadow: var(--shadow-sm);
+  transition: transform .14s, box-shadow .14s, border-color .14s;
+  position: relative;
+}
+.lp-card:hover { transform: translateY(-3px); box-shadow: var(--shadow); border-color: var(--ember-line); }
+.lp-card .ic {
+  width: 46px; height: 46px; border-radius: 11px; display: grid; place-items: center;
+  font-size: 22px; margin-bottom: 16px; background: var(--ember-soft);
+}
+.lp-card h3 { font-size: 18px; color: var(--navy); font-weight: 700; margin: 0 0 6px; }
+.lp-card p { font-size: 13.5px; color: var(--muted); margin: 0 0 14px; line-height: 1.5; }
+.lp-card .who { font-size: 11.5px; font-weight: 600; color: var(--ember-dark); text-transform: uppercase; letter-spacing: .05em; }
+.lp-card .arrow { position: absolute; top: 24px; right: 24px; color: var(--faint); font-size: 18px; transition: transform .14s, color .14s; }
+.lp-card:hover .arrow { transform: translateX(3px); color: var(--ember); }
+.lp-card.is-soon { opacity: .72; }
+.lp-card.is-soon .badge-soon {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); background: #EEF0F3; padding: 3px 8px; border-radius: 6px;
+}
+.lp-foot { text-align: center; margin-top: 46px; font-size: 13px; color: var(--faint); }
+
+/* ------------------------------------------------------------
+   Search "no results" + hidden state
+   ------------------------------------------------------------ */
+.help-section.is-hidden { display: none; }
+.search-empty {
+  display: none;
+  padding: 40px 0; text-align: center; color: var(--muted); font-size: 15px;
+}
+.search-empty.show { display: block; }
+
+/* back to top */
+.to-top {
+  position: fixed; right: 22px; bottom: 22px;
+  width: 42px; height: 42px; border-radius: 50%;
+  background: var(--navy); color: #fff; border: none; cursor: pointer;
+  font-size: 18px; box-shadow: var(--shadow); opacity: 0; pointer-events: none;
+  transition: opacity .2s; z-index: 40;
+}
+.to-top.show { opacity: 1; pointer-events: auto; }
+.to-top:hover { background: var(--ember); }
+
+/* ------------------------------------------------------------
+   Mobile
+   ------------------------------------------------------------ */
+.help-menu-btn {
+  display: none;
+  background: var(--navy); color:#fff; border:none; border-radius: 8px;
+  width: 38px; height: 38px; font-size: 18px; cursor: pointer;
+}
+.help-scrim { display:none; }
+
+@media (max-width: 900px) {
+  :root { --sidebar-w: 256px; }
+  .help-content-inner, .help-topbar-inner { padding-left: 22px; padding-right: 22px; }
+  .help-sidebar {
+    position: fixed; left: 0; top: 0; z-index: 60;
+    transform: translateX(-100%); transition: transform .22s ease;
+    box-shadow: 0 0 40px rgba(0,0,0,.3);
+  }
+  .help-shell.nav-open .help-sidebar { transform: translateX(0); }
+  .help-shell.nav-open .help-scrim {
+    display: block; position: fixed; inset: 0; background: rgba(15,23,42,.5); z-index: 55;
+  }
+  .help-menu-btn { display: grid; place-items: center; }
+  .help-search { width: auto; flex: 1; max-width: none; }
+  .help-hero h1 { font-size: 27px; }
+  .help-crumb { display: none; }
+}
+
+@media (max-width: 560px) {
+  .help-content-inner, .help-topbar-inner { padding-left: 16px; padding-right: 16px; }
+  .lp { padding: 40px 18px 60px; }
+  .lp-hero h1 { font-size: 29px; }
+}
+
+</style>
+</head>
+<body>
+<div class="help-shell">
+  <aside class="help-sidebar">
+    <div class="help-brand"><div class="help-brand-mark" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 72 72" xmlns="http://www.w3.org/2000/svg"><path d="M36 6 C26 18 12 26 14 44 C16 58 26 68 36 72 C46 68 56 58 58 44 C60 26 46 18 36 6Z" fill="#FDE68A"/><path d="M36 22 C31 30 26 36 28 46 C30 53 33 58 36 62 C39 58 42 53 44 46 C46 36 41 30 36 22Z" fill="#fff"/></svg></div><div><div class="help-brand-name">Go<span class="warm">Warm</span> CRM</div><div class="help-brand-sub">Help Center</div></div></div>
+    <div class="help-role-pill"><span class="dot"></span> Sales Rep</div>
+    <nav class="help-nav">
+<div class="help-nav-group-label">Before you start</div>
+<a href="#prereqs"><span class="ic">✅</span> What must be enabled</a>
+<div class="help-nav-group-label">Setup</div>
+<a href="#extension"><span class="ic">🧩</span> Install the extension</a>
+<div class="help-nav-group-label">Build</div>
+<a href="#create"><span class="ic">🚀</span> Create a campaign</a>
+<a href="#sequence"><span class="ic">📨</span> Build the sequence</a>
+<a href="#prospects"><span class="ic">🎯</span> Add prospects</a>
+<div class="help-nav-group-label">Run</div>
+<a href="#launch"><span class="ic">▶️</span> Launch & schedule</a>
+<a href="#calls"><span class="ic">📞</span> Making & logging calls</a>
+<div class="help-nav-group-label">Every day</div>
+<a href="#monitor"><span class="ic">📊</span> Monitor & respond</a>
+<div class="help-nav-group-label">Reference</div>
+<a href="#reference"><span class="ic">🧮</span> Quick reference</a>
+<a href="#troubleshooting"><span class="ic">🛟</span> Troubleshooting</a>
+<div class="help-nav-foot"><a href="index.html">← All guides</a></div>
+</nav>
+  </aside>
+  <div class="help-scrim"></div>
+  <main class="help-content">
+    <div class="help-topbar">
+      <div class="help-topbar-inner">
+        <button class="help-menu-btn" aria-label="Open navigation">☰</button>
+        <span class="help-crumb">Help Center · <b>Running Campaigns</b></span>
+        <div class="help-search">
+          <span class="mag">🔍</span>
+          <input type="search" placeholder="Search this guide…" aria-label="Search this guide" />
+        </div>
+      </div>
+    </div>
+    <div class="help-content-inner">
+      <header class="help-hero">
+        <span class="help-eyebrow">For Sales Reps</span>
+        <h1>Running Campaigns</h1>
+        <p>Your step-by-step playbook for running prospecting campaigns — create, build the cadence, add prospects, launch, call, and work the replies. Covers AI and manual, auto-send and manual, and signal and plain. Setup lives in the Campaign Setup guide.</p>
+      </header>
+      <section class="help-section" id="prereqs">
+        <h2><span class="num">01</span> Before you start — what must be enabled for you</h2>
+        <p class="lead">You don't configure these yourself, but your day-to-day work depends on them. Run down this checklist; if something's missing, the last column tells you what to ask an admin for. Full admin details live in the <a href="campaigns-admin.html">Campaign Setup</a> guide.</p>        <div class="help-table-wrap">
+          <table class="ref">
+            <thead><tr><th>You need…</th><th>How to tell it's ready</th><th>If it's not…</th></tr></thead>
+            <tbody>
+<tr><td><b>A sending mailbox</b> (your own)</td><td>Settings → sender accounts shows a <span class="pill pill--green">Healthy</span> Gmail/Outlook account</td><td><b>You connect it yourself</b> there → Connect → authorize. If it shows <span class="pill pill--red">Disconnected</span>, <b>you reconnect it</b> the same way — no admin needed. (Ask an admin only if you can't see the screen at all — that's module access.)</td></tr>
+<tr><td><b>A sending window</b></td><td>Emails go out during working hours</td><td>There's a <b>built-in default</b>, so this usually just works. To change it, set a <b>per-campaign schedule</b> yourself (§05), or ask an admin to change the org default.</td></tr>
+<tr><td><b>The Chrome extension</b></td><td>The GoWarm flame is in your toolbar and the popup says <span class="pill pill--green">Connected</span></td><td>Ask your admin to share the extension build / install page.</td></tr>
+<tr><td><b>LinkedIn URLs on prospects</b></td><td>The on-profile panel shows a timeline, not "Not in GoWarmCRM"</td><td><i>You control this</i> — see §04.</td></tr>
+<tr><td><b>Calling</b> (Twilio)</td><td>A <b>Call via Twilio</b> button appears and the Calls tab works</td><td>Ask your admin to set up the org Twilio subaccount, give you a number, and enable calling for you.</td></tr>
+<tr><td><b>AI drafting</b> (optional)</td><td>You can set a step to <b>AI mode</b> and it drafts</td><td>Ask your admin to configure an AI provider + the Prospecting Skill. <i>(You may also set a personal key if your org allows it.)</i></td></tr>
+<tr><td><b>LinkedIn auto-send</b> (optional)</td><td>Settings → LinkedIn Auto-Connect lets you opt in</td><td>Ask your admin to enable it at Org Admin → Prospecting → LinkedIn.</td></tr>
+<tr><td><b>Signal-based targeting</b> (optional)</td><td>The staged campaign's Targeting step offers signals/Target Profiles</td><td>You can build Target Profiles & signals yourself; the only admin dependency is <b>enrichment keys</b>.</td></tr>
+            </tbody>
+          </table>
+        </div>        <div class="note note--tip"><span class="ic">💡</span><div><p><b>Three things you <i>do</i> control that trip people up:</b> (1) your <b>mailbox</b> — you connect <i>and</i> reconnect it; (2) the <b>sending window</b> — a per-campaign schedule (§05) overrides the org default; (3) whether a step <b>auto-sends or waits for your approval</b> — a sequence setting you choose, not an admin one. Also: prospects need a <b>LinkedIn URL</b> saved or the extension can't match them (§04).</p></div></div>
+      </section>
+      <section class="help-section" id="extension">
+        <h2><span class="num">02</span> Install &amp; connect the Chrome extension</h2>
+        <p class="lead">Skip this section if you only do email/call outreach. The extension is the bridge between LinkedIn and your pipeline.</p>        <ol class="help-steps">
+          <li>Unzip the build so you have the folder containing <code>manifest.json</code>.</li>
+          <li>Open <code>chrome://extensions</code>, toggle on <strong>Developer mode</strong> (top-right), click <strong>Load unpacked</strong>, and select that folder.</li>
+          <li>The GoWarm flame appears in your toolbar — <strong>pin</strong> it (puzzle-piece → pin).</li>
+          <li><strong>Connect:</strong> open your GoWarmCRM app in a tab and sign in. Click the extension icon; the popup should read <b>Connected</b>. If it says <em>Not connected</em>, sign in and hit <b>Try connecting now</b>.</li>
+        </ol>        <div class="note note--info"><span class="ic">ℹ️</span><div><p>Works in Chrome, Edge, or Brave. No token to paste — it uses your session. When a new build ships, the popup shows a banner: replace the folder and click <b>reload</b> on the card at <code>chrome://extensions</code>; your connection and defaults carry over.</p></div></div>
+      </section>
+      <section class="help-section" id="create">
+        <h2><span class="num">03</span> Create a campaign</h2>
+        <p class="lead">Open Prospecting → Campaigns → New Campaign. Two paths — pick by what you're doing.</p>        <div class="help-table-wrap">
+          <table class="ref">
+            <thead><tr><th>Guided Brief wizard</th><th>Staged flow</th></tr></thead>
+            <tbody>
+<tr><td>A straightforward outreach push; capture your pitch fast for AI-quality framing.</td><td>You want to target by <b>signals</b>, start from a <b>Target Profile</b>, or run a <b>non-outreach</b> motion.</td></tr>
+            </tbody>
+          </table>
+        </div>        <h3>Guided Brief wizard (six steps)</h3>        <ol class="help-steps">
+          <li><strong>Basics</strong> — name (required), the solution it prospects for, an internal description.</li>
+          <li><strong>Audience &amp; ICP</strong> — one or more personas.</li>
+          <li><strong>Pitch</strong> — the core pitch paragraph + value props.</li>
+          <li><strong>Proof</strong> — case studies (customer, problem, what you did, outcome).</li>
+          <li><strong>Outreach fallback</strong> — the plain template baseline; any AI draft reverts to this in one click.</li>
+          <li><strong>Review</strong> — confirm and create.</li>
+        </ol>        <h3>Staged flow (three steps — signal or plain)</h3>        <ol class="help-steps">
+          <li><strong>Purpose &amp; basics</strong> — name, purpose (outreach vs. non-outreach), solution, description.</li>
+          <li><strong>Targeting</strong> — leave empty for a plain list-driven campaign (you add prospects yourself), or add <b>Filter</b> (must-match) and <b>Prioritize</b> (rank-higher) rules from the signal catalog. Signal campaigns need <b>enrichment</b> enabled by an admin; qualifying prospects surface in your Research Queue to approve.</li>
+          <li><strong>Execution</strong> (outreach only) — attach a playbook, sequence, goal, and schedule.</li>
+        </ol>
+      </section>
+      <section class="help-section" id="sequence">
+        <h2><span class="num">04</span> Build the sequence</h2>
+        <p class="lead">Prospecting → Sequences → New Sequence. A sequence is an ordered list of steps, each with a channel and a delay.</p>        <h3>Steps &amp; channels</h3>        <div class="chip-row-wrap">
+        <div class="chip-row"><span class="chip-glyph">✉️</span><div class="chip-body"><b>Email</b> — subject + body (merge variables supported).</div></div>
+        <div class="chip-row"><span class="chip-glyph">🔗</span><div class="chip-body"><b>LinkedIn</b> — a connection request (optional note) or a DM.</div></div>
+        <div class="chip-row"><span class="chip-glyph">📞</span><div class="chip-body"><b>Call</b> — a task for you; no body. Surfaces in your Calls tab / Work Queue (§06).</div></div>
+        </div>        <h3>With AI vs. without AI</h3>        <div class="chip-row-wrap">
+        <div class="chip-row"><span class="chip-glyph">📝</span><div class="chip-body"><b>Without AI</b> — you write each step; personalization is merge variables. Deterministic. Needs nothing from an admin.</div></div>
+        <div class="chip-row"><span class="chip-glyph">✨</span><div class="chip-body"><b>With AI</b> (needs a provider + skill set up) — flip the sequence AI toggle on, set steps to <b>AI mode</b>. The skill drafts from the prospect's context + your pitch. Revert any AI step to its template in one click.</div></div>
+        </div>        <h3>With auto-send vs. without auto-send — your choice, per step</h3>        <p><b>Email.</b> Turn on <b>require approval</b> to review first: the step becomes a <b>draft</b> in your Work Queue to edit and send. Leave approval <b>off</b> to auto-send on schedule (needs a healthy mailbox).</p>        <p><b>LinkedIn.</b> <b>Manual</b> — the request/DM lands as a task you send yourself; the extension logs it. <b>Auto-send</b> — needs the org enable <i>and</i> your opt-in at Settings → LinkedIn Auto-Connect (with a personal cap); the extension then sends with a hard 24h cap, jittered pacing, working-hours gating, and an instant stop on any LinkedIn security prompt.</p>        <p><b>Call</b> — always manual: dial via Twilio or log it (§06).</p>        <h3>Stop conditions & A/B</h3>        <div class="chip-row-wrap">
+        <div class="chip-row"><span class="chip-glyph">💬</span><div class="chip-body"><b>Stop on reply</b> (default on) — an email or synced LinkedIn reply stops the enrollment. Leave it on.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🤝</span><div class="chip-body"><b>Stop on connection accept</b> — for LinkedIn-led sequences, pause once they accept so you follow up personally.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🧪</span><div class="chip-body"><b>A/B variants</b> — test arms via the A/B panel; assignment is deterministic and results roll up per arm.</div></div>
+        </div>
+      </section>
+      <section class="help-section" id="prospects">
+        <h2><span class="num">05</span> Add prospects &amp; set the schedule</h2>
+        <p class="lead">A campaign does nothing until prospects are in it. Mix these freely.</p>        <div class="chip-row-wrap">
+        <div class="chip-row"><span class="chip-glyph">✍️</span><div class="chip-body"><b>Manual</b> — open the campaign → Add Prospect. Enter name, company, email, LinkedIn URL, phone.</div></div>
+        <div class="chip-row"><span class="chip-glyph">📄</span><div class="chip-body"><b>CSV import</b> — Import (top of Prospecting), map columns. Update-by-ID re-import avoids duplicates.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🧩</span><div class="chip-body"><b>Capture from LinkedIn</b> — the panel captures profiles (<code>/in/</code>) and companies (<code>/company/</code>). Set <b>Push defaults</b> in the popup so captures land in the right campaign/sequence.</div></div>
+        <div class="chip-row"><span class="chip-glyph">📡</span><div class="chip-body"><b>Research Queue</b> — for signal campaigns, qualifying prospects appear with the triggering signal; review and approve.</div></div>
+        </div>        <div class="note note--warn"><span class="ic">⚠️</span><div><p><b>Every prospect needs a LinkedIn URL.</b> The extension matches on the <code>linkedin_url</code> stored on the record (<code>https://www.linkedin.com/in/username</code>). No URL → the panel shows <b>"Not in GoWarmCRM"</b> even though they exist. Set it on the prospect record. This is the #1 reason the panel "doesn't work."</p></div></div>        <h3>Set the sending schedule (optional override)</h3>        <p>Every campaign already sends on a schedule: <b>its own if set, otherwise your org's, otherwise a built-in default</b> — so a new campaign sends correctly on day one. To use a different window for <i>this</i> campaign, set it in the staged flow's <b>Execution</b> step or the campaign's schedule settings: sending days, timezone, start time, pacing (fixed interval or spread), and the LinkedIn release cap.</p>        <div class="note note--info"><span class="ic">ℹ️</span><div><p>The <b>email daily cap isn't here</b> — it lives on each of your sender accounts, and the campaign's capacity is the sum of your active senders' limits. Use <b>Schedule preview</b> to see when steps will actually fire.</p></div></div>
+      </section>
+      <section class="help-section" id="launch">
+        <h2><span class="num">06</span> Launch &amp; run</h2>
+        <p class="lead">Enroll prospects, then the system fires due steps on schedule.</p>        <div class="chip-row-wrap">
+        <div class="chip-row"><span class="chip-glyph">1️⃣</span><div class="chip-body"><b>One prospect</b> — open them → Enroll into the sequence (pick sequence + start step).</div></div>
+        <div class="chip-row"><span class="chip-glyph">👥</span><div class="chip-body"><b>Everyone</b> — Enroll all on the campaign enrolls every eligible prospect.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🌊</span><div class="chip-body"><b>In waves</b> — Batch Activate rolls a large set live in controlled waves — good for warming a mailbox.</div></div>
+        </div>        <p>After launch: auto-send steps go out (within schedule + caps); approval-required and Call steps become tasks in your <b>Work Queue</b>. The <b>Pacing</b> tile and <b>Schedule preview</b> show when upcoming steps fire. Campaigns are <span class="pill pill--green">Active</span> / <span class="pill pill--grey">Paused</span> / <span class="pill pill--navy">Completed</span> — pause to stop new steps without losing enrollments.</p>
+      </section>
+      <section class="help-section" id="calls">
+        <h2><span class="num">07</span> Making &amp; logging calls (Twilio)</h2>
+        <p class="lead">Requires calling set up by an admin (org subaccount + your number + calling enabled). If the <b>Call via Twilio</b> button isn't there, that's what's missing.</p>        <h3>One-time: your phone &amp; timezone</h3>        <p>In <b>Settings → My Preferences</b>, set your <b>timezone</b> (so call tasks and callbacks are local) and — <b>only in phone-bridge mode</b> — a <b>personal phone</b>. In the default browser-softphone mode you just need a working microphone.</p>        <h3>Place a call</h3>        <ol class="help-steps">
+          <li>Open the prospect (or a call task).</li>
+          <li>In the phone panel, pick which number to dial — you can add, label, set-primary, or delete a prospect's numbers here.</li>
+          <li>Click <strong>Call via Twilio</strong>. Browser softphone: allow <b>microphone</b> access the first time; it dials the prospect with your number as caller ID. Phone bridge: Twilio rings your phone first, then bridges the prospect.</li>
+          <li>If recording with disclosure is enabled, a spoken announcement plays at the start.</li>
+        </ol>        <h3>Log the outcome</h3>        <p>Record it in the <b>Log call</b> panel: outcome (<span class="pill pill--green">connected — meaningful</span>, <span class="pill pill--green">connected — brief</span>, <span class="pill pill--ember">callback requested</span>, <span class="pill pill--amber">voicemail left</span>, <span class="pill pill--grey">no answer</span>, <span class="pill pill--grey">wrong number</span>, <span class="pill pill--grey">gatekeeper</span>), notes, and — for a callback — a date/time that defaults to the next business day at 10am. Logged calls land on the prospect's timeline and feed your call metrics.</p>
+      </section>
+      <section class="help-section" id="monitor">
+        <h2><span class="num">08</span> Monitor &amp; respond (your daily loop)</h2>
+        <p class="lead">Read the health, work the queues, and keep LinkedIn synced.</p>        <h3>Health pill on the Campaigns list</h3>        <div class="chip-row-wrap">
+        <div class="chip-row"><span class="chip-glyph"><span class="pill pill--red">Failing</span></span><div class="chip-body">Steps failed in the last 24h — usually a disconnected sender. Reconnect your mailbox yourself in Settings → sender accounts.</div></div>
+        <div class="chip-row"><span class="chip-glyph"><span class="pill pill--amber">Stalled</span></span><div class="chip-body">Active enrollments idle ~7 days — usually drafts/call tasks in your Work Queue or a schedule gap.</div></div>
+        <div class="chip-row"><span class="chip-glyph"><span class="pill pill--green">Active</span></span><div class="chip-body">Healthy.</div></div>
+        </div>        <h3>Work the queues</h3>        <div class="chip-row-wrap">
+        <div class="chip-row"><span class="chip-glyph">📥</span><div class="chip-body"><b>Inbox</b> — replies land here; work them (they're on the prospect's timeline).</div></div>
+        <div class="chip-row"><span class="chip-glyph">⚡</span><div class="chip-body"><b>Work Queue</b> — drafts/tasks awaiting you (approval-required email, manual LinkedIn, calls).</div></div>
+        <div class="chip-row"><span class="chip-glyph">📞</span><div class="chip-body"><b>Calls</b> — call tasks and logging (§07).</div></div>
+        <div class="chip-row"><span class="chip-glyph">📈</span><div class="chip-body"><b>Insights / WBR</b> — funnel and weekly-review metrics.</div></div>
+        </div>        <h3>Sync LinkedIn every session — order matters</h3>        <ol class="help-steps">
+          <li>Open <b>My Network → Manage → Sent</b> on LinkedIn, click <b>Check &amp; update sent</b>. For acceptances, open <b>My Network → Connections</b>, then <b>Check &amp; update accepted</b>. (Each reads the page you have open.)</li>
+          <li><b>Resolve identities</b> (runs in batches — re-click to continue), then <b>Sync messages</b> (each message recorded once; safe to re-run).</li>
+        </ol>        <div class="note note--info"><span class="ic">ℹ️</span><div><p><b>Sync before you plan the day.</b> Replies only stop sequences once GoWarmCRM has seen them — a morning sync means nobody gets step 3 after they already answered step 2.</p></div></div>
+      </section>
+      <section class="help-section" id="reference">
+        <h2><span class="num">09</span> Quick reference</h2>
+        <h3>Email: AI × Auto-send</h3>        <div class="help-table-wrap">
+          <table class="ref">
+            <thead><tr><th></th><th>Manual (require approval)</th><th>Auto-send</th></tr></thead>
+            <tbody>
+<tr><td><b>No AI</b></td><td>You send a plain template from the Work Queue.</td><td>System sends the plain template on schedule.</td></tr>
+<tr><td><b>AI</b></td><td>AI drafts; you review/edit, then send.</td><td>AI drafts and the system sends. Highest throughput.</td></tr>
+            </tbody>
+          </table>
+        </div>        <h3>Channel: who sends / what's needed</h3>        <div class="help-table-wrap">
+          <table class="ref">
+            <thead><tr><th>Channel</th><th>Manual</th><th>Automated</th></tr></thead>
+            <tbody>
+<tr><td><b>Email</b></td><td>Send drafts from Work Queue.</td><td>Auto-send: healthy mailbox + schedule.</td></tr>
+<tr><td><b>LinkedIn</b></td><td>You send on LinkedIn; extension logs it.</td><td>Org enable + your opt-in + personal cap.</td></tr>
+<tr><td><b>Call</b></td><td>Always manual — dial via Twilio or log it.</td><td>No auto-dial. Needs Twilio set up + your number.</td></tr>
+            </tbody>
+          </table>
+        </div>        <h3>Signal vs. plain</h3>        <div class="help-table-wrap">
+          <table class="ref">
+            <thead><tr><th></th><th>Plain</th><th>Signal-based</th></tr></thead>
+            <tbody>
+<tr><td>Prospects in via</td><td>You add / import / capture.</td><td>They qualify from triggers → Research Queue to approve.</td></tr>
+<tr><td>Needs from admin</td><td>Nothing extra.</td><td>Enrichment keys (Target Profiles/signals you can build yourself).</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <section class="help-section" id="troubleshooting">
+        <h2><span class="num">10</span> Troubleshooting</h2>
+        <div class="chip-row-wrap">
+        <div class="chip-row"><span class="chip-glyph">🧩</span><div class="chip-body"><b>Extension panel doesn't appear</b> — be on a <code>linkedin.com/in/</code> URL, refresh, and confirm the extension is enabled at <code>chrome://extensions</code>.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🔍</span><div class="chip-body"><b>"Not in GoWarmCRM"</b> — the prospect has no saved LinkedIn URL, or the format doesn't match. Add/fix it (§05).</div></div>
+        <div class="chip-row"><span class="chip-glyph">🔑</span><div class="chip-body"><b>"Sign in first"</b> — open the app, sign in, reopen the popup.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🔁</span><div class="chip-body"><b>Sync buttons seem to do nothing</b> — identity resolution runs in batches; re-click Resolve identities, then Sync messages.</div></div>
+        <div class="chip-row"><span class="chip-glyph">📭</span><div class="chip-body"><b>Nothing is sending</b> — check your mailbox is <span class="pill pill--green">Healthy</span> (reconnect it yourself if not), you're inside the sending window, and under your sender's daily cap.</div></div>
+        <div class="chip-row"><span class="chip-glyph">😴</span><div class="chip-body"><b>Campaign is "Stalled"</b> — work the drafts/call tasks in your Work Queue, or the schedule has no open hours right now.</div></div>
+        <div class="chip-row"><span class="chip-glyph">💬</span><div class="chip-body"><b>Replies aren't stopping sequences</b> — for LinkedIn, Sync messages first; for email, confirm reply-stop isn't off for that campaign.</div></div>
+        <div class="chip-row"><span class="chip-glyph">✨</span><div class="chip-body"><b>AI drafts look generic</b> — fill in the campaign's pitch, value props, personas, case studies, and hook ordering. (If AI won't draft at all, ask your admin to confirm a provider is configured.)</div></div>
+        <div class="chip-row"><span class="chip-glyph">🔗</span><div class="chip-body"><b>LinkedIn auto-send isn't running</b> — org enable + your opt-in both on, within human-hours, under the cap, no security challenge open, LinkedIn open in a normal tab.</div></div>
+        <div class="chip-row"><span class="chip-glyph">📞</span><div class="chip-body"><b>No "Call via Twilio" button</b> — ask your admin to provision the subaccount, give you a number, and enable calling for you.</div></div>
+        <div class="chip-row"><span class="chip-glyph">🎧</span><div class="chip-body"><b>Call won't connect (softphone)</b> — allow microphone access for the site in the address bar. A network that blocks Twilio (<code>wss://*.twilio.com</code>) can also stop it. In bridge mode, set your personal phone in My Preferences.</div></div>
+        </div>
+      </section>
+      <div class="search-empty">No sections match your search. Try a different term.</div>
+    </div>
+  </main>
+</div>
+<button class="to-top" aria-label="Back to top">↑</button>
+<script>
+/* ============================================================
+   GoWarmCRM — Help Center shared behavior
+   Vanilla JS, no dependencies. Safe to drop in under any CSP.
+   ============================================================ */
+(function () {
+  'use strict';
+
+  /* ---------- Mobile nav toggle ---------- */
+  var shell   = document.querySelector('.help-shell');
+  var menuBtn = document.querySelector('.help-menu-btn');
+  var scrim   = document.querySelector('.help-scrim');
+  function closeNav() { if (shell) shell.classList.remove('nav-open'); }
+  if (menuBtn && shell) {
+    menuBtn.addEventListener('click', function () { shell.classList.toggle('nav-open'); });
+  }
+  if (scrim) scrim.addEventListener('click', closeNav);
+
+  /* ---------- Section nav: smooth scroll + close mobile ---------- */
+  var navLinks = Array.prototype.slice.call(document.querySelectorAll('.help-nav a[href^="#"]'));
+  navLinks.forEach(function (a) {
+    a.addEventListener('click', function () { closeNav(); });
+  });
+
+  /* ---------- Scroll-spy: highlight active section in nav ---------- */
+  var sections = Array.prototype.slice.call(document.querySelectorAll('.help-section[id]'));
+  var byId = {};
+  navLinks.forEach(function (a) {
+    var id = a.getAttribute('href').slice(1);
+    byId[id] = a;
+  });
+
+  function setActive(id) {
+    navLinks.forEach(function (a) { a.classList.remove('active'); });
+    if (byId[id]) byId[id].classList.add('active');
+  }
+
+  if ('IntersectionObserver' in window && sections.length) {
+    var visible = {};
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) { visible[e.target.id] = e.isIntersecting ? e.intersectionRatio : 0; });
+      var best = null, bestR = 0;
+      sections.forEach(function (s) {
+        var r = visible[s.id] || 0;
+        if (r > bestR) { bestR = r; best = s.id; }
+      });
+      if (best) setActive(best);
+    }, { rootMargin: '-64px 0px -55% 0px', threshold: [0, .15, .35, .6, 1] });
+    sections.forEach(function (s) { io.observe(s); });
+  }
+
+  /* ---------- Search / filter sections ---------- */
+  var search = document.querySelector('.help-search input');
+  var empty  = document.querySelector('.search-empty');
+  if (search && sections.length) {
+    var debounce;
+    search.addEventListener('input', function () {
+      clearTimeout(debounce);
+      debounce = setTimeout(runFilter, 120);
+    });
+    function runFilter() {
+      var q = search.value.trim().toLowerCase();
+      var anyVisible = false;
+      sections.forEach(function (s) {
+        if (!q) { s.classList.remove('is-hidden'); anyVisible = true; return; }
+        var hit = (s.textContent || '').toLowerCase().indexOf(q) !== -1;
+        s.classList.toggle('is-hidden', !hit);
+        if (hit) anyVisible = true;
+      });
+      // dim nav items whose section is hidden
+      navLinks.forEach(function (a) {
+        var id = a.getAttribute('href').slice(1);
+        var sec = document.getElementById(id);
+        a.style.display = (!q || (sec && !sec.classList.contains('is-hidden'))) ? '' : 'none';
+      });
+      if (empty) empty.classList.toggle('show', !!q && !anyVisible);
+    }
+  }
+
+  /* ---------- Back to top ---------- */
+  var toTop = document.querySelector('.to-top');
+  if (toTop) {
+    window.addEventListener('scroll', function () {
+      toTop.classList.toggle('show', window.scrollY > 600);
+    }, { passive: true });
+    toTop.addEventListener('click', function () {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  }
+})();
+
+</script>
+</body>
+</html>

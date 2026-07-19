@@ -24,6 +24,11 @@ function WebClient() {
 const TYPE_TO_CATEGORY = {
   notification_immediate:          'immediate',
   prospecting_immediate:           'immediate',
+  // Agency Phase 6: the client-team-lead fast-path alert for a client-wide
+  // sending block. Immediate-category so it rides the same Slack routing as
+  // other prompt alerts (the `|| 'immediate'` fallback below would cover it
+  // too; listed explicitly for clarity/filterability).
+  prospecting_client_sender_blocked: 'immediate',
   notification_digest:             'digest',
   prospecting_digest:              'digest',
   prospecting_escalation_tier_1:   'escalation',

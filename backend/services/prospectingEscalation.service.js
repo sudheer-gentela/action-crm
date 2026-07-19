@@ -222,6 +222,38 @@ class ProspectingEscalationService {
     return out;
   }
 
+  // ── Public: resolve a client's active team lead(s) ───────────────────────
+  // Returns the user_ids of client_team_members with role='lead' for this
+  // client, limited to ACTIVE org members (org-checked via the join to
+  // clients + org_users.is_active). Best-effort: on any error returns [] so a
+  // lookup failure never blocks the surrounding notification path.
+  //
+  // Introduced in Agency Phase 6 to give the immediate "client sender missing"
+  // fast-path a lead set independent of the escalation tier. resolveEscalation-
+  // Recipients() reuses this for its tier-2 additive client-lead loop-in, so
+  // there is exactly ONE client-lead query in the service.
+  static async resolveClientLeads(orgId, clientId) {
+    if (!clientId) return [];
+    try {
+      const res = await db.query(
+        `SELECT ctm.user_id
+           FROM client_team_members ctm
+           JOIN clients   c  ON c.id = ctm.client_id
+           JOIN org_users ou ON ou.user_id = ctm.user_id
+                             AND ou.org_id = c.org_id
+                             AND ou.is_active = TRUE
+          WHERE ctm.client_id = $1
+            AND c.org_id      = $2
+            AND ctm.role      = 'lead'`,
+        [clientId, orgId]
+      );
+      return res.rows.map(r => r.user_id);
+    } catch (err) {
+      console.warn('⚠️  resolveClientLeads: lookup failed:', err.message);
+      return [];
+    }
+  }
+
   // ── Public: tier-aware recipient resolution ──────────────────────────────
   // Resolves the user IDs to notify for a given action owner at a given
   // tier (1, 2, or 3).
@@ -269,28 +301,13 @@ class ProspectingEscalationService {
     const managerId = managerRes.rows[0]?.manager_id;
     if (managerId) recipients.add(managerId);
 
-    // Tier 2 (additive): the client's team lead(s). Org-checked via the join
-    // to clients, and limited to active org members (mirrors the admin
-    // fallback below). Best-effort — a resolution failure here must not stop
-    // the rest of the ladder from being notified.
+    // Tier 2 (additive): the client's team lead(s). Org-checked + active-member
+    // checked inside resolveClientLeads() (Phase 6 extraction — one shared
+    // query). Best-effort — a resolution failure there returns [] and never
+    // stops the rest of the ladder from being notified.
     if (clientId) {
-      try {
-        const leadRes = await db.query(
-          `SELECT ctm.user_id
-             FROM client_team_members ctm
-             JOIN clients   c  ON c.id = ctm.client_id
-             JOIN org_users ou ON ou.user_id = ctm.user_id
-                               AND ou.org_id = c.org_id
-                               AND ou.is_active = TRUE
-            WHERE ctm.client_id = $1
-              AND c.org_id      = $2
-              AND ctm.role      = 'lead'`,
-          [clientId, orgId]
-        );
-        leadRes.rows.forEach(r => recipients.add(r.user_id));
-      } catch (err) {
-        console.warn('⚠️  resolveEscalationRecipients: client-lead lookup failed:', err.message);
-      }
+      const leads = await this.resolveClientLeads(orgId, clientId);
+      leads.forEach(id => recipients.add(id));
     }
 
     if (tier < 3) return recipients;

@@ -46,6 +46,8 @@ const FILES = {
   orgadmin:   'orgadmin.html',
   enduser:    'enduser.html',
   extension:  'extension.html',
+  'campaigns-user':  'campaigns-user.html',   // rep-facing: Running Campaigns
+  'campaigns-admin': 'campaigns-admin.html',  // admin-facing: Campaign Setup
 };
 
 // Map an app "active role" slug to the guide it should open.
@@ -67,9 +69,9 @@ async function isSuperAdmin(userId) {
 function guidesFor(orgRole, superAdmin) {
   // 'extension' first so the fallback primary (last element) stays a role guide.
   // Every role gets the Chrome Extension guide.
-  const g = ['extension', 'enduser'];
-  if (orgRole === 'owner' || orgRole === 'admin') g.push('orgadmin');
-  if (superAdmin) { g.push('orgadmin', 'superadmin'); }
+  const g = ['extension', 'campaigns-user', 'enduser'];
+  if (orgRole === 'owner' || orgRole === 'admin') g.push('campaigns-admin', 'orgadmin');
+  if (superAdmin) { g.push('campaigns-admin', 'orgadmin', 'superadmin'); }
   return Array.from(new Set(g));
 }
 
@@ -86,7 +88,7 @@ function parseCookies(header) {
 // see the app's localStorage from this origin, so we filter server-side here).
 function filterLandingCards(html, allowed) {
   return html.replace(
-    /\n\s*<a class="lp-card" data-guide="([a-z]+)"[\s\S]*?<\/a>\n/g,
+    /\n\s*<a class="lp-card" data-guide="([a-z-]+)"[\s\S]*?<\/a>\n/g,
     (match, guide) => (allowed.includes(guide) ? match : '\n')
   );
 }
