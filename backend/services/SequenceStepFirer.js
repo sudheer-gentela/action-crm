@@ -110,7 +110,24 @@ async function resolveSender(dbClient, orgId, userId, clientId) {
 
     if (r.rows[0]) return r.rows[0];
 
-    // Client has no active sender — fall back to rep sender with a warning
+    // Client has no active sender. Phase 3 (2026_53): if the client requires
+    // a client-owned sender, do NOT borrow the rep's personal mailbox — return
+    // null. Draft creation treats a null sender as "no signature" (non-fatal
+    // by design); the hard enforcement happens at send time (auto-send via
+    // pickEmailSenderWithCapacity, manual via /drafts/:logId/send).
+    const pol = await dbClient.query(
+      `SELECT require_client_sender FROM clients WHERE id = $1 AND org_id = $2`,
+      [clientId, orgId]
+    );
+    if (pol.rows[0]?.require_client_sender === true) {
+      console.warn(
+        `SequenceStepFirer: no active client sender for client_id=${clientId} ` +
+        `(org ${orgId}) and require_client_sender is set — NOT falling back to rep sender`
+      );
+      return null;
+    }
+
+    // Legacy behaviour (flag off): fall back to rep sender with a warning
     console.warn(
       `SequenceStepFirer: no active client sender for client_id=${clientId} ` +
       `(org ${orgId}) — falling back to rep sender for user ${userId}`
@@ -149,7 +166,10 @@ async function resolveSender(dbClient, orgId, userId, clientId) {
 // firer DEFER to the next tick. Manual sends (sequences.routes.js draft send)
 // are NOT routed through here — a human sends whenever they choose.
 //
-// Returns: { sender, status: 'ok' | 'all_maxed' | 'cooling_down' | 'no_accounts' }
+// Returns: { sender, status: 'ok' | 'all_maxed' | 'cooling_down' | 'no_accounts' | 'client_sender_required' }
+// 'client_sender_required' (Phase 3, 2026_53): the prospect's client has no
+// active client-owned sender AND clients.require_client_sender is set — the
+// caller must FAIL the step visibly, never fall back to the rep's mailbox.
 async function pickEmailSenderWithCapacity(dbClient, orgId, userId, clientId, settings, now = new Date(), allowedSenderIds = null) {
   const defaultLimit    = settings?.defaultDailyLimit ?? 50;
   const ceiling         = settings?.dailyLimitCeiling ?? 100;
@@ -172,6 +192,19 @@ async function pickEmailSenderWithCapacity(dbClient, orgId, userId, clientId, se
       [orgId, clientId]
     );
     rows = r.rows;
+    // Client has no active sender. Phase 3 (2026_53): a client that requires
+    // a client-owned sender never borrows the rep's pool — surface a distinct
+    // status so the caller fails the step VISIBLY (failAndPause) rather than
+    // deferring forever or sending from the wrong identity.
+    if (!rows.length) {
+      const pol = await dbClient.query(
+        `SELECT require_client_sender FROM clients WHERE id = $1 AND org_id = $2`,
+        [clientId, orgId]
+      );
+      if (pol.rows[0]?.require_client_sender === true) {
+        return { sender: null, status: 'client_sender_required' };
+      }
+    }
     // Fall back to rep senders if the client has none (mirrors resolveSender).
     if (!rows.length) {
       const rr = await dbClient.query(
@@ -1667,13 +1700,15 @@ const SequenceStepFirer = {
             );
             continue;
           }
-          if (pick.status === 'no_accounts' || !pick.sender) {
+          if (pick.status === 'no_accounts' || pick.status === 'client_sender_required' || !pick.sender) {
             await failAndPause(client, {
               orgId: enrollment.org_id, enrollmentId: enrollment.id, stepId: step.id,
               prospectId: enrollment.prospect_id, enrolledBy: enrollment.enrolled_by,
               seqName: enrollment.seq_name, stepOrder: enrollment.current_step,
               channel: 'email',
-              message: 'No active email sender connected — connect Gmail or Outlook in Settings → Outreach.',
+              message: pick.status === 'client_sender_required'
+                ? 'This client requires its own sender mailbox and none is connected — connect Gmail or Outlook for the client in Agency → client → Senders (or disable "Require client mailbox").'
+                : 'No active email sender connected — connect Gmail or Outlook in Settings → Outreach.',
             });
             errors++;
             continue;
@@ -1811,7 +1846,9 @@ const SequenceStepFirer = {
                 prospectId: enrollment.prospect_id, enrolledBy: enrollment.enrolled_by,
                 seqName: enrollment.seq_name, stepOrder: enrollment.current_step,
                 channel: 'email',
-                message: 'Email sender disconnected — reconnect in Settings → Outreach, then resume.',
+                message: failover.status === 'client_sender_required'
+                  ? 'This client requires its own sender mailbox and none is connected — connect Gmail or Outlook for the client in Agency → client → Senders, then resume.'
+                  : 'Email sender disconnected — reconnect in Settings → Outreach, then resume.',
               });
               errors++;
               continue;

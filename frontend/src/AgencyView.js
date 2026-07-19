@@ -640,6 +640,10 @@ function SendersTab({ clientId }) {
   const [connecting,    setConnecting]    = useState(''); // 'gmail' | 'outlook' | ''
   const [editingId,     setEditingId]     = useState(null);
   const [removingId,    setRemovingId]    = useState(null);
+  // Phase 3 (2026_53): per-client hard block on the rep-mailbox fallback.
+  // null = policy not loaded yet (toggle hidden until it is).
+  const [requireClientSender, setRequireClientSender] = useState(null);
+  const [savingPolicy,        setSavingPolicy]        = useState(false);
 
   const loadSenders = useCallback(async () => {
     setLoading(true); setError('');
@@ -654,6 +658,27 @@ function SendersTab({ clientId }) {
   }, [clientId]);
 
   useEffect(() => { loadSenders(); }, [loadSenders]);
+
+  // Load the client's sender policy alongside the sender list (own fetch so a
+  // failure here never blocks the sender management UI).
+  useEffect(() => {
+    apiFetch(`/clients/${clientId}`)
+      .then(r => setRequireClientSender(r.client?.require_client_sender === true))
+      .catch(() => setRequireClientSender(null));
+  }, [clientId]);
+
+  const handleTogglePolicy = async () => {
+    const next = !requireClientSender;
+    setSavingPolicy(true); setError('');
+    try {
+      const r = await apiFetch(`/clients/${clientId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ require_client_sender: next }),
+      });
+      setRequireClientSender(r.client?.require_client_sender === true);
+    } catch (err) { setError(err.message); }
+    finally { setSavingPolicy(false); }
+  };
 
   const handleConnect = async (provider) => {
     setConnecting(provider); setError('');
@@ -729,6 +754,40 @@ function SendersTab({ clientId }) {
       </div>
 
       {error && <ErrorBox msg={error} />}
+
+      {/* ── Sender policy (Phase 3, 2026_53) ── */}
+      {requireClientSender !== null && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '12px 16px', marginBottom: 16, borderRadius: 10,
+          background: requireClientSender ? '#F0FDFA' : '#f9fafb',
+          border: `1px solid ${requireClientSender ? '#CCFBF1' : '#e5e7eb'}`,
+        }}>
+          <div style={{ paddingRight: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>
+              Require client mailbox
+            </div>
+            <div style={{ fontSize: 11.5, color: '#6b7280', marginTop: 2, lineHeight: 1.5 }}>
+              {requireClientSender
+                ? "On — this client's emails only send from the mailboxes connected above. If none is active, sends fail visibly instead of using a rep's personal mailbox."
+                : "Off — if no client mailbox is connected, emails fall back to the sending rep's personal mailbox (their address and signature)."}
+            </div>
+          </div>
+          <button
+            onClick={handleTogglePolicy}
+            disabled={savingPolicy}
+            style={{
+              padding: '6px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+              cursor: savingPolicy ? 'default' : 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap',
+              border: `1px solid ${requireClientSender ? TEAL : '#d1d5db'}`,
+              background: requireClientSender ? TEAL : '#fff',
+              color: requireClientSender ? '#fff' : '#374151',
+            }}
+          >
+            {savingPolicy ? '…' : (requireClientSender ? 'Required ✓' : 'Not required')}
+          </button>
+        </div>
+      )}
 
       {/* ── Empty state ── */}
       {loading ? (

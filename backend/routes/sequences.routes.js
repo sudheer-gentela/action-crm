@@ -1617,28 +1617,79 @@ router.post('/drafts/:logId/send', async (req, res) => {
     }
 
     // ── 2. Select sender account ───────────────────────────────────────────
-    // CHANGED: AND client_id IS NULL on both branches — rep's personal senders only.
-    // Client senders are selected automatically by SequenceStepFirer at draft
-    // creation time; the rep sends from whichever account the draft was created for.
+    // Phase 3 (2026_53): mirrors SequenceStepFirer — a client prospect's
+    // manual send prefers the CLIENT's sender; previously both branches were
+    // hard-scoped to the rep's personal senders, so every manual send for a
+    // client prospect went out from the rep's own mailbox regardless of the
+    // draft-time signature. With require_client_sender set on the client and
+    // no active client sender, the send is blocked with an actionable 400
+    // instead of silently using the wrong identity.
+    const prospectClientId = prospect.client_id || null;
+    let requireClientSender = false;
+    if (prospectClientId) {
+      const polRes = await client.query(
+        `SELECT require_client_sender FROM clients WHERE id = $1 AND org_id = $2`,
+        [prospectClientId, req.orgId]
+      );
+      requireClientSender = polRes.rows[0]?.require_client_sender === true;
+    }
+
     let sender;
     if (senderAccountId) {
+      // Explicit pick: the rep's own personal sender, OR a sender owned by
+      // THIS prospect's client. Never another client's sender.
       const r = await client.query(
         `SELECT * FROM prospecting_sender_accounts
-          WHERE id=$1 AND org_id=$2 AND user_id=$3 AND client_id IS NULL AND is_active=true`,
-        [senderAccountId, req.orgId, req.user.userId]
+          WHERE id=$1 AND org_id=$2 AND is_active=true
+            AND ( (user_id=$3 AND client_id IS NULL)
+               OR ($4::int IS NOT NULL AND client_id=$4) )`,
+        [senderAccountId, req.orgId, req.user.userId, prospectClientId]
       );
       if (!r.rows.length) return res.status(404).json({ error: { message: 'Sender account not found or inactive' } });
       sender = r.rows[0];
+      if (requireClientSender && sender.client_id == null) {
+        return res.status(400).json({
+          error: {
+            message: 'This client requires its own sender mailbox — pick one of the client\'s connected accounts (Agency → client → Senders).',
+            code: 'CLIENT_SENDER_REQUIRED',
+          }
+        });
+      }
     } else {
-      const r = await client.query(
-        `SELECT * FROM prospecting_sender_accounts
-          WHERE org_id=$1 AND user_id=$2 AND client_id IS NULL AND is_active=true
-          ORDER BY
-            (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
-            last_sent_at ASC NULLS FIRST
-          LIMIT 1`,
-        [req.orgId, req.user.userId]
-      );
+      // Auto-rotation: client senders first (least-sent), then — unless the
+      // client forbids it — the rep's personal senders. Same ordering as the
+      // firer's resolveSender().
+      let r = { rows: [] };
+      if (prospectClientId) {
+        r = await client.query(
+          `SELECT * FROM prospecting_sender_accounts
+            WHERE org_id=$1 AND client_id=$2 AND is_active=true
+            ORDER BY
+              (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
+              last_sent_at ASC NULLS FIRST
+            LIMIT 1`,
+          [req.orgId, prospectClientId]
+        );
+        if (!r.rows.length && requireClientSender) {
+          return res.status(400).json({
+            error: {
+              message: 'This client requires its own sender mailbox and none is connected — connect Gmail or Outlook for the client in Agency → client → Senders (or disable "Require client mailbox").',
+              code: 'CLIENT_SENDER_REQUIRED',
+            }
+          });
+        }
+      }
+      if (!r.rows.length) {
+        r = await client.query(
+          `SELECT * FROM prospecting_sender_accounts
+            WHERE org_id=$1 AND user_id=$2 AND client_id IS NULL AND is_active=true
+            ORDER BY
+              (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
+              last_sent_at ASC NULLS FIRST
+            LIMIT 1`,
+          [req.orgId, req.user.userId]
+        );
+      }
       if (!r.rows.length) {
         return res.status(400).json({
           error: { message: 'No active sender accounts. Connect a Gmail or Outlook account in Settings → Outreach.', code: 'NO_SENDER_ACCOUNTS' }

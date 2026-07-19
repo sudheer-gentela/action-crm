@@ -44,12 +44,21 @@ const crypto            = require('crypto');
 const { pool }          = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext }    = require('../middleware/orgContext.middleware');
+const requireModule     = require('../middleware/requireModule.middleware');
 
 // Google + Outlook OAuth helpers (reuse existing services)
 const { getAuthUrl: getGoogleAuthUrl }  = require('../services/googleService');
 const { getAuthUrl: getOutlookAuthUrl } = require('../services/outlookService');
 
-router.use(authenticateToken, orgContext);
+// Phase 3 (2026_53): the whole agency-side surface is gated on the agency
+// module (settings.modules.agency, allowed+enabled — 404 when off, matching
+// prospecting/contracts convention). Previously any authenticated org user in
+// ANY org could hit these endpoints; only the frontend hid the tab. Safe for
+// client PORTAL users: the portal authenticates via its own magic-link router
+// (client-portal.routes.js) and never touches /api/clients. The OAuth
+// CALLBACKS also live elsewhere (google/outlook routes) — only the
+// authenticated connect-URL generation is here.
+router.use(authenticateToken, orgContext, requireModule('agency'));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS
@@ -214,7 +223,8 @@ router.get('/:id', async (req, res) => {
 // PUT /:id — update client
 // ─────────────────────────────────────────────────────────────────────────────
 router.put('/:id', async (req, res) => {
-  const { name, status, service_start_date, service_notes, logo_url, portal_enabled } = req.body;
+  const { name, status, service_start_date, service_notes, logo_url, portal_enabled,
+          require_client_sender } = req.body;
   try {
     const { rows } = await pool.query(
       `UPDATE clients
@@ -224,13 +234,15 @@ router.put('/:id', async (req, res) => {
               service_notes      = COALESCE($4, service_notes),
               logo_url           = COALESCE($5, logo_url),
               portal_enabled     = COALESCE($6, portal_enabled),
+              require_client_sender = COALESCE($9, require_client_sender),
               updated_at         = NOW()
         WHERE id = $7 AND org_id = $8 AND archived_at IS NULL
         RETURNING *`,
       [name || null, status || null, service_start_date || null,
        service_notes || null, logo_url || null,
        portal_enabled !== undefined ? portal_enabled : null,
-       req.params.id, req.orgId]
+       req.params.id, req.orgId,
+       require_client_sender !== undefined ? require_client_sender === true : null]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Client not found' } });
     res.json({ client: rows[0] });
