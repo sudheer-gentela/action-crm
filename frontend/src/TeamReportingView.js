@@ -117,6 +117,11 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
   const [windowState, setWindowState] = useState({ kind: 'preset', windowDays: 30 });
   const [campaignFilter, setCampaignFilter] = useState([]);   // multi-select campaign IDs
   const [allCampaigns, setAllCampaigns] = useState([]);       // for the multi-select dropdown
+  // Agency Phase 4: client dimension. clients=[] (fetch failed / module off /
+  // none exist) hides both the filter and the "By client" tab entirely, so
+  // non-agency orgs see a byte-identical UI.
+  const [clients, setClients] = useState([]);
+  const [clientFilter, setClientFilter] = useState('');       // '' = all clients
   const [showCampaignDropdown, setShowCampaignDropdown] = useState(false);
   const [error, setError] = useState(null);
 
@@ -167,6 +172,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
   const [repData,        setRepData]        = useState(null);
   const [campaignData,   setCampaignData]   = useState(null);
   const [sequenceData,   setSequenceData]   = useState(null);
+  const [clientData,     setClientData]     = useState(null);   // Agency Phase 4
   const [tabLoading,     setTabLoading]     = useState(false);
 
   // Refs to avoid stale closures in async loads
@@ -187,6 +193,16 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
         // If prefs endpoint fails, default depth and continue.
         setDepth('direct');
       });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Agency Phase 4: load clients for the filter + "By client" tab. 404 when
+  // the agency module is off (requireModule) — swallow and hide the feature.
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch('/clients')
+      .then(r => { if (!cancelled) setClients(r.clients || []); })
+      .catch(() => { if (!cancelled) setClients([]); });
     return () => { cancelled = true; };
   }, []);
 
@@ -234,8 +250,9 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
     let q = `depth=${depth || 'direct'}`;
     q += windowToQueryParams(windowState);
     if (campaignFilter.length > 0) q += `&campaignIds=${arrayToCsv(campaignFilter)}`;
+    if (clientFilter) q += `&clientId=${clientFilter}`;
     return q;
-  }, [depth, windowState, campaignFilter]);
+  }, [depth, windowState, campaignFilter, clientFilter]);
 
   const loadTab = useCallback(async (which) => {
     if (!depth) return;     // wait for scope hydration
@@ -244,6 +261,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
     if (which === 'rep')      url = `/reporting/sequences/team-by-rep?${queryString}`;
     if (which === 'campaign') url = `/reporting/sequences/team-overview?${queryString}`;
     if (which === 'sequence') url = `/reporting/sequences/team-by-sequence?${queryString}`;
+    if (which === 'client')   url = `/reporting/sequences/team-by-client?${queryString}`;
     if (!url) return;       // 'wbr' and 'insights' tabs fetch their own data
                             // (WbrGrid / InsightsPanel) — without this guard the
                             // generic loader fired apiFetch(undefined) → /apiundefined 404
@@ -258,6 +276,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
       if (which === 'rep')      setRepData(res);
       if (which === 'campaign') setCampaignData(res);
       if (which === 'sequence') setSequenceData(res);
+      if (which === 'client')   setClientData(res);
     } catch (err) {
       if (reqId !== lastReqRef.current) return;
       setError(`Failed to load ${which}: ${err.message}`);
@@ -342,6 +361,7 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
           setTabExplicitlySet(true);
           if (t !== 'campaign') setDrillCampaignId(null);   // exit drill-down
         }}
+        showClientTab={clients.length > 0}
       />
       <Toolbar
         depth={depth}
@@ -353,6 +373,10 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
         allCampaigns={allCampaigns}
         showCampaignDropdown={showCampaignDropdown}
         onToggleCampaignDropdown={() => setShowCampaignDropdown(s => !s)}
+        clients={clients}
+        clientFilter={clientFilter}
+        onClientFilterChange={setClientFilter}
+        showClientFilter={clients.length > 0 && tab !== 'client' && tab !== 'insights' && tab !== 'linkedin' && tab !== 'activity' && tab !== 'lifunnel' && tab !== 'wbr'}   // 'By client' IS the client rollup
         showCampaignFilter={tab !== 'campaign' && tab !== 'insights' && tab !== 'linkedin' && tab !== 'activity' && tab !== 'lifunnel'}   // tab 'campaign' IS the campaign list; insights org-level; LinkedIn risk has no campaign filter; activity spans modules beyond campaigns
         showWindowPicker={tab !== 'wbr' && tab !== 'insights' && tab !== 'linkedin' && tab !== 'lifunnel'}           // WBR/insight windows fixed; LinkedIn risk has its own window picker
       />
@@ -393,6 +417,11 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
             setProspectPanel({ sequenceId, sequenceName })}
           onDrill={openDrill}
         />
+      )}
+
+      {tab === 'client' && (
+        <ClientTab data={clientData} loading={tabLoading} windowState={windowState}
+                   onSetWindow={setWindowState} />
       )}
 
       {tab === 'sequence' && (
@@ -486,10 +515,12 @@ function Header({ scope }) {
 // ──────────────────────────────────────────────────────────────────────────
 // TabBar
 // ──────────────────────────────────────────────────────────────────────────
-function TabBar({ tab, onTabChange }) {
+function TabBar({ tab, onTabChange, showClientTab = false }) {
   const tabs = [
     { key: 'rep',      label: 'By rep' },
     { key: 'campaign', label: 'By campaign' },
+    // Agency Phase 4: only rendered for orgs that actually have clients.
+    ...(showClientTab ? [{ key: 'client', label: 'By client' }] : []),
     { key: 'sequence', label: 'By sequence' },
     { key: 'wbr',      label: 'WBR' },        // Insights/WBR Phase 5
     { key: 'insights', label: 'Insights' },   // Insights/WBR Phase 5
@@ -521,6 +552,8 @@ function Toolbar({
   campaignFilter, onCampaignFilterChange,
   allCampaigns, showCampaignDropdown, onToggleCampaignDropdown,
   showCampaignFilter,
+  // Agency Phase 4
+  clients = [], clientFilter = '', onClientFilterChange = null, showClientFilter = false,
   showWindowPicker = true,   // Insights/WBR Phase 5: WBR/Insights tabs use fixed windows
 }) {
   const isPreset = windowState.kind === 'preset';
@@ -590,6 +623,23 @@ function Toolbar({
           </span>
         )}
       </div>
+      )}
+
+      {showClientFilter && (
+        <div className="trv-toolbar-group trv-toolbar-right">
+          <span className="trv-toolbar-label">Client:</span>
+          <select
+            className="trv-window-btn"
+            value={clientFilter}
+            onChange={e => onClientFilterChange && onClientFilterChange(e.target.value)}
+            style={{ cursor: 'pointer' }}
+          >
+            <option value="">All</option>
+            {clients.map(cl => (
+              <option key={cl.id} value={cl.id}>{cl.name}</option>
+            ))}
+          </select>
+        </div>
       )}
 
       {showCampaignFilter && (
@@ -1169,7 +1219,16 @@ function CampaignTab({ data, loading, scope, onDrillIn, onOpenProspects, windowS
                       onClick={() => setExpandedId(expanded ? null : c.campaignId)}
                     >
                       <td className="trv-chevron">{expanded ? '▾' : '›'}</td>
-                      <td className="trv-link">{c.name || <span className="trv-muted">(unnamed campaign)</span>}</td>
+                      <td className="trv-link">
+                        {c.name || <span className="trv-muted">(unnamed campaign)</span>}
+                        {c.clientName && (
+                          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 600, color: '#0F766E',
+                                         background: '#F0FDFA', border: '1px solid #CCFBF1',
+                                         borderRadius: 10, padding: '1px 7px', whiteSpace: 'nowrap' }}>
+                            🏢 {c.clientName}
+                          </span>
+                        )}
+                      </td>
                       <td>
                         {c.owner ? c.owner.name : <span className="trv-muted">—</span>}
                         {c.owner && depthBadge(c.owner)}
@@ -1252,6 +1311,88 @@ function CampaignTab({ data, loading, scope, onDrillIn, onOpenProspects, windowS
 // which is invisible to the campaign tab. Expandable rows show all top
 // users with their numbers + last activity.
 // ──────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────
+// ClientTab — Agency Phase 4: per-client rollup (/team-by-client)
+//
+// Campaign-grain attribution: a client's numbers are the sum of its
+// campaigns' numbers, so this tab and "By campaign" reconcile exactly.
+// Campaigns without a client roll into the "No client" row.
+// ──────────────────────────────────────────────────────────────────────────
+function ClientTab({ data, loading, windowState, onSetWindow }) {
+  if (loading && !data) return <LoadingState />;
+  if (!data) return null;
+  const rows = data.clients || [];
+  const allZero = rows.length > 0 && rows.every(r =>
+    (r.sent || 0) === 0 && (r.enrolled || 0) === 0 && (r.replied || 0) === 0
+  );
+  const totals = rows.reduce((a, r) => ({
+    campaigns: a.campaigns + (r.campaigns || 0),
+    enrolled:  a.enrolled  + (r.enrolled  || 0),
+    sent:      a.sent      + (r.sent      || 0),
+    replied:   a.replied   + (r.replied   || 0),
+    bounced:   a.bounced   + (r.bounced   || 0),
+  }), { campaigns: 0, enrolled: 0, sent: 0, replied: 0, bounced: 0 });
+  return (
+    <div className="trv-tab-body">
+      <MetricTiles
+        tiles={[
+          { label: 'Clients',   value: fmtNum(rows.filter(r => r.clientId).length) },
+          { label: 'Campaigns', value: fmtNum(totals.campaigns) },
+          { label: 'Enrolled',  value: fmtNum(totals.enrolled) },
+          { label: 'Sent',      value: fmtNum(totals.sent) },
+          { label: 'Replied',   value: fmtNum(totals.replied) },
+          { label: 'Bounced',   value: fmtNum(totals.bounced) },
+        ]}
+      />
+      <SmartEmpty rowsExist={rows.length > 0} allZero={allZero} windowState={windowState}
+                  onSetWindow={onSetWindow} entityLabel="client" />
+      {rows.length > 0 && (
+        <div className="trv-table-wrap">
+          <table className="trv-table">
+            <thead>
+              <tr>
+                <th>Client</th>
+                <th className="num">Campaigns</th>
+                <th className="num">Enrolled</th>
+                <th className="num" style={GROUP_EDGE}>Email sent</th>
+                <th className="num">Email replied</th>
+                <th className="num" title="Hard bounces + blocks + soft bounces across the client's campaigns.">Bounced</th>
+                <th className="num" style={GROUP_EDGE}>LI sent</th>
+                <th className="num">LI replied</th>
+                <th className="num" style={GROUP_EDGE}>Reply %</th>
+                <th>Last activity</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => {
+                const isZero = (r.sent || 0) === 0 && (r.enrolled || 0) === 0;
+                return (
+                  <tr key={r.clientId ?? 'none'} className={isZero ? 'trv-row-muted' : ''}>
+                    <td className="trv-link">
+                      {r.clientId
+                        ? <>🏢 {r.clientName}</>
+                        : <span className="trv-muted">No client (internal)</span>}
+                    </td>
+                    <td className="num">{fmtNum(r.campaigns)}</td>
+                    <td className="num">{fmtNum(r.enrolled)}</td>
+                    <td className="num" style={GROUP_EDGE}>{fmtNum(r.sentEmail)}</td>
+                    <td className="num">{fmtNum(r.repliedEmail)}</td>
+                    <td className="num">{fmtNum(r.bounced)}</td>
+                    <td className="num" style={GROUP_EDGE}>{fmtNum(r.sentLinkedin)}</td>
+                    <td className="num">{fmtNum(r.repliedLinkedin)}</td>
+                    <td className="num" style={GROUP_EDGE}>{fmtPct(r.repliedRate)}</td>
+                    <td>{fmtDate(r.lastActivityAt)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SequenceTab({ data, loading, scope, windowState, onSetWindow, onOpenProspects, onDrill }) {
   const [expandedId, setExpandedId] = useState(null);
   if (loading && !data) return <LoadingState />;

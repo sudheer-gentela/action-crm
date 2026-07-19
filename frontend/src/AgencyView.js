@@ -480,12 +480,13 @@ function ClientDetail({ clientId, onBack }) {
 
         {tab === 'overview' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12 }}>
               {[
                 { label: 'Total Prospects', value: prospects?.length || 0,       color: TEAL },
                 { label: 'Emails Sent',     value: outreach?.totalSent || 0,     color: '#3b82f6' },
                 { label: 'Replies',         value: outreach?.totalReplies || 0,  color: '#059669' },
                 { label: 'Reply Rate',      value: `${outreach?.replyRate || 0}%`, color: '#f59e0b' },
+                { label: 'Calls Made',      value: outreach?.totalCalls || 0,    color: '#8b5cf6' },  // Agency Phase 4
               ].map(({ label, value, color }) => (
                 <div key={label} style={{ padding: '16px 18px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12 }}>
                   <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>{label}</div>
@@ -543,11 +544,12 @@ function ClientDetail({ clientId, onBack }) {
 
         {tab === 'outreach' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12 }}>
               {[
                 { label: 'Total Sent',    value: outreach?.totalSent    || 0,       color: '#3b82f6' },
                 { label: 'Total Replies', value: outreach?.totalReplies || 0,       color: '#059669' },
                 { label: 'Reply Rate',    value: `${outreach?.replyRate || 0}%`,    color: '#f59e0b' },
+                { label: 'Calls Made',    value: outreach?.totalCalls   || 0,       color: '#8b5cf6' },  // Agency Phase 4
               ].map(({ label, value, color }) => (
                 <div key={label} style={{ padding: '14px 16px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10 }}>
                   <div style={{ fontSize: 11, color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 6 }}>{label}</div>

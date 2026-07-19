@@ -125,6 +125,52 @@ function parseTimeWindow(query) {
 }
 
 /**
+ * Agency Phase 4: resolve an optional clientId query param into the id list
+ * of that client's campaigns (prospecting_campaigns.client_id, 2026_52).
+ *
+ * The client dimension deliberately rides the EXISTING campaignIds machinery
+ * rather than adding p.client_id predicates inside every CTE: the returned
+ * list is intersected with any explicit campaignIds filter and then flows
+ * through resolveCampaignFilter / campaignParam untouched, so all three team
+ * lenses stay consistent with each other by construction.
+ *
+ * Semantics (documented, not accidental): this is CAMPAIGN-grain client
+ * attribution — activity counts for a client are activity in that client's
+ * campaigns. A client prospect enrolled outside any campaign is not counted
+ * here (it still appears in the client dashboard, which is prospect-grain).
+ *
+ * Returns:
+ *   null  — no clientId param → no client filter
+ *   int[] — possibly EMPTY (client exists but has no campaigns, or bad id;
+ *           callers already short-circuit empty campaign filters to an
+ *           empty response, which is exactly right)
+ */
+async function resolveClientCampaignIds(orgId, rawClientId) {
+  if (rawClientId === undefined || rawClientId === null || rawClientId === '') return null;
+  const cid = parseInt(rawClientId, 10);
+  if (!Number.isInteger(cid)) return [];
+  const r = await pool.query(
+    `SELECT id FROM prospecting_campaigns WHERE org_id = $1 AND client_id = $2`,
+    [orgId, cid]
+  );
+  return r.rows.map(x => x.id);
+}
+
+/**
+ * Agency Phase 4: combine the explicit campaignIds filter with the
+ * client-derived campaign list. null = "no filter" on either side.
+ *   null ∩ null → null       (no filter at all)
+ *   null ∩ list → list       (only one side filters)
+ *   list ∩ list → set-intersection (possibly empty → empty response upstream)
+ */
+function mergeCampaignFilters(a, b) {
+  if (a === null) return b;
+  if (b === null) return a;
+  const bs = new Set(b);
+  return a.filter(id => bs.has(id));
+}
+
+/**
  * Apply campaign-id filter against the viewer's scope.
  * Same pattern as ReportingScopeService for userIds — silently drop
  * out-of-scope IDs, never error, to avoid leaking which IDs exist.
@@ -363,6 +409,9 @@ router.get('/sequences/team-overview', async (req, res) => {
   try {
     const explicitUserIds = parseIntListParam(req.query.userIds);
     const requestedCampaignIds = parseIntListParam(req.query.campaignIds);
+    // Agency Phase 4: optional ?clientId= narrows to that client's campaigns.
+    // Rides the existing campaignIds machinery (see resolveClientCampaignIds).
+    const clientCampaignIds = await resolveClientCampaignIds(req.orgId, req.query.clientId);
 
     const window = parseTimeWindow(req.query);
 
@@ -374,7 +423,7 @@ router.get('/sequences/team-overview', async (req, res) => {
 
     const scopeUserIds = scope.userIds;
     const campaignIdFilter = await resolveCampaignFilter(
-      req.orgId, scopeUserIds, requestedCampaignIds
+      req.orgId, scopeUserIds, mergeCampaignFilters(requestedCampaignIds, clientCampaignIds)
     );
 
     // ── Per-campaign aggregates ─────────────────────────────────────
@@ -528,6 +577,8 @@ router.get('/sequences/team-overview', async (req, res) => {
          c.id AS campaign_id,
          c.name,
          c.owner_id,
+         c.client_id,
+         cl.name AS client_name,
          u.first_name, u.last_name, u.email,
          COALESCE(e.enrolled, 0)  AS enrolled,
          COALESCE(l.drafts, 0)    AS drafts,
@@ -548,6 +599,7 @@ router.get('/sequences/team-overview', async (req, res) => {
          l.last_fired_at
        FROM prospecting_campaigns c
        LEFT JOIN users u ON u.id = c.owner_id
+       LEFT JOIN clients cl ON cl.id = c.client_id
        LEFT JOIN log_agg    l ON l.campaign_id = c.id
        LEFT JOIN enroll_agg e ON e.campaign_id = c.id
        LEFT JOIN stalled_agg s ON s.campaign_id = c.id
@@ -575,6 +627,9 @@ router.get('/sequences/team-overview', async (req, res) => {
       return {
         campaignId: r.campaign_id,
         name:       r.name,
+        // Agency Phase 4: which client this campaign runs for (2026_52).
+        clientId:   r.client_id ?? null,
+        clientName: r.client_name ?? null,
         owner: r.owner_id ? {
           userId:           r.owner_id,
           name:             ownerName,
@@ -685,6 +740,9 @@ router.get('/sequences/team-by-rep', async (req, res) => {
   try {
     const explicitUserIds = parseIntListParam(req.query.userIds);
     const requestedCampaignIds = parseIntListParam(req.query.campaignIds);
+    // Agency Phase 4: optional ?clientId= narrows to that client's campaigns.
+    // Rides the existing campaignIds machinery (see resolveClientCampaignIds).
+    const clientCampaignIds = await resolveClientCampaignIds(req.orgId, req.query.clientId);
 
     const window = parseTimeWindow(req.query);
 
@@ -696,7 +754,7 @@ router.get('/sequences/team-by-rep', async (req, res) => {
 
     const scopeUserIds = scope.userIds;
     const campaignIdFilter = await resolveCampaignFilter(
-      req.orgId, scopeUserIds, requestedCampaignIds
+      req.orgId, scopeUserIds, mergeCampaignFilters(requestedCampaignIds, clientCampaignIds)
     );
 
     if (campaignIdFilter && campaignIdFilter.length === 0) {
@@ -1089,6 +1147,159 @@ router.get('/sequences/team-by-rep', async (req, res) => {
 //   Same as Phase 2: active enrollments whose latest log is older than
 //   7 days before the window's end. Definition is independent of windowDays.
 //
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/reporting/sequences/team-by-client — Agency Phase 4
+//
+// Per-CLIENT rollup of the same campaign-grain aggregates team-overview uses:
+// activity is attributed to a client through its campaigns (2026_52), so this
+// tab and the campaign tab reconcile by construction. Campaigns with no client
+// roll into a single { clientId: null } "No client" bucket so the totals
+// across rows always equal the campaign tab's totals for the same filters.
+//
+// Scope model is identical to team-overview: campaign row set = campaigns
+// with prospects owned by (or enrollments created by) in-scope users; reply
+// and bounce definitions come from the shared CTE builders so no lens can
+// drift from another.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/sequences/team-by-client', async (req, res) => {
+  try {
+    const explicitUserIds = parseIntListParam(req.query.userIds);
+    const window = parseTimeWindow(req.query);
+
+    const scope = await ReportingScopeService.resolveReportingScope(
+      req.user.userId,
+      req.orgId,
+      { depth: req.query.depth, explicitUserIds }
+    );
+    const scopeUserIds = scope.userIds;
+
+    const params = [req.orgId, scopeUserIds, window.startISO, window.endISO];
+
+    const perClientRes = await pool.query(
+      `WITH scoped_campaigns AS (
+         -- Same inclusion predicate as team-overview's campaign row set.
+         SELECT c.id, c.client_id
+           FROM prospecting_campaigns c
+          WHERE c.org_id = $1 AND (
+            EXISTS (SELECT 1 FROM prospects p
+                     WHERE p.campaign_id = c.id
+                       AND p.owner_id    = ANY($2::int[])
+                       AND p.deleted_at IS NULL)
+            OR EXISTS (SELECT 1 FROM sequence_enrollments se
+                            JOIN prospects p ON p.id = se.prospect_id
+                       WHERE p.campaign_id = c.id
+                         AND se.enrolled_by = ANY($2::int[]))
+          )
+       ),
+       log_agg AS (
+         SELECT
+           p.campaign_id,
+           COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed'))::int  AS sent,
+           COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed')
+                                  AND ssl.channel = 'email')::int           AS sent_email,
+           COUNT(*) FILTER (WHERE ssl.status IN ('sent','completed')
+                                  AND ssl.channel = 'linkedin')::int        AS sent_linkedin,
+           COUNT(*) FILTER (WHERE ssl.status = 'failed')::int               AS failed,
+           MAX(ssl.fired_at) AS last_fired_at
+         FROM sequence_step_logs ssl
+         JOIN sequence_enrollments se ON se.id = ssl.enrollment_id
+         JOIN prospects p             ON p.id = se.prospect_id
+         WHERE ssl.org_id    = $1
+           AND ssl.fired_at >= $3::timestamptz
+           AND ssl.fired_at <= $4::timestamptz
+           AND se.enrolled_by = ANY($2::int[])
+         GROUP BY p.campaign_id
+       ),
+       enroll_agg AS (
+         SELECT p.campaign_id, COUNT(*)::int AS enrolled
+           FROM sequence_enrollments se
+           JOIN prospects p ON p.id = se.prospect_id
+          WHERE se.org_id      = $1
+            AND se.enrolled_at >= $3::timestamptz
+            AND se.enrolled_at <= $4::timestamptz
+            AND se.enrolled_by = ANY($2::int[])
+          GROUP BY p.campaign_id
+       ),
+       ${replyEventsCte({ startParam: '$3', endParam: '$4' })},
+       reply_agg AS (
+         SELECT campaign_id,
+                COUNT(*)::int                                      AS replied,
+                COUNT(*) FILTER (WHERE channel = 'email')::int     AS replied_email,
+                COUNT(*) FILTER (WHERE channel = 'linkedin')::int  AS replied_linkedin
+           FROM reply_events
+          WHERE campaign_id IS NOT NULL
+          GROUP BY campaign_id
+       ),
+       ${bounceEventsCte({ startParam: '$3', endParam: '$4' })},
+       bounce_agg AS (
+         SELECT campaign_id, ${BOUNCE_COUNTERS}
+           FROM bounce_events
+          WHERE campaign_id IS NOT NULL
+          GROUP BY campaign_id
+       )
+       SELECT
+         sc.client_id,
+         cl.name AS client_name,
+         COUNT(DISTINCT sc.id)::int                    AS campaigns,
+         COALESCE(SUM(e.enrolled), 0)::int             AS enrolled,
+         COALESCE(SUM(l.sent), 0)::int                 AS sent,
+         COALESCE(SUM(l.sent_email), 0)::int           AS sent_email,
+         COALESCE(SUM(l.sent_linkedin), 0)::int        AS sent_linkedin,
+         COALESCE(SUM(l.failed), 0)::int               AS failed,
+         COALESCE(SUM(rp.replied), 0)::int             AS replied,
+         COALESCE(SUM(rp.replied_email), 0)::int       AS replied_email,
+         COALESCE(SUM(rp.replied_linkedin), 0)::int    AS replied_linkedin,
+         COALESCE(SUM(b.bounced), 0)::int              AS bounced,
+         COALESCE(SUM(b.bounced_hard), 0)::int         AS bounced_hard,
+         COALESCE(SUM(b.bounced_block), 0)::int        AS bounced_block,
+         COALESCE(SUM(b.bounced_soft), 0)::int         AS bounced_soft,
+         MAX(l.last_fired_at)                          AS last_activity_at
+       FROM scoped_campaigns sc
+       LEFT JOIN clients cl    ON cl.id = sc.client_id
+       LEFT JOIN log_agg    l  ON l.campaign_id  = sc.id
+       LEFT JOIN enroll_agg e  ON e.campaign_id  = sc.id
+       LEFT JOIN reply_agg  rp ON rp.campaign_id = sc.id
+       LEFT JOIN bounce_agg b  ON b.campaign_id  = sc.id
+       GROUP BY sc.client_id, cl.name
+       ORDER BY (sc.client_id IS NULL) ASC, sent DESC, cl.name ASC`,
+      params
+    );
+
+    const clients = perClientRes.rows.map(r => ({
+      clientId:       r.client_id,
+      clientName:     r.client_id ? r.client_name : null,   // null → UI renders "No client"
+      campaigns:      r.campaigns,
+      enrolled:       r.enrolled,
+      sent:           r.sent,
+      sentEmail:      r.sent_email,
+      sentLinkedin:   r.sent_linkedin,
+      failed:         r.failed,
+      replied:        r.replied,
+      repliedEmail:   r.replied_email,
+      repliedLinkedin:r.replied_linkedin,
+      bounced:        r.bounced,
+      bouncedHard:    r.bounced_hard,
+      bouncedBlock:   r.bounced_block,
+      bouncedSoft:    r.bounced_soft,
+      repliedRate:    _repliedRate(r.replied, r.sent),
+      lastActivityAt: r.last_activity_at,
+    }));
+
+    res.json({
+      scope,
+      period: {
+        startDate: window.startISO,
+        endDate:   window.endISO,
+        description: window.isoIntervalDescription,
+      },
+      clients,
+    });
+  } catch (err) {
+    console.error('GET /reporting/sequences/team-by-client', err);
+    res.status(500).json({ error: { message: 'Failed to load per-client reporting' } });
+  }
+});
+
 router.get('/sequences/team-by-sequence', async (req, res) => {
   try {
     const explicitUserIds      = parseIntListParam(req.query.userIds);
@@ -1105,11 +1316,15 @@ router.get('/sequences/team-by-sequence', async (req, res) => {
 
     const scopeUserIds = scope.userIds;
 
+    // Agency Phase 4: optional ?clientId= narrows to that client's campaigns
+    // before the scope intersection — same construction as the other tabs.
+    const clientCampaignIds = await resolveClientCampaignIds(req.orgId, req.query.clientId);
+
     // Resolve campaign filter through the same auth helper team-overview uses.
     // null = "no filter" (include orphan bucket); empty array = "filtered to
     // nothing" (return empty response).
     const campaignIdFilter = await resolveCampaignFilter(
-      req.orgId, scopeUserIds, requestedCampaignIds
+      req.orgId, scopeUserIds, mergeCampaignFilters(requestedCampaignIds, clientCampaignIds)
     );
 
     if (campaignIdFilter && campaignIdFilter.length === 0) {

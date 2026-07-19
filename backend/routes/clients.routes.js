@@ -517,6 +517,20 @@ router.get('/:id/dashboard', async (req, res) => {
       [req.params.id, weekStart, req.orgId]
     );
 
+    // Agency Phase 4: calls made to this client's prospects. Same prospect-
+    // grain attribution as the email stats above (calls.prospect_id →
+    // prospects.client_id); occurred_at is the call clock, mirroring sent_at.
+    const callsRes = await pool.query(
+      `SELECT
+         COUNT(*)::int                                                    AS total_calls,
+         COUNT(*) FILTER (WHERE c.occurred_at >= $2)::int                 AS calls_this_week,
+         COALESCE(SUM(c.duration_seconds), 0)::int                        AS total_call_seconds
+       FROM calls c
+       JOIN prospects p ON p.id = c.prospect_id
+       WHERE p.client_id = $1 AND c.org_id = $3`,
+      [req.params.id, weekStart, req.orgId]
+    );
+
     // Sequence performance
     const seqRes = await pool.query(
       `SELECT
@@ -607,6 +621,7 @@ router.get('/:id/dashboard', async (req, res) => {
     );
 
     const outreach = outreachRes.rows[0];
+    const callsRow = callsRes.rows[0] || {};
 
     res.json({
       client,
@@ -619,6 +634,10 @@ router.get('/:id/dashboard', async (req, res) => {
         replyRate: outreach.total_sent > 0
           ? ((outreach.total_replies / outreach.total_sent) * 100).toFixed(1)
           : '0.0',
+        // Agency Phase 4: voice channel alongside email.
+        totalCalls:       callsRow.total_calls        || 0,
+        callsThisWeek:    callsRow.calls_this_week    || 0,
+        totalCallSeconds: callsRow.total_call_seconds || 0,
       },
       sequences:      seqRes.rows,
       prospects:      prospectsRes.rows,
