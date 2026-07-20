@@ -43,6 +43,7 @@ router.get('/match', async (req, res) => {
       orgId: req.orgId,
       linkedinCompanyUrl: req.query.linkedinCompanyUrl || null,
       domain: req.query.domain || null,
+      linkedinCompanyId: req.query.linkedinCompanyId || null,
     });
     res.json({ success: true, ...match });
   } catch (err) {

@@ -2214,6 +2214,7 @@ router.post('/', async (req, res) => {
     const {
       firstName, lastName, email, phone, linkedinUrl, title, linkedinHeadline, location,
       companyName, companyDomain, companySize, companyIndustry, companyLinkedInUrl,
+      companyLinkedInId,
       accountId, source, playbookId, tags,
       // v1.8 extension contract: optional campaign assignment + sequence
       // enrollment performed atomically with creation. Previously dropped on
@@ -2374,6 +2375,7 @@ router.post('/', async (req, res) => {
       companyIndustry:     companyIndustry,
       companySize:         companySize,
       companyLinkedInUrl:  normalizeLinkedInCompanyUrl(companyLinkedInUrl),
+      companyLinkedInId:   companyLinkedInId || null,
       email:               email,
     });
     let resolvedAccountId = accountResolution.accountId;

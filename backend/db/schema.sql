@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict didbCRo4byblVG5SEB2O2WCc11rXqoaoCfNqx5jlytdeIcuNxmkv3aN6V0zNjhz
+\restrict K1JhLydikq0saU6Zb3dxWbRdVf7e5ETFsOHHcT4ZAWjYNmVPw3COuLQisp3B5Td
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -937,9 +937,17 @@ CREATE TABLE public.calls (
     updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     callback_requested_at timestamp with time zone,
     status character varying(32) DEFAULT 'logged'::character varying NOT NULL,
+    client_id integer,
     CONSTRAINT calls_direction_chk CHECK (((direction)::text = ANY ((ARRAY['outbound'::character varying, 'inbound'::character varying])::text[]))),
     CONSTRAINT calls_status_chk CHECK (((status)::text = ANY ((ARRAY['logged'::character varying, 'initiated'::character varying, 'ringing'::character varying, 'in_progress'::character varying, 'completed'::character varying, 'no_answer'::character varying, 'failed'::character varying, 'busy'::character varying, 'canceled'::character varying])::text[])))
 );
+
+
+--
+-- Name: COLUMN calls.client_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.calls.client_id IS 'Agency Phase 7A (2026_55): the client this call was made on behalf of, DENORMALIZED and STAMPED AT CREATION from the prospect (prospects.client_id, org-checked) at the four call-creation sites. NULL = no prospect (unmatched inbound) or prospect has no client (every non-agency org / CRM call). Frozen like an invoice line: prospect_id is never reassigned post-insert, and later reassigning the prospect to another client does NOT retro-change this. FK ON DELETE SET NULL so deleting a client never deletes call history. See 2026_55_calls_client_id.sql.';
 
 
 --
@@ -10092,6 +10100,13 @@ CREATE INDEX idx_calls_callback_due ON public.calls USING btree (org_id, callbac
 
 
 --
+-- Name: idx_calls_client_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_calls_client_id ON public.calls USING btree (client_id, occurred_at DESC) WHERE (client_id IS NOT NULL);
+
+
+--
 -- Name: idx_calls_contact; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -13617,6 +13632,14 @@ ALTER TABLE ONLY public.calls
 
 
 --
+-- Name: calls calls_client_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.calls
+    ADD CONSTRAINT calls_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.clients(id) ON DELETE SET NULL;
+
+
+--
 -- Name: calls calls_contact_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -16713,5 +16736,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict didbCRo4byblVG5SEB2O2WCc11rXqoaoCfNqx5jlytdeIcuNxmkv3aN6V0zNjhz
+\unrestrict K1JhLydikq0saU6Zb3dxWbRdVf7e5ETFsOHHcT4ZAWjYNmVPw3COuLQisp3B5Td
 

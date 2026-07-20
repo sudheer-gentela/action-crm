@@ -50,7 +50,7 @@ const SignalService        = require('./SignalService');
 const SignalRegistry       = require('./SignalRegistryService');
 const SignalActionSurfacer = require('./SignalActionSurfacer');
 const EnrichmentSignalIngest = require('./EnrichmentSignalIngestService');
-const { normalizeLinkedInCompanyUrl, normalizeDomain, resolveAccountId } = require('./domainResolver');
+const { normalizeLinkedInCompanyUrl, normalizeDomain, normalizeLinkedInCompanyId, resolveAccountId } = require('./domainResolver');
 
 const RECENT_POST_KEY = 'recent_company_post';
 const ABOUT_MAX_CHARS = 5000;
@@ -233,24 +233,58 @@ function extractSignals(capture) {
  * domain. Returns { accountId, accountName, matchedBy } or
  * { accountId: null, matchedBy: 'none' }.
  */
-async function matchAccount({ orgId, linkedinCompanyUrl, domain, client }) {
+async function matchAccount({ orgId, linkedinCompanyUrl, domain, linkedinCompanyId, client }) {
   const db = client || pool;
   const liUrl = normalizeLinkedInCompanyUrl ? normalizeLinkedInCompanyUrl(linkedinCompanyUrl) : (linkedinCompanyUrl || null);
+  const companyId = normalizeLinkedInCompanyId ? normalizeLinkedInCompanyId(linkedinCompanyId) : null;
+
+  // ── id-first: the numeric company id is the stable cross-surface key (the
+  //    only structured company key Sales Navigator exposes). Match it before
+  //    url/domain. Backfill the URL when missing on a hit (never overwrite). ──
+  if (companyId) {
+    const { rows } = await db.query(
+      `SELECT id, name, linkedin_company_url FROM accounts
+        WHERE org_id = $1 AND deleted_at IS NULL
+          AND linkedin_company_id = $2
+        ORDER BY id ASC LIMIT 1`,
+      [orgId, companyId]
+    );
+    if (rows.length) {
+      if (liUrl && !rows[0].linkedin_company_url) {
+        await db.query(
+          `UPDATE accounts SET linkedin_company_url = $2, updated_at = NOW()
+            WHERE id = $1 AND (linkedin_company_url IS NULL OR linkedin_company_url = '')`,
+          [rows[0].id, liUrl]
+        ).catch(() => {});
+      }
+      return { accountId: rows[0].id, accountName: rows[0].name, matchedBy: 'company_id' };
+    }
+  }
+
   if (liUrl) {
     const { rows } = await db.query(
-      `SELECT id, name FROM accounts
+      `SELECT id, name, linkedin_company_id FROM accounts
         WHERE org_id = $1 AND deleted_at IS NULL
           AND LOWER(linkedin_company_url) = LOWER($2)
         LIMIT 1`,
       [orgId, liUrl]
     );
-    if (rows.length) return { accountId: rows[0].id, accountName: rows[0].name, matchedBy: 'linkedin_url' };
+    if (rows.length) {
+      if (companyId && !rows[0].linkedin_company_id) {
+        await db.query(
+          `UPDATE accounts SET linkedin_company_id = $2, updated_at = NOW()
+            WHERE id = $1 AND (linkedin_company_id IS NULL OR linkedin_company_id = '')`,
+          [rows[0].id, companyId]
+        ).catch(() => {});
+      }
+      return { accountId: rows[0].id, accountName: rows[0].name, matchedBy: 'linkedin_url' };
+    }
   }
 
   const realDomain = normalizeDomain ? normalizeDomain(domain) : (domain || null);
   if (realDomain) {
     const { rows } = await db.query(
-      `SELECT id, name, linkedin_company_url FROM accounts
+      `SELECT id, name, linkedin_company_url, linkedin_company_id FROM accounts
         WHERE org_id = $1 AND deleted_at IS NULL
           AND LOWER(domain) = LOWER($2)
         LIMIT 1`,
@@ -263,6 +297,15 @@ async function matchAccount({ orgId, linkedinCompanyUrl, domain, client }) {
           `UPDATE accounts SET linkedin_company_url = $2, updated_at = NOW()
             WHERE id = $1 AND (linkedin_company_url IS NULL OR linkedin_company_url = '')`,
           [rows[0].id, liUrl]
+        ).catch(() => {});
+      }
+      // Same for the numeric id — so a domain-matched account converges on the
+      // id key for future Sales-Nav captures.
+      if (companyId && !rows[0].linkedin_company_id) {
+        await db.query(
+          `UPDATE accounts SET linkedin_company_id = $2, updated_at = NOW()
+            WHERE id = $1 AND (linkedin_company_id IS NULL OR linkedin_company_id = '')`,
+          [rows[0].id, companyId]
         ).catch(() => {});
       }
       return { accountId: rows[0].id, accountName: rows[0].name, matchedBy: 'domain' };
@@ -299,6 +342,7 @@ async function ingestCompanyCapture({ orgId, userId, capture, createIfMissing = 
     orgId,
     linkedinCompanyUrl: capture.linkedinCompanyUrl,
     domain: capture.websiteDomain,
+    linkedinCompanyId: capture.linkedinCompanyId,
   });
   let created = false;
 
@@ -310,7 +354,8 @@ async function ingestCompanyCapture({ orgId, userId, capture, createIfMissing = 
       return { ok: false, reason: 'no_company_name' };
     }
     // Explicit rep choice — ride the existing create path (dedup by
-    // domain/name, catchall handling, LinkedIn URL stamped on the new row).
+    // company-id/domain/name, catchall handling, LinkedIn URL + id stamped on
+    // the new row).
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -320,7 +365,10 @@ async function ingestCompanyCapture({ orgId, userId, capture, createIfMissing = 
         ownerId: userId || null,
         companyName: String(capture.name).trim(),
         companyDomain: capture.websiteDomain || null,
+        companyIndustry: capture.industry || null,
+        companySize: capture.sizeRange || null,
         companyLinkedInUrl: capture.linkedinCompanyUrl || null,
+        companyLinkedInId: capture.linkedinCompanyId || null,
       });
       await client.query('COMMIT');
       if (!r.accountId) return { ok: false, reason: r.status || 'account_create_failed' };

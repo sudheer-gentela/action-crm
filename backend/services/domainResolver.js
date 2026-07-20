@@ -30,6 +30,33 @@
 
 const CATCHALL_DOMAIN = 'catchalldomain.com';
 
+// ── LinkedIn numeric company id normalizer ──────────────────────────────────
+// The account analogue of a member URN. Accepts anything a caller might hand us
+// and returns the bare numeric id as a string, or null when there isn't a clean
+// one. Deliberately strict: we only accept a run of digits, so a malformed or
+// unexpected shape yields null (→ the caller falls back to domain/name) rather
+// than a junk key that could mis-match.
+//
+// Accepts:  9261371  ·  "9261371"  ·  "urn:li:fs_salesCompany:9261371"
+//           "urn:li:company:9261371"  ·  "urn:li:fsd_company:9261371"
+//           "https://www.linkedin.com/company/9261371/"  (numeric slug only)
+// Rejects:  vanity slugs ("path-robotics"), empty, non-numeric, mixed.
+function normalizeLinkedInCompanyId(input) {
+  if (input == null) return null;
+  const s = String(input).trim();
+  if (!s) return null;
+  // Bare integer (most common: passed straight from the extension).
+  if (/^\d+$/.test(s)) return s;
+  // urn:li:<any>Company:<id>  — take the trailing digit run after the last colon.
+  const urn = s.match(/^urn:li:[a-z_]*company:(\d+)$/i);
+  if (urn) return urn[1];
+  // /company/<digits> — only when the slug is purely numeric (a vanity slug is
+  // NOT a company id and must be rejected).
+  const url = s.match(/\/company\/(\d+)(?:[/?#]|$)/i);
+  if (url) return url[1];
+  return null;
+}
+
 // LinkedIn hosts — anything matching is junk-as-a-domain.
 const LINKEDIN_HOSTS = new Set([
   'linkedin.com',
@@ -218,8 +245,13 @@ async function resolveAccountId({
   companyIndustry,
   companySize,
   companyLinkedInUrl,
+  companyLinkedInId,
   email,
 }) {
+  // Normalize the numeric company id up front. null → id-path is skipped and we
+  // fall through to the unchanged domain/name logic exactly as before.
+  const companyIdNorm = normalizeLinkedInCompanyId(companyLinkedInId);
+
   // Helper: backfill linkedin_company_url on an existing row when missing.
   // No-op if writer didn't provide one. Never overwrites a populated value.
   async function maybeBackfillLinkedInUrl(existingAccountId) {
@@ -234,16 +266,54 @@ async function resolveAccountId({
     );
   }
 
-  // 1. Caller provided an account id directly — trust them, but fill URL if missing.
+  // Helper: backfill linkedin_company_id on an existing row when missing.
+  // Same never-overwrite house rule. No-op when the writer didn't supply a
+  // clean id. This is what lets a domain/name/url match ALSO learn the numeric
+  // id, so future Sales-Nav captures of the same company match id-first.
+  async function maybeBackfillCompanyId(existingAccountId) {
+    if (!companyIdNorm) return;
+    await client.query(
+      `UPDATE accounts
+          SET linkedin_company_id = $2,
+              updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+          AND (linkedin_company_id IS NULL OR linkedin_company_id = '')`,
+      [existingAccountId, companyIdNorm]
+    );
+  }
+
+  // 1. Caller provided an account id directly — trust them, but fill URL + id
+  //    if missing.
   if (accountId) {
     await maybeBackfillLinkedInUrl(Number(accountId));
+    await maybeBackfillCompanyId(Number(accountId));
     return { accountId: Number(accountId), status: 'caller_provided' };
+  }
+
+  // ── Path 0: match by LinkedIn numeric company id (the account analogue of
+  //    URN-first prospect dedup). Runs BEFORE domain/name because the id is the
+  //    stable, cross-surface key: it survives vanity-slug changes and is the
+  //    only structured company key Sales Navigator exposes. On a hit we backfill
+  //    the URL when missing (never overwrite) and return; we do NOT overwrite
+  //    the matched row's domain/name (a wrong id must never merge good data —
+  //    additive only). ───────────────────────────────────────────────────────
+  if (companyIdNorm) {
+    const byId = await client.query(
+      `SELECT id FROM accounts
+        WHERE org_id = $1 AND linkedin_company_id = $2 AND deleted_at IS NULL
+        ORDER BY id ASC LIMIT 1`,
+      [orgId, companyIdNorm]
+    );
+    if (byId.rows.length > 0) {
+      await maybeBackfillLinkedInUrl(byId.rows[0].id);
+      return { accountId: byId.rows[0].id, status: 'matched_by_company_id' };
+    }
   }
 
   const trimmedName = companyName ? String(companyName).trim() : '';
   const realDomain  = deriveDomain({ companyDomain, email });
 
-  // No domain AND no company name → nothing to do.
+  // No id-match, no domain AND no company name → nothing to do.
   if (!realDomain && !trimmedName) {
     return { accountId: null, status: 'no_company_info' };
   }
@@ -259,6 +329,7 @@ async function resolveAccountId({
     );
     if (byDomain.rows.length > 0) {
       await maybeBackfillLinkedInUrl(byDomain.rows[0].id);
+      await maybeBackfillCompanyId(byDomain.rows[0].id);
       return { accountId: byDomain.rows[0].id, status: 'matched_by_domain' };
     }
 
@@ -289,14 +360,16 @@ async function resolveAccountId({
                     industry = COALESCE(industry, $3),
                     size     = COALESCE(size, $4),
                     linkedin_company_url = CASE WHEN $5 THEN $6 ELSE linkedin_company_url END,
+                    linkedin_company_id  = COALESCE(linkedin_company_id, $7),
                     updated_at = CURRENT_TIMESTAMP
               WHERE id = $1`,
             [existing.id, realDomain, companyIndustry || null, companySize || null,
-             shouldFillUrl, companyLinkedInUrl || null]
+             shouldFillUrl, companyLinkedInUrl || null, companyIdNorm || null]
           );
           return { accountId: existing.id, status: 'upgraded_catchall' };
         }
         await maybeBackfillLinkedInUrl(existing.id);
+        await maybeBackfillCompanyId(existing.id);
         return { accountId: existing.id, status: 'matched_by_name' };
       }
     }
@@ -305,12 +378,12 @@ async function resolveAccountId({
     const ins = await client.query(
       `INSERT INTO accounts
          (org_id, owner_id, name, domain, industry, size,
-          needs_domain_review, linkedin_company_url)
-       VALUES ($1, $2, $3, $4, $5, $6, FALSE, $7)
+          needs_domain_review, linkedin_company_url, linkedin_company_id)
+       VALUES ($1, $2, $3, $4, $5, $6, FALSE, $7, $8)
        RETURNING id`,
       [orgId, ownerId, trimmedName || realDomain, realDomain,
        companyIndustry || null, companySize || null,
-       companyLinkedInUrl || null]
+       companyLinkedInUrl || null, companyIdNorm || null]
     );
     return { accountId: ins.rows[0].id, status: 'created_real_domain' };
   }
@@ -330,6 +403,7 @@ async function resolveAccountId({
   );
   if (byNameOnly.rows.length > 0) {
     await maybeBackfillLinkedInUrl(byNameOnly.rows[0].id);
+    await maybeBackfillCompanyId(byNameOnly.rows[0].id);
     return { accountId: byNameOnly.rows[0].id, status: 'matched_by_name' };
   }
 
@@ -337,12 +411,12 @@ async function resolveAccountId({
   const insCatch = await client.query(
     `INSERT INTO accounts
        (org_id, owner_id, name, domain, industry, size,
-        needs_domain_review, linkedin_company_url)
-     VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7)
+        needs_domain_review, linkedin_company_url, linkedin_company_id)
+     VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8)
      RETURNING id`,
     [orgId, ownerId, trimmedName, CATCHALL_DOMAIN,
      companyIndustry || null, companySize || null,
-     companyLinkedInUrl || null]
+     companyLinkedInUrl || null, companyIdNorm || null]
   );
   return { accountId: insCatch.rows[0].id, status: 'created_catchall' };
 }
@@ -351,6 +425,7 @@ module.exports = {
   CATCHALL_DOMAIN,
   normalizeDomain,
   normalizeLinkedInCompanyUrl,
+  normalizeLinkedInCompanyId,
   extractDomainFromEmail,
   deriveDomain,
   resolveAccountId,
