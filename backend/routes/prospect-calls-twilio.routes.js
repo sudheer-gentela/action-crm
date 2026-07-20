@@ -305,7 +305,7 @@ router.post('/initiate', initiateIpLimiter, callingEntitled, async (req, res) =>
 
   // 2. Prospect validation.
   const pRes = await db.pool.query(
-    `SELECT id, phone, first_name, last_name
+    `SELECT id, phone, first_name, last_name, client_id
        FROM prospects
       WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
     [prospectId, req.orgId]
@@ -371,14 +371,14 @@ router.post('/initiate', initiateIpLimiter, callingEntitled, async (req, res) =>
          (org_id, prospect_id, user_id,
           direction, status, outcome,
           phone_used, provider, sequence_step_log_id,
-          occurred_at)
+          occurred_at, client_id)
        VALUES ($1, $2, $3,
                'outbound', 'initiated', NULL,
                $4, 'twilio', $5,
-               CURRENT_TIMESTAMP)
+               CURRENT_TIMESTAMP, $6)
        RETURNING *`,
       [req.orgId, prospectId, req.user.userId,
-       phoneUsed, sequenceStepLogId]
+       phoneUsed, sequenceStepLogId, prospect.client_id ?? null]
     );
     callRow = insRes.rows[0];
   } catch (err) {
@@ -512,7 +512,7 @@ router.post('/prepare', initiateIpLimiter, callingEntitled, async (req, res) => 
 
   // 2. Prospect must exist + have a phone.
   const pRes = await db.pool.query(
-    `SELECT id, phone, first_name, last_name
+    `SELECT id, phone, first_name, last_name, client_id
        FROM prospects
       WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
     [prospectId, req.orgId]
@@ -555,13 +555,13 @@ router.post('/prepare', initiateIpLimiter, callingEntitled, async (req, res) => 
          (org_id, prospect_id, user_id,
           direction, status, outcome,
           phone_used, provider, sequence_step_log_id,
-          occurred_at)
+          occurred_at, client_id)
        VALUES ($1, $2, $3,
                'outbound', 'initiated', NULL,
                $4, 'twilio', $5,
-               CURRENT_TIMESTAMP)
+               CURRENT_TIMESTAMP, $6)
        RETURNING *`,
-      [req.orgId, prospectId, req.user.userId, phoneToUse, sequenceStepLogId]
+      [req.orgId, prospectId, req.user.userId, phoneToUse, sequenceStepLogId, prospect.client_id ?? null]
     );
     const callRow = insRes.rows[0];
 

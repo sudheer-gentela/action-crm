@@ -159,7 +159,7 @@ router.post('/', async (req, res) => {
   // Verify the prospect exists and belongs to this org. We do this OUTSIDE
   // the transaction below so we can return a clean 404 before any writes.
   const pCheck = await db.query(
-    `SELECT id, phone FROM prospects
+    `SELECT id, phone, client_id FROM prospects
       WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
     [v.prospectId, req.orgId]
   );
@@ -184,11 +184,13 @@ router.post('/', async (req, res) => {
          (org_id, prospect_id, user_id,
           occurred_at, direction, outcome,
           duration_seconds, notes, phone_used,
-          sequence_step_log_id, callback_requested_at)
+          sequence_step_log_id, callback_requested_at,
+          client_id)
        VALUES ($1, $2, $3,
                COALESCE($4, CURRENT_TIMESTAMP), $5, $6,
                $7, $8, $9,
-               $10, $11)
+               $10, $11,
+               $12)
        RETURNING *`,
       [
         req.orgId,
@@ -202,6 +204,7 @@ router.post('/', async (req, res) => {
         phoneUsed,
         v.sequenceStepLogId,
         v.callbackRequestedAt,
+        prospectRow.client_id ?? null,
       ]
     );
     const call = insertRes.rows[0];

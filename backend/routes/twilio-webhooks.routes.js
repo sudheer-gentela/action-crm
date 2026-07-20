@@ -339,14 +339,18 @@ router.post('/twiml-inbound/:didSid', requireTwilioSignature(orgFromDidSid), asy
     // matching (country code variants, parentheses, etc.) is a Phase 4
     // problem. If no match, prospect_id stays null.
     let matchedProspectId = null;
+    let matchedClientId   = null;
     if (fromNumber) {
       const pRes = await db.pool.query(
-        `SELECT id FROM prospects
+        `SELECT id, client_id FROM prospects
           WHERE org_id = $1 AND phone = $2 AND deleted_at IS NULL
           LIMIT 1`,
         [rep.org_id, fromNumber]
       );
-      if (pRes.rows.length) matchedProspectId = pRes.rows[0].id;
+      if (pRes.rows.length) {
+        matchedProspectId = pRes.rows[0].id;
+        matchedClientId   = pRes.rows[0].client_id ?? null;
+      }
     }
 
     // Insert the call row in status='ringing' (Twilio just rang the DID,
@@ -359,12 +363,12 @@ router.post('/twiml-inbound/:didSid', requireTwilioSignature(orgFromDidSid), asy
       `INSERT INTO calls
          (org_id, user_id, prospect_id, direction, status,
           provider, provider_call_id, phone_used,
-          occurred_at)
+          occurred_at, client_id)
        VALUES ($1, $2, $3, 'inbound', 'ringing',
                'twilio', $4, $5,
-               CURRENT_TIMESTAMP)
+               CURRENT_TIMESTAMP, $6)
        ON CONFLICT DO NOTHING`,
-      [rep.org_id, rep.user_id, matchedProspectId, callSid, fromNumber || null]
+      [rep.org_id, rep.user_id, matchedProspectId, callSid, fromNumber || null, matchedClientId]
     );
 
     // Build TwiML to dial the rep.
