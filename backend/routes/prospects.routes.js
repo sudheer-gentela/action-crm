@@ -1325,6 +1325,70 @@ router.get('/export.csv', async (req, res) => {
   }
 });
 
+// ── POST /resolve-sales-url — passive Sales-Nav URL resolution (UPDATE-ONLY) ──
+// Used by the Chrome extension as the rep browses Sales Navigator: when a full
+// profile response yields the public flagshipProfileUrl for a fs_salesProfile
+// id, we stamp that URL onto the matching prospect (added earlier from a list,
+// with sales_profile_id but no URL). This NEVER creates a prospect — browsing a
+// lead must not silently import it. It only fills a gap on an existing row.
+//
+// Body: { salesProfileId, linkedinUrl }
+// Returns: { ok, updated: boolean, prospectId?: number, reason?: string }
+//   updated=false + reason='not_found'   → no prospect with that id (no-op)
+//   updated=false + reason='already_set' → row already has a linkedin_url
+router.post('/resolve-sales-url', async (req, res) => {
+  try {
+    const { salesProfileId, linkedinUrl } = req.body || {};
+    if (!salesProfileId || !linkedinUrl) {
+      return res.status(400).json({ error: { message: 'salesProfileId and linkedinUrl are required' } });
+    }
+    // Only accept a genuine public /in/ URL as identity — never store a
+    // Sales-Nav /sales/lead/ handle.
+    if (!/\/in\/[^/?#]+/.test(String(linkedinUrl))) {
+      return res.status(400).json({ error: { message: 'linkedinUrl must be a public /in/ profile URL' } });
+    }
+
+    // Fill only when the row exists AND its linkedin_url is still empty. The
+    // WHERE clause makes this idempotent and race-safe (last-writer is a no-op).
+    const upd = await db.query(
+      `UPDATE prospects
+          SET linkedin_url = $3,
+              updated_at   = CURRENT_TIMESTAMP
+        WHERE org_id = $1
+          AND sales_profile_id = $2
+          AND deleted_at IS NULL
+          AND (linkedin_url IS NULL OR linkedin_url = '')
+        RETURNING id`,
+      [req.orgId, salesProfileId, linkedinUrl]
+    );
+
+    if (upd.rows.length > 0) {
+      await db.query(
+        `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description)
+         VALUES ($1, $2, $3, 'updated', 'Public LinkedIn URL resolved from Sales Navigator')`,
+        [req.orgId, upd.rows[0].id, req.user.userId]
+      ).catch(() => { /* best-effort */ });
+      return res.json({ ok: true, updated: true, prospectId: upd.rows[0].id });
+    }
+
+    // Distinguish "no such prospect" from "already had a URL" for the caller,
+    // without another round trip mattering — this is a cheap existence check.
+    const exists = await db.query(
+      `SELECT 1 FROM prospects
+        WHERE org_id = $1 AND sales_profile_id = $2 AND deleted_at IS NULL LIMIT 1`,
+      [req.orgId, salesProfileId]
+    );
+    return res.json({
+      ok: true,
+      updated: false,
+      reason: exists.rows.length ? 'already_set' : 'not_found',
+    });
+  } catch (err) {
+    console.error('[prospects] resolve-sales-url error:', err);
+    res.status(500).json({ error: { message: 'Resolve failed' } });
+  }
+});
+
 // ── GET /by-linkedin-url — look up prospect by LinkedIn profile URL ───────────
 // Used by the Chrome extension. Must be defined BEFORE /:id routes.
 // Query: ?url=https://www.linkedin.com/in/username
@@ -2226,6 +2290,12 @@ router.post('/', async (req, res) => {
       // vanity-slug change updates the existing prospect's URL instead of
       // creating a duplicate. Absent (manual/email creation) → unchanged path.
       memberUrn = null,
+      // Option A (Sales Navigator): the fs_salesProfile id. The only durable
+      // identity a Sales-Nav list/search row carries (no public URL, no
+      // fsd_profile URN). Deduped between member_urn and slug; backfilled onto
+      // /in/-captured rows so the two surfaces converge. Absent (/in/, manual,
+      // email) → unchanged path.
+      salesProfileId = null,
       // Agency Phase 2: direct client assignment at creation, independent of
       // any campaign. Validated below (org-owned, not archived). When BOTH
       // clientId and a client-tagged campaignId are sent, the explicit
@@ -2282,18 +2352,43 @@ router.post('/', async (req, res) => {
     // instead of inserting a duplicate. If URN matches one row and slug another
     // (a pre-existing duplicate), URN wins and the stale slug row is left for a
     // later cleanup pass — we never merge in the hot path.
-    if (memberUrn) {
+    // ── v1.20 / Option A: identity-first dedup (URN → sales_profile_id → slug) ──
+    // Runs whenever the capture supplied ANY durable identity. Precedence:
+    //   1. member_urn      (fsd_profile URN)  — strongest, from /in/* capture
+    //   2. sales_profile_id (fs_salesProfile) — from Sales Navigator capture
+    //   3. linkedin_url slug (/in/<slug>)     — the bridge that converges 1 & 2
+    // On a match we UPDATE the existing prospect: take the incoming URL (so a
+    // vanity-slug change is healed and a passive Sales-Nav resolve stamps the
+    // public URL onto a list-added row), COALESCE-backfill empty fields, and
+    // backfill member_urn / sales_profile_id only when still empty (never
+    // overwrite a good value). If two keys point at different rows (a pre-existing
+    // duplicate), the higher-precedence key wins and the other row is left for a
+    // later cleanup pass — we never merge in the hot path.
+    if (memberUrn || salesProfileId) {
       const incomingSlug = (linkedinUrl || '').match(/\/in\/([^/?#]+)/);
       const slugLc = incomingSlug ? decodeURIComponent(incomingSlug[1]).toLowerCase() : null;
 
       let match = null, matchedBy = null;
-      const byUrn = await db.query(
-        `SELECT * FROM prospects
-          WHERE org_id = $1 AND member_urn = $2 AND deleted_at IS NULL
-          ORDER BY id ASC LIMIT 1`,
-        [req.orgId, memberUrn]
-      );
-      if (byUrn.rows.length > 0) { match = byUrn.rows[0]; matchedBy = 'member_urn'; }
+
+      if (memberUrn) {
+        const byUrn = await db.query(
+          `SELECT * FROM prospects
+            WHERE org_id = $1 AND member_urn = $2 AND deleted_at IS NULL
+            ORDER BY id ASC LIMIT 1`,
+          [req.orgId, memberUrn]
+        );
+        if (byUrn.rows.length > 0) { match = byUrn.rows[0]; matchedBy = 'member_urn'; }
+      }
+
+      if (!match && salesProfileId) {
+        const bySpi = await db.query(
+          `SELECT * FROM prospects
+            WHERE org_id = $1 AND sales_profile_id = $2 AND deleted_at IS NULL
+            ORDER BY id ASC LIMIT 1`,
+          [req.orgId, salesProfileId]
+        );
+        if (bySpi.rows.length > 0) { match = bySpi.rows[0]; matchedBy = 'sales_profile_id'; }
+      }
 
       if (!match && slugLc) {
         const bySlug = await db.query(
@@ -2312,6 +2407,7 @@ router.post('/', async (req, res) => {
           `UPDATE prospects SET
              linkedin_url      = COALESCE($1, linkedin_url),
              member_urn        = COALESCE(member_urn, $2),
+             sales_profile_id  = COALESCE(sales_profile_id, $9),
              linkedin_headline = COALESCE(linkedin_headline, $3),
              location          = COALESCE(location, $4),
              company_name      = COALESCE(company_name, $5),
@@ -2319,9 +2415,9 @@ router.post('/', async (req, res) => {
              updated_at        = CURRENT_TIMESTAMP
            WHERE id = $6 AND org_id = $7
            RETURNING *`,
-          [linkedinUrl || null, memberUrn, linkedinHeadline || null,
+          [linkedinUrl || null, memberUrn || null, linkedinHeadline || null,
            location || null, companyName || null, match.id, req.orgId,
-           resolvedClientId]
+           resolvedClientId, salesProfileId || null]
         );
         const prospectRow = upd.rows[0] || match;
 
@@ -2410,13 +2506,13 @@ router.post('/', async (req, res) => {
          org_id, owner_id, created_by, first_name, last_name, email, phone, linkedin_url,
          title, linkedin_headline, location, company_name, company_domain, company_size,
          company_industry, account_id, source, playbook_id, tags, member_urn,
-         client_id,
+         client_id, sales_profile_id,
          stage, stage_changed_at
        ) VALUES (
          $1, $2, $2, $3, $4, $5, $6, $7,
          $8, $9, $10, $11, $12, $13,
          $14, $15, $16, $17, $18, $19,
-         $20,
+         $20, $21,
          'target', CURRENT_TIMESTAMP
        ) RETURNING *`,
       [
@@ -2425,6 +2521,7 @@ router.post('/', async (req, res) => {
         companyIndustry, resolvedAccountId, source || 'manual', resolvedPlaybookId,
         JSON.stringify(tags || []), memberUrn || null,
         resolvedClientId,   // Agency Phase 2 — explicit client; trigger fills from campaign when null
+        salesProfileId || null,   // Option A — Sales-Nav fs_salesProfile id
       ]
     );
 
