@@ -13,7 +13,7 @@ import OutreachComposer from '../OutreachComposer';
 import OutreachSkillPanel from './OutreachSkillPanel';
 import SignalWorkPanel from './SignalWorkPanel';
 import StrapPanel from '../StrapPanel';
-import SequenceEnrollModal from '../SequenceEnrollModal';
+import EnrollInCampaignModal from './EnrollInCampaignModal';
 import TwilioCallModal from '../TwilioCallModal';
 import ProspectPhonesPanel from './ProspectPhonesPanel';
 import CustomFieldsPanel from '../customfields/CustomFieldsPanel';
@@ -960,9 +960,9 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpen
               }}
               onClick={() => !activeEnrollment && setShowEnrollModal(true)}
               disabled={!!activeEnrollment}
-              title={activeEnrollment ? `Active in: ${activeEnrollment.sequence_name}` : 'Enroll in Sequence'}
+              title={activeEnrollment ? `Active in: ${activeEnrollment.sequence_name}` : 'Enroll in Campaign'}
             >
-              📨 {activeEnrollment ? `In Sequence: ${activeEnrollment.sequence_name}` : 'Enroll in Sequence'}
+              📨 {activeEnrollment ? `In Sequence: ${activeEnrollment.sequence_name}` : 'Enroll in Campaign'}
             </button>
             {prospect.stage === 'qualified_sal' && (
               <button className="pv-btn-convert" onClick={handleConvert}>🎉 Convert</button>
@@ -1653,15 +1653,15 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpen
           )}
         </div>
 
-        {/* SequenceEnrollModal */}
+        {/* Enroll in Campaign modal — sets campaign membership + schedules the
+            first touch, and shows the rep exactly when it will go out. */}
         {showEnrollModal && prospect && (
-          <SequenceEnrollModal
-            prospects={[prospect]}
+          <EnrollInCampaignModal
+            prospect={prospect}
             onEnrolled={async () => {
-              setShowEnrollModal(false);
-              // Fix 1: refresh prospect so Intel tab shows updated research_notes
-              // Fix 2: refresh activities so Activity tab shows sequence_enrolled entry
-              // Fix 3: refresh activeEnrollment so button becomes disabled
+              // Refresh prospect (campaign_id / stage may have changed), the
+              // activity feed (new enrollment entry), and the active-enrollment
+              // state so the button flips to the disabled "In Sequence" label.
               try {
                 const res = await apiFetch(`/prospects/${prospectId}`);
                 setProspect(res.prospect);
