@@ -454,12 +454,24 @@ function cleanEditPropagation(v) {
   return v === 'freeze' ? 'freeze' : 'live';
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// cleanAiEnabled — normalise the org AI master switch. Returns true/false when
+// the input is a boolean or the legacy 'true'/'false' string, else undefined
+// (key omitted, so the reader's enabled-by-default fallback applies). Mirrors
+// PersonalizationDispatcher.isOrgAiEnabled, which treats only 'false' as off.
+// ─────────────────────────────────────────────────────────────────────────────
+function cleanAiEnabled(v) {
+  if (v === true  || v === 'true')  return true;
+  if (v === false || v === 'false') return false;
+  return undefined;
+}
+
 function sanitizeOrgConfig(input) {
   const c = (input && typeof input === 'object') ? input : {};
   const g = (c.guardrails && typeof c.guardrails === 'object') ? c.guardrails : {};
   const hp = (c.hook_preferences && typeof c.hook_preferences === 'object')
     ? c.hook_preferences : {};
-  return {
+  const out = {
     pitch:                        cleanPitch(c.pitch),
     products:                     cleanProductArray(c.products),
     default_value_props:          cleanStringArray(c.default_value_props),
@@ -484,6 +496,13 @@ function sanitizeOrgConfig(input) {
     // Sequence edit/reorder propagation to in-flight enrollments. Default 'live'.
     sequence_edit_propagation: cleanEditPropagation(c.sequence_edit_propagation),
   };
+  // AI master switch (org "enabled" axis). Preserve it through sanitisation so a
+  // later config save doesn't drop the seeded/admin-set value. Only carried when
+  // explicitly present as a boolean (or the legacy 'true'/'false' string);
+  // absent/other → key omitted so the reader falls back to enabled-by-default.
+  const ai = cleanAiEnabled(c.ai_enabled);
+  if (ai !== undefined) out.ai_enabled = ai;
+  return out;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

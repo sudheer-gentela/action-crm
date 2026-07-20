@@ -1699,6 +1699,61 @@ async function hasBeenSeeded(client, orgId, module) {
  * seedOrg — called on new org creation.
  * Seeds the Sales pipeline stages + Sales playbook automatically.
  */
+// ─────────────────────────────────────────────────────────────────────────────
+// seedProspectingDefaults — write the outreach defaults a brand-new org should
+// start with. Runs inside seedOrg's transaction (takes the same client).
+//
+//   1. Sending schedule (org_integrations.config for 'prospecting_email'):
+//      all seven days of the week, and the full 0–24h window, so a new org can
+//      send at any time on any day until an admin narrows it. This is the org
+//      layer of the SendingScheduleResolver cascade; campaigns can still
+//      override per-field. Field names/ranges match the resolver
+//      (sendWindowDays 0–6, sendWindowStartHour 0–23, sendWindowEndHour 1–24 —
+//      24 = end-of-day, i.e. the last hour 23:00–24:00 is included).
+//      ON CONFLICT merges so an existing config's keys always win — seeding
+//      never clobbers a schedule an admin already set.
+//
+//   2. AI master switch OFF (organizations.settings.prospecting_config
+//      .ai_enabled = false): the org-admin "enabled" axis of the AI gate starts
+//      off, so outreach personalisation is disabled by default until turned on.
+//      (The platform 'entitlements.ai' axis is already default-off separately;
+//      AI runs only when BOTH are on.) jsonb_set touches only that one key.
+// ─────────────────────────────────────────────────────────────────────────────
+async function seedProspectingDefaults(client, orgId) {
+  // 1. Sending schedule: all days, all hours.
+  const scheduleConfig = {
+    sendWindowDays:      [0, 1, 2, 3, 4, 5, 6], // Sun–Sat
+    sendWindowStartHour: 0,
+    sendWindowEndHour:   24,
+  };
+  await client.query(
+    `INSERT INTO org_integrations (org_id, integration_type, status, config)
+     VALUES ($1, 'prospecting_email', 'active', $2::jsonb)
+     ON CONFLICT (org_id, integration_type)
+     DO UPDATE SET config      = EXCLUDED.config || org_integrations.config,
+                   updated_at  = NOW()`,
+    [orgId, JSON.stringify(scheduleConfig)]
+  );
+
+  // 2. Disable AI by default (org master switch). Merge rather than jsonb_set:
+  // jsonb_set won't create the 'prospecting_config' parent when it's missing
+  // (as it is on a brand-new org), so build it explicitly. The top-level `||`
+  // replaces only the prospecting_config key (other settings keys — modules,
+  // entitlements — are preserved); the inner `||` preserves any existing
+  // prospecting_config keys while forcing ai_enabled to false.
+  await client.query(
+    `UPDATE organizations
+        SET settings = COALESCE(settings, '{}'::jsonb)
+                       || jsonb_build_object(
+                            'prospecting_config',
+                            COALESCE(settings->'prospecting_config', '{}'::jsonb)
+                              || '{"ai_enabled": false}'::jsonb
+                          )
+      WHERE id = $1`,
+    [orgId]
+  );
+}
+
 async function seedOrg(orgId) {
   const client = await pool.connect();
   try {
@@ -1719,6 +1774,9 @@ async function seedOrg(orgId) {
       await insertPlaybookRoles(client, playbookId, 'sales', roleMap);
       await insertPlayRoles(client, insertedPlays, 'sales', roleMap);
     }
+
+    // Seed prospecting outreach defaults for the new org.
+    await seedProspectingDefaults(client, orgId);
 
     await client.query('COMMIT');
   } catch (err) {

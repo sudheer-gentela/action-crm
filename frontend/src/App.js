@@ -253,6 +253,76 @@ const useAuth = () => {
 };
 
 // ─────────────────────────────────────────────────────────────
+// PasswordInput — a password field with a show/hide eye toggle.
+// Clicking the eye flips the input between type="password" (masked)
+// and type="text" (visible), so the user can verify what they typed.
+// Keeps its own visibility state so multiple password fields on one
+// screen (e.g. new + confirm on the reset form) toggle independently.
+// ─────────────────────────────────────────────────────────────
+const EyeIcon = (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+    <circle cx="12" cy="12" r="3" />
+  </svg>
+);
+const EyeOffIcon = (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+    <line x1="1" y1="1" x2="23" y2="23" />
+  </svg>
+);
+
+function PasswordInput({
+  name, value, onChange, placeholder,
+  disabled = false, required = true, minLength, autoFocus = false,
+}) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <div style={{ position: 'relative' }}>
+      <input
+        type={visible ? 'text' : 'password'}
+        name={name}
+        value={value}
+        onChange={onChange}
+        placeholder={placeholder}
+        required={required}
+        disabled={disabled}
+        minLength={minLength}
+        autoFocus={autoFocus}
+        style={{ paddingRight: 46, boxSizing: 'border-box' }}
+      />
+      <button
+        type="button"
+        onClick={() => setVisible(v => !v)}
+        disabled={disabled}
+        tabIndex={-1}
+        aria-label={visible ? 'Hide password' : 'Show password'}
+        title={visible ? 'Hide password' : 'Show password'}
+        style={{
+          position: 'absolute',
+          top: 0,
+          right: 0,
+          height: '100%',
+          width: 44,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: 'transparent',
+          border: 'none',
+          padding: 0,
+          color: visible ? '#1A3A5C' : '#718096',
+          cursor: disabled ? 'not-allowed' : 'pointer',
+        }}
+      >
+        {visible ? EyeOffIcon : EyeIcon}
+      </button>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
 // AuthScreen  (login · register · forgot-password · reset-password)
 // ─────────────────────────────────────────────────────────────
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
@@ -424,18 +494,18 @@ function AuthScreen({ onLogin, onRegister, initialMode }) {
           <form onSubmit={handleSubmit} className="login-form" style={{ marginTop: 24 }}>
             <div className="form-group">
               <label>New Password</label>
-              <input
-                type="password" name="password" value={formData.password} onChange={handleChange}
-                placeholder="At least 8 characters" required disabled={loading} minLength={8}
+              <PasswordInput
+                name="password" value={formData.password} onChange={handleChange}
+                placeholder="At least 8 characters" disabled={loading} minLength={8}
                 autoFocus
               />
               <small className="form-hint">Minimum 8 characters</small>
             </div>
             <div className="form-group">
               <label>Confirm New Password</label>
-              <input
-                type="password" name="confirmPassword" value={formData.confirmPassword} onChange={handleChange}
-                placeholder="Repeat your new password" required disabled={loading}
+              <PasswordInput
+                name="confirmPassword" value={formData.confirmPassword} onChange={handleChange}
+                placeholder="Repeat your new password" disabled={loading}
               />
             </div>
             {error && <div className="error-message">{error}</div>}
@@ -479,10 +549,10 @@ function AuthScreen({ onLogin, onRegister, initialMode }) {
 
           <div className="form-group">
             <label>Password</label>
-            <input
-              type="password" name="password" value={formData.password} onChange={handleChange}
+            <PasswordInput
+              name="password" value={formData.password} onChange={handleChange}
               placeholder={mode === 'register' ? 'At least 8 characters' : '••••••••'}
-              required disabled={loading} minLength={mode === 'register' ? 8 : undefined}
+              disabled={loading} minLength={mode === 'register' ? 8 : undefined}
             />
             {mode === 'register' && <small className="form-hint">Minimum 8 characters</small>}
           </div>
