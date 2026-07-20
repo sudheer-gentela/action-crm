@@ -4588,6 +4588,259 @@ router.post('/:id/enroll-one', async (req, res) => {
   }
 });
 
+// ── POST /:id/enroll-batch — enroll MANY prospects into this campaign ────────
+//
+// Bulk sibling of enroll-one, behind the pipeline's "Enroll in campaign" bulk
+// action. Stage-agnostic; sets membership AND schedules the first touch for
+// every eligible prospect (capacity-aware, spread across days — identical math
+// to schedule-preview / bulk-activate). This is the fix for "added to a
+// campaign but nothing fires": a bulk add now always produces scheduled
+// outreach, never a silent membership tag. Prospects already active/paused in
+// the default sequence are skipped and reported.
+//
+// Body: { prospectIds: number[] }
+// Returns: { enrolled, skipped[], firstSendAt, lastSendAt, byDay[], channel,
+//            timezone, sequenceName, campaignId }
+router.post('/:id/enroll-batch', async (req, res) => {
+  try {
+    const rawIds = Array.isArray(req.body?.prospectIds) ? req.body.prospectIds : [];
+    const idList = [...new Set(rawIds.map(x => parseInt(x, 10)).filter(Number.isFinite))];
+    if (idList.length === 0) {
+      return res.status(400).json({ error: { message: 'prospectIds array is required' } });
+    }
+    const HARD_CEILING = 500;
+    if (idList.length > HARD_CEILING) {
+      return res.status(400).json({ error: {
+        message: `Too many prospects selected (max ${HARD_CEILING} per bulk enroll).`,
+      } });
+    }
+
+    // Campaign + default sequence + mutate access.
+    const campRes = await pool.query(
+      `SELECT c.id, c.default_sequence_id, c.name, c.owner_id, s.name AS sequence_name
+         FROM prospecting_campaigns c
+    LEFT JOIN sequences s ON s.id = c.default_sequence_id
+        WHERE c.id = $1 AND c.org_id = $2 AND c.status IN ('active','paused')`,
+      [req.params.id, req.orgId]
+    );
+    if (!campRes.rows.length) {
+      return res.status(404).json({ error: { message: 'Campaign not found or archived' } });
+    }
+    const campaign = campRes.rows[0];
+    if (!(await CampaignAccess.requireCanMutate(req, res, campaign))) return;
+    if (!campaign.default_sequence_id) {
+      return res.status(400).json({ error: {
+        message: 'This campaign has no default sequence, so no outreach can be scheduled. Set a default sequence on the campaign first.',
+        code: 'NO_DEFAULT_SEQUENCE',
+      } });
+    }
+
+    // Candidate set: org-scoped, live, and NOT already active/paused in the
+    // default sequence. Everything filtered out is reported as skipped so the
+    // caller can show an honest count.
+    const candRes = await pool.query(
+      `SELECT p.id
+         FROM prospects p
+        WHERE p.org_id = $1 AND p.deleted_at IS NULL AND p.id = ANY($2::int[])
+          AND NOT EXISTS (
+            SELECT 1 FROM sequence_enrollments se
+             WHERE se.prospect_id = p.id AND se.sequence_id = $3
+               AND se.status IN ('active','paused'))`,
+      [req.orgId, idList, campaign.default_sequence_id]
+    );
+    const candidates = candRes.rows.map(r => r.id);
+    const candidateSet = new Set(candidates);
+    const skipped = idList
+      .filter(id => !candidateSet.has(id))
+      .map(id => ({ prospectId: id, reason: 'already_enrolled_or_ineligible' }));
+
+    if (candidates.length === 0) {
+      return res.json({
+        enrolled: 0, skipped,
+        sequenceName: campaign.sequence_name, campaignId: campaign.id,
+        message: 'No eligible prospects — all selected are already enrolled in this campaign\u2019s sequence.',
+      });
+    }
+
+    // ── Capacity + schedule (identical basis to schedule-preview) ──────────
+    const capInfo    = await resolveCampaignCapacity(
+      req.orgId, parseInt(req.params.id, 10), req.user.userId, campaign.default_sequence_id
+    );
+    const settings   = capInfo.settings;
+    const channel    = capInfo.firstChannel;
+    const channelCap = capInfo.channelCap;
+    const tz = settings.sendWindowTimezone;
+
+    const existingByDay = {};
+    if (Number.isFinite(channelCap.perDayFull)) {
+      const ex = await pool.query(
+        `SELECT se.next_step_due
+           FROM sequence_enrollments se
+           JOIN sequence_steps ss
+             ON ss.sequence_id = se.sequence_id AND ss.id = se.current_step_id
+           JOIN prospects p ON p.id = se.prospect_id
+          WHERE se.org_id = $1 AND se.enrolled_by = $2 AND se.status = 'active'
+            AND se.next_step_due > NOW() AND ss.channel = $3`,
+        [req.orgId, req.user.userId, channel]
+      );
+      for (const r of ex.rows) {
+        const local = SendingSchedule._internal.getLocalCalendarDate(new Date(r.next_step_due), tz);
+        existingByDay[local.dayKey] = (existingByDay[local.dayKey] || 0) + 1;
+      }
+    }
+
+    const stepRes = await pool.query(
+      `SELECT delay_days, delay_hours FROM sequence_steps
+        WHERE sequence_id = $1 ORDER BY step_order LIMIT 1`,
+      [campaign.default_sequence_id]
+    );
+    const firstDelay      = parseInt(stepRes.rows[0]?.delay_days, 10)  || 0;
+    const firstDelayHours = parseInt(stepRes.rows[0]?.delay_hours, 10) || 0;
+
+    const slots = SendingSchedule.scheduleBatchSlots({
+      count: candidates.length, settings, channel, dayCap: channelCap, existingByDay, now: new Date(),
+    });
+    const firstDelayMs = (firstDelay * 24 + firstDelayHours) * 3600000;
+    const finalSlots = firstDelayMs > 0
+      ? slots.map(s => new Date(s.getTime() + firstDelayMs))
+      : slots;
+
+    // ── Membership + enrollment (one transaction) ──────────────────────────
+    const client = await pool.connect();
+    const assignedSlots = [];   // ISO strings actually written
+    const enrolledIds   = [];
+    try {
+      await client.query('BEGIN');
+
+      // Membership for all candidates (reassign from any prior campaign).
+      await client.query(
+        `UPDATE prospects SET campaign_id = $1, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ANY($2::int[]) AND org_id = $3`,
+        [campaign.id, candidates, req.orgId]
+      );
+
+      let slotIndex = 0;
+      for (const prospectId of candidates) {
+        // scheduleBatchSlots may return fewer slots than candidates (2-year
+        // day-walk cap). A missing slot → skip rather than write a NULL-due,
+        // never-firing enrollment. Match bulk-activate: don't advance on miss.
+        const nextDue = finalSlots[slotIndex];
+        if (!nextDue) { skipped.push({ prospectId, reason: 'no_capacity' }); continue; }
+        slotIndex++;
+
+        const { experimentId, variantKey } = await ExperimentAssigner.assignVariant(client, {
+          sequenceId: campaign.default_sequence_id, prospectId,
+        });
+
+        const er = await client.query(
+          `INSERT INTO sequence_enrollments
+                       (org_id, sequence_id, prospect_id, enrolled_by,
+                        next_step_due, personalised_steps, status, variant_key, experiment_id)
+                VALUES ($1, $2, $3, $4, $5, '{}'::jsonb, 'active', $6, $7)
+           ON CONFLICT (sequence_id, prospect_id) DO NOTHING
+           RETURNING id`,
+          [req.orgId, campaign.default_sequence_id, prospectId, req.user.userId,
+           nextDue, variantKey, experimentId]
+        );
+        if (er.rows.length === 0) {
+          // Raced between candidate fetch and insert — slot already consumed.
+          skipped.push({ prospectId, reason: 'already_enrolled' });
+          continue;
+        }
+
+        await EnrollmentStepResolver.stampInitialCursor(client, er.rows[0].id, campaign.default_sequence_id);
+        enrolledIds.push(prospectId);
+        assignedSlots.push(nextDue);
+
+        try {
+          await client.query(
+            `INSERT INTO prospecting_activities
+                         (org_id, prospect_id, user_id, activity_type, description, metadata)
+                  VALUES ($1, $2, $3, 'activation_completed', $4, $5::jsonb)`,
+            [req.orgId, prospectId, req.user.userId,
+             `Enrolled in campaign "${campaign.name}" (sequence "${campaign.sequence_name}")`,
+             JSON.stringify({
+               campaignId:   campaign.id,
+               sequenceId:   campaign.default_sequence_id,
+               sequenceName: campaign.sequence_name,
+               enrollmentId: er.rows[0].id,
+               firstSendAt:  nextDue.toISOString(),
+               enrollBatch:  true,
+             })],
+          );
+        } catch (actErr) {
+          console.warn('enroll-batch: activity log failed:', actErr.message);
+        }
+      }
+
+      // Advance pre-outreach prospects to outreach (forward-only, batch).
+      if (enrolledIds.length) {
+        await client.query(
+          `UPDATE prospects
+              SET stage = 'outreach', stage_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ANY($1::int[]) AND org_id = $2 AND stage IN ('target','research')`,
+          [enrolledIds, req.orgId]
+        );
+      }
+
+      await client.query('COMMIT');
+    } catch (txErr) {
+      await client.query('ROLLBACK');
+      console.error('enroll-batch tx error:', txErr);
+      return res.status(500).json({ error: { message: 'Enrollment failed: ' + txErr.message } });
+    } finally {
+      client.release();
+    }
+
+    // Materialize immediate auto-send rows (non-fatal).
+    try {
+      const newEnrollmentIds = [];
+      // (enrollment ids weren't collected above; re-fetch the just-created ones)
+      const idRes = await pool.query(
+        `SELECT id FROM sequence_enrollments
+          WHERE sequence_id = $1 AND prospect_id = ANY($2::int[]) AND status = 'active'`,
+        [campaign.default_sequence_id, enrolledIds]
+      );
+      for (const r of idRes.rows) newEnrollmentIds.push(r.id);
+      if (newEnrollmentIds.length) {
+        await require('../services/SequenceStepFirer').materializePendingAutoSends(newEnrollmentIds);
+      }
+    } catch (matErr) {
+      console.warn('enroll-batch: materializePendingAutoSends failed (non-fatal):', matErr.message);
+    }
+
+    // Per-day summary of the slots we actually assigned (for the result screen).
+    const byDayMap = new Map();
+    for (const slot of assignedSlots) {
+      const key = SendingSchedule._internal.getLocalCalendarDate(slot, tz).dayKey;
+      if (!byDayMap.has(key)) byDayMap.set(key, []);
+      byDayMap.get(key).push(slot);
+    }
+    const byDay = [];
+    for (const [date, ds] of byDayMap) {
+      ds.sort((a, b) => a - b);
+      byDay.push({ date, count: ds.length, firstAt: ds[0].toISOString(), lastAt: ds[ds.length - 1].toISOString() });
+    }
+    byDay.sort((a, b) => a.date.localeCompare(b.date));
+    const sortedSlots = [...assignedSlots].sort((a, b) => a - b);
+
+    res.json({
+      enrolled:     enrolledIds.length,
+      skipped,
+      firstSendAt:  sortedSlots[0] ? sortedSlots[0].toISOString() : null,
+      lastSendAt:   sortedSlots.length ? sortedSlots[sortedSlots.length - 1].toISOString() : null,
+      byDay,
+      channel,
+      timezone:     tz,
+      sequenceName: campaign.sequence_name,
+      campaignId:   campaign.id,
+    });
+  } catch (err) {
+    console.error('enroll-batch error:', err);
+    res.status(500).json({ error: { message: 'Bulk enrollment failed: ' + err.message } });
+  }
+});
+
 // ── GET /:id/schedule-preview?count=N — predict slot timestamps ──────────────
 //
 // Returns the N future timestamps that bulk-activate would assign as

@@ -25,6 +25,7 @@ import AccountView          from './prospecting/AccountView';
 import ProspectCreateModal  from './prospecting/ProspectCreateModal';
 import ProspectDetailPanel  from './prospecting/ProspectDetailPanel';
 import DiscardProspectModal from './prospecting/DiscardProspectModal';
+import BulkEnrollCampaignModal from './prospecting/BulkEnrollCampaignModal';
 import SequencesView        from './prospecting/SequencesView';
 import CampaignsView        from './prospecting/CampaignsView';
 import ResearchQueueView    from './prospecting/ResearchQueueView';
@@ -321,10 +322,11 @@ export default function ProspectingView() {
   // Bulk "Move to ▾" stage control (context-aware forward progression).
   const [showMoveMenu, setShowMoveMenu] = useState(false);
   const [movingStage, setMovingStage]   = useState(false);
-  // Bulk "Add to campaign ▾" control — assign/move the selection's campaign
-  // membership (does NOT change stage or stop sequences; mirrors bulk-campaign).
+  // Bulk "Enroll in campaign ▾" control — sets membership AND schedules the
+  // first touch for each prospect (via a preview modal), so a bulk add never
+  // leaves prospects in a campaign with nothing firing.
   const [showAddCampaignMenu, setShowAddCampaignMenu] = useState(false);
-  const [addingCampaign, setAddingCampaign] = useState(false);
+  const [enrollCampaignTarget, setEnrollCampaignTarget] = useState(null); // chosen campaign object
   // Sequence to pre-select when "Move to → Outreach" opens the enroll preview
   // (the campaign's own default sequence, so it's one click inside a campaign).
   const [enrollPreSeqId, setEnrollPreSeqId] = useState(null);
@@ -479,44 +481,13 @@ export default function ProspectingView() {
     }
   };
 
-  // Add (or move) the selected prospects to a chosen campaign. Uses the same
-  // /prospects/bulk-campaign endpoint as removal, but with a real campaignId —
-  // the backend validates the campaign belongs to the org and sets campaign_id
-  // without touching stage or existing sequence enrollments. Prospects already
-  // in a different campaign are re-assigned (moved) to the chosen one.
-  const handleBulkAddToCampaign = async (campaignId) => {
-    if (!campaignId || selectedIds.size === 0 || addingCampaign) return;
+  // Open the bulk enroll-in-campaign modal for the chosen campaign. The modal
+  // shows the first-touch schedule, then enrolls (membership + scheduled
+  // outreach) on confirm — replacing the old membership-only "add to campaign".
+  const handlePickCampaignForEnroll = (campaign) => {
+    if (!campaign || selectedIds.size === 0) return;
     setShowAddCampaignMenu(false);
-    const ids = [...selectedIds];
-    const camp = activeCampaigns.find(c => c.id === campaignId);
-    const campName = camp?.name || `campaign ${campaignId}`;
-    const alreadyElsewhere = selectedProspects.filter(
-      p => p.campaign_id && p.campaign_id !== campaignId
-    ).length;
-    const ok = window.confirm(
-      `Add ${ids.length} prospect${ids.length === 1 ? '' : 's'} to "${campName}"?` +
-      (alreadyElsewhere
-        ? `\n\n${alreadyElsewhere} ${alreadyElsewhere === 1 ? 'is' : 'are'} already in another campaign and will be moved.`
-        : '') +
-      `\n\nThis changes campaign membership only — it does not change stage or start outreach.`
-    );
-    if (!ok) return;
-    setAddingCampaign(true);
-    try {
-      const res = await apiFetch('/prospects/bulk-campaign', {
-        method: 'POST',
-        body: JSON.stringify({ prospectIds: ids, campaignId }),
-      });
-      clearSelection();
-      fetchProspects();
-      if (res?.updated != null) {
-        alert(`Added ${res.updated} prospect${res.updated === 1 ? '' : 's'} to "${campName}".`);
-      }
-    } catch (err) {
-      alert(`Could not add to campaign: ${err.message}`);
-    } finally {
-      setAddingCampaign(false);
-    }
+    setEnrollCampaignTarget(campaign);
   };
 
   // Clear selection when the user switches views or changes the search query.
@@ -1364,6 +1335,23 @@ export default function ProspectingView() {
         />
       )}
 
+      {/* ── Bulk Enroll-in-Campaign Modal ──────────────────────────────────── */}
+      {enrollCampaignTarget && (
+        <BulkEnrollCampaignModal
+          prospects={prospects.filter(p => selectedIds.has(p.id))}
+          campaign={enrollCampaignTarget}
+          onEnrolled={() => {
+            // Refresh the board so stages/enrollment badges update. Selection is
+            // cleared on close so the modal's result screen keeps its count.
+            fetchProspects();
+          }}
+          onClose={() => {
+            setEnrollCampaignTarget(null);
+            clearSelection();
+          }}
+        />
+      )}
+
       {/* ── Bulk Discard Modal ─────────────────────────────────────────────── */}
       {showBulkDiscardModal && (
         <DiscardProspectModal
@@ -1493,9 +1481,9 @@ export default function ProspectingView() {
               </div>
             )}
           </div>
-          {/* Add to campaign ▾ — assign/move the selection's campaign
-              membership. Changes membership only (no stage change, no outreach);
-              prospects already in another campaign are moved. */}
+          {/* Enroll in campaign ▾ — sets membership AND schedules the first
+              touch for the selection (via a preview modal), so a bulk add never
+              leaves prospects in a campaign with nothing firing. */}
           {showAddCampaignMenu && (
             <div
               onClick={() => setShowAddCampaignMenu(false)}
@@ -1505,20 +1493,20 @@ export default function ProspectingView() {
           <div style={{ position: 'relative' }}>
             <button
               onClick={() => setShowAddCampaignMenu(v => !v)}
-              disabled={addingCampaign || activeCampaigns.length === 0}
+              disabled={activeCampaigns.length === 0}
               title={
                 activeCampaigns.length === 0
-                  ? 'No active campaigns available to add to'
-                  : 'Add selected prospects to a campaign'
+                  ? 'No active campaigns available'
+                  : 'Enroll selected prospects in a campaign (schedules first touch)'
               }
               style={{
                 padding: '7px 16px', borderRadius: 7, border: 'none',
-                background: (addingCampaign || activeCampaigns.length === 0) ? '#9ca3af' : '#0F9D8E',
+                background: (activeCampaigns.length === 0) ? '#9ca3af' : '#0F9D8E',
                 color: '#fff', fontSize: 13, fontWeight: 600,
-                cursor: (addingCampaign || activeCampaigns.length === 0) ? 'default' : 'pointer',
+                cursor: (activeCampaigns.length === 0) ? 'default' : 'pointer',
               }}
             >
-              {addingCampaign ? '⟳ Adding…' : '📋 Add to campaign ▾'}
+              📨 Enroll in campaign ▾
             </button>
             {showAddCampaignMenu && activeCampaigns.length > 0 && (
               <div style={{
@@ -1530,7 +1518,7 @@ export default function ProspectingView() {
                 {activeCampaigns.map(c => (
                   <button
                     key={c.id}
-                    onClick={() => handleBulkAddToCampaign(c.id)}
+                    onClick={() => handlePickCampaignForEnroll(c)}
                     style={{
                       display: 'block', width: '100%',
                       padding: '10px 14px', border: 'none', background: '#fff',
@@ -1540,6 +1528,11 @@ export default function ProspectingView() {
                     onMouseLeave={e => (e.currentTarget.style.background = '#fff')}
                   >
                     {c.name}
+                    {!c.default_sequence_id && (
+                      <span style={{ marginLeft: 8, fontSize: 10, color: '#b45309', background: '#fef3c7', padding: '1px 6px', borderRadius: 8 }}>
+                        no sequence
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>
