@@ -8,6 +8,7 @@ const ProspectContextBuilder  = require('../services/ProspectContextBuilder');
 const PlaybookActionGenerator = require('../services/PlaybookActionGenerator');
 const ActionWriter            = require('../services/ActionWriter');
 const { resolveAccountId, normalizeLinkedInCompanyUrl } = require('../services/domainResolver');
+const salesResolverPolicy = require('../services/salesResolverPolicy');
 const { enrichAccountForProspect } = require('../services/enrichmentService');
 // Signal-Based Campaigns (P6): list-derived qualifiers → signals on import.
 const ListSignalIngestService = require('../services/ListSignalIngestService');
@@ -1389,6 +1390,136 @@ router.post('/resolve-sales-url', async (req, res) => {
   }
 });
 
+// ── GET /resolver-policy — effective + raw org/user policy for this user ──────
+// The extension reads this to know whether to run and how (cap, gap, quiet
+// hours, presence). effective = element-wise min(user, org); org is the ceiling.
+router.get('/resolver-policy', async (req, res) => {
+  try {
+    const orgRow = await db.query(
+      `SELECT sales_resolver FROM org_action_config WHERE org_id = $1 LIMIT 1`,
+      [req.orgId]
+    );
+    const rawOrg = (orgRow.rows[0] && orgRow.rows[0].sales_resolver) || {};
+    const userRow = await db.query(
+      `SELECT preferences FROM user_preferences WHERE user_id = $1 AND org_id = $2 LIMIT 1`,
+      [req.user.userId, req.orgId]
+    );
+    const prefs = (userRow.rows[0] && userRow.rows[0].preferences) || {};
+    const rawUser = (prefs && prefs.sales_resolver) || {};
+
+    const effective = salesResolverPolicy.effectivePolicy(rawOrg, rawUser);
+    res.json({
+      org:  salesResolverPolicy.normalizeOrg(rawOrg),
+      user: rawUser,
+      effective: {
+        enabled:          effective.enabled,
+        max_per_day:      effective.max_per_day,
+        min_gap_seconds:  effective.min_gap_seconds,
+        require_presence: effective.require_presence,
+        quiet_windows:    effective.quiet_windows,
+      },
+    });
+  } catch (err) {
+    console.error('[prospects] resolver-policy GET error:', err);
+    res.status(500).json({ error: { message: 'Failed to load resolver policy' } });
+  }
+});
+
+// ── PUT /resolver-policy/org — admin sets the ORG ceiling ─────────────────────
+router.put('/resolver-policy/org', async (req, res) => {
+  try {
+    // Admin-only: mutating the org ceiling is an admin action.
+    if (req.user.role !== 'admin' && req.user.role !== 'owner') {
+      return res.status(403).json({ error: { message: 'Admin role required to set org resolver policy' } });
+    }
+    // Normalize through the policy module so a bad payload can't persist unsafe
+    // values (hard guardrails applied here too).
+    const normalized = salesResolverPolicy.normalizeOrg(req.body || {});
+    await db.query(
+      `INSERT INTO org_action_config (org_id, sales_resolver, updated_by)
+         VALUES ($1, $2::jsonb, $3)
+       ON CONFLICT (org_id) DO UPDATE
+         SET sales_resolver = $2::jsonb, updated_by = $3`,
+      [req.orgId, JSON.stringify(normalized), req.user.userId]
+    );
+    res.json({ ok: true, org: normalized });
+  } catch (err) {
+    console.error('[prospects] resolver-policy org PUT error:', err);
+    res.status(500).json({ error: { message: 'Failed to save org resolver policy' } });
+  }
+});
+
+// ── PUT /resolver-policy/user — rep sets their own (tighter-only) prefs ────────
+// Stored raw under preferences->'sales_resolver'; the CLAMP happens at read time
+// in effectivePolicy(), so even if a stale/looser value is stored it can never
+// exceed the org ceiling in effect.
+router.put('/resolver-policy/user', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const clean = {};
+    if (typeof b.enabled === 'boolean') clean.enabled = b.enabled;
+    if (b.max_per_day != null && Number.isFinite(Number(b.max_per_day))) clean.max_per_day = Math.max(0, Math.floor(Number(b.max_per_day)));
+    if (b.min_gap_seconds != null && Number.isFinite(Number(b.min_gap_seconds))) clean.min_gap_seconds = Math.max(0, Math.floor(Number(b.min_gap_seconds)));
+    if (b.require_presence === true) clean.require_presence = true;
+    if (b.quiet_hours && typeof b.quiet_hours === 'object') clean.quiet_hours = b.quiet_hours;
+
+    await db.query(
+      `INSERT INTO user_preferences (user_id, org_id, preferences)
+         VALUES ($1, $2, jsonb_build_object('sales_resolver', $3::jsonb))
+       ON CONFLICT (user_id, org_id) DO UPDATE
+         SET preferences = jsonb_set(COALESCE(user_preferences.preferences, '{}'::jsonb),
+                                     '{sales_resolver}', $3::jsonb, true),
+             updated_at = CURRENT_TIMESTAMP`,
+      [req.user.userId, req.orgId, JSON.stringify(clean)]
+    );
+    res.json({ ok: true, user: clean });
+  } catch (err) {
+    console.error('[prospects] resolver-policy user PUT error:', err);
+    res.status(500).json({ error: { message: 'Failed to save user resolver policy' } });
+  }
+});
+
+// ── GET /resolve-queue — the resolver's work list ─────────────────────────────
+// Prospects captured from Sales-Nav that still lack a public URL, with the full
+// resolve triple. Only rows whose capturing identity matches the caller's
+// currently-logged-in LinkedIn identity are returned (the resolver must replay a
+// triple under the same session that minted it). Rows with NO recorded identity
+// are eligible for any identity (legacy/pre-identity captures).
+//   Query: ?identity=<primaryIdentity>&limit=<n≤100>
+router.get('/resolve-queue', async (req, res) => {
+  try {
+    const identity = (req.query.identity || '').toString().trim() || null;
+    const limit = Math.max(1, Math.min(100, parseInt(req.query.limit, 10) || 25));
+    const { rows } = await db.query(
+      `SELECT id, sales_profile_id, sales_auth_type, sales_auth_token
+         FROM prospects
+        WHERE org_id = $1
+          AND deleted_at IS NULL
+          AND sales_profile_id IS NOT NULL
+          AND (linkedin_url IS NULL OR linkedin_url = '')
+          AND sales_auth_token IS NOT NULL
+          AND ($2::text IS NULL
+               OR sales_captured_identity IS NULL
+               OR sales_captured_identity = $2)
+        ORDER BY created_at ASC
+        LIMIT $3`,
+      [req.orgId, identity, limit]
+    );
+    res.json({
+      ok: true,
+      items: rows.map((r) => ({
+        prospectId:    r.id,
+        salesProfileId: r.sales_profile_id,
+        authType:      r.sales_auth_type,
+        authToken:     r.sales_auth_token,
+      })),
+    });
+  } catch (err) {
+    console.error('[prospects] resolve-queue error:', err);
+    res.status(500).json({ error: { message: 'Failed to load resolve queue' } });
+  }
+});
+
 // ── GET /by-linkedin-url — look up prospect by LinkedIn profile URL ───────────
 // Used by the Chrome extension. Must be defined BEFORE /:id routes.
 // Query: ?url=https://www.linkedin.com/in/username
@@ -2296,6 +2427,12 @@ router.post('/', async (req, res) => {
       // /in/-captured rows so the two surfaces converge. Absent (/in/, manual,
       // email) → unchanged path.
       salesProfileId = null,
+      // Option A resolve triple (2 & 3) + the LinkedIn identity that captured
+      // the row — stored so the background resolver can replay salesApiProfiles
+      // under the correct session. All optional; only Sales-Nav captures set them.
+      salesAuthType = null,
+      salesAuthToken = null,
+      salesCapturedIdentity = null,
       // Agency Phase 2: direct client assignment at creation, independent of
       // any campaign. Validated below (org-owned, not archived). When BOTH
       // clientId and a client-tagged campaignId are sent, the explicit
@@ -2408,6 +2545,9 @@ router.post('/', async (req, res) => {
              linkedin_url      = COALESCE($1, linkedin_url),
              member_urn        = COALESCE(member_urn, $2),
              sales_profile_id  = COALESCE(sales_profile_id, $9),
+             sales_auth_type   = COALESCE(sales_auth_type, $10),
+             sales_auth_token  = COALESCE(sales_auth_token, $11),
+             sales_captured_identity = COALESCE(sales_captured_identity, $12),
              linkedin_headline = COALESCE(linkedin_headline, $3),
              location          = COALESCE(location, $4),
              company_name      = COALESCE(company_name, $5),
@@ -2417,7 +2557,8 @@ router.post('/', async (req, res) => {
            RETURNING *`,
           [linkedinUrl || null, memberUrn || null, linkedinHeadline || null,
            location || null, companyName || null, match.id, req.orgId,
-           resolvedClientId, salesProfileId || null]
+           resolvedClientId, salesProfileId || null,
+           salesAuthType || null, salesAuthToken || null, salesCapturedIdentity || null]
         );
         const prospectRow = upd.rows[0] || match;
 
@@ -2506,13 +2647,13 @@ router.post('/', async (req, res) => {
          org_id, owner_id, created_by, first_name, last_name, email, phone, linkedin_url,
          title, linkedin_headline, location, company_name, company_domain, company_size,
          company_industry, account_id, source, playbook_id, tags, member_urn,
-         client_id, sales_profile_id,
+         client_id, sales_profile_id, sales_auth_type, sales_auth_token, sales_captured_identity,
          stage, stage_changed_at
        ) VALUES (
          $1, $2, $2, $3, $4, $5, $6, $7,
          $8, $9, $10, $11, $12, $13,
          $14, $15, $16, $17, $18, $19,
-         $20, $21,
+         $20, $21, $22, $23, $24,
          'target', CURRENT_TIMESTAMP
        ) RETURNING *`,
       [
@@ -2522,6 +2663,7 @@ router.post('/', async (req, res) => {
         JSON.stringify(tags || []), memberUrn || null,
         resolvedClientId,   // Agency Phase 2 — explicit client; trigger fills from campaign when null
         salesProfileId || null,   // Option A — Sales-Nav fs_salesProfile id
+        salesAuthType || null, salesAuthToken || null, salesCapturedIdentity || null,  // resolve triple + capturing identity
       ]
     );
 
