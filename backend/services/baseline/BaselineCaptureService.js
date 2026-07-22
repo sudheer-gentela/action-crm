@@ -4,38 +4,40 @@
  * DROP-IN LOCATION: backend/services/baseline/BaselineCaptureService.js
  *
  * Orchestrates the assessment sequence:
- *
  *   discover → map (human-approved stage mapping) → pull history → compute
  *   → freeze
  *
  * Public API:
  *   runDiscovery({ connectionId, orgId, userId })
  *       → { schemaSnapshotId, warnings }
- *     Runs schemaDiscovery, freezes a crm_schema_snapshots row. Idempotent
- *     per connection per day — re-running creates a new snapshot; old ones
- *     stay frozen (config-debt history is content).
  *
  *   captureBaseline({ connectionId, orgId, userId })
- *       → { snapshotId, status, warnings }
- *     Requires: a frozen schema snapshot AND an approved stage_map on the
- *     connection. Pulls stage history + open deals + activity counts through
- *     the CRM adapter, computes all six metric families via metricDefs,
- *     writes crm_history_import rows into deal_stage_history, and freezes
- *     the baseline_snapshots row. Fails loudly into status='failed' with
- *     error_detail; failed rows stay mutable so retries work.
+ *       → { snapshotId, status, warnings }        (awaits full run)
  *
- * Design invariants:
- *   - Computes WITHOUT hydrating deals into the working tables (assessment
- *     orgs stay clean). deal_stage_history rows carry crm_deal_id.
- *   - baseline_config resolved from crm_connections.settings at capture time
- *     and COPIED onto the snapshot (audit trail — connection config may
- *     change later; the snapshot's config may not).
- *   - Every write carries org_id. Keep it that way.
+ *   startBaselineCapture({ connectionId, orgId, userId })
+ *       → { snapshotId, status: 'computing' }     (returns immediately;
+ *         capture continues in background; poll GET /api/baseline/snapshots/:id)
  *
- * Week-2 TODO markers (agreed skeleton scope): activity-count pull and
- * contact-role pull are stubbed with explicit warnings so a week-1 capture
- * still freezes an honest snapshot (metrics 4 and 6 report their data gaps
- * through the hygiene notes rather than fake zeros).
+ * WEEK-2 INPUTS (complete in this version):
+ *   - Activity recency: Salesforce Opportunity.LastActivityDate (standard
+ *     roll-up of latest Task/Event); HubSpot notes_last_contacted deal
+ *     property. Cheap single-field pulls — no Task aggregation needed.
+ *     Directionality (two-way vs logged-at-all) is NOT observable from these
+ *     fields; the activity metric self-describes as "logged activity" via its
+ *     hygiene note rather than claiming two-way precision it doesn't have.
+ *   - Threading: Salesforce OpportunityContactRole GROUP BY OpportunityId
+ *     (aggregate-row ceiling 2000 → warning when hit); HubSpot
+ *     num_associated_contacts standard property.
+ *   - HubSpot owner names: /crm/v3/owners paged map (id → name).
+ *   - HubSpot closed-deal meta now derives from the SAME deals pull as open
+ *     deals (one pass, no second pull).
+ *
+ * Design invariants (unchanged from v1):
+ *   - Computes WITHOUT hydrating deals into the working tables.
+ *   - baseline_config resolved at capture time and COPIED onto the snapshot.
+ *   - Frozen rows are immutable at the DB level (2026_61 trigger); failed
+ *     rows stay mutable so retries work.
+ *   - Every write carries org_id.
  */
 
 const { pool } = require('../../config/database');
@@ -73,13 +75,11 @@ async function _loadConnection(connectionId, orgId) {
 
 /**
  * Credential resolution rule (2026_60): integration_id set → pointer mode,
- * auth through the existing org-level machinery (sfAuth/hsAuth refresh stays
- * the single writer). integration_id NULL → self-contained client-scoped
- * credentials (Phase 3; not reachable until the client-connect flow lands).
+ * auth through the existing org-level machinery. integration_id NULL →
+ * self-contained client-scoped credentials (Phase 3a; explicit until built).
  */
 async function _crmHandle(conn) {
   if (conn.integration_id == null) {
-    // Phase 3 path — client-scoped credentials. Explicit until built.
     throw new Error(
       `Connection ${conn.id} is self-contained (client-scoped); ` +
       `client-credential resolution lands in Phase 3a.`
@@ -104,23 +104,16 @@ function _resolveBaselineConfig(conn) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Stage resolver: connection stage_map + schema snapshot stage_defs
 // ─────────────────────────────────────────────────────────────────────────────
-//
-// Canonical stage keys come from the APPROVED stage_map; closed/won semantics
-// come from the CRM's OWN stage metadata (OpportunityStage / pipeline stage
-// metadata) in the frozen schema snapshot — never guessed from names.
 
 function _buildStageResolver(stageMap, schemaPayload) {
-  const rawMeta = new Map(); // raw label → { isClosed, isWon, sortOrder }
+  const rawMeta = new Map();
   for (const s of (schemaPayload.stage_defs || [])) {
-    rawMeta.set(s.label, {
+    const meta = {
       isClosed: !!s.isClosed, isWon: !!s.isWon,
       sortOrder: s.sortOrder != null ? s.sortOrder : null,
-    });
-    // HubSpot stage_defs also carry internal ids as `id`
-    if (s.id) rawMeta.set(s.id, {
-      isClosed: !!s.isClosed, isWon: !!s.isWon,
-      sortOrder: s.sortOrder != null ? s.sortOrder : null,
-    });
+    };
+    rawMeta.set(s.label, meta);
+    if (s.id) rawMeta.set(s.id, meta);   // HubSpot internal stage ids
   }
 
   const activeOrdered = [];
@@ -138,7 +131,7 @@ function _buildStageResolver(stageMap, schemaPayload) {
     resolve(rawLabel) {
       if (rawLabel == null) return null;
       const key = (stageMap || {})[rawLabel];
-      if (!key) return null;                       // unmapped → warning upstream
+      if (!key) return null;
       const meta = rawMeta.get(rawLabel) || {};
       return {
         key,
@@ -194,10 +187,10 @@ async function runDiscovery({ connectionId, orgId, userId }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PUBLIC: captureBaseline
+// PUBLIC: captureBaseline / startBaselineCapture
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function captureBaseline({ connectionId, orgId, userId }) {
+async function _prepareCapture({ connectionId, orgId, userId }) {
   const conn = await _loadConnection(connectionId, orgId);
   const cfg = _resolveBaselineConfig(conn);
   const stageMap = (conn.settings && conn.settings.stage_map) || {};
@@ -208,7 +201,6 @@ async function captureBaseline({ connectionId, orgId, userId }) {
     );
   }
 
-  // Latest frozen schema snapshot is a hard prerequisite (stage semantics).
   const schemaRes = await pool.query(
     `SELECT id, schema FROM crm_schema_snapshots
       WHERE connection_id = $1 AND org_id = $2 AND status = 'frozen'
@@ -218,7 +210,6 @@ async function captureBaseline({ connectionId, orgId, userId }) {
   if (!schemaRes.rows.length) {
     throw new Error(`No frozen schema snapshot for connection ${conn.id} — run discovery first.`);
   }
-  const schemaPayload = schemaRes.rows[0].schema;
 
   const captureAt = new Date();
   const historyFrom = new Date(captureAt);
@@ -232,28 +223,71 @@ async function captureBaseline({ connectionId, orgId, userId }) {
     [orgId, conn.client_id, conn.id, conn.crm_type, defs.METRIC_DEFS_VERSION,
      JSON.stringify(cfg), historyFrom, captureAt, userId || null]
   );
-  const snapshotId = ins.rows[0].id;
+
+  return {
+    conn, cfg, stageMap,
+    schemaPayload: schemaRes.rows[0].schema,
+    captureAt,
+    snapshotId: ins.rows[0].id,
+  };
+}
+
+/** Awaits the full capture run. */
+async function captureBaseline({ connectionId, orgId, userId }) {
+  const prep = await _prepareCapture({ connectionId, orgId, userId });
+  return _executeCapture(orgId, prep);
+}
+
+/**
+ * Creates the snapshot row, returns immediately, computes in background.
+ * Errors land in baseline_snapshots.status='failed' + error_detail; the
+ * caller polls the snapshot.
+ */
+async function startBaselineCapture({ connectionId, orgId, userId }) {
+  const prep = await _prepareCapture({ connectionId, orgId, userId });
+  setImmediate(async () => {
+    try {
+      await _executeCapture(orgId, prep);
+    } catch (err) {
+      console.error(`[baseline] background capture ${prep.snapshotId} failed: ${err.message}`);
+    }
+  });
+  return { snapshotId: prep.snapshotId, status: 'computing' };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Capture execution
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function _executeCapture(orgId, prep) {
+  const { conn, cfg, stageMap, schemaPayload, captureAt, snapshotId } = prep;
   const warnings = [];
 
   try {
     const handle = await _crmHandle(conn);
     if (handle.type === 'salesforce') await handle.sf.init();
 
-    // ── Pull stage history ───────────────────────────────────────────────────
+    // ── Stage history ────────────────────────────────────────────────────────
     const { events, truncated } = handle.type === 'salesforce'
       ? await getSalesforceStageHistory(handle.sf, { historyMonths: cfg.history_months })
       : await getHubSpotStageHistory(handle.hs, { historyMonths: cfg.history_months });
     if (truncated) warnings.push({ kind: 'history_truncated', detail: 'record ceiling reached; window partially covered' });
 
-    // ── Pull open deals (+ segment axis values) ──────────────────────────────
-    const openDeals = handle.type === 'salesforce'
-      ? await _sfOpenDeals(handle.sf, cfg, warnings)
-      : await _hsOpenDeals(handle.hs, cfg, warnings);
-
-    // TODO(week 2): activity counts (SF Task/Event grouped by WhatId; HubSpot
-    // engagements) and contact roles (OpportunityContactRole / associations).
-    // Until then metrics 4 & 6 self-report their gap via hygiene notes.
-    warnings.push({ kind: 'partial_inputs', detail: 'activity coverage and threading pulled in week-2 build; hygiene notes reflect the gap' });
+    // ── Deals + week-2 inputs ────────────────────────────────────────────────
+    let openDeals, closedMeta;
+    if (handle.type === 'salesforce') {
+      openDeals = await _sfOpenDeals(handle.sf, captureAt, cfg, warnings);
+      await _sfAttachContactRoles(handle.sf, openDeals, warnings);
+      const closedDeals = await _sfClosedDealMeta(handle.sf, cfg, warnings);
+      closedMeta = new Map(closedDeals.map(d => [d.crmId, d]));
+    } else {
+      const ownerMap = await _hsOwnerMap(handle.hs, warnings);
+      const allDeals = await _hsPullDeals(handle.hs, captureAt, cfg, ownerMap, warnings);
+      openDeals = allDeals;               // stall filters closed via resolver
+      closedMeta = new Map(allDeals.map(d => [d.crmId, {
+        crmId: d.crmId, ownerName: d.ownerName, segmentValues: d.segmentValues,
+      }]));
+    }
 
     // ── Compute ──────────────────────────────────────────────────────────────
     const resolver = _buildStageResolver(stageMap, schemaPayload);
@@ -261,7 +295,7 @@ async function captureBaseline({ connectionId, orgId, userId }) {
     if (unmappedStages.size) {
       warnings.push({
         kind: 'unmapped_historical_stages',
-        detail: Object.fromEntries(unmappedStages),   // raw label → event count
+        detail: Object.fromEntries(unmappedStages),
       });
     }
 
@@ -270,19 +304,10 @@ async function captureBaseline({ connectionId, orgId, userId }) {
     const stall      = defs.computeStall(openDeals, cycle.metrics.byStage, resolver, captureAt);
     const activity   = defs.computeActivityCoverage(openDeals);
     const threading  = defs.computeThreading(openDeals);
+    const winRates   = defs.computeWinRates({ timelines }, closedMeta, cfg);
 
-    const closedMeta = new Map();
-    for (const d of openDeals) { /* open deals irrelevant for win rate */ }
-    // Win-rate meta comes from terminal-event amounts + segment values pulled
-    // with the closed-deal query below.
-    const closedDeals = handle.type === 'salesforce'
-      ? await _sfClosedDealMeta(handle.sf, cfg, warnings)
-      : await _hsClosedDealMeta(handle.hs, cfg, warnings);
-    for (const d of closedDeals) closedMeta.set(d.crmId, d);
-    const winRates = defs.computeWinRates({ timelines }, closedMeta, cfg);
-
-    // ── Persist stage ledger backfill ────────────────────────────────────────
-    await _writeHistoryImport(orgId, events, resolver);
+    // ── Stage-ledger backfill ────────────────────────────────────────────────
+    await _writeHistoryImport(orgId, events);
 
     // ── Freeze ───────────────────────────────────────────────────────────────
     const metrics = {
@@ -318,7 +343,7 @@ async function captureBaseline({ connectionId, orgId, userId }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Open / closed deal pulls (no hydration into working tables)
+// Salesforce pulls
 // ─────────────────────────────────────────────────────────────────────────────
 
 function _segmentFieldList(cfg) {
@@ -327,77 +352,136 @@ function _segmentFieldList(cfg) {
     .map(a => a.field);
 }
 
-async function _sfOpenDeals(sfClient, cfg, warnings) {
+function _daysAgo(dateStr, captureAt) {
+  if (!dateStr) return null;
+  const t = new Date(dateStr).getTime();
+  if (Number.isNaN(t)) return null;
+  return (new Date(captureAt).getTime() - t) / 86400000;
+}
+
+async function _sfPaged(sfClient, soql, collect) {
+  let page = await sfClient.query(soql);
+  collect(page.records);
+  while (!page.done && page.nextRecordsUrl) {
+    const raw = await sfClient._request('GET', `${sfClient.instanceUrl}${page.nextRecordsUrl}`);
+    page = { records: raw.records || [], done: raw.done ?? true, nextRecordsUrl: raw.nextRecordsUrl || null };
+    collect(page.records);
+  }
+}
+
+async function _sfOpenDeals(sfClient, captureAt, cfg, warnings) {
   const segFields = _segmentFieldList(cfg).filter(f => f !== 'Amount');
   const fieldSel = ['Id', 'StageName', 'Amount', 'CreatedDate', 'LastStageChangeDate',
-    'OwnerId', 'Owner.Name', ...segFields];
-  let soql =
-    `SELECT ${[...new Set(fieldSel)].join(', ')} FROM Opportunity ` +
-    `WHERE IsClosed = false`;
+    'LastActivityDate', 'OwnerId', 'Owner.Name', ...segFields];
   const rows = [];
   try {
-    let page = await sfClient.query(soql);
-    rows.push(...page.records);
-    while (!page.done && page.nextRecordsUrl) {
-      const raw = await sfClient._request('GET', `${sfClient.instanceUrl}${page.nextRecordsUrl}`);
-      page = { records: raw.records || [], done: raw.done ?? true, nextRecordsUrl: raw.nextRecordsUrl || null };
-      rows.push(...page.records);
-    }
+    await _sfPaged(sfClient,
+      `SELECT ${[...new Set(fieldSel)].join(', ')} FROM Opportunity WHERE IsClosed = false`,
+      recs => rows.push(...recs));
   } catch (err) {
-    // LastStageChangeDate needs API v52+; some orgs restrict it. Degrade once.
+    // LastStageChangeDate / LastActivityDate can be restricted — degrade once.
     warnings.push({ kind: 'open_deal_pull_degraded', detail: err.message });
     const res = await sfClient.query(
       'SELECT Id, StageName, Amount, CreatedDate, OwnerId FROM Opportunity WHERE IsClosed = false');
     rows.push(...res.records);
   }
-  return rows.map(r => ({
-    crmId: r.Id,
-    stage: r.StageName,
-    amount: r.Amount != null ? Number(r.Amount) : null,
-    createdAt: r.CreatedDate,
-    stageChangedAt: r.LastStageChangeDate || null,
-    ownerName: r.Owner ? r.Owner.Name : null,
-    segmentValues: Object.fromEntries(segFields.map(f => [f, r[f] ?? null])),
-    contactRoleCount: null,   // week 2
-    activityLast14: null,     // week 2
-    activityLast30: null,     // week 2
-  }));
+  return rows.map(r => {
+    const lastAct = _daysAgo(r.LastActivityDate, captureAt);
+    return {
+      crmId: r.Id,
+      stage: r.StageName,
+      amount: r.Amount != null ? Number(r.Amount) : null,
+      createdAt: r.CreatedDate,
+      stageChangedAt: r.LastStageChangeDate || null,
+      ownerName: r.Owner ? r.Owner.Name : null,
+      segmentValues: Object.fromEntries(segFields.map(f => [f, r[f] ?? null])),
+      contactRoleCount: null,                 // attached separately
+      activityLast14: lastAct == null ? null : (lastAct <= 14 ? 1 : 0),
+      activityLast30: lastAct == null ? null : (lastAct <= 30 ? 1 : 0),
+    };
+  });
+}
+
+const SF_AGG_ROW_CEILING = 2000; // SOQL aggregate result ceiling
+
+async function _sfAttachContactRoles(sfClient, openDeals, warnings) {
+  if (!openDeals.length) return;
+  try {
+    const res = await sfClient.query(
+      'SELECT OpportunityId oid, COUNT(Id) c FROM OpportunityContactRole ' +
+      'WHERE Opportunity.IsClosed = false GROUP BY OpportunityId'
+    );
+    const byOpp = new Map(res.records.map(r => [r.oid, Number(r.c)]));
+    for (const d of openDeals) {
+      // Zero roles is real data: OCR readable but no rows for this deal.
+      d.contactRoleCount = byOpp.get(d.crmId) || 0;
+    }
+    if (res.records.length >= SF_AGG_ROW_CEILING) {
+      warnings.push({
+        kind: 'contact_roles_truncated',
+        detail: `aggregate row ceiling (${SF_AGG_ROW_CEILING}) reached — threading covers the first ${SF_AGG_ROW_CEILING} opportunities only`,
+      });
+    }
+  } catch (err) {
+    warnings.push({ kind: 'contact_roles_unavailable', detail: err.message });
+    // contactRoleCount stays null → threading metric self-reports the gap.
+  }
 }
 
 async function _sfClosedDealMeta(sfClient, cfg, warnings) {
   const segFields = _segmentFieldList(cfg).filter(f => f !== 'Amount');
+  const wantAmountBand = (cfg.segment_axes || []).some(a => a.field === 'Amount');
   const fieldSel = ['Id', 'Amount', 'Owner.Name', ...segFields];
-  const soql =
-    `SELECT ${[...new Set(fieldSel)].join(', ')} FROM Opportunity ` +
-    `WHERE IsClosed = true AND CloseDate = LAST_N_MONTHS:${cfg.history_months}`;
   const out = [];
   try {
-    let page = await sfClient.query(soql);
-    const collect = (records) => {
-      for (const r of records) {
-        const segmentValues = Object.fromEntries(segFields.map(f => [f, r[f] ?? null]));
-        if ((cfg.segment_axes || []).some(a => a.field === 'Amount')) {
-          segmentValues.Amount = _amountBand(r.Amount);
+    await _sfPaged(sfClient,
+      `SELECT ${[...new Set(fieldSel)].join(', ')} FROM Opportunity ` +
+      `WHERE IsClosed = true AND CloseDate = LAST_N_MONTHS:${cfg.history_months}`,
+      recs => {
+        for (const r of recs) {
+          const segmentValues = Object.fromEntries(segFields.map(f => [f, r[f] ?? null]));
+          if (wantAmountBand) segmentValues.Amount = _amountBand(r.Amount);
+          out.push({ crmId: r.Id, ownerName: r.Owner ? r.Owner.Name : null, segmentValues });
         }
-        out.push({ crmId: r.Id, ownerName: r.Owner ? r.Owner.Name : null, segmentValues });
-      }
-    };
-    collect(page.records);
-    while (!page.done && page.nextRecordsUrl) {
-      const raw = await sfClient._request('GET', `${sfClient.instanceUrl}${page.nextRecordsUrl}`);
-      page = { records: raw.records || [], done: raw.done ?? true, nextRecordsUrl: raw.nextRecordsUrl || null };
-      collect(page.records);
-    }
+      });
   } catch (err) {
     warnings.push({ kind: 'closed_deal_meta_failed', detail: err.message });
   }
   return out;
 }
 
-async function _hsOpenDeals(hsAdapter, cfg, warnings) {
+// ─────────────────────────────────────────────────────────────────────────────
+// HubSpot pulls
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function _hsOwnerMap(hsAdapter, warnings) {
+  const map = new Map();
+  let after;
+  try {
+    for (;;) {
+      const params = { limit: 100 };
+      if (after) params.after = after;
+      const data = await hsAdapter._get('/crm/v3/owners', params);
+      for (const o of (data.results || [])) {
+        const name = [o.firstName, o.lastName].filter(Boolean).join(' ') || o.email || String(o.id);
+        map.set(String(o.id), name);
+      }
+      const next = data.paging && data.paging.next && data.paging.next.after;
+      if (!next) break;
+      after = next;
+    }
+  } catch (err) {
+    warnings.push({ kind: 'owner_map_unavailable', detail: err.message });
+  }
+  return map;
+}
+
+async function _hsPullDeals(hsAdapter, captureAt, cfg, ownerMap, warnings) {
   const segFields = _segmentFieldList(cfg).filter(f => f.toLowerCase() !== 'amount');
-  const props = ['dealstage', 'amount', 'createdate', 'hs_lastmodifieddate',
-    'hubspot_owner_id', 'hs_date_entered_current_stage', ...segFields];
+  const wantAmountBand = (cfg.segment_axes || []).some(a => a.field === 'Amount');
+  const props = ['dealstage', 'amount', 'createdate',
+    'hubspot_owner_id', 'hs_date_entered_current_stage',
+    'num_associated_contacts', 'notes_last_contacted', ...segFields];
   const out = [];
   let after;
   try {
@@ -407,18 +491,21 @@ async function _hsOpenDeals(hsAdapter, cfg, warnings) {
       const data = await hsAdapter._get('/crm/v3/objects/deals', params);
       for (const r of (data.results || [])) {
         const p = r.properties || {};
-        // Closed-ness resolves downstream through the stage resolver; pull all.
+        const lastAct = _daysAgo(p.notes_last_contacted, captureAt);
+        const segmentValues = Object.fromEntries(segFields.map(f => [f, p[f] ?? null]));
+        if (wantAmountBand) segmentValues.Amount = _amountBand(p.amount);
         out.push({
           crmId: r.id,
           stage: p.dealstage,
           amount: p.amount != null && p.amount !== '' ? Number(p.amount) : null,
           createdAt: p.createdate || null,
           stageChangedAt: p.hs_date_entered_current_stage || null,
-          ownerName: p.hubspot_owner_id || null,   // id → name resolution week 2
-          segmentValues: Object.fromEntries(segFields.map(f => [f, p[f] ?? null])),
-          contactRoleCount: null,
-          activityLast14: null,
-          activityLast30: null,
+          ownerName: ownerMap.get(String(p.hubspot_owner_id)) || p.hubspot_owner_id || null,
+          segmentValues,
+          contactRoleCount: (p.num_associated_contacts != null && p.num_associated_contacts !== '')
+            ? Number(p.num_associated_contacts) : null,
+          activityLast14: lastAct == null ? null : (lastAct <= 14 ? 1 : 0),
+          activityLast30: lastAct == null ? null : (lastAct <= 30 ? 1 : 0),
         });
       }
       const next = data.paging && data.paging.next && data.paging.next.after;
@@ -429,13 +516,6 @@ async function _hsOpenDeals(hsAdapter, cfg, warnings) {
     warnings.push({ kind: 'open_deal_pull_degraded', detail: err.message });
   }
   return out;
-}
-
-async function _hsClosedDealMeta(hsAdapter, cfg, warnings) {
-  // HubSpot closed-deal meta rides the same pull as open deals in v1 (the
-  // timelines decide terminality); segment values already collected there.
-  // Kept separate for interface symmetry; week 2 folds owner-name resolution in.
-  return [];
 }
 
 function _amountBand(amount) {
@@ -452,12 +532,11 @@ function _amountBand(amount) {
 // deal_stage_history backfill (source = crm_history_import)
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function _writeHistoryImport(orgId, events, resolver) {
+async function _writeHistoryImport(orgId, events) {
   if (!events.length) return;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    // Idempotent per capture: replace previous import rows for this org.
     await client.query(
       `DELETE FROM deal_stage_history
         WHERE org_id = $1 AND source = 'crm_history_import'`,
@@ -492,5 +571,6 @@ async function _writeHistoryImport(orgId, events, resolver) {
 module.exports = {
   runDiscovery,
   captureBaseline,
+  startBaselineCapture,
   DEFAULT_BASELINE_CONFIG,
 };

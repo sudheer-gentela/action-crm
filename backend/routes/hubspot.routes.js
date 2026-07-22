@@ -24,6 +24,7 @@ const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext }    = require('../middleware/orgContext.middleware');
 const { pool }          = require('../config/database');
 const hsAuth            = require('../services/hubspot.auth');
+const crmConnections = require('../services/crmConnections.service');
 const crmSync           = require('../services/crm');
 
 const FRONTEND_URL = process.env.FRONTEND_URL || process.env.CORS_ORIGIN || 'https://app.gowarmcrm.com';
@@ -62,7 +63,9 @@ router.use(orgContext);
 // GET /connect
 router.get('/connect', async (req, res) => {
   try {
-    const authUrl = hsAuth.getAuthUrl(req.user.userId, req.orgId);
+    // Baseline/Assessment (2026_60): same purpose scope as the SF connect.
+    const scope = { purpose: req.query.purpose === 'assessment' ? 'assessment' : 'standard' };
+    const authUrl = hsAuth.getAuthUrl(req.user.userId, req.orgId, scope);
     res.json({ success: true, authUrl });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -172,6 +175,9 @@ router.patch('/settings', async (req, res) => {
        WHERE org_id = $1 AND integration_type = 'hubspot'`,
       params
     );
+
+    // Mirror onto the org-level crm_connections pointer row (2026_60).
+    await crmConnections.mirrorSettings(req.orgId, 'hubspot', updates);
 
     res.json({ success: true, message: 'Settings updated' });
   } catch (err) {

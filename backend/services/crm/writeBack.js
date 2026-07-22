@@ -69,6 +69,13 @@ const BATCH_SIZE = 200;
  * @returns {{ pushed: number, skipped: number, errors: string[] }}
  */
 async function runWriteBackForOrg(orgId, { actionId = null, hoursBack = 25 } = {}) {
+  // Assessment hard gate (2026_60): assessment orgs never write back.
+  try {
+    await require('../crmConnections.service').assertOrgWritesAllowed(orgId);
+  } catch (gateErr) {
+    return { skipped: true, reason: 'assessment_org' };
+  }
+
   // ── Gate check ──────────────────────────────────────────────────────────────
   const intRes = await pool.query(
     `SELECT settings FROM org_integrations WHERE org_id = $1 AND integration_type = 'salesforce'`,

@@ -294,6 +294,14 @@ async function _syncTasks(sf, orgId, settings) {
  * Only runs if org.settings.write_back_enabled = true.
  */
 async function runWriteBackForOrg(orgId) {
+  // Assessment hard gate (2026_60): assessment orgs never write back,
+  // regardless of any settings flag. Skip before reading config.
+  try {
+    await require('./crmConnections.service').assertOrgWritesAllowed(orgId);
+  } catch (gateErr) {
+    return { skipped: true, reason: 'assessment_org' };
+  }
+
   const intRes = await pool.query(
     `SELECT settings FROM org_integrations WHERE org_id = $1 AND integration_type = 'salesforce'`,
     [orgId]

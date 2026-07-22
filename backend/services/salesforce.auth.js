@@ -33,8 +33,15 @@ const REDIRECT_URI  = process.env.SALESFORCE_REDIRECT_URI;
 /**
  * Build the Salesforce OAuth authorization URL.
  * State encodes userId + orgId so the callback knows who to save the token for.
+ *
+ * Baseline/Assessment (2026_60): optional scope = { clientId?, purpose? }.
+ *   purpose  'standard' | 'assessment' — recorded on the crm_connections row.
+ *            Assessment ORGS force purpose='assessment' server-side regardless.
+ *   clientId reserved for Phase 3a (client-scoped connections). Plumbed
+ *            through state now; the callback rejects it until 3a lands so a
+ *            hand-built URL can't create a half-supported connection.
  */
-function getAuthUrl(userId, orgId) {
+function getAuthUrl(userId, orgId, scope = {}) {
   if (!CLIENT_ID || !REDIRECT_URI) {
     throw new Error('SALESFORCE_CLIENT_ID and SALESFORCE_REDIRECT_URI env vars are required');
   }
@@ -42,6 +49,8 @@ function getAuthUrl(userId, orgId) {
   const state = Buffer.from(JSON.stringify({
     userId:    parseInt(userId, 10),
     orgId:     parseInt(orgId,  10),
+    clientId:  scope.clientId != null ? parseInt(scope.clientId, 10) : null,
+    purpose:   scope.purpose === 'assessment' ? 'assessment' : 'standard',
     timestamp: Date.now(),
   })).toString('base64');
 
@@ -72,7 +81,14 @@ async function exchangeCode(code, stateStr) {
     throw new Error('Invalid OAuth state parameter');
   }
 
-  const { userId, orgId } = stateData;
+  const { userId, orgId, clientId = null, purpose = 'standard' } = stateData;
+
+  // Client-scoped connections carry their own credentials on crm_connections
+  // and land in Phase 3a. Reject now so a stale/hand-built state can't create
+  // a connection the credential resolver doesn't support yet.
+  if (clientId != null) {
+    throw new Error('Client-scoped Salesforce connections are not yet enabled (Phase 3a)');
+  }
 
   // Exchange code for tokens
   const tokenRes = await axios.post(SF_TOKEN_URL, new URLSearchParams({
@@ -145,6 +161,26 @@ async function exchangeCode(code, stateStr) {
         initial_sync_complete: { Contact: false, Account: false, Opportunity: false, Lead: false },
       }),
     ]);
+
+    // ── crm_connections pointer row (2026_60) ────────────────────────────────
+    // Same transaction as the org_integrations upsert: either both records of
+    // this connect exist or neither does. Pointer mode — credentials stay in
+    // oauth_tokens/org_integrations; getValidToken remains the single refresher.
+    const intIdRes = await client.query(
+      `SELECT id FROM org_integrations WHERE org_id = $1 AND integration_type = 'salesforce'`,
+      [orgId]
+    );
+    if (intIdRes.rows.length) {
+      const crmConnections = require('./crmConnections.service');
+      await crmConnections.upsertPointerConnection(client, {
+        orgId,
+        crmType:       'salesforce',
+        integrationId: intIdRes.rows[0].id,
+        instanceUrl:   instance_url,
+        connectedBy:   userId,
+        purpose,
+      });
+    }
 
     await client.query('COMMIT');
   } catch (err) {

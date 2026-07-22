@@ -23,6 +23,7 @@ const { pool }         = require('../config/database');
 const sfAuth           = require('../services/salesforce.auth');
 const sfSync           = require('../services/crm');
 const { createClient } = require('../services/salesforce.client');
+const crmConnections   = require('../services/crmConnections.service');
 
 const FRONTEND_URL = process.env.FRONTEND_URL || process.env.CORS_ORIGIN || 'https://app.gowarmcrm.com';
 
@@ -57,7 +58,12 @@ router.use(orgContext);
 // GET /connect — initiate OAuth (org admin initiates, token stored org-level)
 router.get('/connect', async (req, res) => {
   try {
-    const authUrl = sfAuth.getAuthUrl(req.user.userId, req.orgId);
+    // Baseline/Assessment (2026_60): ?purpose=assessment marks the resulting
+    // crm_connections row. Assessment ORGS force this server-side anyway
+    // (crmConnections.upsertPointerConnection); the param covers the case of a
+    // standard org connecting explicitly for an assessment engagement.
+    const scope = { purpose: req.query.purpose === 'assessment' ? 'assessment' : 'standard' };
+    const authUrl = sfAuth.getAuthUrl(req.user.userId, req.orgId, scope);
     res.json({ success: true, authUrl });
   } catch (err) {
     console.error('SF connect error:', err.message);
@@ -188,6 +194,15 @@ router.patch('/settings', async (req, res) => {
 
   // Check SuperAdmin has enabled write-back globally before allowing org to enable it
   if (updates.write_back_enabled === true) {
+    // Assessment hard gate (2026_60): assessment orgs can never enable
+    // write-back — 403 by org type, before the platform flag is even read.
+    try {
+      await crmConnections.assertOrgWritesAllowed(req.orgId);
+    } catch (gateErr) {
+      return res.status(gateErr.statusCode || 403).json({
+        success: false, error: gateErr.message, code: gateErr.code,
+      });
+    }
     const platformRes = await pool.query(
       `SELECT value FROM platform_settings WHERE key = 'sf_write_back_enabled'`
     ).catch(() => ({ rows: [] }));
@@ -217,6 +232,10 @@ router.patch('/settings', async (req, res) => {
       `UPDATE org_integrations SET settings = ${settingsExpr}, updated_at = NOW() WHERE org_id = $1 AND integration_type = 'salesforce'`,
       params
     );
+
+    // Mirror stage_map / field_map / sync_objects / write_back_enabled onto
+    // the org-level crm_connections pointer row (2026_60). Best-effort.
+    await crmConnections.mirrorSettings(req.orgId, 'salesforce', updates);
 
     res.json({ success: true, message: 'Settings updated' });
   } catch (err) {

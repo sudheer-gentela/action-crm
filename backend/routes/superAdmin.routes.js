@@ -169,23 +169,31 @@ router.get('/orgs/:orgId', async (req, res) => {
 // Create a new org
 router.post('/orgs', async (req, res) => {
   try {
-    const { name, plan = 'free', max_users = 10, notes = '' } = req.body;
+    const { name, plan = 'free', max_users = 10, notes = '', type = 'standard' } = req.body;
     if (!name?.trim()) {
       return res.status(400).json({ error: { message: 'Organisation name is required' } });
+    }
+    if (!['standard', 'assessment'].includes(type)) {
+      return res.status(400).json({ error: { message: "type must be 'standard' or 'assessment'" } });
     }
 
     const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
     const result = await pool.query(`
-      INSERT INTO organizations (name, slug, plan, max_users, notes, status, created_at)
-      VALUES ($1, $2, $3, $4, $5, 'active', now())
+      INSERT INTO organizations (name, slug, plan, max_users, notes, status, type, created_at)
+      VALUES ($1, $2, $3, $4, $5, 'active', $6, now())
       RETURNING *
-    `, [name.trim(), slug, plan, max_users, notes]);
+    `, [name.trim(), slug, plan, max_users, notes, type]);
 
-    await auditLog(req, 'create_org', 'org', result.rows[0].id, { name, plan });
+    await auditLog(req, 'create_org', 'org', result.rows[0].id, { name, plan, type });
 
     // Seed default stages, playbooks, etc.
-    await seedOrg(result.rows[0].id);
+    // Assessment orgs (2026_60) are deliberately NOT seeded: the diagnostic
+    // engine runs against raw CRM-derived data only, and the org stays clean
+    // for a later convert-to-standard (which seeds then).
+    if (type !== 'assessment') {
+      await seedOrg(result.rows[0].id);
+    }
 
     res.status(201).json({ org: result.rows[0] });
   } catch (err) {

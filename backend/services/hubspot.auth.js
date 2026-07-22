@@ -52,7 +52,10 @@ const SCOPES = [
 
 // ── getAuthUrl ────────────────────────────────────────────────────────────────
 
-function getAuthUrl(userId, orgId) {
+// Baseline/Assessment (2026_60): optional scope = { clientId?, purpose? } —
+// same contract as salesforce.auth.js getAuthUrl. clientId reserved for
+// Phase 3a; callback rejects it until then.
+function getAuthUrl(userId, orgId, scope = {}) {
   const { CLIENT_ID, REDIRECT_URI } = _env();
   if (!CLIENT_ID || !REDIRECT_URI) {
     throw new Error('HUBSPOT_CLIENT_ID and HUBSPOT_REDIRECT_URI env vars are required');
@@ -61,6 +64,8 @@ function getAuthUrl(userId, orgId) {
   const state = Buffer.from(JSON.stringify({
     userId:    parseInt(userId, 10),
     orgId:     parseInt(orgId,  10),
+    clientId:  scope.clientId != null ? parseInt(scope.clientId, 10) : null,
+    purpose:   scope.purpose === 'assessment' ? 'assessment' : 'standard',
     timestamp: Date.now(),
   })).toString('base64');
 
@@ -91,7 +96,11 @@ async function exchangeCode(code, stateStr) {
     throw new Error('Invalid OAuth state parameter');
   }
 
-  const { userId, orgId } = stateData;
+  const { userId, orgId, clientId = null, purpose = 'standard' } = stateData;
+
+  if (clientId != null) {
+    throw new Error('Client-scoped HubSpot connections are not yet enabled (Phase 3a)');
+  }
 
   // Exchange code for tokens
   const tokenRes = await axios.post(HS_TOKEN_URL, new URLSearchParams({
@@ -168,6 +177,23 @@ async function exchangeCode(code, stateStr) {
         initial_sync_complete: { Company: false, Contact: false, Deal: false },
       }),
     ]);
+
+    // ── crm_connections pointer row (2026_60) — same contract as SF path ─────
+    const intIdRes = await client.query(
+      `SELECT id FROM org_integrations WHERE org_id = $1 AND integration_type = 'hubspot'`,
+      [orgId]
+    );
+    if (intIdRes.rows.length) {
+      const crmConnections = require('./crmConnections.service');
+      await crmConnections.upsertPointerConnection(client, {
+        orgId,
+        crmType:       'hubspot',
+        integrationId: intIdRes.rows[0].id,
+        instanceUrl,
+        connectedBy:   userId,
+        purpose,
+      });
+    }
 
     await client.query('COMMIT');
   } catch (err) {
