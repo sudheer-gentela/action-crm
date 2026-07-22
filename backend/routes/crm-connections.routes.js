@@ -235,6 +235,24 @@ router.patch('/:id/baseline-config', requireRole('admin', 'owner'), async (req, 
       return res.status(400).json({ success: false, error: `report.branding must be one of ${BRANDINGS.join(', ')}` });
     }
     updates.report = { branding: b.report.branding };
+    // White-label identity (2026_62): display name + optional logo for the
+    // findings report. Falls back to client name / org name when omitted.
+    if (b.report.branding === 'white_label') {
+      if (b.report.label_name !== undefined) {
+        const ln = String(b.report.label_name).trim();
+        if (!ln || ln.length > 255) {
+          return res.status(400).json({ success: false, error: 'report.label_name must be 1–255 chars' });
+        }
+        updates.report.label_name = ln;
+      }
+      if (b.report.label_logo_url !== undefined) {
+        const lu = String(b.report.label_logo_url).trim();
+        if (lu && !/^https:\/\//.test(lu)) {
+          return res.status(400).json({ success: false, error: 'report.label_logo_url must be an https URL' });
+        }
+        if (lu) updates.report.label_logo_url = lu;
+      }
+    }
   }
   if (b.segment_axes !== undefined) {
     if (!Array.isArray(b.segment_axes) || b.segment_axes.some(a => !a || !a.object || !a.field)) {
