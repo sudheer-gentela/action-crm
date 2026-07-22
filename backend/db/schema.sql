@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict K1JhLydikq0saU6Zb3dxWbRdVf7e5ETFsOHHcT4ZAWjYNmVPw3COuLQisp3B5Td
+\restrict auULhGIizGV9VVArVuC5XnL4veVQwsMLWadJRC5F0jlTrxcFWMtejDkZNn9XQUL
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -48,6 +48,47 @@ BEGIN
     AND key = NEW.stage
   LIMIT 1;
   RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: prospect_notes_reject_update(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.prospect_notes_reject_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'prospect_notes is append-only ΓÇö entries cannot be modified (id=%)', OLD.id
+    USING ERRCODE = 'raise_exception';
+END;
+$$;
+
+
+--
+-- Name: reject_frozen_mutation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_frozen_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        IF OLD.status = 'frozen' THEN
+            RAISE EXCEPTION 'Row % in % is frozen and cannot be deleted', OLD.id, TG_TABLE_NAME
+                USING ERRCODE = 'raise_exception';
+        END IF;
+        RETURN OLD;
+    END IF;
+
+    -- UPDATE
+    IF OLD.status = 'frozen' THEN
+        RAISE EXCEPTION 'Row % in % is frozen and cannot be modified', OLD.id, TG_TABLE_NAME
+            USING ERRCODE = 'raise_exception';
+    END IF;
+    NEW.updated_at := NOW();
+    RETURN NEW;
 END;
 $$;
 
@@ -335,6 +376,7 @@ CREATE TABLE public.accounts (
     needs_domain_review boolean DEFAULT false NOT NULL,
     linkedin_company_url character varying(500),
     account_type character varying(20) DEFAULT 'none'::character varying NOT NULL,
+    linkedin_company_id text,
     CONSTRAINT chk_account_disposition CHECK (((account_disposition IS NULL) OR ((account_disposition)::text = ANY ((ARRAY['kill_account'::character varying, 'long_term_account'::character varying, 'unable_to_decide_account'::character varying])::text[])))),
     CONSTRAINT chk_account_type CHECK (((account_type)::text = ANY ((ARRAY['none'::character varying, 'target'::character varying, 'customer'::character varying, 'churned'::character varying])::text[])))
 );
@@ -366,6 +408,13 @@ COMMENT ON COLUMN public.accounts.research_meta IS 'Metadata about the AI genera
 --
 
 COMMENT ON COLUMN public.accounts.account_type IS 'Authoritative account classification (D12): none|target|customer|churned. customerΓåÆchurn play, targetΓåÆinbound play. Backfilled from won-deal/client_id, RevOps-overridable.';
+
+
+--
+-- Name: COLUMN accounts.linkedin_company_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.accounts.linkedin_company_id IS 'Stable LinkedIn numeric company id (e.g. 9261371) ΓÇö the same integer across urn:li:company / fs_salesCompany / fsd_company and /company/<id>. Captured by the Chrome extension. Preferred over linkedin_company_url for capture-time account dedup (slug-change resilient, and the only structured key Sales Navigator exposes for a company). Nullable, non-unique by design; set only when empty, never overwritten.';
 
 
 --
@@ -869,6 +918,63 @@ CREATE SEQUENCE public.ai_token_usage_id_seq
 --
 
 ALTER SEQUENCE public.ai_token_usage_id_seq OWNED BY public.ai_token_usage.id;
+
+
+--
+-- Name: baseline_snapshots; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.baseline_snapshots (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    client_id integer,
+    connection_id integer NOT NULL,
+    crm_type character varying(50) NOT NULL,
+    captured_at timestamp with time zone DEFAULT now() NOT NULL,
+    history_from date,
+    history_to date,
+    metric_defs_version character varying(20) NOT NULL,
+    baseline_config jsonb DEFAULT '{}'::jsonb NOT NULL,
+    status character varying(50) DEFAULT 'pending'::character varying NOT NULL,
+    metrics jsonb,
+    segments jsonb,
+    evidence jsonb,
+    warnings jsonb,
+    computed_by integer,
+    error_detail text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT baseline_snapshots_crm_type_check CHECK (((crm_type)::text = ANY ((ARRAY['salesforce'::character varying, 'hubspot'::character varying])::text[]))),
+    CONSTRAINT baseline_snapshots_frozen_payload_check CHECK ((((status)::text <> 'frozen'::text) OR ((metrics IS NOT NULL) AND (history_from IS NOT NULL)))),
+    CONSTRAINT baseline_snapshots_status_check CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'computing'::character varying, 'frozen'::character varying, 'failed'::character varying])::text[])))
+);
+
+
+--
+-- Name: TABLE baseline_snapshots; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.baseline_snapshots IS 'Immutable pre-deployment metric snapshots (checklist Tier 1 #1). Rows with status=frozen reject UPDATE and DELETE at the trigger level. Written by BaselineCaptureService only. Introduced 2026_61.';
+
+
+--
+-- Name: baseline_snapshots_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.baseline_snapshots_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: baseline_snapshots_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.baseline_snapshots_id_seq OWNED BY public.baseline_snapshots.id;
 
 
 --
@@ -2253,6 +2359,119 @@ ALTER SEQUENCE public.conversation_starters_id_seq OWNED BY public.conversation_
 
 
 --
+-- Name: crm_connections; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.crm_connections (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    client_id integer,
+    crm_type character varying(50) NOT NULL,
+    purpose character varying(50) DEFAULT 'standard'::character varying NOT NULL,
+    integration_id integer,
+    credentials jsonb,
+    instance_url character varying(500),
+    settings jsonb DEFAULT '{}'::jsonb NOT NULL,
+    status character varying(50) DEFAULT 'pending'::character varying NOT NULL,
+    write_back_enabled boolean DEFAULT false NOT NULL,
+    sync_status character varying(50) DEFAULT 'idle'::character varying NOT NULL,
+    last_sync_at timestamp with time zone,
+    last_sync_error text,
+    connected_by integer,
+    connected_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT crm_connections_credential_mode_check CHECK (((integration_id IS NOT NULL) OR (credentials IS NOT NULL) OR ((status)::text = 'pending'::text))),
+    CONSTRAINT crm_connections_crm_type_check CHECK (((crm_type)::text = ANY ((ARRAY['salesforce'::character varying, 'hubspot'::character varying])::text[]))),
+    CONSTRAINT crm_connections_purpose_check CHECK (((purpose)::text = ANY ((ARRAY['standard'::character varying, 'assessment'::character varying])::text[])))
+);
+
+
+--
+-- Name: TABLE crm_connections; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.crm_connections IS 'First-class CRM connections. client_id NULL = org-level (migrated from org_integrations, credentials resolved via integration_id pointer). client_id set = client-scoped connection with its own credentials (Phase 3). Introduced 2026_60 for the Baseline+Assessment build.';
+
+
+--
+-- Name: COLUMN crm_connections.credentials; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.crm_connections.credentials IS 'App-layer-encrypted tokens for self-contained (client-scoped) connections. NULL when integration_id is set. Never log this column.';
+
+
+--
+-- Name: crm_connections_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.crm_connections_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: crm_connections_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.crm_connections_id_seq OWNED BY public.crm_connections.id;
+
+
+--
+-- Name: crm_schema_snapshots; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.crm_schema_snapshots (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    client_id integer,
+    connection_id integer NOT NULL,
+    crm_type character varying(50) NOT NULL,
+    captured_at timestamp with time zone DEFAULT now() NOT NULL,
+    status character varying(50) DEFAULT 'pending'::character varying NOT NULL,
+    schema jsonb,
+    warnings jsonb,
+    error_detail text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT crm_schema_snapshots_crm_type_check CHECK (((crm_type)::text = ANY ((ARRAY['salesforce'::character varying, 'hubspot'::character varying])::text[]))),
+    CONSTRAINT crm_schema_snapshots_frozen_payload_check CHECK ((((status)::text <> 'frozen'::text) OR (schema IS NOT NULL))),
+    CONSTRAINT crm_schema_snapshots_status_check CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'computing'::character varying, 'frozen'::character varying, 'failed'::character varying])::text[])))
+);
+
+
+--
+-- Name: TABLE crm_schema_snapshots; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.crm_schema_snapshots IS 'Frozen CRM schema discovery: custom fields with fill rates, stage definitions from the CRM''s own metadata (OpportunityStage / HubSpot pipelines), validation rules, automation inventory. Grounds stage-mapping approval and the config-debt findings. Same freeze contract as baseline_snapshots. Introduced 2026_61.';
+
+
+--
+-- Name: crm_schema_snapshots_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.crm_schema_snapshots_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: crm_schema_snapshots_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.crm_schema_snapshots_id_seq OWNED BY public.crm_schema_snapshots.id;
+
+
+--
 -- Name: custom_field_defs; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2560,6 +2779,51 @@ CREATE VIEW public.deal_roles AS
     sort_order,
     created_at
    FROM public.org_roles;
+
+
+--
+-- Name: deal_stage_history; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.deal_stage_history (
+    id bigint NOT NULL,
+    org_id integer NOT NULL,
+    deal_id integer,
+    crm_deal_id character varying(100),
+    from_stage character varying(255),
+    to_stage character varying(255) NOT NULL,
+    changed_at timestamp with time zone NOT NULL,
+    source character varying(50) DEFAULT 'sync'::character varying NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT deal_stage_history_deal_ref_check CHECK (((deal_id IS NOT NULL) OR (crm_deal_id IS NOT NULL))),
+    CONSTRAINT deal_stage_history_source_check CHECK (((source)::text = ANY ((ARRAY['sync'::character varying, 'manual'::character varying, 'crm_history_import'::character varying])::text[])))
+);
+
+
+--
+-- Name: TABLE deal_stage_history; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.deal_stage_history IS 'Deal stage transition ledger. sync/manual rows are written at the deal upsert choke point from 2026_61 onward; crm_history_import rows are the one-shot baseline backfill (OpportunityHistory / HubSpot dealstage history). Post-baseline deltas read this table, never the CRM. Introduced 2026_61.';
+
+
+--
+-- Name: deal_stage_history_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.deal_stage_history_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: deal_stage_history_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.deal_stage_history_id_seq OWNED BY public.deal_stage_history.id;
 
 
 --
@@ -3758,7 +4022,8 @@ CREATE TABLE public.org_action_config (
     campaign_settings jsonb DEFAULT '{}'::jsonb NOT NULL,
     prospecting_escalation jsonb DEFAULT '{}'::jsonb NOT NULL,
     linkedin_automation jsonb DEFAULT '{}'::jsonb NOT NULL,
-    network_jobchange jsonb DEFAULT '{}'::jsonb NOT NULL
+    network_jobchange jsonb DEFAULT '{}'::jsonb NOT NULL,
+    sales_resolver jsonb DEFAULT '{}'::jsonb NOT NULL
 );
 
 
@@ -3791,6 +4056,13 @@ COMMENT ON COLUMN public.org_action_config.linkedin_automation IS 'Optional Link
 --
 
 COMMENT ON COLUMN public.org_action_config.network_jobchange IS 'Org-level network job-change config (partial, merged over SYSTEM_DEFAULTS by NetworkJobChangeConfig): auto_promote_on_move (D2), notify_scope (D10), export_cadence (D5). Per-user overrides in user_preferences.preferences->''network_jobchange''.';
+
+
+--
+-- Name: COLUMN org_action_config.sales_resolver; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.org_action_config.sales_resolver IS 'Background Sales-Nav URL resolver ORG policy (hard ceiling). Keys (all optional; services/salesResolverPolicy.js supplies defaults): enabled (default false, opt-in), max_per_user_per_day (default 100), min_gap_seconds (default 45), quiet_hours {start,end} local (default 22:00ΓÇô07:00), require_presence (default true). Per-user prefs in user_preferences.preferences->''sales_resolver'' may only tighten these; effective policy = element-wise min(user, org).';
 
 
 --
@@ -4136,8 +4408,11 @@ CREATE TABLE public.organizations (
     notes text,
     suspended_at timestamp with time zone,
     suspended_by integer,
+    type character varying(50) DEFAULT 'standard'::character varying NOT NULL,
+    converted_to_standard_at timestamp with time zone,
     CONSTRAINT organizations_plan_check CHECK (((plan)::text = ANY ((ARRAY['free'::character varying, 'starter'::character varying, 'pro'::character varying, 'enterprise'::character varying])::text[]))),
-    CONSTRAINT organizations_status_check CHECK (((status)::text = ANY ((ARRAY['active'::character varying, 'suspended'::character varying, 'trial'::character varying, 'cancelled'::character varying])::text[])))
+    CONSTRAINT organizations_status_check CHECK (((status)::text = ANY ((ARRAY['active'::character varying, 'suspended'::character varying, 'trial'::character varying, 'cancelled'::character varying])::text[]))),
+    CONSTRAINT organizations_type_check CHECK (((type)::text = ANY ((ARRAY['standard'::character varying, 'assessment'::character varying])::text[])))
 );
 
 
@@ -4799,6 +5074,54 @@ ALTER SEQUENCE public.proposals_id_seq OWNED BY public.proposals.id;
 
 
 --
+-- Name: prospect_notes; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.prospect_notes (
+    id bigint NOT NULL,
+    org_id integer NOT NULL,
+    prospect_id integer NOT NULL,
+    user_id integer NOT NULL,
+    body text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT prospect_notes_body_check CHECK (((length(body) >= 1) AND (length(body) <= 5000)))
+);
+
+
+--
+-- Name: TABLE prospect_notes; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.prospect_notes IS 'Append-only attributed notes log per prospect (extension side panel). Entries are immutable once written ΓÇö API is GET+POST only, and trg_prospect_notes_immutable rejects UPDATEs at the DB level. Anyone in the org who can view the prospect may read/append.';
+
+
+--
+-- Name: COLUMN prospect_notes.user_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.prospect_notes.user_id IS 'Author ΓÇö the user who wrote the entry. Immutable, like the rest of the row.';
+
+
+--
+-- Name: prospect_notes_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.prospect_notes_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: prospect_notes_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.prospect_notes_id_seq OWNED BY public.prospect_notes.id;
+
+
+--
 -- Name: prospect_phones; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -5390,6 +5713,10 @@ CREATE TABLE public.prospects (
     campaign_id integer,
     member_urn text,
     created_by integer NOT NULL,
+    sales_profile_id text,
+    sales_auth_type text,
+    sales_auth_token text,
+    sales_captured_identity text,
     CONSTRAINT chk_prospect_revisit_disposition CHECK (((revisit_disposition IS NULL) OR (revisit_disposition = ANY (ARRAY['kill'::text, 'long_term'::text, 'unable_to_decide'::text]))))
 );
 
@@ -5413,6 +5740,34 @@ COMMENT ON COLUMN public.prospects.linkedin_headline IS 'Free-text headline show
 --
 
 COMMENT ON COLUMN public.prospects.member_urn IS 'Stable LinkedIn fsd_profile URN (urn:li:fsd_profile:ΓÇª). Captured by the Chrome extension, owner-bound to the profile slug. Preferred over linkedin_url for auto-send targeting and capture-time dedup (slug-change resilient). Nullable, non-unique by design.';
+
+
+--
+-- Name: COLUMN prospects.sales_profile_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.prospects.sales_profile_id IS 'Stable LinkedIn Sales Navigator fs_salesProfile id (the opaque token in urn:li:fs_salesProfile:(<id>,ΓÇª)). Captured by the Chrome extension from Sales-Nav lists/searches/profiles. The only durable identity a Sales-Nav list row carries. Used for capture-time dedup (member_urn ΓåÆ sales_profile_id ΓåÆ slug). Nullable, non-unique, set only when empty (never overwritten).';
+
+
+--
+-- Name: COLUMN prospects.sales_auth_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.prospects.sales_auth_type IS 'Sales-Nav fs_salesProfile authType (e.g. NAME_SEARCH), 2nd element of the resolve triple. With sales_profile_id + sales_auth_token, lets the background resolver rebuild the salesApiProfiles request URL. Nullable/additive.';
+
+
+--
+-- Name: COLUMN prospects.sales_auth_token; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.prospects.sales_auth_token IS 'Sales-Nav fs_salesProfile authToken (e.g. lORL), 3rd element of the triple. Validated durable across same-account logout/login. Nullable/additive.';
+
+
+--
+-- Name: COLUMN prospects.sales_captured_identity; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.prospects.sales_captured_identity IS 'The LinkedIn identity (from salesApiPrimaryIdentity) whose session captured this row. The resolver only replays the triple under the SAME logged-in account; a mismatch is skipped (avoids cross-session 403). Nullable/additive.';
 
 
 --
@@ -7164,6 +7519,13 @@ ALTER TABLE ONLY public.ai_token_usage ALTER COLUMN id SET DEFAULT nextval('publ
 
 
 --
+-- Name: baseline_snapshots id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.baseline_snapshots ALTER COLUMN id SET DEFAULT nextval('public.baseline_snapshots_id_seq'::regclass);
+
+
+--
 -- Name: calendar_sync_history id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -7367,6 +7729,20 @@ ALTER TABLE ONLY public.conversation_starters ALTER COLUMN id SET DEFAULT nextva
 
 
 --
+-- Name: crm_connections id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_connections ALTER COLUMN id SET DEFAULT nextval('public.crm_connections_id_seq'::regclass);
+
+
+--
+-- Name: crm_schema_snapshots id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_schema_snapshots ALTER COLUMN id SET DEFAULT nextval('public.crm_schema_snapshots_id_seq'::regclass);
+
+
+--
 -- Name: custom_field_defs id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -7406,6 +7782,13 @@ ALTER TABLE ONLY public.deal_play_instances ALTER COLUMN id SET DEFAULT nextval(
 --
 
 ALTER TABLE ONLY public.deal_products ALTER COLUMN id SET DEFAULT nextval('public.deal_products_id_seq'::regclass);
+
+
+--
+-- Name: deal_stage_history id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.deal_stage_history ALTER COLUMN id SET DEFAULT nextval('public.deal_stage_history_id_seq'::regclass);
 
 
 --
@@ -7721,6 +8104,13 @@ ALTER TABLE ONLY public.prompts ALTER COLUMN id SET DEFAULT nextval('public.prom
 --
 
 ALTER TABLE ONLY public.proposals ALTER COLUMN id SET DEFAULT nextval('public.proposals_id_seq'::regclass);
+
+
+--
+-- Name: prospect_notes id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.prospect_notes ALTER COLUMN id SET DEFAULT nextval('public.prospect_notes_id_seq'::regclass);
 
 
 --
@@ -8130,6 +8520,14 @@ ALTER TABLE ONLY public.ai_token_usage
 
 
 --
+-- Name: baseline_snapshots baseline_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.baseline_snapshots
+    ADD CONSTRAINT baseline_snapshots_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: calendar_sync_history calendar_sync_history_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -8458,6 +8856,22 @@ ALTER TABLE ONLY public.conversation_starters
 
 
 --
+-- Name: crm_connections crm_connections_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_connections
+    ADD CONSTRAINT crm_connections_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: crm_schema_snapshots crm_schema_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_schema_snapshots
+    ADD CONSTRAINT crm_schema_snapshots_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: custom_field_defs custom_field_defs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -8519,6 +8933,14 @@ ALTER TABLE ONLY public.deal_play_instances
 
 ALTER TABLE ONLY public.deal_products
     ADD CONSTRAINT deal_products_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: deal_stage_history deal_stage_history_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.deal_stage_history
+    ADD CONSTRAINT deal_stage_history_pkey PRIMARY KEY (id);
 
 
 --
@@ -9079,6 +9501,14 @@ ALTER TABLE ONLY public.prompts
 
 ALTER TABLE ONLY public.proposals
     ADD CONSTRAINT proposals_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: prospect_notes prospect_notes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.prospect_notes
+    ADD CONSTRAINT prospect_notes_pkey PRIMARY KEY (id);
 
 
 --
@@ -9652,6 +10082,13 @@ CREATE INDEX idx_accounts_external_refs ON public.accounts USING gin (external_r
 
 
 --
+-- Name: idx_accounts_linkedin_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_accounts_linkedin_company_id ON public.accounts USING btree (org_id, linkedin_company_id) WHERE ((linkedin_company_id IS NOT NULL) AND (deleted_at IS NULL));
+
+
+--
 -- Name: idx_accounts_needs_domain_review; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -10055,6 +10492,20 @@ CREATE INDEX idx_aie_org_created ON public.activity_inflow_events USING btree (o
 --
 
 CREATE INDEX idx_aie_org_status ON public.activity_inflow_events USING btree (org_id, status) WHERE (status = 'pending_review'::text);
+
+
+--
+-- Name: idx_baseline_snapshots_connection; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_baseline_snapshots_connection ON public.baseline_snapshots USING btree (connection_id, captured_at DESC);
+
+
+--
+-- Name: idx_baseline_snapshots_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_baseline_snapshots_org ON public.baseline_snapshots USING btree (org_id, captured_at DESC);
 
 
 --
@@ -10737,6 +11188,27 @@ CREATE INDEX idx_cpi_status ON public.contract_play_instances USING btree (contr
 
 
 --
+-- Name: idx_crm_connections_client; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_crm_connections_client ON public.crm_connections USING btree (client_id) WHERE (client_id IS NOT NULL);
+
+
+--
+-- Name: idx_crm_connections_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_crm_connections_org ON public.crm_connections USING btree (org_id);
+
+
+--
+-- Name: idx_crm_schema_snapshots_connection; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_crm_schema_snapshots_connection ON public.crm_schema_snapshots USING btree (connection_id, captured_at DESC);
+
+
+--
 -- Name: idx_csig_contract; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -10825,6 +11297,20 @@ CREATE INDEX idx_deal_products_org ON public.deal_products USING btree (org_id);
 --
 
 CREATE INDEX idx_deal_products_prod ON public.deal_products USING btree (product_id);
+
+
+--
+-- Name: idx_deal_stage_history_crm_deal; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_deal_stage_history_crm_deal ON public.deal_stage_history USING btree (org_id, crm_deal_id, changed_at) WHERE (crm_deal_id IS NOT NULL);
+
+
+--
+-- Name: idx_deal_stage_history_deal; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_deal_stage_history_deal ON public.deal_stage_history USING btree (org_id, deal_id, changed_at);
 
 
 --
@@ -11920,6 +12406,13 @@ CREATE INDEX idx_proposals_org ON public.proposals USING btree (org_id);
 
 
 --
+-- Name: idx_prospect_notes_prospect; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_prospect_notes_prospect ON public.prospect_notes USING btree (org_id, prospect_id, created_at DESC);
+
+
+--
 -- Name: idx_prospect_phones_org_prospect; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -12106,6 +12599,13 @@ CREATE INDEX idx_prospects_research_meta_provider ON public.prospects USING gin 
 --
 
 CREATE INDEX idx_prospects_revisit_date ON public.prospects USING btree (org_id, stage, revisit_date) WHERE (revisit_date IS NOT NULL);
+
+
+--
+-- Name: idx_prospects_sales_profile_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_prospects_sales_profile_id ON public.prospects USING btree (org_id, sales_profile_id) WHERE ((sales_profile_id IS NOT NULL) AND (deleted_at IS NULL));
 
 
 --
@@ -12935,6 +13435,20 @@ CREATE UNIQUE INDEX uq_connection_job_events_dedup ON public.connection_job_even
 
 
 --
+-- Name: uq_crm_connections_client_level; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_crm_connections_client_level ON public.crm_connections USING btree (org_id, client_id, crm_type) WHERE (client_id IS NOT NULL);
+
+
+--
+-- Name: uq_crm_connections_org_level; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_crm_connections_org_level ON public.crm_connections USING btree (org_id, crm_type) WHERE (client_id IS NULL);
+
+
+--
 -- Name: uq_dhd_grain; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -13131,6 +13645,13 @@ CREATE TRIGGER trg_aie_updated_at BEFORE UPDATE ON public.activity_inflow_events
 
 
 --
+-- Name: baseline_snapshots trg_baseline_snapshots_freeze; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_baseline_snapshots_freeze BEFORE DELETE OR UPDATE ON public.baseline_snapshots FOR EACH ROW EXECUTE FUNCTION public.reject_frozen_mutation();
+
+
+--
 -- Name: custom_field_defs trg_cfd_updated_at; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -13142,6 +13663,13 @@ CREATE TRIGGER trg_cfd_updated_at BEFORE UPDATE ON public.custom_field_defs FOR 
 --
 
 CREATE TRIGGER trg_contracts_updated_at BEFORE UPDATE ON public.contracts FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
+-- Name: crm_schema_snapshots trg_crm_schema_snapshots_freeze; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_crm_schema_snapshots_freeze BEFORE DELETE OR UPDATE ON public.crm_schema_snapshots FOR EACH ROW EXECUTE FUNCTION public.reject_frozen_mutation();
 
 
 --
@@ -13212,6 +13740,13 @@ CREATE TRIGGER trg_product_catalog_updated BEFORE UPDATE ON public.product_catal
 --
 
 CREATE TRIGGER trg_product_groups_updated BEFORE UPDATE ON public.product_groups FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
+-- Name: prospect_notes trg_prospect_notes_immutable; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_prospect_notes_immutable BEFORE UPDATE ON public.prospect_notes FOR EACH ROW EXECUTE FUNCTION public.prospect_notes_reject_update();
 
 
 --
@@ -13613,6 +14148,30 @@ ALTER TABLE ONLY public.ai_token_usage
 
 ALTER TABLE ONLY public.ai_token_usage
     ADD CONSTRAINT ai_token_usage_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
+
+
+--
+-- Name: baseline_snapshots baseline_snapshots_client_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.baseline_snapshots
+    ADD CONSTRAINT baseline_snapshots_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.clients(id);
+
+
+--
+-- Name: baseline_snapshots baseline_snapshots_connection_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.baseline_snapshots
+    ADD CONSTRAINT baseline_snapshots_connection_id_fkey FOREIGN KEY (connection_id) REFERENCES public.crm_connections(id);
+
+
+--
+-- Name: baseline_snapshots baseline_snapshots_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.baseline_snapshots
+    ADD CONSTRAINT baseline_snapshots_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
 
 
 --
@@ -14296,6 +14855,54 @@ ALTER TABLE ONLY public.conversation_starters
 
 
 --
+-- Name: crm_connections crm_connections_client_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_connections
+    ADD CONSTRAINT crm_connections_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.clients(id);
+
+
+--
+-- Name: crm_connections crm_connections_integration_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_connections
+    ADD CONSTRAINT crm_connections_integration_id_fkey FOREIGN KEY (integration_id) REFERENCES public.org_integrations(id) ON DELETE SET NULL;
+
+
+--
+-- Name: crm_connections crm_connections_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_connections
+    ADD CONSTRAINT crm_connections_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: crm_schema_snapshots crm_schema_snapshots_client_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_schema_snapshots
+    ADD CONSTRAINT crm_schema_snapshots_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.clients(id);
+
+
+--
+-- Name: crm_schema_snapshots crm_schema_snapshots_connection_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_schema_snapshots
+    ADD CONSTRAINT crm_schema_snapshots_connection_id_fkey FOREIGN KEY (connection_id) REFERENCES public.crm_connections(id);
+
+
+--
+-- Name: crm_schema_snapshots crm_schema_snapshots_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.crm_schema_snapshots
+    ADD CONSTRAINT crm_schema_snapshots_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
 -- Name: custom_field_defs custom_field_defs_campaign_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -14469,6 +15076,22 @@ ALTER TABLE ONLY public.deal_products
 
 ALTER TABLE ONLY public.org_roles
     ADD CONSTRAINT deal_roles_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: deal_stage_history deal_stage_history_deal_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.deal_stage_history
+    ADD CONSTRAINT deal_stage_history_deal_id_fkey FOREIGN KEY (deal_id) REFERENCES public.deals(id) ON DELETE CASCADE;
+
+
+--
+-- Name: deal_stage_history deal_stage_history_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.deal_stage_history
+    ADD CONSTRAINT deal_stage_history_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
 
 
 --
@@ -16371,6 +16994,19 @@ ALTER TABLE public.actions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.ai_processing_log ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: baseline_snapshots; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.baseline_snapshots ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: baseline_snapshots baseline_snapshots_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY baseline_snapshots_org_isolation ON public.baseline_snapshots USING ((org_id = (NULLIF(current_setting('app.current_org_id'::text, true), ''::text))::integer));
+
+
+--
 -- Name: calendar_sync_history; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -16454,10 +17090,49 @@ CREATE POLICY contract_plays_org_isolation ON public.contract_plays USING ((org_
 
 
 --
+-- Name: crm_connections; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.crm_connections ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: crm_connections crm_connections_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY crm_connections_org_isolation ON public.crm_connections USING ((org_id = (NULLIF(current_setting('app.current_org_id'::text, true), ''::text))::integer));
+
+
+--
+-- Name: crm_schema_snapshots; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.crm_schema_snapshots ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: crm_schema_snapshots crm_schema_snapshots_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY crm_schema_snapshots_org_isolation ON public.crm_schema_snapshots USING ((org_id = (NULLIF(current_setting('app.current_org_id'::text, true), ''::text))::integer));
+
+
+--
 -- Name: deal_health_config; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
 ALTER TABLE public.deal_health_config ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: deal_stage_history; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.deal_stage_history ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: deal_stage_history deal_stage_history_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY deal_stage_history_org_isolation ON public.deal_stage_history USING ((org_id = (NULLIF(current_setting('app.current_org_id'::text, true), ''::text))::integer));
+
 
 --
 -- Name: deals; Type: ROW SECURITY; Schema: public; Owner: -
@@ -16736,5 +17411,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict K1JhLydikq0saU6Zb3dxWbRdVf7e5ETFsOHHcT4ZAWjYNmVPw3COuLQisp3B5Td
+\unrestrict auULhGIizGV9VVArVuC5XnL4veVQwsMLWadJRC5F0jlTrxcFWMtejDkZNn9XQUL
 
