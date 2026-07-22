@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict auULhGIizGV9VVArVuC5XnL4veVQwsMLWadJRC5F0jlTrxcFWMtejDkZNn9XQUL
+\restrict 7V99IdkwQlgvsDkRx6MhgFfWyOiXqoM87UVZ6bUKUOJ0I8gHk3PAH8YO2v9nQOx
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -918,6 +918,59 @@ CREATE SEQUENCE public.ai_token_usage_id_seq
 --
 
 ALTER SEQUENCE public.ai_token_usage_id_seq OWNED BY public.ai_token_usage.id;
+
+
+--
+-- Name: baseline_reports; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.baseline_reports (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    client_id integer,
+    snapshot_id integer NOT NULL,
+    connection_id integer NOT NULL,
+    branding character varying(50) DEFAULT 'gowarm'::character varying NOT NULL,
+    label_name character varying(255),
+    label_logo_url text,
+    findings jsonb NOT NULL,
+    narrative jsonb,
+    narrative_model character varying(100),
+    narrative_status character varying(50) DEFAULT 'none'::character varying NOT NULL,
+    html text NOT NULL,
+    share_token character varying(64),
+    generated_by integer,
+    generated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT baseline_reports_branding_check CHECK (((branding)::text = ANY ((ARRAY['gowarm'::character varying, 'white_label'::character varying])::text[]))),
+    CONSTRAINT baseline_reports_narrative_status_check CHECK (((narrative_status)::text = ANY ((ARRAY['none'::character varying, 'ok'::character varying, 'unavailable'::character varying, 'failed'::character varying])::text[])))
+);
+
+
+--
+-- Name: TABLE baseline_reports; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.baseline_reports IS 'Findings reports rendered from frozen baseline_snapshots. Derived + regenerable (no freeze trigger ΓÇö the snapshot is the immutable artifact). findings = deterministic engine output; narrative = AI layer that never produces numbers. share_token grants unauthenticated HTML read. Introduced 2026_62.';
+
+
+--
+-- Name: baseline_reports_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.baseline_reports_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: baseline_reports_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.baseline_reports_id_seq OWNED BY public.baseline_reports.id;
 
 
 --
@@ -4322,6 +4375,47 @@ ALTER SEQUENCE public.org_roles_id_seq OWNED BY public.org_roles.id;
 
 
 --
+-- Name: org_skill_installs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.org_skill_installs (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    skill_name character varying(100) NOT NULL,
+    bundle_id integer NOT NULL,
+    installed_by integer,
+    installed_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE org_skill_installs; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.org_skill_installs IS 'Explicit skill-version pins per org. Absence of a row = follow the newest platform bundle (or disk). Delete the row to unpin. Introduced 2026_63.';
+
+
+--
+-- Name: org_skill_installs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.org_skill_installs_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: org_skill_installs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.org_skill_installs_id_seq OWNED BY public.org_skill_installs.id;
+
+
+--
 -- Name: org_slack_installs; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -6504,6 +6598,58 @@ ALTER SEQUENCE public.signal_defs_id_seq OWNED BY public.signal_defs.id;
 
 
 --
+-- Name: skill_bundles; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.skill_bundles (
+    id integer NOT NULL,
+    scope character varying(20) NOT NULL,
+    owner_org_id integer,
+    name character varying(100) NOT NULL,
+    version character varying(20) NOT NULL,
+    manifest jsonb DEFAULT '{}'::jsonb NOT NULL,
+    files jsonb NOT NULL,
+    checksum character varying(64) NOT NULL,
+    status character varying(20) DEFAULT 'published'::character varying NOT NULL,
+    published_by integer,
+    published_at timestamp with time zone DEFAULT now() NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT skill_bundles_name_check CHECK (((name)::text ~ '^[a-z0-9][a-z0-9-]{1,80}$'::text)),
+    CONSTRAINT skill_bundles_owner_check CHECK (((((scope)::text = 'platform'::text) AND (owner_org_id IS NULL)) OR (((scope)::text = 'org'::text) AND (owner_org_id IS NOT NULL)))),
+    CONSTRAINT skill_bundles_scope_check CHECK (((scope)::text = ANY ((ARRAY['platform'::character varying, 'org'::character varying])::text[]))),
+    CONSTRAINT skill_bundles_status_check CHECK (((status)::text = ANY ((ARRAY['published'::character varying, 'archived'::character varying])::text[]))),
+    CONSTRAINT skill_bundles_version_check CHECK (((version)::text ~ '^[0-9]+\.[0-9]+\.[0-9]+$'::text))
+);
+
+
+--
+-- Name: TABLE skill_bundles; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.skill_bundles IS 'Versioned skill content units (Phase 2). Published bundles are treated as immutable by the service layer (new version = new row; archive, never edit). Resolution: org pin -> newest platform bundle -> disk. Introduced 2026_63.';
+
+
+--
+-- Name: skill_bundles_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.skill_bundles_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: skill_bundles_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.skill_bundles_id_seq OWNED BY public.skill_bundles.id;
+
+
+--
 -- Name: skill_prompt_versions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -6543,6 +6689,9 @@ CREATE TABLE public.skill_runs (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     cache_read_tokens integer DEFAULT 0 NOT NULL,
     cache_creation_tokens integer DEFAULT 0 NOT NULL,
+    bundle_id integer,
+    bundle_version character varying(20),
+    bundle_source character varying(20),
     CONSTRAINT skill_runs_status_check CHECK ((status = ANY (ARRAY['ok'::text, 'parse_failed'::text, 'execution_failed'::text, 'skipped'::text])))
 );
 
@@ -7519,6 +7668,13 @@ ALTER TABLE ONLY public.ai_token_usage ALTER COLUMN id SET DEFAULT nextval('publ
 
 
 --
+-- Name: baseline_reports id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.baseline_reports ALTER COLUMN id SET DEFAULT nextval('public.baseline_reports_id_seq'::regclass);
+
+
+--
 -- Name: baseline_snapshots id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -8009,6 +8165,13 @@ ALTER TABLE ONLY public.org_roles ALTER COLUMN id SET DEFAULT nextval('public.or
 
 
 --
+-- Name: org_skill_installs id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_skill_installs ALTER COLUMN id SET DEFAULT nextval('public.org_skill_installs_id_seq'::regclass);
+
+
+--
 -- Name: organizations id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -8268,6 +8431,13 @@ ALTER TABLE ONLY public.signal_defs ALTER COLUMN id SET DEFAULT nextval('public.
 
 
 --
+-- Name: skill_bundles id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.skill_bundles ALTER COLUMN id SET DEFAULT nextval('public.skill_bundles_id_seq'::regclass);
+
+
+--
 -- Name: skill_runs id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -8517,6 +8687,22 @@ ALTER TABLE ONLY public.ai_processing_log
 
 ALTER TABLE ONLY public.ai_token_usage
     ADD CONSTRAINT ai_token_usage_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: baseline_reports baseline_reports_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.baseline_reports
+    ADD CONSTRAINT baseline_reports_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: baseline_reports baseline_reports_share_token_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.baseline_reports
+    ADD CONSTRAINT baseline_reports_share_token_key UNIQUE (share_token);
 
 
 --
@@ -9272,6 +9458,14 @@ ALTER TABLE ONLY public.org_roles
 
 
 --
+-- Name: org_skill_installs org_skill_installs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_skill_installs
+    ADD CONSTRAINT org_skill_installs_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: org_slack_installs org_slack_installs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -9736,6 +9930,14 @@ ALTER TABLE ONLY public.signal_defs
 
 
 --
+-- Name: skill_bundles skill_bundles_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.skill_bundles
+    ADD CONSTRAINT skill_bundles_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: skill_prompt_versions skill_prompt_versions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -9877,6 +10079,14 @@ ALTER TABLE ONLY public.tracking_domains
 
 ALTER TABLE ONLY public.deal_health_config
     ADD CONSTRAINT uq_deal_health_config_user_org UNIQUE (user_id, org_id);
+
+
+--
+-- Name: org_skill_installs uq_org_skill_installs; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_skill_installs
+    ADD CONSTRAINT uq_org_skill_installs UNIQUE (org_id, skill_name);
 
 
 --
@@ -10492,6 +10702,20 @@ CREATE INDEX idx_aie_org_created ON public.activity_inflow_events USING btree (o
 --
 
 CREATE INDEX idx_aie_org_status ON public.activity_inflow_events USING btree (org_id, status) WHERE (status = 'pending_review'::text);
+
+
+--
+-- Name: idx_baseline_reports_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_baseline_reports_org ON public.baseline_reports USING btree (org_id, generated_at DESC);
+
+
+--
+-- Name: idx_baseline_reports_snapshot; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_baseline_reports_snapshot ON public.baseline_reports USING btree (snapshot_id, generated_at DESC);
 
 
 --
@@ -12070,6 +12294,13 @@ CREATE INDEX idx_org_roles_org ON public.org_roles USING btree (org_id) WHERE (i
 
 
 --
+-- Name: idx_org_skill_installs_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_org_skill_installs_org ON public.org_skill_installs USING btree (org_id);
+
+
+--
 -- Name: idx_org_twilio_accounts_subaccount_sid; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -12868,10 +13099,24 @@ CREATE INDEX idx_signal_defs_org_active ON public.signal_defs USING btree (org_i
 
 
 --
+-- Name: idx_skill_bundles_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_skill_bundles_name ON public.skill_bundles USING btree (name, status, published_at DESC);
+
+
+--
 -- Name: idx_skill_prompt_versions_skill; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_skill_prompt_versions_skill ON public.skill_prompt_versions USING btree (skill_name, first_seen DESC);
+
+
+--
+-- Name: idx_skill_runs_bundle; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_skill_runs_bundle ON public.skill_runs USING btree (bundle_id) WHERE (bundle_id IS NOT NULL);
 
 
 --
@@ -13582,6 +13827,20 @@ CREATE UNIQUE INDEX uq_signal_defs_org_key ON public.signal_defs USING btree (or
 
 
 --
+-- Name: uq_skill_bundles_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_skill_bundles_org ON public.skill_bundles USING btree (owner_org_id, name, version) WHERE ((scope)::text = 'org'::text);
+
+
+--
+-- Name: uq_skill_bundles_platform; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_skill_bundles_platform ON public.skill_bundles USING btree (name, version) WHERE ((scope)::text = 'platform'::text);
+
+
+--
 -- Name: uq_ssv_exp_step_key; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -14148,6 +14407,38 @@ ALTER TABLE ONLY public.ai_token_usage
 
 ALTER TABLE ONLY public.ai_token_usage
     ADD CONSTRAINT ai_token_usage_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
+
+
+--
+-- Name: baseline_reports baseline_reports_client_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.baseline_reports
+    ADD CONSTRAINT baseline_reports_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.clients(id);
+
+
+--
+-- Name: baseline_reports baseline_reports_connection_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.baseline_reports
+    ADD CONSTRAINT baseline_reports_connection_id_fkey FOREIGN KEY (connection_id) REFERENCES public.crm_connections(id);
+
+
+--
+-- Name: baseline_reports baseline_reports_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.baseline_reports
+    ADD CONSTRAINT baseline_reports_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: baseline_reports baseline_reports_snapshot_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.baseline_reports
+    ADD CONSTRAINT baseline_reports_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES public.baseline_snapshots(id);
 
 
 --
@@ -15775,6 +16066,22 @@ ALTER TABLE ONLY public.org_invites
 
 
 --
+-- Name: org_skill_installs org_skill_installs_bundle_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_skill_installs
+    ADD CONSTRAINT org_skill_installs_bundle_id_fkey FOREIGN KEY (bundle_id) REFERENCES public.skill_bundles(id);
+
+
+--
+-- Name: org_skill_installs org_skill_installs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_skill_installs
+    ADD CONSTRAINT org_skill_installs_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
 -- Name: org_slack_installs org_slack_installs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -16647,6 +16954,22 @@ ALTER TABLE ONLY public.signal_defs
 
 
 --
+-- Name: skill_bundles skill_bundles_owner_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.skill_bundles
+    ADD CONSTRAINT skill_bundles_owner_org_id_fkey FOREIGN KEY (owner_org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: skill_runs skill_runs_bundle_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.skill_runs
+    ADD CONSTRAINT skill_runs_bundle_id_fkey FOREIGN KEY (bundle_id) REFERENCES public.skill_bundles(id);
+
+
+--
 -- Name: skill_runs skill_runs_prompt_hash_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -16994,6 +17317,19 @@ ALTER TABLE public.actions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.ai_processing_log ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: baseline_reports; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.baseline_reports ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: baseline_reports baseline_reports_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY baseline_reports_org_isolation ON public.baseline_reports USING ((org_id = (NULLIF(current_setting('app.current_org_id'::text, true), ''::text))::integer));
+
+
+--
 -- Name: baseline_snapshots; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -17333,6 +17669,19 @@ CREATE POLICY org_isolation_user_prompts ON public.user_prompts USING ((org_id =
 
 
 --
+-- Name: org_skill_installs; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.org_skill_installs ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: org_skill_installs org_skill_installs_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY org_skill_installs_org_isolation ON public.org_skill_installs USING ((org_id = (NULLIF(current_setting('app.current_org_id'::text, true), ''::text))::integer));
+
+
+--
 -- Name: playbook_stages; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -17356,6 +17705,19 @@ ALTER TABLE public.prompts ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.proposals ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: skill_bundles; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.skill_bundles ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: skill_bundles skill_bundles_visibility; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY skill_bundles_visibility ON public.skill_bundles USING (((owner_org_id IS NULL) OR (owner_org_id = (NULLIF(current_setting('app.current_org_id'::text, true), ''::text))::integer)));
+
 
 --
 -- Name: skill_runs; Type: ROW SECURITY; Schema: public; Owner: -
@@ -17411,5 +17773,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict auULhGIizGV9VVArVuC5XnL4veVQwsMLWadJRC5F0jlTrxcFWMtejDkZNn9XQUL
+\unrestrict 7V99IdkwQlgvsDkRx6MhgFfWyOiXqoM87UVZ6bUKUOJ0I8gHk3PAH8YO2v9nQOx
 

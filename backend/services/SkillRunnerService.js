@@ -26,6 +26,7 @@ const crypto = require('crypto');
 
 const { pool }            = require('../config/database');
 const AIClientResolver    = require('./ai/AIClientResolver');
+const skillBundles        = require('./skillBundles.service');
 const Entitlements         = require('./entitlements.service');
 const TokenTrackingService = require('./TokenTrackingService');
 const OutreachValidator    = require('./OutreachValidator');
@@ -305,6 +306,8 @@ async function persistSkillRun(client, {
   orgId, userId, skillName, prospectId, dealId,
   inputPayload, systemPrompt, output, rawOutput,
   methodology, model, usage, latencyMs, status, errorDetail,
+  // 2026_63 bundle attribution — null for pre-bundle paths (fit-gate skips)
+  bundleId = null, bundleVersion = null, bundleSource = null,
 }) {
   // Upsert the prompt version (hash → text). ON CONFLICT keeps it idempotent.
   const promptHash = hashPrompt(systemPrompt);
@@ -366,7 +369,8 @@ async function persistSkillRun(client, {
        model, input_tokens, output_tokens,
        cache_read_tokens, cache_creation_tokens,
        cost_usd, latency_ms,
-       status, error_detail
+       status, error_detail,
+       bundle_id, bundle_version, bundle_source
      ) VALUES (
        $1,$2,$3,$4,$5,
        $6::jsonb,$7,$8,
@@ -375,7 +379,8 @@ async function persistSkillRun(client, {
        $13,$14,$15,
        $16,$17,
        $18,$19,
-       $20,$21
+       $20,$21,
+       $22,$23,$24
      ) RETURNING id`,
     [
       orgId, userId, skillName, prospectId || null, dealId || null,
@@ -390,6 +395,7 @@ async function persistSkillRun(client, {
       estimatedCost,
       latencyMs != null ? latencyMs : null,
       status, errorDetail || null,
+      bundleId, bundleVersion, bundleSource,
     ]
   );
   return ins.rows[0].id;
@@ -472,7 +478,16 @@ async function runSkill({
     throw e;
   }
 
-  const bundle = loadSkill(skillName, methodology);
+  // ── Bundle resolution (2026_63) ─────────────────────────────────────────
+  // org pin → newest platform bundle → disk (loadSkill, unchanged). The DB
+  // layer returns null on any miss or error, so disk remains the guaranteed
+  // floor and day-one behaviour is identical for orgs with no bundles.
+  const resolved = await skillBundles.resolveForRun(
+    orgId, skillName, methodology, ALLOWED_METHODOLOGIES);
+  const bundle        = resolved ? resolved.bundle  : loadSkill(skillName, methodology);
+  const bundleId      = resolved ? resolved.bundleId : null;
+  const bundleVersion = resolved ? resolved.version  : null;
+  const bundleSource  = resolved ? resolved.source   : 'disk';
   const system = buildSystemPrompt(bundle);
 
   // The user message: the context payload + strict output instructions.
@@ -591,6 +606,7 @@ async function runSkill({
         model, usage: { input_tokens: 0, output_tokens: 0 },
         latencyMs: Date.now() - startTs,
         status: 'execution_failed', errorDetail: err.message,
+        bundleId, bundleVersion, bundleSource,
       });
       const e = new Error('Skill execution failed: ' + err.message);
       e.statusCode = 502;
@@ -619,6 +635,7 @@ async function runSkill({
         output: null, rawOutput: completeText, methodology,
         model, usage: aiResult.usage, latencyMs,
         status: 'parse_failed', errorDetail: parseResult.error,
+        bundleId, bundleVersion, bundleSource,
       });
       return {
         ok: false, status: 'parse_failed', runId,
@@ -634,6 +651,7 @@ async function runSkill({
       output: parseResult.value, rawOutput: completeText, methodology,
       model, usage: aiResult.usage, latencyMs,
       status: 'ok', errorDetail: null,
+      bundleId, bundleVersion, bundleSource,
     });
 
     // Deterministic post-validation: length caps, banned phrasings, and

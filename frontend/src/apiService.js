@@ -280,6 +280,7 @@ twilio: {
     createOrg: (data) => api.post('/super/orgs', data),
     updateOrg: (orgId, data) => api.patch(`/super/orgs/${orgId}`, data),
     suspendOrg: (orgId, data) => api.post(`/super/orgs/${orgId}/suspend`, data),
+    convertOrgToStandard: (orgId) => api.post(`/super/orgs/${orgId}/convert-to-standard`),
     impersonateOrg: (orgId) => api.post(`/super/orgs/${orgId}/impersonate`),
     impersonateUser: (userId) => api.post(`/super/users/${userId}/impersonate`),
     getUsers: (params = {}) => api.get('/super/users', { params }),

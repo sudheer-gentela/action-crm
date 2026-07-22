@@ -269,6 +269,9 @@ function SAOrgs({ initialStatus = '' }) {
                       <button className="sa-link" onClick={() => setSelected(org)}>
                         {org.name}
                       </button>
+                      {org.type === 'assessment' && (
+                        <span className="sa-badge-status sa-badge-status--amber" style={{ marginLeft: 6 }}>assessment</span>
+                      )}
                       <div className="sa-sub-text">ID: {org.id}</div>
                     </td>
                     <td>
@@ -422,6 +425,7 @@ function SAOrgDetail({ orgId, onClose }) {
   const [success, setSuccess] = useState('');
   const [addEmail, setAddEmail] = useState('');
   const [addRole, setAddRole]   = useState('member');
+  const [converting, setConverting] = useState(false);
 
   // Create user state
   const [showCreateUser, setShowCreateUser] = useState(false);
@@ -452,6 +456,28 @@ function SAOrgDetail({ orgId, onClose }) {
   }, [orgId]);
 
   useEffect(() => { load(); }, [load]);
+
+
+  // Assessment → Standard conversion (one-way). Seeds the org on the spot.
+  const handleConvertToStandard = async () => {
+    if (!window.confirm(
+      `Convert "${data?.org?.name}" to a Standard organisation?\n\n` +
+      'This is one-way. The org will be seeded with default stages & playbooks, ' +
+      'and CRM write-back becomes ENABLE-ABLE (it stays off until explicitly turned on per connection). ' +
+      'Frozen assessment baselines are kept as the before-picture.'
+    )) return;
+    try {
+      setConverting(true);
+      await apiService.superAdmin.convertOrgToStandard(orgId);
+      setSuccess('Converted to Standard and seeded');
+      setTimeout(() => setSuccess(''), 4000);
+      await load();
+    } catch (e) {
+      setError(e.response?.data?.error?.message || 'Conversion failed');
+    } finally {
+      setConverting(false);
+    }
+  };
 
   const handleSave = async () => {
     try {
@@ -634,6 +660,32 @@ function SAOrgDetail({ orgId, onClose }) {
               ) : (
                 <div className="sa-info-grid">
                   <div className="sa-info-row"><span>ID</span><strong>{data.org.id}</strong></div>
+                  <div className="sa-info-row">
+                    <span>Type</span>
+                    <strong>
+                      {data.org.type === 'assessment' ? (
+                        <span className="sa-badge-status sa-badge-status--amber">assessment (read-only, unseeded)</span>
+                      ) : (
+                        <>standard{data.org.converted_to_standard_at
+                          ? ` — converted ${new Date(data.org.converted_to_standard_at).toLocaleDateString()}`
+                          : ''}</>
+                      )}
+                    </strong>
+                  </div>
+                  {data.org.type === 'assessment' && (
+                    <div className="sa-info-row">
+                      <span>Convert</span>
+                      <strong>
+                        <button
+                          className="sa-btn-sm sa-btn-sm--green"
+                          onClick={handleConvertToStandard}
+                          disabled={converting}
+                        >
+                          {converting ? 'Converting…' : '⤴ Convert to Standard'}
+                        </button>
+                      </strong>
+                    </div>
+                  )}
                   <div className="sa-info-row"><span>Status</span><strong>{data.org.status}</strong></div>
                   <div className="sa-info-row"><span>Plan</span><strong>{data.org.plan}</strong></div>
                   <div className="sa-info-row"><span>Seats</span><strong>{data.members.filter(m => m.is_active).length} / {data.org.max_users}</strong></div>
@@ -1214,7 +1266,7 @@ function SAOrgModules({ orgId }) {
 // ─────────────────────────────────────────────────────────────────
 
 function SACreateOrg({ onClose, onCreated }) {
-  const [form, setForm] = useState({ name: '', plan: 'free', max_users: 10, notes: '' });
+  const [form, setForm] = useState({ name: '', plan: 'free', max_users: 10, notes: '', type: 'standard' });
   const [saving, setSaving] = useState(false);
   const [error, setError]   = useState('');
 
@@ -1260,6 +1312,20 @@ function SACreateOrg({ onClose, onCreated }) {
           <div className="sa-form-field">
             <label>Max Users</label>
             <input type="number" min="1" value={form.max_users} onChange={e => setForm({ ...form, max_users: parseInt(e.target.value) })} />
+          </div>
+          <div className="sa-form-field sa-form-field--full">
+            <label>Organisation Type</label>
+            <select value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}>
+              <option value="standard">Standard — full customer org (seeded with default stages & playbooks)</option>
+              <option value="assessment">Assessment — read-only toward the CRM, NOT seeded</option>
+            </select>
+            {form.type === 'assessment' && (
+              <div className="sa-sub-text" style={{ marginTop: 4 }}>
+                Assessment orgs: CRM write-back is hard-blocked (403), no default stages or
+                playbooks are created, and the org can be converted to Standard later —
+                conversion seeds it at that point.
+              </div>
+            )}
           </div>
           <div className="sa-form-field sa-form-field--full">
             <label>Notes (internal)</label>

@@ -95,7 +95,7 @@ router.get('/orgs', async (req, res) => {
       pool.query(`
         SELECT
           o.id, o.name, o.status, o.plan, o.max_users,
-          o.notes, o.created_at, o.suspended_at,
+          o.type, o.notes, o.created_at, o.suspended_at,
           COUNT(ou.user_id) FILTER (WHERE ou.is_active = TRUE) AS member_count,
           MAX(CASE WHEN ou.role = 'owner' THEN u.email END)    AS owner_email
         FROM organizations o
@@ -198,6 +198,62 @@ router.post('/orgs', async (req, res) => {
     res.status(201).json({ org: result.rows[0] });
   } catch (err) {
     console.error('POST /super/orgs error:', err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+// ── Convert assessment org → standard (2026_60 lifecycle) ───────────────────
+// One-way. Effects, in order:
+//   1. organizations.type = 'standard', converted_to_standard_at = NOW()
+//   2. seedOrg() — the org's FIRST seeding (assessment orgs were created
+//      unseeded, so this is safe and gives them default stages/playbooks now)
+//   3. crm_connections.purpose = 'standard' for the org's connections —
+//      the assessment history stays on the frozen snapshots; the live
+//      connection is no longer assessment-flagged
+//   4. bust the org-type cache so the write-back 403 lifts within this
+//      process immediately (other instances age out in ≤60s)
+// What does NOT change: write_back_enabled stays FALSE per connection (a
+// separate, deliberate enablement), and frozen baseline/schema snapshots
+// remain immutable — they are the "before" evidence the engagement is
+// measured against.
+router.post('/orgs/:orgId/convert-to-standard', async (req, res) => {
+  try {
+    const { orgId } = req.params;
+
+    const orgRes = await pool.query(
+      `SELECT id, name, type FROM organizations WHERE id = $1`, [orgId]);
+    if (!orgRes.rows.length) {
+      return res.status(404).json({ error: { message: 'Organisation not found' } });
+    }
+    if (orgRes.rows[0].type !== 'assessment') {
+      return res.status(409).json({ error: { message: `Organisation is '${orgRes.rows[0].type}' — only assessment orgs can be converted` } });
+    }
+
+    await pool.query(`
+      UPDATE organizations
+         SET type = 'standard', converted_to_standard_at = NOW()
+       WHERE id = $1
+    `, [orgId]);
+
+    // First seeding for this org (was skipped at creation by design).
+    await seedOrg(parseInt(orgId, 10));
+
+    await pool.query(`
+      UPDATE crm_connections SET purpose = 'standard', updated_at = NOW()
+       WHERE org_id = $1 AND purpose = 'assessment'
+    `, [orgId]).catch(err =>
+      console.warn(`[convert] purpose flip skipped for org ${orgId}: ${err.message}`));
+
+    try {
+      require('../services/crmConnections.service').invalidateOrgType(orgId);
+    } catch (_) { /* cache bust is best-effort */ }
+
+    await auditLog(req, 'convert_org_to_standard', 'org', parseInt(orgId, 10),
+      { name: orgRes.rows[0].name });
+
+    res.json({ converted: true, orgId: parseInt(orgId, 10) });
+  } catch (err) {
+    console.error(`POST /super/orgs/${req.params.orgId}/convert-to-standard error:`, err);
     res.status(500).json({ error: { message: err.message } });
   }
 });
