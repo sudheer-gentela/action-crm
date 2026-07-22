@@ -4095,6 +4095,107 @@ router.get('/:id/activities', async (req, res) => {
   }
 });
 
+// ═════════════════════════════════════════════════════════════════════════════
+// Prospect notes (2026_59) — APPEND-ONLY attributed, timestamped notes log.
+//
+// Model: each entry is its own immutable row in prospect_notes (author +
+// created_at). There is deliberately NO update or delete endpoint — the notes
+// history is a running record; "editing" means appending a new entry, never
+// changing what was already written. The full history renders as one
+// read-only log in the extension side panel; new entries are composed
+// separately and appended.
+//
+// Authorization: any org member who can VIEW the prospect may read + append.
+// When the org has restrict_prospect_view_to_scope ON, that means "prospect's
+// owner is in the viewer's reporting scope", exactly the GET /:id gate.
+//
+// Agency module: notes hang off (org_id, prospect_id) and follow the prospect
+// regardless of client_id. The client portal (client-portal.routes.js) selects
+// a fixed field list and never touches prospect_notes, so notes remain
+// internal-only by construction — no filtering required.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Shared gate: prospect exists in this org AND the viewer may see it.
+// Returns the prospect row (id, owner_id) or null after having responded.
+async function loadNotesGatedProspect(req, res) {
+  const pRes = await db.query(
+    `SELECT id, owner_id FROM prospects
+     WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
+    [req.params.id, req.orgId]
+  );
+  if (pRes.rows.length === 0) {
+    res.status(404).json({ error: { message: 'Prospect not found' } });
+    return null;
+  }
+  const row = pRes.rows[0];
+  const { restrict_prospect_view_to_scope } = await CampaignSettings.getForOrg(req.orgId);
+  if (restrict_prospect_view_to_scope === true) {
+    const { userIds } = await AccessPolicy.resolveScope(req, { depth: 'all' });
+    if (!Array.isArray(userIds) || !userIds.includes(row.owner_id)) {
+      res.status(403).json({ error: { message: 'You do not have access to this prospect' } });
+      return null;
+    }
+  }
+  return row;
+}
+
+// Rows come back with the author's display name resolved; the extension
+// renders it verbatim and never needs a users lookup of its own.
+const NOTE_SELECT = `
+  SELECT n.id, n.prospect_id, n.user_id, n.body, n.created_at,
+         au.first_name AS author_first_name, au.last_name AS author_last_name
+  FROM prospect_notes n
+  LEFT JOIN users au ON n.user_id = au.id`;
+
+// ── GET /:id/notes — the notes log ───────────────────────────────────────────
+// Returned NEWEST-FIRST so the LIMIT cap keeps the LATEST N entries when a
+// history exceeds it; the extension reverses client-side to display the log
+// chronologically (oldest → newest, new entries appending at the bottom).
+router.get('/:id/notes', async (req, res) => {
+  try {
+    if (!(await loadNotesGatedProspect(req, res))) return;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+    const result = await db.query(
+      `${NOTE_SELECT}
+       WHERE n.prospect_id = $1 AND n.org_id = $2
+       ORDER BY n.created_at DESC
+       LIMIT $3`,
+      [req.params.id, req.orgId, limit]
+    );
+    res.json({ notes: result.rows });
+  } catch (error) {
+    console.error('Get prospect notes error:', error);
+    res.status(500).json({ error: { message: 'Failed to fetch notes' } });
+  }
+});
+
+// ── POST /:id/notes — append an entry (immutable once written) ───────────────
+router.post('/:id/notes', async (req, res) => {
+  try {
+    if (!(await loadNotesGatedProspect(req, res))) return;
+    const body = typeof req.body.body === 'string' ? req.body.body.trim() : '';
+    if (!body) {
+      return res.status(400).json({ error: { message: 'Note body is required' } });
+    }
+    if (body.length > 5000) {
+      return res.status(400).json({ error: { message: 'Note is too long (max 5000 characters)' } });
+    }
+    const ins = await db.query(
+      `INSERT INTO prospect_notes (org_id, prospect_id, user_id, body)
+       VALUES ($1, $2, $3, $4) RETURNING id`,
+      [req.orgId, req.params.id, req.userId, body]
+    );
+    const result = await db.query(
+      `${NOTE_SELECT} WHERE n.id = $1 AND n.org_id = $2`,
+      [ins.rows[0].id, req.orgId]
+    );
+    res.status(201).json({ note: result.rows[0] });
+  } catch (error) {
+    console.error('Create prospect note error:', error);
+    res.status(500).json({ error: { message: 'Failed to save note' } });
+  }
+});
+
 // ── PATCH /:id — update prospect fields ──────────────────────────────────────
 router.patch('/:id', async (req, res) => {
   try {
