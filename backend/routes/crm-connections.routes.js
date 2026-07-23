@@ -129,9 +129,13 @@ router.get('/:id/mapping-proposal', async (req, res) => {
       return res.status(404).json({ success: false, error: 'No frozen schema snapshot — run discovery first' });
     }
 
+    // Canonical stages live in pipeline_stages (pipeline='sales' is the deals
+    // pipeline — same filter deals.routes.js uses). deal_stages does not
+    // exist; the identically-named routes file is unmounted legacy code.
     const stagesRes = await pool.query(
       `SELECT key, name, stage_type, sort_order, is_terminal
-         FROM deal_stages WHERE org_id = $1
+         FROM pipeline_stages
+        WHERE org_id = $1 AND pipeline = 'sales' AND is_active = true
         ORDER BY sort_order ASC`,
       [req.orgId]);
 
@@ -169,7 +173,8 @@ router.patch('/:id/stage-map', requireRole('admin', 'owner'), async (req, res) =
     // key hygiene is enforced. On convert-to-standard, the org gets seeded
     // stages and any RE-approval is validated against them as usual.
     const stagesRes = await pool.query(
-      `SELECT key FROM deal_stages WHERE org_id = $1`, [req.orgId]);
+      `SELECT key FROM pipeline_stages
+        WHERE org_id = $1 AND pipeline = 'sales' AND is_active = true`, [req.orgId]);
     if (stagesRes.rows.length > 0) {
       const valid = new Set(stagesRes.rows.map(r => r.key));
       const bad = Object.values(stage_map).filter(k => k != null && !valid.has(k));

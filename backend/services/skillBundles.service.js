@@ -259,7 +259,9 @@ async function installBundle(orgId, bundleId, { installedBy = null, force = fals
   const requires = (row.manifest && row.manifest.requires) || {};
   const unmet = [];
   if (Array.isArray(requires.playbook_stages) && requires.playbook_stages.length) {
-    const st = await pool.query(`SELECT key FROM deal_stages WHERE org_id = $1`, [orgId]);
+    const st = await pool.query(
+      `SELECT key FROM pipeline_stages
+        WHERE org_id = $1 AND pipeline = 'sales' AND is_active = true`, [orgId]);
     const have = new Set(st.rows.map(r => r.key));
     for (const need of requires.playbook_stages) {
       if (!have.has(need)) unmet.push(`playbook stage '${need}'`);
