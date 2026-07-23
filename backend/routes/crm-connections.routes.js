@@ -162,16 +162,33 @@ router.patch('/:id/stage-map', requireRole('admin', 'owner'), async (req, res) =
     const conn = await crmConnections.getConnection(req.orgId, req.params.id);
     if (!conn) return res.status(404).json({ success: false, error: 'Connection not found' });
 
-    // Every mapped key must exist as a deal stage in this org.
+    // Every mapped key must exist as a deal stage in this org — EXCEPT when
+    // the org has no deal_stages at all (assessment orgs are unseeded by
+    // design). In that case the map defines its own canonical keys (identity
+    // mapping — see stageMappingProposer.proposeIdentityMap) and only basic
+    // key hygiene is enforced. On convert-to-standard, the org gets seeded
+    // stages and any RE-approval is validated against them as usual.
     const stagesRes = await pool.query(
       `SELECT key FROM deal_stages WHERE org_id = $1`, [req.orgId]);
-    const valid = new Set(stagesRes.rows.map(r => r.key));
-    const bad = Object.values(stage_map).filter(k => k != null && !valid.has(k));
-    if (bad.length) {
-      return res.status(400).json({
-        success: false,
-        error: `Unknown deal stage key(s): ${[...new Set(bad)].join(', ')}`,
-      });
+    if (stagesRes.rows.length > 0) {
+      const valid = new Set(stagesRes.rows.map(r => r.key));
+      const bad = Object.values(stage_map).filter(k => k != null && !valid.has(k));
+      if (bad.length) {
+        return res.status(400).json({
+          success: false,
+          error: `Unknown deal stage key(s): ${[...new Set(bad)].join(', ')}`,
+        });
+      }
+    } else {
+      const badKey = Object.values(stage_map)
+        .filter(k => k != null)
+        .find(k => !/^[a-z0-9][a-z0-9_]{0,60}$/.test(String(k)));
+      if (badKey) {
+        return res.status(400).json({
+          success: false,
+          error: `Stage key '${badKey}' must be a lowercase slug (a-z, 0-9, _)`,
+        });
+      }
     }
 
     await pool.query(

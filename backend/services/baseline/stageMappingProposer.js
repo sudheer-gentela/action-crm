@@ -52,9 +52,52 @@ function _tokenSim(a, b) {
  * @param {Array} gowarmStages   deal_stages rows for the org
  *                               [{ key, name, stage_type, sort_order, is_terminal }]
  */
+function _slug(label) {
+  return String(label || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 60) || 'stage';
+}
+
+/**
+ * Identity proposal for orgs with NO deal_stages (assessment orgs are
+ * unseeded by design). Canonical keys are slugs of the CRM's own stage
+ * labels; won/lost semantics come from the CRM's own metadata. The baseline
+ * then measures the org in its OWN stage language — which is exactly right
+ * for an assessment: no GoWarm playbook exists to map onto.
+ */
+function proposeIdentityMap(stageDefs) {
+  const defs = (stageDefs || []).filter(s => s.isActive !== false);
+  const used = new Set();
+  const proposals = defs.map(def => {
+    let key = _slug(def.label);
+    while (used.has(key)) key = `${key}_2`;
+    used.add(key);
+    const mapKey = def.id || def.label;
+    const display = def.pipelineLabel ? `${def.label} [${def.pipelineLabel}]` : def.label;
+    return {
+      crmStage: mapKey, crmLabel: display, proposedKey: key,
+      confidence: 'high',
+      rationale: def.isWon ? `Identity mapping (CRM marks IsWon)`
+        : def.isClosed ? `Identity mapping (CRM marks Closed/Lost)`
+        : `Identity mapping — org has no playbook stages, so the assessment uses the CRM's own stage names`,
+    };
+  });
+  return {
+    mode: 'identity',
+    proposals,
+    unmatchedCrmStages: [],
+    unusedGowarmStages: [],
+  };
+}
+
 function proposeStageMap(stageDefs, gowarmStages) {
   const defs = (stageDefs || []).filter(s => s.isActive !== false);
   const gw   = (gowarmStages || []);
+
+  // Unseeded org (assessment): identity mapping is the only honest proposal.
+  if (gw.length === 0) return proposeIdentityMap(stageDefs);
 
   const gwWon    = gw.find(s => s.stage_type === 'won');
   const gwLost   = gw.find(s => s.stage_type === 'lost');
@@ -149,4 +192,4 @@ function proposeStageMap(stageDefs, gowarmStages) {
   };
 }
 
-module.exports = { proposeStageMap };
+module.exports = { proposeStageMap, proposeIdentityMap };
