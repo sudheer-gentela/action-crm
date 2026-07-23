@@ -343,9 +343,62 @@ async function _executeCapture(orgId, prep) {
       winRates: winRates.metrics,
       threading: threading.metrics,
     };
+    // ── Deal inventory: every deal the snapshot saw, classified ────────────
+    // The drill-through layer: headline numbers must be checkable deal by
+    // deal, so the inventory records identity + classification + the values
+    // each metric consumed. Capped at 1000 rows (warned beyond).
+    const stalledSet = new Set((stall.evidence.stalledDeals || []).map(d => d.crmId));
+    const inv = new Map();
+    for (const d of openDeals) {
+      const resolved = resolver.resolve(d.stage);
+      const dwell = d.stageChangedAt
+        ? Number(((new Date(captureAt) - new Date(d.stageChangedAt)) / 86400000).toFixed(1)) : null;
+      inv.set(d.crmId, {
+        crmId: d.crmId, name: d.name || null,
+        rawStage: d.stage, stageKey: resolved ? resolved.key : null,
+        status: resolved ? (resolved.isClosed ? (resolved.isWon ? 'won' : 'lost') : 'open') : 'unmapped_stage',
+        amount: d.amount, createdAt: d.createdAt || null, closeDate: null,
+        dwellDays: dwell, stalled: stalledSet.has(d.crmId),
+        activityLast30: d.activityLast30, contactRoleCount: d.contactRoleCount,
+        ownerName: d.ownerName || null,
+      });
+    }
+    for (const [cid, meta] of closedMeta) {
+      if (inv.has(cid)) continue;
+      const tl = timelines.get(cid);
+      inv.set(cid, {
+        crmId: cid, name: meta.name || null,
+        rawStage: meta.rawStage || null,
+        stageKey: meta.rawStage ? (resolver.resolve(meta.rawStage)?.key ?? null) : null,
+        status: tl && tl.terminal ? (tl.terminal.isWon ? 'won' : 'lost') : 'closed',
+        amount: meta.amount ?? null, createdAt: meta.createdAt || null,
+        closeDate: meta.closeDate || null,
+        dwellDays: null, stalled: false,
+        activityLast30: null, contactRoleCount: null,
+        ownerName: meta.ownerName || null,
+      });
+    }
+    for (const [cid, tl] of timelines) {
+      if (inv.has(cid) || !tl.entries.length) continue;
+      inv.set(cid, {
+        crmId: cid, name: null, rawStage: tl.entries[tl.entries.length - 1].rawStage,
+        stageKey: tl.entries[tl.entries.length - 1].stageKey,
+        status: tl.terminal ? (tl.terminal.isWon ? 'won' : 'lost') : 'history_only',
+        amount: null, createdAt: null, closeDate: null,
+        dwellDays: null, stalled: false, activityLast30: null,
+        contactRoleCount: null, ownerName: null,
+      });
+    }
+    let dealInventory = [...inv.values()];
+    if (dealInventory.length > 1000) {
+      warnings.push({ kind: 'inventory_truncated', detail: `${dealInventory.length} deals seen; inventory capped at 1000` });
+      dealInventory = dealInventory.slice(0, 1000);
+    }
+
     const evidence = {
       cycleTime: cycle.evidence,
       stall: stall.evidence,
+      dealInventory,
     };
 
     await pool.query(
@@ -401,7 +454,7 @@ async function _sfPaged(sfClient, soql, collect) {
 
 async function _sfOpenDeals(sfClient, captureAt, cfg, warnings) {
   const segFields = _segmentFieldList(cfg).filter(f => f !== 'Amount');
-  const fieldSel = ['Id', 'StageName', 'Amount', 'CreatedDate', 'LastStageChangeDate',
+  const fieldSel = ['Id', 'Name', 'StageName', 'Amount', 'CreatedDate', 'LastStageChangeDate',
     'LastActivityDate', 'OwnerId', 'Owner.Name', ...segFields];
   const rows = [];
   try {
@@ -419,6 +472,7 @@ async function _sfOpenDeals(sfClient, captureAt, cfg, warnings) {
     const lastAct = _daysAgo(r.LastActivityDate, captureAt);
     return {
       crmId: r.Id,
+      name: r.Name || null,
       stage: r.StageName,
       amount: r.Amount != null ? Number(r.Amount) : null,
       createdAt: r.CreatedDate,
@@ -461,7 +515,7 @@ async function _sfAttachContactRoles(sfClient, openDeals, warnings) {
 async function _sfClosedDealMeta(sfClient, cfg, warnings) {
   const segFields = _segmentFieldList(cfg).filter(f => f !== 'Amount');
   const wantAmountBand = (cfg.segment_axes || []).some(a => a.field === 'Amount');
-  const fieldSel = ['Id', 'Amount', 'Owner.Name', ...segFields];
+  const fieldSel = ['Id', 'Name', 'StageName', 'Amount', 'CreatedDate', 'CloseDate', 'Owner.Name', ...segFields];
   const out = [];
   try {
     await _sfPaged(sfClient,
@@ -471,7 +525,11 @@ async function _sfClosedDealMeta(sfClient, cfg, warnings) {
         for (const r of recs) {
           const segmentValues = Object.fromEntries(segFields.map(f => [f, _axisValue(r, f)]));
           if (wantAmountBand) segmentValues.Amount = _amountBand(r.Amount);
-          out.push({ crmId: r.Id, ownerName: r.Owner ? r.Owner.Name : null, segmentValues });
+          out.push({
+            crmId: r.Id, name: r.Name || null, rawStage: r.StageName,
+            amount: r.Amount != null ? Number(r.Amount) : null,
+            createdAt: r.CreatedDate || null, closeDate: r.CloseDate || null,
+            ownerName: r.Owner ? r.Owner.Name : null, segmentValues });
         }
       });
   } catch (err) {
@@ -509,7 +567,7 @@ async function _hsOwnerMap(hsAdapter, warnings) {
 async function _hsPullDeals(hsAdapter, captureAt, cfg, ownerMap, warnings) {
   const segFields = _segmentFieldList(cfg).filter(f => f.toLowerCase() !== 'amount');
   const wantAmountBand = (cfg.segment_axes || []).some(a => a.field === 'Amount');
-  const props = ['dealstage', 'amount', 'createdate',
+  const props = ['dealname', 'dealstage', 'amount', 'createdate',
     'hubspot_owner_id', 'hs_date_entered_current_stage',
     'num_associated_contacts', 'notes_last_contacted', ...segFields];
   const out = [];
@@ -526,6 +584,7 @@ async function _hsPullDeals(hsAdapter, captureAt, cfg, ownerMap, warnings) {
         if (wantAmountBand) segmentValues.Amount = _amountBand(p.amount);
         out.push({
           crmId: r.id,
+          name: p.dealname || null,
           stage: p.dealstage,
           amount: p.amount != null && p.amount !== '' ? Number(p.amount) : null,
           createdAt: p.createdate || null,

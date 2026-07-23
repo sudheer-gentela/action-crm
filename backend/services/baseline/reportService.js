@@ -49,6 +49,7 @@ async function generateReport({ snapshotId, orgId, userId }) {
   // Load the frozen snapshot + its schema snapshot + naming context.
   const snapRes = await pool.query(`
     SELECT bs.*, cc.crm_type AS conn_crm_type, cc.client_id AS conn_client_id,
+           cc.instance_url AS conn_instance_url,
            o.name AS org_name, c.name AS client_name, c.logo_url AS client_logo_url
     FROM baseline_snapshots bs
     JOIN crm_connections cc ON cc.id = bs.connection_id
@@ -260,6 +261,55 @@ function renderHtml({ snap, findings, scoreboard, thresholds, narrative, brandin
       ${f.dollars != null ? `<p class="fine">Quantified: ${_usd(f.dollars)} — sum of open amounts on the deals in evidence (<code>${_esc(f.evidenceRef || '')}</code>).</p>` : ''}
     </div>`).join('');
 
+  // ── Drill-through layer ────────────────────────────────────────────────
+  const ev = snap.evidence || {};
+  const inventory = Array.isArray(ev.dealInventory) ? ev.dealInventory : [];
+  const invById = new Map(inventory.map(d => [d.crmId, d]));
+  const sfBase = snap.crm_type === 'salesforce' && snap.conn_instance_url
+    ? String(snap.conn_instance_url).replace(/\/$/, '') : null;
+  const dealLink = (crmId, label) => sfBase
+    ? `<a href="${_esc(`${sfBase}/lightning/r/Opportunity/${crmId}/view`)}" target="_blank" rel="noopener">${_esc(label)}</a>`
+    : _esc(label);
+  const dealLabel = (crmId) => {
+    const d = invById.get(crmId);
+    return (d && d.name) ? d.name : crmId;
+  };
+
+  const stalledRows = (ev.stall && ev.stall.stalledDeals) || [];
+  const stalledDetail = stalledRows.length ? `
+    <h3>Stalled deals — the ${stalledRows.length} behind the headline</h3>
+    <table><thead><tr><th>Deal</th><th>Stage</th><th>Days in stage</th><th>Stage p75</th><th>Amount</th></tr></thead>
+    <tbody>${stalledRows.map(d => `<tr>
+      <td>${dealLink(d.crmId, dealLabel(d.crmId))}</td>
+      <td>${_esc(d.stage)}</td><td>${d.dwellDays}</td><td>${d.thresholdDays}</td>
+      <td>${_usd(d.amount)}</td></tr>`).join('')}</tbody></table>
+    <p class="fine">Days in stage measured to capture time; p75 is this stage's own historical threshold. Sum of amounts = the stalled-pipeline headline.</p>` : '';
+
+  const STATUS_LABEL = { open: 'Open', won: 'Won', lost: 'Lost', closed: 'Closed', history_only: 'History only', unmapped_stage: 'Unmapped stage' };
+  const inventoryBlock = inventory.length ? `
+    <section class="page-break">
+      <h2>Deal inventory (${inventory.length} deals considered)</h2>
+      <p class="fine">Every deal this snapshot saw in the ${_dt(snap.history_from)} → ${_dt(snap.history_to)} window, with the values each metric consumed.
+      "History only" = appears in stage history but closed outside the close-date window. "Unmapped stage" = excluded from stage metrics (see caveats).
+      ${sfBase ? 'Deal names link to the Salesforce record for verification.' : ''}</p>
+      <table><thead><tr><th>Deal</th><th>Stage</th><th>Status</th><th>Amount</th><th>Created</th><th>Days in stage</th><th>Stalled</th><th>Act. 30d</th><th>Contacts</th><th>Owner</th></tr></thead>
+      <tbody>${inventory.map(d => `<tr${d.stalled ? ' style="background:#FEF2F2"' : ''}>
+        <td>${dealLink(d.crmId, d.name || d.crmId)}</td>
+        <td>${_esc(d.rawStage || '')}</td>
+        <td>${_esc(STATUS_LABEL[d.status] || d.status)}</td>
+        <td>${d.amount != null ? _usd(d.amount) : ''}</td>
+        <td>${d.createdAt ? _dt(d.createdAt) : ''}</td>
+        <td>${d.dwellDays != null ? d.dwellDays : ''}</td>
+        <td>${d.stalled ? 'yes' : ''}</td>
+        <td>${d.activityLast30 == null ? '' : (d.activityLast30 ? 'yes' : 'no')}</td>
+        <td>${d.contactRoleCount != null ? d.contactRoleCount : ''}</td>
+        <td>${_esc(d.ownerName || '')}</td></tr>`).join('')}</tbody></table>
+    </section>` : `
+    <section>
+      <h2>Deal inventory</h2>
+      <p class="fine">Not captured in this snapshot (pre-v1.1.0 capture). Re-run the baseline capture to include the deal-level inventory.</p>
+    </section>`;
+
   const cyc = Object.entries((m.cycleTime || {}).byStage || {});
   const cycleTable = cyc.length ? `
     <table><thead><tr><th>Stage</th><th>Median days</th><th>p75 days</th><th>n</th></tr></thead>
@@ -325,6 +375,7 @@ function renderHtml({ snap, findings, scoreboard, thresholds, narrative, brandin
   <section class="page-break">
     <h2>Findings</h2>
     ${findingsBlock || '<p class="fine">No findings crossed reporting thresholds.</p>'}
+    ${stalledDetail}
   </section>
 
   <section class="page-break">
@@ -333,6 +384,8 @@ function renderHtml({ snap, findings, scoreboard, thresholds, narrative, brandin
     <h2>Stage-to-stage conversion</h2>
     ${convTable}
   </section>
+
+  ${inventoryBlock}
 
   <section class="page-break">
     <h2>Methodology</h2>

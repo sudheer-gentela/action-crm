@@ -34,7 +34,9 @@
  *   }
  */
 
-const METRIC_DEFS_VERSION = '1.0.0';
+// 1.1.0: evidence gains dealInventory (drill-through layer). Metric
+// FORMULAS are unchanged from 1.0.0 — the bump marks the evidence contract.
+const METRIC_DEFS_VERSION = '1.1.0';
 
 // ── small stats helpers ──────────────────────────────────────────────────────
 
