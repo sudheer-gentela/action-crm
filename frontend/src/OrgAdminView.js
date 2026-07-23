@@ -19,6 +19,7 @@ import OATrackingDiagnostics from './orgadmin/panels/OATrackingDiagnostics';
 import OANdrCleanup from './orgadmin/panels/OANdrCleanup';
 import OASalesforceSettings from './orgadmin/panels/OASalesforceSettings';
 import OAHubSpotSettings from './orgadmin/panels/OAHubSpotSettings';
+import OAAssessment from './orgadmin/panels/OAAssessment';
 import OASettings from './orgadmin/panels/OASettings';
 import OAAgentSettings from './orgadmin/panels/OAAgentSettings';
 import OADuplicateSettings from './orgadmin/panels/OADuplicateSettings';
@@ -269,6 +270,7 @@ export default function OrgAdminView() {
             {(tab === 'integrations' || tab === 'integrations-overview') && <OAIntegrations orgId={orgId} />}
             {tab === 'salesforce'        && <OASalesforceSettings />}
             {tab === 'hubspot'           && <OAHubSpotSettings />}
+            {tab === 'assessment'        && <OAAssessment />}
             {tab === 'settings'         && <OASettings />}
           </div>
         </div>
