@@ -56,6 +56,8 @@ const DIRECTION_OPTIONS = [
 
 export default function SalesforceConnect({ onConnectionChange }) {
   const [subTab,      setSubTab]      = useState('connection');
+  const [sfEnv,       setSfEnv]       = useState('production');   // production | sandbox | custom
+  const [sfLoginUrl,  setSfLoginUrl]  = useState('');             // custom My Domain URL
   const [status,      setStatus]      = useState(null);
   const [settings,    setSettings]    = useState(null);
   const [loading,     setLoading]     = useState(true);
@@ -173,11 +175,18 @@ function ConnectionTab({ status, onConnect, onDisconnect, setError, setSuccess, 
 
   const handleConnect = async () => {
     try {
-      const res = await salesforceAPI.getAuthUrl();
+      if (sfEnv === 'custom' && !/^https:\/\/.+/.test(sfLoginUrl.trim())) {
+        setError('Enter your full My Domain URL, e.g. https://acme.my.salesforce.com');
+        return;
+      }
+      const res = await salesforceAPI.getAuthUrl({
+        environment: sfEnv,
+        login_url: sfEnv === 'custom' ? sfLoginUrl.trim() : undefined,
+      });
       if (res.success && res.authUrl) window.location.href = res.authUrl;
       else throw new Error(res.error || 'Invalid response');
     } catch (e) {
-      setError('Failed to start Salesforce connection. Check env vars are set.');
+      setError(e.message || 'Failed to start Salesforce connection. Check env vars are set.');
     }
   };
 
@@ -220,6 +229,38 @@ function ConnectionTab({ status, onConnect, onDisconnect, setError, setSuccess, 
             <li>Set the callback URL to your GoWarm backend + <code>/api/salesforce/callback</code></li>
             <li>Add env vars: <code>SALESFORCE_CLIENT_ID</code>, <code>SALESFORCE_CLIENT_SECRET</code>, <code>SALESFORCE_REDIRECT_URI</code></li>
           </ul>
+        </div>
+        <div className="sf-prereq" style={{ marginTop: 12 }}>
+          <div className="sf-prereq-title">Salesforce environment</div>
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', margin: '8px 0' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input type="radio" name="sf-env" checked={sfEnv === 'production'} onChange={() => setSfEnv('production')} />
+              Production <code>login.salesforce.com</code>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input type="radio" name="sf-env" checked={sfEnv === 'sandbox'} onChange={() => setSfEnv('sandbox')} />
+              Sandbox <code>test.salesforce.com</code>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input type="radio" name="sf-env" checked={sfEnv === 'custom'} onChange={() => setSfEnv('custom')} />
+              My Domain URL
+            </label>
+          </div>
+          {sfEnv === 'custom' && (
+            <input
+              style={{ width: '100%', maxWidth: 480 }}
+              placeholder="https://yourcompany.my.salesforce.com"
+              value={sfLoginUrl}
+              onChange={e => setSfLoginUrl(e.target.value)}
+            />
+          )}
+          <div className="sf-help-text" style={{ marginTop: 6 }}>
+            Most customer orgs use a <b>My Domain</b> URL (find it in Salesforce Setup → My Domain) —
+            it is also where SSO applies. Developer Edition orgs look like
+            <code> https://name-dev-ed.develop.my.salesforce.com</code>. Use Production only if the
+            org allows login via login.salesforce.com. Login, token exchange, and refresh all use the
+            host you pick here.
+          </div>
         </div>
         <button className="sf-btn sf-btn--primary" onClick={handleConnect}>
           Connect Salesforce

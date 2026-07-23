@@ -28,6 +28,31 @@ const CLIENT_ID     = process.env.SALESFORCE_CLIENT_ID;
 const CLIENT_SECRET = process.env.SALESFORCE_CLIENT_SECRET;
 const REDIRECT_URI  = process.env.SALESFORCE_REDIRECT_URI;
 
+// ── Login-host support (My Domain / sandbox) ─────────────────────────────────
+// The authorize host is org-specific: production login.salesforce.com,
+// sandboxes test.salesforce.com, and orgs with My Domain (all newer orgs,
+// Developer Editions included) their own https://<x>.my.salesforce.com —
+// which is also where customer SSO lives, and which some orgs ENFORCE
+// (login.salesforce.com refused). The chosen host must then be used for the
+// TOKEN exchange and refresh too, so it is carried through the OAuth state
+// and persisted in account_data.auth_host.
+//
+// normalizeSfLoginHost accepts: https://login.salesforce.com,
+// https://test.salesforce.com, or any https://*.my.salesforce.com
+// (including *.sandbox.my.salesforce.com and *.develop.my.salesforce.com).
+// Returns the origin string, or null if not an allowed Salesforce host.
+function normalizeSfLoginHost(input) {
+  if (!input) return null;
+  let url;
+  try { url = new URL(String(input).trim()); } catch { return null; }
+  if (url.protocol !== 'https:') return null;
+  const h = url.hostname.toLowerCase();
+  const ok = h === 'login.salesforce.com'
+          || h === 'test.salesforce.com'
+          || /^[a-z0-9][a-z0-9-]*(\.(sandbox|develop))?\.my\.salesforce\.com$/.test(h);
+  return ok ? `https://${h}` : null;
+}
+
 // ── getAuthUrl ────────────────────────────────────────────────────────────────
 
 /**
@@ -46,11 +71,17 @@ function getAuthUrl(userId, orgId, scope = {}) {
     throw new Error('SALESFORCE_CLIENT_ID and SALESFORCE_REDIRECT_URI env vars are required');
   }
 
+  // scope.loginHost: validated My Domain / sandbox / production host.
+  // Invalid input falls back to production rather than erroring here — the
+  // route validates and 400s on bad custom URLs before this point.
+  const authHost = normalizeSfLoginHost(scope.loginHost) || SF_AUTH_BASE;
+
   const state = Buffer.from(JSON.stringify({
     userId:    parseInt(userId, 10),
     orgId:     parseInt(orgId,  10),
     clientId:  scope.clientId != null ? parseInt(scope.clientId, 10) : null,
     purpose:   scope.purpose === 'assessment' ? 'assessment' : 'standard',
+    authHost,
     timestamp: Date.now(),
   })).toString('base64');
 
@@ -62,7 +93,7 @@ function getAuthUrl(userId, orgId, scope = {}) {
     state,
   });
 
-  return `${SF_AUTHORIZE_URL}?${params.toString()}`;
+  return `${authHost}/services/oauth2/authorize?${params.toString()}`;
 }
 
 // ── exchangeCode ──────────────────────────────────────────────────────────────
@@ -82,6 +113,10 @@ async function exchangeCode(code, stateStr) {
   }
 
   const { userId, orgId, clientId = null, purpose = 'standard' } = stateData;
+  // Same host as authorize: My-Domain-enforced orgs reject a code minted on
+  // their host being exchanged at login.salesforce.com. Re-validate the host
+  // from state before use.
+  const authHost = normalizeSfLoginHost(stateData.authHost) || SF_AUTH_BASE;
 
   // Client-scoped connections carry their own credentials on crm_connections
   // and land in Phase 3a. Reject now so a stale/hand-built state can't create
@@ -91,7 +126,7 @@ async function exchangeCode(code, stateStr) {
   }
 
   // Exchange code for tokens
-  const tokenRes = await axios.post(SF_TOKEN_URL, new URLSearchParams({
+  const tokenRes = await axios.post(`${authHost}/services/oauth2/token`, new URLSearchParams({
     grant_type:    'authorization_code',
     client_id:     CLIENT_ID,
     client_secret: CLIENT_SECRET,
@@ -133,7 +168,7 @@ async function exchangeCode(code, stateStr) {
         updated_at    = NOW()
     `, [
       userId, orgId, access_token, refresh_token, expiresAt,
-      JSON.stringify({ instance_url, sf_user_id: sfUserId, sf_username: sfUsername, sf_email: sfEmail }),
+      JSON.stringify({ instance_url, auth_host: authHost, sf_user_id: sfUserId, sf_username: sfUsername, sf_email: sfEmail }),
     ]);
 
     // Upsert org_integrations row — create or update on reconnect
@@ -245,16 +280,17 @@ async function getValidToken(orgId) {
     return { accessToken: token.access_token, instanceUrl };
   }
 
-  // Token expired or near expiry — refresh
+  // Token expired or near expiry — refresh on the host the org authorised on
   console.log(`🔄 Refreshing Salesforce token for org ${orgId}...`);
-  const refreshed = await _refreshToken(token.refresh_token, token.user_id, orgId, instanceUrl);
+  const authHost = normalizeSfLoginHost(token.account_data?.auth_host) || SF_AUTH_BASE;
+  const refreshed = await _refreshToken(token.refresh_token, token.user_id, orgId, authHost);
   return { accessToken: refreshed.accessToken, instanceUrl };
 }
 
 // ── _refreshToken (internal) ──────────────────────────────────────────────────
 
-async function _refreshToken(refreshToken, userId, orgId, instanceUrl) {
-  const res = await axios.post(SF_TOKEN_URL, new URLSearchParams({
+async function _refreshToken(refreshToken, userId, orgId, authHost) {
+  const res = await axios.post(`${authHost || SF_AUTH_BASE}/services/oauth2/token`, new URLSearchParams({
     grant_type:    'refresh_token',
     client_id:     CLIENT_ID,
     client_secret: CLIENT_SECRET,
@@ -280,7 +316,7 @@ async function _refreshToken(refreshToken, userId, orgId, instanceUrl) {
  */
 async function revokeToken(orgId) {
   const res = await pool.query(`
-    SELECT ot.access_token, ot.user_id
+    SELECT ot.access_token, ot.user_id, ot.account_data
     FROM oauth_tokens ot
     JOIN org_integrations oi ON oi.org_id = $1 AND oi.integration_type = 'salesforce' AND oi.connected_by = ot.user_id
     WHERE ot.provider = 'salesforce'
@@ -290,10 +326,11 @@ async function revokeToken(orgId) {
   if (res.rows.length === 0) return; // Already disconnected
 
   const { access_token, user_id } = res.rows[0];
+  const revokeHost = normalizeSfLoginHost(res.rows[0].account_data?.auth_host) || SF_AUTH_BASE;
 
   // Best-effort SF revoke (don't fail if SF is unreachable)
   try {
-    await axios.post(SF_REVOKE_URL, new URLSearchParams({ token: access_token }), {
+    await axios.post(`${revokeHost}/services/oauth2/revoke`, new URLSearchParams({ token: access_token }), {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     });
   } catch (err) {
@@ -350,4 +387,4 @@ async function getConnectionStatus(orgId) {
   };
 }
 
-module.exports = { getAuthUrl, exchangeCode, getValidToken, revokeToken, getConnectionStatus };
+module.exports = { getAuthUrl, exchangeCode, getValidToken, revokeToken, getConnectionStatus, normalizeSfLoginHost };

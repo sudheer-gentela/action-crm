@@ -63,6 +63,24 @@ router.get('/connect', async (req, res) => {
     // (crmConnections.upsertPointerConnection); the param covers the case of a
     // standard org connecting explicitly for an assessment engagement.
     const scope = { purpose: req.query.purpose === 'assessment' ? 'assessment' : 'standard' };
+
+    // Environment selection: production (default) | sandbox | custom My Domain.
+    // A custom URL is validated here and 400s when invalid, so the person
+    // fixes the URL instead of being bounced by the wrong login host.
+    const env = req.query.environment || 'production';
+    if (env === 'sandbox') {
+      scope.loginHost = 'https://test.salesforce.com';
+    } else if (env === 'custom') {
+      const host = sfAuth.normalizeSfLoginHost(req.query.login_url);
+      if (!host) {
+        return res.status(400).json({
+          success: false,
+          error: 'login_url must be an https Salesforce host (e.g. https://acme.my.salesforce.com)',
+        });
+      }
+      scope.loginHost = host;
+    }
+
     const authUrl = sfAuth.getAuthUrl(req.user.userId, req.orgId, scope);
     res.json({ success: true, authUrl });
   } catch (err) {

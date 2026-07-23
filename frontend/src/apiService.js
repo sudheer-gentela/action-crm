@@ -945,8 +945,12 @@ export default api;
 
 // ─── Salesforce Integration API ───────────────────────────────────────────────
 export const salesforceAPI = {
-  getAuthUrl: async () => {
-    const response = await fetch(`${API_BASE_URL}/salesforce/connect`, { headers: getAuthHeaders() });
+  // params: { environment: 'production'|'sandbox'|'custom', login_url?, purpose? }
+  getAuthUrl: async (params = {}) => {
+    const qs = new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v != null && v !== ''))
+    ).toString();
+    const response = await fetch(`${API_BASE_URL}/salesforce/connect${qs ? `?${qs}` : ''}`, { headers: getAuthHeaders() });
     if (!response.ok) { const e = await response.json().catch(() => ({})); throw new Error(e.error || 'Failed to get SF auth URL'); }
     return response.json();
   },
