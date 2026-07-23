@@ -150,7 +150,10 @@ export default function OAAssessment() {
         method: 'PATCH', body: JSON.stringify({ stage_map }),
       });
       flash('Stage map approved');
+      // Refresh BOTH: detail (drives the approved chip) and the connections
+      // list (drives the capture gate) — the gate read a stale list before.
       await loadDetail(connId);
+      await loadConnections();
     } catch (e) { fail(e, 'Approval failed'); }
     finally { setBusy(''); }
   };
@@ -226,7 +229,10 @@ export default function OAAssessment() {
   const conn = connections.find(c => c.id === connId);
   const schemaSnap = detail?.latestSchemaSnapshot;
   const hasFrozenSchema = schemaSnap?.status === 'frozen';
-  const hasStageMap = conn && conn.stage_map && Object.keys(conn.stage_map).length > 0;
+  const detailStageMap = detail?.connection?.settings?.stage_map;
+  const hasStageMap =
+    (detailStageMap && Object.keys(detailStageMap).length > 0) ||
+    (conn && conn.stage_map && Object.keys(conn.stage_map).length > 0);
 
   return (
     <div>
