@@ -56,8 +56,6 @@ const DIRECTION_OPTIONS = [
 
 export default function SalesforceConnect({ onConnectionChange }) {
   const [subTab,      setSubTab]      = useState('connection');
-  const [sfEnv,       setSfEnv]       = useState('production');   // production | sandbox | custom
-  const [sfLoginUrl,  setSfLoginUrl]  = useState('');             // custom My Domain URL
   const [status,      setStatus]      = useState(null);
   const [settings,    setSettings]    = useState(null);
   const [loading,     setLoading]     = useState(true);
@@ -172,6 +170,8 @@ export default function SalesforceConnect({ onConnectionChange }) {
 
 function ConnectionTab({ status, onConnect, onDisconnect, setError, setSuccess, onConnectionChange }) {
   const [syncing, setSyncing] = useState(false);
+  const [sfEnv,      setSfEnv]      = useState('production');   // production | sandbox | custom
+  const [sfLoginUrl, setSfLoginUrl] = useState('');             // custom My Domain URL
 
   const handleConnect = async () => {
     try {
