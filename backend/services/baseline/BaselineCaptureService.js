@@ -53,7 +53,9 @@ const DEFAULT_BASELINE_CONFIG = {
   cycle_calc: 'sum_dwell',     // decision 1
   segment_axes: [              // decision 3 — extensible per connection
     { object: 'Opportunity', field: 'Amount', banding: 'auto' },
-    { object: 'Opportunity', field: 'Industry' },
+    // Industry is an ACCOUNT field in Salesforce (not Opportunity) — pulled
+    // via relationship traversal. Dropped automatically for HubSpot.
+    { object: 'Opportunity', field: 'Account.Industry' },
   ],
   min_cell_n: 5,
   max_cycle_days: 270,
@@ -260,8 +262,31 @@ async function startBaselineCapture({ connectionId, orgId, userId }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function _executeCapture(orgId, prep) {
-  const { conn, cfg, stageMap, schemaPayload, captureAt, snapshotId } = prep;
+  const { conn, cfg: rawCfg, stageMap, schemaPayload, captureAt, snapshotId } = prep;
   const warnings = [];
+
+  // ── Segment-axis validation against the frozen schema ────────────────────
+  // A bad axis must cost ITSELF, not the whole pull: unknown fields are
+  // dropped with their own warning instead of poisoning the SOQL with
+  // INVALID_FIELD (which degraded the entire open-deal pull before).
+  const cfg = { ...rawCfg, segment_axes: [] };
+  const sfFields = new Set(((schemaPayload.fields || {}).Opportunity || []).map(f => f.name));
+  const sfAcct   = new Set(((schemaPayload.fields || {}).Account || []).map(f => f.name));
+  const hsFields = new Set(((schemaPayload.fields || {}).deals || []).map(f => f.name));
+  for (const axis of (rawCfg.segment_axes || [])) {
+    let ok;
+    if (conn.crm_type === 'salesforce') {
+      const [head, rel] = String(axis.field).split('.');
+      ok = rel ? (head === 'Account' && sfAcct.has(rel)) : sfFields.has(axis.field);
+    } else {
+      ok = !String(axis.field).includes('.') && hsFields.has(String(axis.field).toLowerCase());
+    }
+    if (ok || axis.field === 'Amount') cfg.segment_axes.push(axis);
+    else warnings.push({
+      kind: 'segment_axis_dropped',
+      detail: `${axis.object}.${axis.field} is not a discoverable field on this ${conn.crm_type} org — axis skipped`,
+    });
+  }
 
   try {
     const handle = await _crmHandle(conn);
@@ -352,6 +377,11 @@ function _segmentFieldList(cfg) {
     .map(a => a.field);
 }
 
+/** Read a possibly-dotted field ('Account.Industry') off a SOQL record. */
+function _axisValue(record, field) {
+  return String(field).split('.').reduce((o, k) => (o == null ? null : o[k]), record) ?? null;
+}
+
 function _daysAgo(dateStr, captureAt) {
   if (!dateStr) return null;
   const t = new Date(dateStr).getTime();
@@ -394,7 +424,7 @@ async function _sfOpenDeals(sfClient, captureAt, cfg, warnings) {
       createdAt: r.CreatedDate,
       stageChangedAt: r.LastStageChangeDate || null,
       ownerName: r.Owner ? r.Owner.Name : null,
-      segmentValues: Object.fromEntries(segFields.map(f => [f, r[f] ?? null])),
+      segmentValues: Object.fromEntries(segFields.map(f => [f, _axisValue(r, f)])),
       contactRoleCount: null,                 // attached separately
       activityLast14: lastAct == null ? null : (lastAct <= 14 ? 1 : 0),
       activityLast30: lastAct == null ? null : (lastAct <= 30 ? 1 : 0),
@@ -439,7 +469,7 @@ async function _sfClosedDealMeta(sfClient, cfg, warnings) {
       `WHERE IsClosed = true AND CloseDate = LAST_N_MONTHS:${cfg.history_months}`,
       recs => {
         for (const r of recs) {
-          const segmentValues = Object.fromEntries(segFields.map(f => [f, r[f] ?? null]));
+          const segmentValues = Object.fromEntries(segFields.map(f => [f, _axisValue(r, f)]));
           if (wantAmountBand) segmentValues.Amount = _amountBand(r.Amount);
           out.push({ crmId: r.Id, ownerName: r.Owner ? r.Owner.Name : null, segmentValues });
         }
