@@ -209,11 +209,11 @@ async function discoverSalesforce(sfClient, opts = {}) {
   } catch (err) {
     limitsNotes.push(`Apex trigger inventory not readable (${err.message}).`);
   }
-  // Approval processes.
+  // Approval processes. ProcessDefinition is a STANDARD-API object (not
+  // Tooling — same class of endpoint as FlowDefinitionView).
   try {
-    const ap = await sfClient._request('GET',
-      `${toolingBase}/query?q=${encodeURIComponent(
-        "SELECT Name, TableEnumOrId, State FROM ProcessDefinition WHERE Type = 'Approval'")}`);
+    const ap = await sfClient.query(
+      "SELECT Name, TableEnumOrId, State FROM ProcessDefinition WHERE Type = 'Approval'");
     automation.approvalProcesses = (ap.records || []).map(r => ({
       name: r.Name, object: r.TableEnumOrId || null, state: r.State || null,
     }));

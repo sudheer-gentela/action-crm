@@ -49,6 +49,7 @@ function DiscoveryViewer({ schema, warnings, capturedAt, onClose }) {
   const [tab, setTab] = React.useState('objects');
   const [fieldView, setFieldView] = React.useState(null); // { objName, fromLabel }
   const [flowView, setFlowView] = React.useState(null);   // flow object for detail
+  const [autoView, setAutoView] = React.useState(null);   // null=summary | 'validation'|'flows'|'workflow'|'apex'|'approvals'
   const [customOnly, setCustomOnly] = React.useState(false);
   const [lowFillOnly, setLowFillOnly] = React.useState(false);
 
@@ -73,7 +74,7 @@ function DiscoveryViewer({ schema, warnings, capturedAt, onClose }) {
 
   const tabBtn = (id, label) => (
     <button key={id} style={{ ...btn, ...(tab === id && !fieldView ? { background: '#111827', color: '#fff', borderColor: '#111827' } : {}) }}
-      onClick={() => { setFieldView(null); setFlowView(null); setTab(id); }}>{label}</button>
+      onClick={() => { setFieldView(null); setFlowView(null); setAutoView(null); setTab(id); }}>{label}</button>
   );
 
   const openFields = (objName, fromLabel) => setFieldView({ objName, fromLabel });
@@ -215,76 +216,108 @@ function DiscoveryViewer({ schema, warnings, capturedAt, onClose }) {
               )}
             </div>
           ) : tab === 'automation' ? (
-            <div>
-              <h4 style={{ margin: '0 0 6px' }}>Validation rules ({(schema.validation_rules || []).length})</h4>
-              {(schema.validation_rules || []).length === 0 ? <div style={{ color: MUTED, fontSize: 13 }}>None readable.</div> : (
-                <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-                  <thead><tr><th style={thS}>Object</th><th style={thS}>Rule</th><th style={thS}>Active</th><th style={thS}>Error message shown to reps</th></tr></thead>
-                  <tbody>{(schema.validation_rules || []).map((v, i) => (
-                    <tr key={i}><td style={tdS}>{v.object}</td><td style={tdS}>{v.name}</td><td style={tdS}>{v.active ? 'yes' : 'no'}</td><td style={{ ...tdS, color: MUTED }}>{v.errorMessage || ''}</td></tr>
-                  ))}</tbody>
+            autoView === null ? (
+              <div>
+                <table style={{ borderCollapse: 'collapse', width: '100%', maxWidth: 720 }}>
+                  <thead><tr><th style={thS}>Category</th><th style={thS}>Count</th><th style={thS}>At a glance</th><th style={thS}></th></tr></thead>
+                  <tbody>
+                    {[
+                      { id: 'validation', label: 'Validation rules', list: schema.validation_rules || [],
+                        glance: (schema.validation_rules || []).filter(v => v.active).length + ' active' },
+                      { id: 'flows', label: 'Active flows', list: schema.automation?.flowList || [],
+                        glance: (() => {
+                          const fl = schema.automation?.flowList || [];
+                          const rec = fl.filter(f => f.triggerObject).length;
+                          const objs = [...new Set(fl.map(f => f.triggerObject).filter(Boolean))];
+                          return rec > 0
+                            ? `${rec} record-triggered (${objs.slice(0, 4).join(', ')}${objs.length > 4 ? '…' : ''}); ${fl.length - rec} screen/scheduled`
+                            : 'all screen / scheduled / manual';
+                        })() },
+                      { id: 'workflow', label: 'Workflow rules', list: schema.automation?.workflowRuleList || [],
+                        glance: [...new Set((schema.automation?.workflowRuleList || []).map(w => w.object).filter(Boolean))].join(', ') || '—' },
+                      { id: 'apex', label: 'Apex triggers', list: schema.automation?.apexTriggers || [],
+                        glance: [...new Set((schema.automation?.apexTriggers || []).map(t => t.object).filter(Boolean))].join(', ') || '—' },
+                      { id: 'approvals', label: 'Approval processes', list: schema.automation?.approvalProcesses || [],
+                        glance: [...new Set((schema.automation?.approvalProcesses || []).map(a => a.object).filter(Boolean))].join(', ') || '—' },
+                    ].map(row => (
+                      <tr key={row.id}>
+                        <td style={tdS}><b>{row.label}</b></td>
+                        <td style={tdS}>{row.list.length}</td>
+                        <td style={{ ...tdS, color: MUTED, fontSize: 12.5 }}>{row.glance}</td>
+                        <td style={tdS}>
+                          {row.list.length > 0 && (
+                            <button style={{ ...btn, padding: '3px 10px', fontSize: 12 }} onClick={() => setAutoView(row.id)}>View →</button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
                 </table>
-              )}
-              <h4 style={{ margin: '14px 0 6px' }}>Active flows ({schema.automation?.flows ?? 'not readable'})</h4>
-              {(schema.automation?.flowList || []).length === 0 ? (
-                <div style={{ color: MUTED, fontSize: 13 }}>None active (or not readable — see caveats).</div>
-              ) : (
-                <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-                  <thead><tr><th style={thS}>Flow</th><th style={thS}>Type</th><th style={thS}>Fires on</th><th style={thS}>Trigger</th><th style={thS}></th></tr></thead>
-                  <tbody>{(schema.automation.flowList || []).map((f, i) => (
-                    <tr key={i}>
-                      <td style={tdS}><b>{f.label}</b><div style={{ color: MUTED, fontSize: 11.5 }}>{f.apiName}</div></td>
-                      <td style={tdS}>{f.processType || ''}</td>
-                      <td style={tdS}>{f.triggerObject || <span style={{ color: MUTED }}>—</span>}</td>
-                      <td style={tdS}>{f.recordTriggerType || f.triggerType || 'screen / manual'}</td>
-                      <td style={tdS}><button style={{ ...btn, padding: '3px 10px', fontSize: 12 }} onClick={() => setFlowView(f)}>Details →</button></td>
-                    </tr>
-                  ))}</tbody>
-                </table>
-              )}
-              <h4 style={{ margin: '14px 0 6px' }}>Workflow rules ({schema.automation?.workflowRules ?? 'not readable'})</h4>
-              {(schema.automation?.workflowRuleList || []).length === 0 ? (
-                <div style={{ color: MUTED, fontSize: 13 }}>None (legacy automation retired, or not readable).</div>
-              ) : (
-                <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-                  <thead><tr><th style={thS}>Rule</th><th style={thS}>Object</th></tr></thead>
-                  <tbody>{(schema.automation.workflowRuleList || []).map((w, i) => (
-                    <tr key={i}><td style={tdS}>{w.name}</td><td style={tdS}>{w.object || ''}</td></tr>
-                  ))}</tbody>
-                </table>
-              )}
-              <h4 style={{ margin: '14px 0 6px' }}>Apex triggers ({(schema.automation?.apexTriggers || []).length})</h4>
-              {(schema.automation?.apexTriggers || []).length === 0 ? (
-                <div style={{ color: MUTED, fontSize: 13 }}>None (or not readable — see caveats).</div>
-              ) : (
-                <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-                  <thead><tr><th style={thS}>Trigger</th><th style={thS}>Object</th><th style={thS}>Status</th></tr></thead>
-                  <tbody>{(schema.automation.apexTriggers || []).map((t, i) => (
-                    <tr key={i}><td style={tdS}>{t.name}</td><td style={tdS}>{t.object || ''}</td><td style={tdS}>{t.status || ''}</td></tr>
-                  ))}</tbody>
-                </table>
-              )}
-              <h4 style={{ margin: '14px 0 6px' }}>Approval processes ({(schema.automation?.approvalProcesses || []).length})</h4>
-              {(schema.automation?.approvalProcesses || []).length === 0 ? (
-                <div style={{ color: MUTED, fontSize: 13 }}>None (or not readable — see caveats).</div>
-              ) : (
-                <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-                  <thead><tr><th style={thS}>Process</th><th style={thS}>Object</th><th style={thS}>State</th></tr></thead>
-                  <tbody>{(schema.automation.approvalProcesses || []).map((a, i) => (
-                    <tr key={i}><td style={tdS}>{a.name}</td><td style={tdS}>{a.object || ''}</td><td style={tdS}>{a.state || ''}</td></tr>
-                  ))}</tbody>
-                </table>
-              )}
-              {schema.ownership && (
-                <div style={{ fontSize: 13, marginTop: 14 }}>
-                  <h4 style={{ margin: '0 0 6px' }}>Ownership context</h4>
-                  Queues: <b>{(schema.ownership.queues || []).length}</b>
-                  {(schema.ownership.queues || []).length > 0 && <span style={{ color: MUTED }}> ({schema.ownership.queues.slice(0, 8).join(', ')}{schema.ownership.queues.length > 8 ? '…' : ''})</span>}
-                  {' '}· Roles: <b>{schema.ownership.roleCount ?? '—'}</b>
-                  {schema.ownership.roleDepth != null && <span> (hierarchy depth {schema.ownership.roleDepth})</span>}
+                {schema.ownership && (
+                  <div style={{ fontSize: 13, marginTop: 14 }}>
+                    <b>Ownership context:</b> Queues: <b>{(schema.ownership.queues || []).length}</b>
+                    {(schema.ownership.queues || []).length > 0 && <span style={{ color: MUTED }}> ({schema.ownership.queues.slice(0, 8).join(', ')}{schema.ownership.queues.length > 8 ? '…' : ''})</span>}
+                    {' '}· Roles: <b>{schema.ownership.roleCount ?? '—'}</b>
+                    {schema.ownership.roleDepth != null && <span> (hierarchy depth {schema.ownership.roleDepth})</span>}
+                  </div>
+                )}
+                <div style={{ fontSize: 12, color: MUTED, marginTop: 10 }}>
+                  Every mechanism that acts on records automatically. Record-triggered flows and validation rules are the usual explanations for batch stage updates and "TBD" compliance patterns.
                 </div>
-              )}
-            </div>
+              </div>
+            ) : (
+              <div>
+                <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 10 }}>
+                  <button style={btn} onClick={() => setAutoView(null)}>← Back to Automation summary</button>
+                </div>
+                {autoView === 'validation' && (
+                  <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+                    <thead><tr><th style={thS}>Object</th><th style={thS}>Rule</th><th style={thS}>Active</th><th style={thS}>Error message shown to reps</th></tr></thead>
+                    <tbody>{(schema.validation_rules || []).map((v, i) => (
+                      <tr key={i}><td style={tdS}>{v.object}</td><td style={tdS}>{v.name}</td><td style={tdS}>{v.active ? 'yes' : 'no'}</td><td style={{ ...tdS, color: MUTED }}>{v.errorMessage || ''}</td></tr>
+                    ))}</tbody>
+                  </table>
+                )}
+                {autoView === 'flows' && (
+                  <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+                    <thead><tr><th style={thS}>Flow</th><th style={thS}>Type</th><th style={thS}>Fires on</th><th style={thS}>Trigger</th><th style={thS}></th></tr></thead>
+                    <tbody>{(schema.automation?.flowList || []).map((f, i) => (
+                      <tr key={i}>
+                        <td style={tdS}><b>{f.label}</b><div style={{ color: MUTED, fontSize: 11.5 }}>{f.apiName}</div></td>
+                        <td style={tdS}>{f.processType || ''}</td>
+                        <td style={tdS}>{f.triggerObject || <span style={{ color: MUTED }}>—</span>}</td>
+                        <td style={tdS}>{f.recordTriggerType || f.triggerType || 'screen / manual'}</td>
+                        <td style={tdS}><button style={{ ...btn, padding: '3px 10px', fontSize: 12 }} onClick={() => setFlowView(f)}>Details →</button></td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                )}
+                {autoView === 'workflow' && (
+                  <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+                    <thead><tr><th style={thS}>Rule</th><th style={thS}>Object</th></tr></thead>
+                    <tbody>{(schema.automation?.workflowRuleList || []).map((w, i) => (
+                      <tr key={i}><td style={tdS}>{w.name}</td><td style={tdS}>{w.object || ''}</td></tr>
+                    ))}</tbody>
+                  </table>
+                )}
+                {autoView === 'apex' && (
+                  <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+                    <thead><tr><th style={thS}>Trigger</th><th style={thS}>Object</th><th style={thS}>Status</th></tr></thead>
+                    <tbody>{(schema.automation?.apexTriggers || []).map((t, i) => (
+                      <tr key={i}><td style={tdS}>{t.name}</td><td style={tdS}>{t.object || ''}</td><td style={tdS}>{t.status || ''}</td></tr>
+                    ))}</tbody>
+                  </table>
+                )}
+                {autoView === 'approvals' && (
+                  <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+                    <thead><tr><th style={thS}>Process</th><th style={thS}>Object</th><th style={thS}>State</th></tr></thead>
+                    <tbody>{(schema.automation?.approvalProcesses || []).map((a, i) => (
+                      <tr key={i}><td style={tdS}>{a.name}</td><td style={tdS}>{a.object || ''}</td><td style={tdS}>{a.state || ''}</td></tr>
+                    ))}</tbody>
+                  </table>
+                )}
+              </div>
+            )
           ) : (
             allWarnings.length === 0 ? <div style={{ color: MUTED, fontSize: 13 }}>None — discovery read everything it asked for.</div> : (
               <ul style={{ fontSize: 13, lineHeight: 1.7 }}>
