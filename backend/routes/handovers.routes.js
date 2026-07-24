@@ -93,7 +93,7 @@ router.put('/sales/:id', async (req, res) => {
 
 router.patch('/sales/:id/status', async (req, res) => {
   try {
-    const { status } = req.body;
+    const { status, closureSummary } = req.body;
     if (!status) {
       return res.status(400).json({ error: { message: 'status is required' } });
     }
@@ -102,7 +102,8 @@ router.patch('/sales/:id/status', async (req, res) => {
       parseInt(req.params.id),
       req.orgId,
       req.user.userId,
-      status
+      status,
+      closureSummary ?? null
     );
     res.json({ handover });
   } catch (err) {
@@ -119,6 +120,20 @@ router.get('/sales/:id/can-submit', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('Can-submit check error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── GET /sales/:id/can-close ──────────────────────────────────────────────────
+// Closure gate: returns is_closeable plus the deliverable rollup, so the UI can
+// both disable the Complete button and explain exactly what is blocking it.
+
+router.get('/sales/:id/can-close', async (req, res) => {
+  try {
+    const result = await handoverService.canClose(parseInt(req.params.id), req.orgId);
+    res.json(result);
+  } catch (err) {
+    console.error('Can-close check error:', err);
     res.status(err.status || 500).json({ error: { message: err.message } });
   }
 });
@@ -168,6 +183,26 @@ router.post('/sales/:id/commitments', async (req, res) => {
     res.status(201).json({ commitment });
   } catch (err) {
     console.error('Add commitment error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── PATCH /sales/:id/commitments/:cid ─────────────────────────────────────────
+// The route that was missing. Retarget a commitment (dueDate, ownerUserId,
+// description) or drive it to closure (status + closureNote).
+
+router.patch('/sales/:id/commitments/:cid', async (req, res) => {
+  try {
+    const commitment = await handoverService.updateCommitment(
+      parseInt(req.params.id),
+      req.orgId,
+      req.user.userId,
+      parseInt(req.params.cid),
+      req.body
+    );
+    res.json({ commitment });
+  } catch (err) {
+    console.error('Update commitment error:', err);
     res.status(err.status || 500).json({ error: { message: err.message } });
   }
 });

@@ -31,11 +31,17 @@ const PlayCompletionService        = require('./PlayCompletionService');  // Pha
 // ── Status machine ────────────────────────────────────────────────────────────
 
 const TRANSITIONS = {
-  draft:        ['submitted'],
-  submitted:    ['draft', 'acknowledged'],   // draft = recall; acknowledged = service accepts
-  acknowledged: ['in_progress'],
-  in_progress:  [],                          // terminal for this module; Task 3 takes over
+  draft:        ['submitted', 'cancelled'],
+  submitted:    ['draft', 'acknowledged', 'cancelled'],  // draft = recall; acknowledged = service accepts
+  acknowledged: ['in_progress', 'cancelled'],
+  in_progress:  ['completed', 'cancelled'],
+  completed:    [],                          // terminal
+  cancelled:    [],                          // terminal
 };
+
+// Terminal statuses — used by the sweep to skip dead handovers and by the
+// list view to default-hide them.
+const TERMINAL_STATUSES = new Set(['completed', 'cancelled']);
 
 // Who can trigger each target status
 const TRANSITION_ROLES = {
@@ -43,6 +49,8 @@ const TRANSITION_ROLES = {
   draft:        'sales',      // recall to draft from submitted
   acknowledged: 'service',   // assigned_service_owner
   in_progress:  'service',
+  completed:    'service',   // service owner signs off delivery
+  cancelled:    'either',    // either side can abandon (deal unwound, etc.)
 };
 
 function assertTransition(from, to) {
@@ -101,19 +109,49 @@ function fmtStakeholder(row) {
 
 function fmtCommitment(row) {
   if (!row) return null;
+
+  const isTerminal = ['met', 'waived', 'breached'].includes(row.status);
+  const isOverdue  = !isTerminal
+    && row.due_date != null
+    && new Date(row.due_date) < new Date(new Date().toDateString());
+
   return {
     id:             row.id,
     handoverId:     row.handover_id,
     description:    row.description,
     commitmentType: row.commitment_type,
+    // ── deliverable tracking (2026_64) ──
+    dueDate:        row.due_date  ?? null,
+    ownerUserId:    row.owner_user_id ?? null,
+    status:         row.status    ?? 'open',
+    closedAt:       row.closed_at ?? null,
+    closedBy:       row.closed_by ?? null,
+    closureNote:    row.closure_note ?? null,
+    isOverdue,
+    daysOverdue:    isOverdue
+      ? Math.floor((Date.now() - new Date(row.due_date)) / 86400000)
+      : 0,
     createdBy:      row.created_by,
     createdAt:      row.created_at,
+    updatedAt:      row.updated_at ?? null,
     createdByName:  row.created_by_name ?? null,
+    ownerName:      row.owner_name      ?? null,
+    closedByName:   row.closed_by_name  ?? null,
   };
 }
 
 function fmtPlay(row) {
   if (!row) return null;
+
+  // BUGFIX: due_date, due_anchor and updated_at were being neither SELECTed in
+  // _getPlays() nor mapped here, so deal_play_instances.due_date — which the
+  // playbook engine has been populating all along — was invisible to the
+  // handover UI. Every deliverable looked undated.
+  const isDone    = ['completed', 'skipped'].includes(row.play_status);
+  const isOverdue = !isDone
+    && row.due_date != null
+    && new Date(row.due_date) < new Date(new Date().toDateString());
+
   return {
     id:              row.id,             // sales_handover_plays.id
     playInstanceId:  row.play_instance_id,
@@ -129,6 +167,13 @@ function fmtPlay(row) {
     priority:        row.priority,
     status:          row.play_status,
     completedBy:     row.completed_by,
+    // ── deliverable tracking (2026_64) ──
+    dueDate:         row.due_date   ?? null,
+    dueAnchor:       row.due_anchor ?? 'created',
+    isOverdue,
+    daysOverdue:     isOverdue
+      ? Math.floor((Date.now() - new Date(row.due_date)) / 86400000)
+      : 0,
   };
 }
 
@@ -357,7 +402,7 @@ async function getById(handoverId, orgId) {
   const commitments = await _getCommitments(handoverId, orgId);
 
   // Load plays
-  const plays = await _getPlays(handoverId);
+  const plays = await _getPlays(handoverId, orgId);
 
   return { ...handover, stakeholders, commitments, plays };
 }
@@ -411,19 +456,43 @@ async function update(handoverId, orgId, data) {
  * @param {number} orgId
  * @param {number} userId
  * @param {string} toStatus
+ * @param {string} [closureSummary]  — required for 'cancelled', optional for 'completed'
  */
-async function advanceStatus(handoverId, orgId, userId, toStatus) {
+async function advanceStatus(handoverId, orgId, userId, toStatus, closureSummary = null) {
   const existing = await _getHandover(handoverId, orgId);
 
   assertTransition(existing.status, toStatus);
 
   // Gate check: cannot submit unless all is_gate plays are complete
+  //
+  // BUGFIX: this block previously read
+  //     const { canSubmit, incompleteGates } = await canSubmit(handoverId, orgId);
+  // The `const canSubmit` destructure creates a block-scoped binding that
+  // SHADOWS the module-level canSubmit() function, and the initialiser then
+  // references that binding while it is still in its temporal dead zone.
+  // Result: every single submit threw
+  //     ReferenceError: Cannot access 'canSubmit' before initialization
+  // and the route returned a 500 — the gate was never actually evaluated,
+  // because nothing got as far as evaluating it. Renaming the destructured
+  // field resolves the shadowing.
   if (toStatus === 'submitted') {
-    const { canSubmit, incompleteGates } = await canSubmit(handoverId, orgId);
-    if (!canSubmit) {
-      const titles = incompleteGates.map(g => `"${g.title}"`).join(', ');
+    const gateCheck = await canSubmit(handoverId, orgId);
+    if (!gateCheck.canSubmit) {
+      const titles = gateCheck.incompleteGates.map(g => `"${g.title}"`).join(', ');
       throw Object.assign(
         new Error(`Cannot submit: incomplete required sections: ${titles}`),
+        { status: 400 }
+      );
+    }
+  }
+
+  // Closure gate: cannot complete unless every gate play AND every commitment
+  // has reached a terminal state. Mirrors the submit gate above.
+  if (toStatus === 'completed') {
+    const closeCheck = await canClose(handoverId, orgId);
+    if (!closeCheck.canClose) {
+      throw Object.assign(
+        new Error(`Cannot complete: ${closeCheck.blockers.join('; ')}`),
         { status: 400 }
       );
     }
@@ -437,23 +506,105 @@ async function advanceStatus(handoverId, orgId, userId, toStatus) {
   if (requiredRole === 'service' && existing.assignedServiceOwnerId !== userId) {
     throw Object.assign(new Error('Only the assigned service owner can perform this action'), { status: 403 });
   }
+  if (requiredRole === 'either'
+      && existing.createdBy !== userId
+      && existing.assignedServiceOwnerId !== userId) {
+    throw Object.assign(
+      new Error('Only the handover creator or assigned service owner can perform this action'),
+      { status: 403 }
+    );
+  }
+
+  // Cancelling destroys the delivery commitment, so it must be explained.
+  // Completion does not require a summary, but accepts one.
+  if (toStatus === 'cancelled' && !String(closureSummary || '').trim()) {
+    throw Object.assign(
+      new Error('closureSummary is required when cancelling a handover'),
+      { status: 400 }
+    );
+  }
 
   const timestampField = {
     submitted:    'submitted_at',
     acknowledged: 'acknowledged_at',
+    completed:    'completed_at',
+    cancelled:    'cancelled_at',
   }[toStatus];
+
+  const actorField = {
+    completed: 'completed_by',
+    cancelled: 'cancelled_by',
+  }[toStatus];
+
+  const sets = ['status = $1'];
+  const params = [toStatus];
+
+  if (timestampField) sets.push(`${timestampField} = NOW()`);
+  if (actorField) {
+    params.push(userId);
+    sets.push(`${actorField} = $${params.length}`);
+  }
+  if (TERMINAL_STATUSES.has(toStatus) && closureSummary != null) {
+    params.push(String(closureSummary).trim());
+    sets.push(`closure_summary = $${params.length}`);
+  }
+  sets.push('updated_at = NOW()');
+
+  params.push(handoverId, orgId);
 
   const { rows } = await pool.query(
     `UPDATE sales_handovers
-     SET status     = $1,
-         ${timestampField ? `${timestampField} = NOW(),` : ''}
-         updated_at = NOW()
-     WHERE id = $2 AND org_id = $3
+     SET ${sets.join(', ')}
+     WHERE id = $${params.length - 1} AND org_id = $${params.length}
      RETURNING *`,
-    [toStatus, handoverId, orgId]
+    params
   );
 
+  // On terminal transition, resolve any outstanding handover diagnostics so a
+  // completed handover stops generating alerts in the rep's action queue.
+  if (TERMINAL_STATUSES.has(toStatus)) {
+    ActionPersister.resolveStaleDiagnostics(
+      { orgId, entityType: 'handover', entityId: existing.dealId, firedRules: [] }
+    ).catch(err => console.error(
+      `[handover.service] diagnostic cleanup failed (handover=${handoverId}):`, err.message
+    ));
+  }
+
   return fmt(rows[0]);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CLOSURE GATE — can this handover be marked completed?
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * A handover may only be completed when every required (is_gate) play and
+ * every commitment has reached a terminal state. Reads the rollup view so the
+ * predicate lives in exactly one place (see 2026_64 migration).
+ *
+ * @param {number} handoverId
+ * @param {number} orgId
+ * @returns {Promise<{canClose:boolean, blockers:string[], rollup:object|null}>}
+ */
+async function canClose(handoverId, orgId) {
+  const { rows: [r] } = await pool.query(
+    `SELECT * FROM handover_deliverable_rollup
+     WHERE handover_id = $1 AND org_id = $2`,
+    [handoverId, orgId]
+  );
+
+  if (!r) return { canClose: false, blockers: ['Handover not found'], rollup: null };
+
+  const blockers = [];
+  if (Number(r.gates_open) > 0) {
+    blockers.push(`${r.gates_open} required section${r.gates_open === '1' ? '' : 's'} still open`);
+  }
+  const openCommitments = Number(r.commitments_total) - Number(r.commitments_closed);
+  if (openCommitments > 0) {
+    blockers.push(`${openCommitments} commitment${openCommitments === 1 ? '' : 's'} not yet resolved`);
+  }
+
+  return { canClose: blockers.length === 0, blockers, rollup: r };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -510,17 +661,26 @@ async function removeStakeholder(handoverId, orgId, stakeholderId) {
 // COMMITMENT CRUD
 // ═══════════════════════════════════════════════════════════════════════════
 
+const COMMITMENT_STATUSES = ['open', 'in_progress', 'met', 'waived', 'breached'];
+const COMMITMENT_TERMINAL = ['met', 'waived', 'breached'];
+
 async function addCommitment(handoverId, orgId, userId, data) {
-  const { description, commitmentType = 'promise' } = data;
+  const {
+    description,
+    commitmentType = 'promise',
+    dueDate     = null,
+    ownerUserId = null,
+  } = data;
 
   if (!description) throw Object.assign(new Error('description is required'), { status: 400 });
 
   const { rows } = await pool.query(
     `INSERT INTO sales_handover_commitments
-       (handover_id, org_id, description, commitment_type, created_by)
-     VALUES ($1, $2, $3, $4, $5)
+       (handover_id, org_id, description, commitment_type, created_by, due_date, owner_user_id, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 'open')
      RETURNING *`,
-    [handoverId, orgId, description.trim(), commitmentType, userId]
+    [handoverId, orgId, description.trim(), commitmentType, userId,
+     dueDate || null, ownerUserId || null]
   );
 
   // Phase 8 — re-run diagnostic rules after a commitment is added.
@@ -536,7 +696,101 @@ async function addCommitment(handoverId, orgId, userId, data) {
   return fmtCommitment(rows[0]);
 }
 
+/**
+ * Update a commitment: retarget its date/owner, or drive it to closure.
+ *
+ * This is the endpoint the module was missing entirely — a commitment could
+ * only be created or destroyed, which is why "tracked to closure" was not
+ * expressible. Closing a commitment stamps closed_at/closed_by server-side;
+ * the client never supplies those.
+ *
+ * @param {object} data  { description?, commitmentType?, dueDate?, ownerUserId?,
+ *                         status?, closureNote? }
+ */
+async function updateCommitment(handoverId, orgId, userId, commitmentId, data) {
+  const { rows: [existing] } = await pool.query(
+    'SELECT * FROM sales_handover_commitments WHERE id = $1 AND handover_id = $2 AND org_id = $3',
+    [commitmentId, handoverId, orgId]
+  );
+  if (!existing) throw Object.assign(new Error('Commitment not found'), { status: 404 });
+
+  const sets = [];
+  const params = [];
+  const push = (frag, val) => { params.push(val); sets.push(`${frag} = $${params.length}`); };
+
+  if (data.description !== undefined) {
+    if (!String(data.description).trim()) {
+      throw Object.assign(new Error('description cannot be empty'), { status: 400 });
+    }
+    push('description', String(data.description).trim());
+  }
+  if (data.commitmentType !== undefined) push('commitment_type', data.commitmentType);
+  if (data.dueDate     !== undefined) push('due_date',      data.dueDate || null);
+  if (data.ownerUserId !== undefined) push('owner_user_id', data.ownerUserId || null);
+
+  if (data.status !== undefined) {
+    if (!COMMITMENT_STATUSES.includes(data.status)) {
+      throw Object.assign(
+        new Error(`status must be one of: ${COMMITMENT_STATUSES.join(', ')}`),
+        { status: 400 }
+      );
+    }
+
+    const goingTerminal   = COMMITMENT_TERMINAL.includes(data.status);
+    const needsExplanation = ['waived', 'breached'].includes(data.status);
+    const note = data.closureNote !== undefined ? data.closureNote : existing.closure_note;
+
+    if (needsExplanation && !String(note || '').trim()) {
+      throw Object.assign(
+        new Error(`closureNote is required when marking a commitment '${data.status}'`),
+        { status: 400 }
+      );
+    }
+
+    push('status', data.status);
+
+    if (goingTerminal) {
+      // Preserve the original closure stamp if it was already terminal —
+      // re-saving a closed commitment shouldn't rewrite who closed it.
+      if (!COMMITMENT_TERMINAL.includes(existing.status)) {
+        sets.push('closed_at = NOW()');
+        push('closed_by', userId);
+      }
+    } else {
+      // Reopening: clear the stamp so the DB CHECK stays satisfied.
+      sets.push('closed_at = NULL', 'closed_by = NULL');
+    }
+  }
+
+  if (data.closureNote !== undefined) push('closure_note', data.closureNote || null);
+
+  if (sets.length === 0) return fmtCommitment(existing);
+
+  params.push(commitmentId, handoverId, orgId);
+  const { rows } = await pool.query(
+    `UPDATE sales_handover_commitments
+     SET ${sets.join(', ')}
+     WHERE id = $${params.length - 2} AND handover_id = $${params.length - 1} AND org_id = $${params.length}
+     RETURNING *`,
+    params
+  );
+
+  // Re-run diagnostics: closing the last overdue commitment should clear
+  // handover_commitment_overdue immediately, not at 01:45 tomorrow.
+  generateForHandoverEvent(handoverId, orgId, 'commitment_updated')
+    .catch(err => console.error(
+      `[handover.service] updateCommitment event trigger error (handover=${handoverId}):`,
+      err.message
+    ));
+
+  return fmtCommitment(rows[0]);
+}
+
 async function removeCommitment(handoverId, orgId, commitmentId) {
+  // NOTE: deletion remains available, but the UI should now route "this is
+  // done"/"we didn't do it" through updateCommitment() instead. Deleting a
+  // commitment erases the evidence that a promise was ever made, which is
+  // precisely the record you want at renewal time.
   const { rowCount } = await pool.query(
     'DELETE FROM sales_handover_commitments WHERE id = $1 AND handover_id = $2 AND org_id = $3',
     [commitmentId, handoverId, orgId]
@@ -631,28 +885,43 @@ async function _getStakeholders(handoverId, orgId) {
 async function _getCommitments(handoverId, orgId) {
   const { rows } = await pool.query(
     `SELECT c.*,
-            u.first_name || ' ' || u.last_name AS created_by_name
+            u.first_name  || ' ' || u.last_name  AS created_by_name,
+            uo.first_name || ' ' || uo.last_name AS owner_name,
+            uc.first_name || ' ' || uc.last_name AS closed_by_name
      FROM sales_handover_commitments c
-     LEFT JOIN users u ON u.id = c.created_by
+     LEFT JOIN users u  ON u.id  = c.created_by
+     LEFT JOIN users uo ON uo.id = c.owner_user_id
+     LEFT JOIN users uc ON uc.id = c.closed_by
      WHERE c.handover_id = $1 AND c.org_id = $2
-     ORDER BY c.commitment_type ASC, c.created_at ASC`,
+     ORDER BY
+       -- open work first, soonest due at the top; closed items sink
+       (c.status IN ('met','waived','breached')) ASC,
+       c.due_date ASC NULLS LAST,
+       c.commitment_type ASC,
+       c.created_at ASC`,
     [handoverId, orgId]
   );
   return rows.map(fmtCommitment);
 }
 
-async function _getPlays(handoverId) {
+async function _getPlays(handoverId, orgId) {
+  // org_id added to the predicate: every other _get* helper in this file is
+  // org-scoped and this one was not. Callers all pre-verify the handover via
+  // _getHandover(), so this is defence in depth rather than a live leak — but
+  // it removes the possibility of a future caller forgetting.
   const { rows } = await pool.query(
     `SELECT
        shp.id, shp.play_instance_id, shp.handover_id, shp.completed_at,
        dpi.title, dpi.description, dpi.channel, dpi.is_gate,
        dpi.execution_type, dpi.sort_order, dpi.priority,
-       dpi.status AS play_status, dpi.completed_by
+       dpi.status AS play_status, dpi.completed_by,
+       dpi.due_date, dpi.due_anchor
      FROM sales_handover_plays shp
      JOIN deal_play_instances dpi ON dpi.id = shp.play_instance_id
      WHERE shp.handover_id = $1
-     ORDER BY dpi.sort_order ASC`,
-    [handoverId]
+       AND ($2::int IS NULL OR shp.org_id = $2)
+     ORDER BY dpi.due_date ASC NULLS LAST, dpi.sort_order ASC`,
+    [handoverId, orgId ?? null]
   );
   return rows.map(fmtPlay);
 }
@@ -791,7 +1060,7 @@ async function runNightlySweep(orgId) {
               h.created_at, h.updated_at
        FROM sales_handovers h
        WHERE h.org_id = $1
-         AND h.status != 'draft'
+         AND h.status NOT IN ('draft', 'completed', 'cancelled')
        ORDER BY h.id ASC`,
       [orgId]
     );
@@ -909,7 +1178,7 @@ async function generateForHandoverEvent(handoverId, orgId, eventType) {
        FROM sales_handovers h
        WHERE h.id = $1
          AND h.org_id = $2
-         AND h.status != 'draft'`,
+         AND h.status NOT IN ('draft', 'completed', 'cancelled')`,
       [handoverId, orgId]
     );
 
@@ -988,9 +1257,11 @@ module.exports = {
   update,
   advanceStatus,
   canSubmit,
+  canClose,               // 2026_64 — closure gate
   addStakeholder,
   removeStakeholder,
   addCommitment,
+  updateCommitment,       // 2026_64 — commitment lifecycle
   removeCommitment,
   completePlay,
   // Nightly sweep — Phase 2
