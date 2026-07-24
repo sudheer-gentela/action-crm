@@ -41,48 +41,89 @@ const STATUS_COLOR = { frozen: OK, computing: WARN, pending: WARN, failed: BAD }
 const CONF_COLOR   = { high: OK, medium: WARN, low: BAD, none: MUTED };
 
 /** Tabbed viewer over the frozen schema snapshot (GET /crm-connections/:id/schema). */
+/** Tabbed viewer over the frozen schema snapshot, with drill navigation:
+ * object lists (standard + custom) -> field detail with a back arrow that
+ * returns to the originating tab. fieldView overlays the tab body; switching
+ * tabs clears it, so navigation always continues from where you were. */
 function DiscoveryViewer({ schema, warnings, capturedAt, onClose }) {
-  const [tab, setTab] = React.useState('fields');
-  const objects = schema.objects || [];
-  const fields = schema.fields || {};
-  const [objName, setObjName] = React.useState(Object.keys(fields)[0] || '');
+  const [tab, setTab] = React.useState('objects');
+  const [fieldView, setFieldView] = React.useState(null); // { objName, fromLabel }
   const [customOnly, setCustomOnly] = React.useState(false);
   const [lowFillOnly, setLowFillOnly] = React.useState(false);
 
-  const rows = (fields[objName] || []).filter(f =>
-    (!customOnly || f.custom) && (!lowFillOnly || (f.fillRate != null && f.fillRate < 0.1)));
+  const objects = schema.objects || [];
+  const fields = schema.fields || {};
+  const standardObjects = objects.filter(o => !o.custom);
+  const customObjects = objects.filter(o => o.custom);
 
   const fillBar = (f) => {
     if (f.fillRateSkipReason === 'boolean') return <span style={{ color: MUTED, fontSize: 12 }}>n/a — checkbox (always set)</span>;
     if (f.fillRateSkipReason === 'not_measurable') return <span style={{ color: MUTED, fontSize: 12 }}>not measurable (type)</span>;
-    return f.fillRate == null ? <span style={{ color: MUTED }}>—</span> : (
-    <span title={`${(f.fillRate * 100).toFixed(1)}%${f.fillRateSampled ? ' (sampled)' : ''}`}>
-      <span style={{ display: 'inline-block', width: 60, height: 8, background: '#f3f4f6', borderRadius: 4, marginRight: 6, verticalAlign: 'middle' }}>
-        <span style={{ display: 'block', width: `${Math.round(f.fillRate * 60)}px`, height: 8, borderRadius: 4, background: f.fillRate < 0.1 ? BAD : f.fillRate < 0.3 ? WARN : OK }} />
+    if (f.fillRate == null) return <span style={{ color: MUTED }}>—</span>;
+    return (
+      <span title={`${(f.fillRate * 100).toFixed(1)}%${f.fillRateSampled ? ' (sampled)' : ''}`}>
+        <span style={{ display: 'inline-block', width: 60, height: 8, background: '#f3f4f6', borderRadius: 4, marginRight: 6, verticalAlign: 'middle' }}>
+          <span style={{ display: 'block', width: `${Math.round(f.fillRate * 60)}px`, height: 8, borderRadius: 4, background: f.fillRate < 0.1 ? BAD : f.fillRate < 0.3 ? WARN : OK }} />
+        </span>
+        {(f.fillRate * 100).toFixed(0)}%{f.fillRateSampled ? '*' : ''}
       </span>
-      {(f.fillRate * 100).toFixed(0)}%{f.fillRateSampled ? '*' : ''}
-    </span>
     );
   };
 
   const tabBtn = (id, label) => (
-    <button key={id} style={{ ...btn, ...(tab === id ? { background: '#111827', color: '#fff', borderColor: '#111827' } : {}) }} onClick={() => setTab(id)}>{label}</button>
+    <button key={id} style={{ ...btn, ...(tab === id && !fieldView ? { background: '#111827', color: '#fff', borderColor: '#111827' } : {}) }}
+      onClick={() => { setFieldView(null); setTab(id); }}>{label}</button>
   );
 
+  const openFields = (objName, fromLabel) => setFieldView({ objName, fromLabel });
+
+  const objectTable = (list, emptyText) => list.length === 0
+    ? <div style={{ color: MUTED, fontSize: 13 }}>{emptyText}</div>
+    : (
+      <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+        <thead><tr><th style={thS}>Object</th><th style={thS}>API name</th><th style={thS}>~Records</th><th style={thS}>Fields</th><th style={thS}></th></tr></thead>
+        <tbody>{list.map(o => {
+          const described = (fields[o.name] || []).length;
+          const shell = o.custom && o.recordCount === 0;
+          return (
+            <tr key={o.name} style={shell ? { background: '#FFFBEB' } : undefined}>
+              <td style={tdS}><b>{o.label || o.name}</b>{shell && <span style={{ ...chip(WARN), marginLeft: 6 }}>zero records</span>}</td>
+              <td style={{ ...tdS, color: MUTED }}>{o.name}</td>
+              <td style={tdS}>{o.recordCount != null ? o.recordCount.toLocaleString() : '—'}</td>
+              <td style={tdS}>{described > 0 ? described : <span style={{ color: MUTED }}>not described</span>}</td>
+              <td style={tdS}>
+                {described > 0 && (
+                  <button style={{ ...btn, padding: '3px 10px', fontSize: 12 }}
+                    onClick={() => openFields(o.name, o.custom ? 'Custom Objects' : 'Objects')}>
+                    View fields →
+                  </button>
+                )}
+              </td>
+            </tr>
+          );
+        })}</tbody>
+      </table>
+    );
+
   const allWarnings = [...(warnings || []), ...((schema.limits_notes || []).map(n => ({ kind: 'limit', detail: n })))];
+
+  const fieldRows = fieldView
+    ? (fields[fieldView.objName] || []).filter(f =>
+        (!customOnly || f.custom) && (!lowFillOnly || (f.fillRate != null && f.fillRate < 0.1)))
+    : [];
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,.55)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
          onClick={e => e.target === e.currentTarget && onClose()}>
       <div style={{ background: '#fff', borderRadius: 10, width: 'min(1000px, 96vw)', height: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', borderBottom: '1px solid #e5e7eb' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', borderBottom: '1px solid #e5e7eb', flexWrap: 'wrap', gap: 6 }}>
           <div>
             <strong style={{ fontSize: 14 }}>Discovery results</strong>
             <span style={{ color: MUTED, fontSize: 12, marginLeft: 8 }}>frozen {capturedAt ? new Date(capturedAt).toLocaleString() : ''}</span>
           </div>
-          <div style={{ display: 'flex', gap: 6 }}>
-            {tabBtn('fields', `Objects & Fields (${objects.length})`)}
-            {tabBtn('custom', `Custom Objects (${objects.filter(o => o.custom).length})`)}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {tabBtn('objects', `Objects (${standardObjects.length})`)}
+            {tabBtn('custom', `Custom Objects (${customObjects.length})`)}
             {tabBtn('stages', `Stages (${(schema.stage_defs || []).length})`)}
             {tabBtn('automation', 'Automation & Rules')}
             {tabBtn('caveats', `Caveats (${allWarnings.length})`)}
@@ -90,26 +131,18 @@ function DiscoveryViewer({ schema, warnings, capturedAt, onClose }) {
           </div>
         </div>
         <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
-          {tab === 'fields' && (
+          {fieldView ? (
             <div>
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
-                <select style={btn} value={objName} onChange={e => setObjName(e.target.value)}>
-                  {Object.keys(fields).map(o => {
-                    const meta = objects.find(x => x.name === o);
-                    return <option key={o} value={o}>{o}{meta?.custom ? ' (custom)' : ''} · {(fields[o] || []).length} fields</option>;
-                  })}
-                </select>
+                <button style={btn} onClick={() => setFieldView(null)}>← Back to {fieldView.fromLabel}</button>
+                <strong style={{ fontSize: 14 }}>{fieldView.objName}</strong>
+                <span style={{ color: MUTED, fontSize: 12.5 }}>{fieldRows.length} of {(fields[fieldView.objName] || []).length} fields</span>
                 <label style={{ fontSize: 13 }}><input type="checkbox" checked={customOnly} onChange={e => setCustomOnly(e.target.checked)} /> custom only</label>
                 <label style={{ fontSize: 13 }}><input type="checkbox" checked={lowFillOnly} onChange={e => setLowFillOnly(e.target.checked)} /> low fill (&lt;10%)</label>
-                {objects.filter(o => o.custom).length > 0 && (
-                  <span style={{ fontSize: 12.5, color: MUTED }}>
-                    {objects.filter(o => o.custom).length} custom objects — see the Custom Objects tab.
-                  </span>
-                )}
               </div>
               <table style={{ borderCollapse: 'collapse', width: '100%' }}>
                 <thead><tr><th style={thS}>Field</th><th style={thS}>Type</th><th style={thS}>Flags</th><th style={thS}>Fill rate</th><th style={thS}>Picklist values</th></tr></thead>
-                <tbody>{rows.map(f => (
+                <tbody>{fieldRows.map(f => (
                   <tr key={f.name} style={f.fillRate != null && f.fillRate < 0.1 && f.custom ? { background: '#FEF2F2' } : undefined}>
                     <td style={tdS}><b>{f.label || f.name}</b><div style={{ color: MUTED, fontSize: 11.5 }}>{f.name}</div></td>
                     <td style={tdS}>{f.type}</td>
@@ -126,45 +159,22 @@ function DiscoveryViewer({ schema, warnings, capturedAt, onClose }) {
               </table>
               <div style={{ fontSize: 11.5, color: MUTED, marginTop: 6 }}>* sampled fill rate (HubSpot). Red rows: custom fields under 10% populated — config-debt candidates.</div>
             </div>
-          )}
-          {tab === 'custom' && (
+          ) : tab === 'objects' ? (
             <div>
-              {objects.filter(o => o.custom).length === 0 ? (
-                <div style={{ color: MUTED, fontSize: 13 }}>No custom objects related to deals or accounts were discovered.</div>
-              ) : (
-                <div>
-                  <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-                    <thead><tr><th style={thS}>Object</th><th style={thS}>API name</th><th style={thS}>~Records</th><th style={thS}>Fields</th><th style={thS}></th></tr></thead>
-                    <tbody>{objects.filter(o => o.custom).map(o => {
-                      const described = (fields[o.name] || []).length;
-                      const shell = o.recordCount === 0;
-                      return (
-                        <tr key={o.name} style={shell ? { background: '#FFFBEB' } : undefined}>
-                          <td style={tdS}><b>{o.label || o.name}</b>{shell && <span style={{ ...chip(WARN), marginLeft: 6 }}>zero records</span>}</td>
-                          <td style={{ ...tdS, color: MUTED }}>{o.name}</td>
-                          <td style={tdS}>{o.recordCount != null ? o.recordCount.toLocaleString() : '—'}</td>
-                          <td style={tdS}>{described > 0 ? described : <span style={{ color: MUTED }}>not described</span>}</td>
-                          <td style={tdS}>
-                            {described > 0 && (
-                              <button style={{ ...btn, padding: '3px 10px', fontSize: 12 }}
-                                onClick={() => { setObjName(o.name); setTab('fields'); }}>
-                                View fields →
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}</tbody>
-                  </table>
-                  <div style={{ fontSize: 12, color: MUTED, marginTop: 8 }}>
-                    These are custom objects with a relationship to Opportunity or Account — where custom process (territories, teams, implementations, approvals) usually lives.
-                    Zero-record objects are config-debt shells. Fill rates are computed for core objects only; record counts cover custom-object liveness.
-                  </div>
-                </div>
-              )}
+              {objectTable(standardObjects, 'No standard objects discovered.')}
+              <div style={{ fontSize: 12, color: MUTED, marginTop: 8 }}>
+                Core CRM objects the assessment reads. Fill rates are computed for Opportunity and Account fields; record counts give scale context.
+              </div>
             </div>
-          )}
-          {tab === 'stages' && (
+          ) : tab === 'custom' ? (
+            <div>
+              {objectTable(customObjects, 'No custom objects related to deals or accounts were discovered.')}
+              <div style={{ fontSize: 12, color: MUTED, marginTop: 8 }}>
+                Custom objects with a relationship to Opportunity or Account — where custom process (territories, teams, implementations, approvals) usually lives.
+                Zero-record objects are config-debt shells.
+              </div>
+            </div>
+          ) : tab === 'stages' ? (
             <div>
               <table style={{ borderCollapse: 'collapse', width: '100%' }}>
                 <thead><tr><th style={thS}>Stage</th><th style={thS}>Probability</th><th style={thS}>Closed</th><th style={thS}>Won</th><th style={thS}>Order</th><th style={thS}>Pipeline</th></tr></thead>
@@ -185,8 +195,7 @@ function DiscoveryViewer({ schema, warnings, capturedAt, onClose }) {
                 </div>
               )}
             </div>
-          )}
-          {tab === 'automation' && (
+          ) : tab === 'automation' ? (
             <div>
               <h4 style={{ margin: '0 0 6px' }}>Validation rules ({(schema.validation_rules || []).length})</h4>
               {(schema.validation_rules || []).length === 0 ? <div style={{ color: MUTED, fontSize: 13 }}>None readable.</div> : (
@@ -231,8 +240,7 @@ function DiscoveryViewer({ schema, warnings, capturedAt, onClose }) {
                 </div>
               )}
             </div>
-          )}
-          {tab === 'caveats' && (
+          ) : (
             allWarnings.length === 0 ? <div style={{ color: MUTED, fontSize: 13 }}>None — discovery read everything it asked for.</div> : (
               <ul style={{ fontSize: 13, lineHeight: 1.7 }}>
                 {allWarnings.map((w, i) => (

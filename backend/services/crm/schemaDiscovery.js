@@ -178,11 +178,12 @@ async function discoverSalesforce(sfClient, opts = {}) {
     limitsNotes.push(`Validation rules not readable with granted permissions (${err.message}) — permission-set recipe grants Tooling read; report will note the gap.`);
   }
   try {
-    // FlowDefinitionView: one row per flow, ActiveVersionId set when active.
-    const fl = await sfClient._request('GET',
-      `${toolingBase}/query?q=${encodeURIComponent(
-        "SELECT ApiName, Label, ProcessType, TriggerType FROM FlowDefinitionView " +
-        "WHERE ActiveVersionId != null")}`);
+    // FlowDefinitionView is a STANDARD-API object (not Tooling — Tooling has
+    // Flow/FlowDefinition and rejects the view). One row per flow;
+    // ActiveVersionId set when active.
+    const fl = await sfClient.query(
+      'SELECT ApiName, Label, ProcessType, TriggerType FROM FlowDefinitionView ' +
+      'WHERE ActiveVersionId != null');
     automation.flowList = (fl.records || []).map(r => ({
       apiName: r.ApiName, label: r.Label,
       processType: r.ProcessType || null,   // AutoLaunchedFlow | Flow | Workflow(PB) | ...
@@ -234,6 +235,15 @@ async function discoverSalesforce(sfClient, opts = {}) {
     limitsNotes.push(`${relatedCustomObjects.size} related custom objects; fields described for the first ${DESCRIBE_CUSTOM_CAP}.`);
   }
 
+  // ── 5a3. Record counts for core objects ──────────────────────────────────
+  const coreCounts = new Map();
+  for (const objName of SF_CORE_OBJECTS) {
+    try {
+      const res = await sfClient.query(`SELECT COUNT() FROM ${objName}`);
+      coreCounts.set(objName, res.totalSize ?? null);
+    } catch (err) { /* count is context, not critical */ }
+  }
+
   // ── 5b. Record counts for related custom objects ─────────────────────────
   // Splits live process objects from config-debt shells. One COUNT() per
   // object, capped at 20 objects to respect API budgets.
@@ -280,7 +290,8 @@ async function discoverSalesforce(sfClient, opts = {}) {
   return {
     crm_type: 'salesforce',
     objects: [
-      ...allObjects.filter(o => SF_CORE_OBJECTS.includes(o.name)),
+      ...allObjects.filter(o => SF_CORE_OBJECTS.includes(o.name))
+        .map(o => ({ ...o, recordCount: coreCounts.get(o.name) ?? null })),
       ...allObjects.filter(o => relatedCustomObjects.has(o.name))
         .map(o => ({ ...o, recordCount: recordCounts.get(o.name) ?? null })),
     ],
