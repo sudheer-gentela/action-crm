@@ -48,6 +48,7 @@ const CONF_COLOR   = { high: OK, medium: WARN, low: BAD, none: MUTED };
 function DiscoveryViewer({ schema, warnings, capturedAt, onClose }) {
   const [tab, setTab] = React.useState('objects');
   const [fieldView, setFieldView] = React.useState(null); // { objName, fromLabel }
+  const [flowView, setFlowView] = React.useState(null);   // flow object for detail
   const [customOnly, setCustomOnly] = React.useState(false);
   const [lowFillOnly, setLowFillOnly] = React.useState(false);
 
@@ -72,7 +73,7 @@ function DiscoveryViewer({ schema, warnings, capturedAt, onClose }) {
 
   const tabBtn = (id, label) => (
     <button key={id} style={{ ...btn, ...(tab === id && !fieldView ? { background: '#111827', color: '#fff', borderColor: '#111827' } : {}) }}
-      onClick={() => { setFieldView(null); setTab(id); }}>{label}</button>
+      onClick={() => { setFieldView(null); setFlowView(null); setTab(id); }}>{label}</button>
   );
 
   const openFields = (objName, fromLabel) => setFieldView({ objName, fromLabel });
@@ -131,7 +132,25 @@ function DiscoveryViewer({ schema, warnings, capturedAt, onClose }) {
           </div>
         </div>
         <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
-          {fieldView ? (
+          {flowView ? (
+            <div>
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 10 }}>
+                <button style={btn} onClick={() => setFlowView(null)}>← Back to Automation & Rules</button>
+                <strong style={{ fontSize: 14 }}>{flowView.label}</strong>
+              </div>
+              <table style={{ borderCollapse: 'collapse', width: '100%', maxWidth: 640 }}>
+                <tbody>
+                  <tr><td style={{ ...tdS, width: 160, color: MUTED }}>API name</td><td style={tdS}>{flowView.apiName}</td></tr>
+                  <tr><td style={{ ...tdS, color: MUTED }}>Type</td><td style={tdS}>{flowView.processType || '—'}</td></tr>
+                  <tr><td style={{ ...tdS, color: MUTED }}>Fires on</td><td style={tdS}>{flowView.triggerObject || '— (screen / manual / scheduled)'}</td></tr>
+                  <tr><td style={{ ...tdS, color: MUTED }}>Record trigger</td><td style={tdS}>{flowView.recordTriggerType || flowView.triggerType || '—'}</td></tr>
+                  <tr><td style={{ ...tdS, color: MUTED }}>Last modified</td><td style={tdS}>{flowView.lastModified ? new Date(flowView.lastModified).toLocaleString() : '—'}</td></tr>
+                  <tr><td style={{ ...tdS, color: MUTED }}>Description</td><td style={tdS}>{flowView.description || <span style={{ color: MUTED }}>none set in Salesforce</span>}</td></tr>
+                </tbody>
+              </table>
+              <div style={{ fontSize: 12, color: MUTED, marginTop: 8 }}>Flow element-level logic is not retrieved (requires Metadata API retrieve) — this is the definition-level view.</div>
+            </div>
+          ) : fieldView ? (
             <div>
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
                 <button style={btn} onClick={() => setFieldView(null)}>← Back to {fieldView.fromLabel}</button>
@@ -211,11 +230,15 @@ function DiscoveryViewer({ schema, warnings, capturedAt, onClose }) {
                 <div style={{ color: MUTED, fontSize: 13 }}>None active (or not readable — see caveats).</div>
               ) : (
                 <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-                  <thead><tr><th style={thS}>Flow</th><th style={thS}>Type</th><th style={thS}>Trigger</th></tr></thead>
+                  <thead><tr><th style={thS}>Flow</th><th style={thS}>Type</th><th style={thS}>Fires on</th><th style={thS}>Trigger</th><th style={thS}></th></tr></thead>
                   <tbody>{(schema.automation.flowList || []).map((f, i) => (
-                    <tr key={i}><td style={tdS}><b>{f.label}</b><div style={{ color: MUTED, fontSize: 11.5 }}>{f.apiName}</div></td>
+                    <tr key={i}>
+                      <td style={tdS}><b>{f.label}</b><div style={{ color: MUTED, fontSize: 11.5 }}>{f.apiName}</div></td>
                       <td style={tdS}>{f.processType || ''}</td>
-                      <td style={tdS}>{f.triggerType || 'screen / manual'}</td></tr>
+                      <td style={tdS}>{f.triggerObject || <span style={{ color: MUTED }}>—</span>}</td>
+                      <td style={tdS}>{f.recordTriggerType || f.triggerType || 'screen / manual'}</td>
+                      <td style={tdS}><button style={{ ...btn, padding: '3px 10px', fontSize: 12 }} onClick={() => setFlowView(f)}>Details →</button></td>
+                    </tr>
                   ))}</tbody>
                 </table>
               )}
@@ -227,6 +250,28 @@ function DiscoveryViewer({ schema, warnings, capturedAt, onClose }) {
                   <thead><tr><th style={thS}>Rule</th><th style={thS}>Object</th></tr></thead>
                   <tbody>{(schema.automation.workflowRuleList || []).map((w, i) => (
                     <tr key={i}><td style={tdS}>{w.name}</td><td style={tdS}>{w.object || ''}</td></tr>
+                  ))}</tbody>
+                </table>
+              )}
+              <h4 style={{ margin: '14px 0 6px' }}>Apex triggers ({(schema.automation?.apexTriggers || []).length})</h4>
+              {(schema.automation?.apexTriggers || []).length === 0 ? (
+                <div style={{ color: MUTED, fontSize: 13 }}>None (or not readable — see caveats).</div>
+              ) : (
+                <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+                  <thead><tr><th style={thS}>Trigger</th><th style={thS}>Object</th><th style={thS}>Status</th></tr></thead>
+                  <tbody>{(schema.automation.apexTriggers || []).map((t, i) => (
+                    <tr key={i}><td style={tdS}>{t.name}</td><td style={tdS}>{t.object || ''}</td><td style={tdS}>{t.status || ''}</td></tr>
+                  ))}</tbody>
+                </table>
+              )}
+              <h4 style={{ margin: '14px 0 6px' }}>Approval processes ({(schema.automation?.approvalProcesses || []).length})</h4>
+              {(schema.automation?.approvalProcesses || []).length === 0 ? (
+                <div style={{ color: MUTED, fontSize: 13 }}>None (or not readable — see caveats).</div>
+              ) : (
+                <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+                  <thead><tr><th style={thS}>Process</th><th style={thS}>Object</th><th style={thS}>State</th></tr></thead>
+                  <tbody>{(schema.automation.approvalProcesses || []).map((a, i) => (
+                    <tr key={i}><td style={tdS}>{a.name}</td><td style={tdS}>{a.object || ''}</td><td style={tdS}>{a.state || ''}</td></tr>
                   ))}</tbody>
                 </table>
               )}

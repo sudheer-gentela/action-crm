@@ -84,6 +84,19 @@ export default function OrgAdminView() {
     if (hashSegment(0) !== 'org-admin') return;
     writeHash(['org-admin', tab === 'members' ? null : tab]);
   }, [tab]);
+
+  // In-app links (e.g. the assessment panel's "Define my own stages")
+  // navigate by hash; without this listener the tab only read the hash on
+  // mount, so such links changed the URL but not the panel.
+  useEffect(() => {
+    const onHash = () => {
+      if (hashSegment(0) !== 'org-admin') return;
+      const seg = hashSegment(1) || 'members';
+      setTab(prev => (prev === seg ? prev : seg));
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
   const [stats, setStats]           = useState(null);
   const [orgName, setOrgName]       = useState('');
   const [orgId,   setOrgId]         = useState(null);

@@ -182,16 +182,43 @@ async function discoverSalesforce(sfClient, opts = {}) {
     // Flow/FlowDefinition and rejects the view). One row per flow;
     // ActiveVersionId set when active.
     const fl = await sfClient.query(
-      'SELECT ApiName, Label, ProcessType, TriggerType FROM FlowDefinitionView ' +
-      'WHERE ActiveVersionId != null');
+      'SELECT ApiName, Label, Description, ProcessType, TriggerType, ' +
+      'RecordTriggerType, TriggerObjectOrEventLabel, LastModifiedDate ' +
+      'FROM FlowDefinitionView WHERE ActiveVersionId != null');
     automation.flowList = (fl.records || []).map(r => ({
       apiName: r.ApiName, label: r.Label,
-      processType: r.ProcessType || null,   // AutoLaunchedFlow | Flow | Workflow(PB) | ...
-      triggerType: r.TriggerType || null,   // RecordAfterSave | Scheduled | null(screen)
+      description: r.Description || null,
+      processType: r.ProcessType || null,        // AutoLaunchedFlow | Flow | Workflow(PB) | ...
+      triggerType: r.TriggerType || null,        // RecordAfterSave | Scheduled | null(screen)
+      recordTriggerType: r.RecordTriggerType || null,     // Create | Update | CreateAndUpdate | Delete
+      triggerObject: r.TriggerObjectOrEventLabel || null, // which records fire it
+      lastModified: r.LastModifiedDate || null,
     }));
     automation.flows = automation.flowList.length;
   } catch (err) {
     limitsNotes.push(`Flow inventory not readable (${err.message}).`);
+  }
+  // Apex triggers — "the triggers in place" in the literal Salesforce sense.
+  try {
+    const tr = await sfClient._request('GET',
+      `${toolingBase}/query?q=${encodeURIComponent(
+        'SELECT Name, TableEnumOrId, Status FROM ApexTrigger')}`);
+    automation.apexTriggers = (tr.records || []).map(r => ({
+      name: r.Name, object: r.TableEnumOrId || null, status: r.Status || null,
+    }));
+  } catch (err) {
+    limitsNotes.push(`Apex trigger inventory not readable (${err.message}).`);
+  }
+  // Approval processes.
+  try {
+    const ap = await sfClient._request('GET',
+      `${toolingBase}/query?q=${encodeURIComponent(
+        "SELECT Name, TableEnumOrId, State FROM ProcessDefinition WHERE Type = 'Approval'")}`);
+    automation.approvalProcesses = (ap.records || []).map(r => ({
+      name: r.Name, object: r.TableEnumOrId || null, state: r.State || null,
+    }));
+  } catch (err) {
+    limitsNotes.push(`Approval-process inventory not readable (${err.message}).`);
   }
   try {
     const wf = await sfClient._request('GET',
