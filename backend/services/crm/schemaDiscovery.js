@@ -204,6 +204,36 @@ async function discoverSalesforce(sfClient, opts = {}) {
     limitsNotes.push(`Workflow-rule inventory not readable (${err.message}).`);
   }
 
+  // ── 5a2. Describe related custom objects (fields, capped) ────────────────
+  // Inventory alone can't answer "what's IN Implementation__c" — describe
+  // the first DESCRIBE_CUSTOM_CAP related custom objects so their fields,
+  // types, and picklists render in the viewer. Fill rates deliberately
+  // skipped for custom objects (API budget); recordCount covers liveness.
+  const DESCRIBE_CUSTOM_CAP = 15;
+  const customToDescribe = [...relatedCustomObjects].slice(0, DESCRIBE_CUSTOM_CAP);
+  for (const objName of customToDescribe) {
+    try {
+      const describe = await sfClient._request('GET', `/sobjects/${objName}/describe`);
+      fields[objName] = (describe.fields || []).map(f => ({
+        name:           f.name,
+        label:          f.label,
+        type:           f.type,
+        custom:         !!f.custom,
+        required:       !f.nillable && !f.defaultedOnCreate && f.createable,
+        calculated:     !!f.calculated,
+        historyTracked: !!(f.trackHistory || f.trackFeedHistory),
+        picklistValues: (f.type === 'picklist' || f.type === 'multipicklist')
+          ? (f.picklistValues || []).filter(p => p.active).map(p => p.value)
+          : undefined,
+      }));
+    } catch (err) {
+      warnings.push({ kind: 'describe_failed', object: objName, detail: err.message });
+    }
+  }
+  if (relatedCustomObjects.size > DESCRIBE_CUSTOM_CAP) {
+    limitsNotes.push(`${relatedCustomObjects.size} related custom objects; fields described for the first ${DESCRIBE_CUSTOM_CAP}.`);
+  }
+
   // ── 5b. Record counts for related custom objects ─────────────────────────
   // Splits live process objects from config-debt shells. One COUNT() per
   // object, capped at 20 objects to respect API budgets.
@@ -268,10 +298,21 @@ async function discoverSalesforce(sfClient, opts = {}) {
 async function _sfFillRates(sfClient, objName, fieldList, historyMonths, warnings) {
   if (!Array.isArray(fieldList) || fieldList.length === 0) return;
 
-  // Aggregate-friendly fields only: skip compound/address/location and base64.
-  const AGG_SKIP = new Set(['address', 'location', 'base64', 'anyType']);
+  // Aggregate-friendly fields only. SOQL COUNT(field) rejects boolean and
+  // textarea outright (and textarea can't even appear in WHERE), alongside
+  // the compound types. Two distinct reasons, tagged distinctly:
+  //   boolean  → fill rate is MEANINGLESS (checkboxes are never null) —
+  //              skipped by design, fillRateSkipReason 'boolean'
+  //   textarea → genuinely unmeasurable via aggregate —
+  //              fillRateSkipReason 'not_measurable'
+  const AGG_SKIP = new Set(['address', 'location', 'base64', 'anyType', 'encryptedstring', 'complexvalue']);
+  for (const f of fieldList) {
+    if (f.type === 'boolean') f.fillRateSkipReason = 'boolean';
+    else if (f.type === 'textarea') f.fillRateSkipReason = 'not_measurable';
+    else if (AGG_SKIP.has(f.type)) f.fillRateSkipReason = 'not_measurable';
+  }
   const candidates = fieldList.filter(f =>
-    !AGG_SKIP.has(f.type) && f.name !== 'Id');
+    !f.fillRateSkipReason && f.name !== 'Id' && f.type !== 'id');
 
   const where = `WHERE CreatedDate = LAST_N_MONTHS:${historyMonths}`;
 

@@ -52,14 +52,18 @@ function DiscoveryViewer({ schema, warnings, capturedAt, onClose }) {
   const rows = (fields[objName] || []).filter(f =>
     (!customOnly || f.custom) && (!lowFillOnly || (f.fillRate != null && f.fillRate < 0.1)));
 
-  const fillBar = (f) => f.fillRate == null ? <span style={{ color: MUTED }}>—</span> : (
+  const fillBar = (f) => {
+    if (f.fillRateSkipReason === 'boolean') return <span style={{ color: MUTED, fontSize: 12 }}>n/a — checkbox (always set)</span>;
+    if (f.fillRateSkipReason === 'not_measurable') return <span style={{ color: MUTED, fontSize: 12 }}>not measurable (type)</span>;
+    return f.fillRate == null ? <span style={{ color: MUTED }}>—</span> : (
     <span title={`${(f.fillRate * 100).toFixed(1)}%${f.fillRateSampled ? ' (sampled)' : ''}`}>
       <span style={{ display: 'inline-block', width: 60, height: 8, background: '#f3f4f6', borderRadius: 4, marginRight: 6, verticalAlign: 'middle' }}>
         <span style={{ display: 'block', width: `${Math.round(f.fillRate * 60)}px`, height: 8, borderRadius: 4, background: f.fillRate < 0.1 ? BAD : f.fillRate < 0.3 ? WARN : OK }} />
       </span>
       {(f.fillRate * 100).toFixed(0)}%{f.fillRateSampled ? '*' : ''}
     </span>
-  );
+    );
+  };
 
   const tabBtn = (id, label) => (
     <button key={id} style={{ ...btn, ...(tab === id ? { background: '#111827', color: '#fff', borderColor: '#111827' } : {}) }} onClick={() => setTab(id)}>{label}</button>
@@ -78,6 +82,7 @@ function DiscoveryViewer({ schema, warnings, capturedAt, onClose }) {
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
             {tabBtn('fields', `Objects & Fields (${objects.length})`)}
+            {tabBtn('custom', `Custom Objects (${objects.filter(o => o.custom).length})`)}
             {tabBtn('stages', `Stages (${(schema.stage_defs || []).length})`)}
             {tabBtn('automation', 'Automation & Rules')}
             {tabBtn('caveats', `Caveats (${allWarnings.length})`)}
@@ -98,11 +103,7 @@ function DiscoveryViewer({ schema, warnings, capturedAt, onClose }) {
                 <label style={{ fontSize: 13 }}><input type="checkbox" checked={lowFillOnly} onChange={e => setLowFillOnly(e.target.checked)} /> low fill (&lt;10%)</label>
                 {objects.filter(o => o.custom).length > 0 && (
                   <span style={{ fontSize: 12.5, color: MUTED }}>
-                    Custom objects related to deals/accounts:{' '}
-                    {objects.filter(o => o.custom).map(o =>
-                      `${o.name}${o.recordCount != null ? ` (~${o.recordCount.toLocaleString()} records)` : ''}`
-                    ).join(', ')}
-                    {objects.some(o => o.custom && o.recordCount === 0) && ' — zero-record objects are config-debt shells'}
+                    {objects.filter(o => o.custom).length} custom objects — see the Custom Objects tab.
                   </span>
                 )}
               </div>
@@ -124,6 +125,43 @@ function DiscoveryViewer({ schema, warnings, capturedAt, onClose }) {
                 ))}</tbody>
               </table>
               <div style={{ fontSize: 11.5, color: MUTED, marginTop: 6 }}>* sampled fill rate (HubSpot). Red rows: custom fields under 10% populated — config-debt candidates.</div>
+            </div>
+          )}
+          {tab === 'custom' && (
+            <div>
+              {objects.filter(o => o.custom).length === 0 ? (
+                <div style={{ color: MUTED, fontSize: 13 }}>No custom objects related to deals or accounts were discovered.</div>
+              ) : (
+                <div>
+                  <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+                    <thead><tr><th style={thS}>Object</th><th style={thS}>API name</th><th style={thS}>~Records</th><th style={thS}>Fields</th><th style={thS}></th></tr></thead>
+                    <tbody>{objects.filter(o => o.custom).map(o => {
+                      const described = (fields[o.name] || []).length;
+                      const shell = o.recordCount === 0;
+                      return (
+                        <tr key={o.name} style={shell ? { background: '#FFFBEB' } : undefined}>
+                          <td style={tdS}><b>{o.label || o.name}</b>{shell && <span style={{ ...chip(WARN), marginLeft: 6 }}>zero records</span>}</td>
+                          <td style={{ ...tdS, color: MUTED }}>{o.name}</td>
+                          <td style={tdS}>{o.recordCount != null ? o.recordCount.toLocaleString() : '—'}</td>
+                          <td style={tdS}>{described > 0 ? described : <span style={{ color: MUTED }}>not described</span>}</td>
+                          <td style={tdS}>
+                            {described > 0 && (
+                              <button style={{ ...btn, padding: '3px 10px', fontSize: 12 }}
+                                onClick={() => { setObjName(o.name); setTab('fields'); }}>
+                                View fields →
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}</tbody>
+                  </table>
+                  <div style={{ fontSize: 12, color: MUTED, marginTop: 8 }}>
+                    These are custom objects with a relationship to Opportunity or Account — where custom process (territories, teams, implementations, approvals) usually lives.
+                    Zero-record objects are config-debt shells. Fill rates are computed for core objects only; record counts cover custom-object liveness.
+                  </div>
+                </div>
+              )}
             </div>
           )}
           {tab === 'stages' && (
@@ -504,12 +542,21 @@ export default function OAAssessment() {
             )}
             {proposal.orgStages && proposal.orgStages.length > 0 && (
               <div style={{ fontSize: 12.5, color: MUTED, marginBottom: 8 }}>
-                Mapping onto this org's <b>{proposal.orgStages.length} canonical stages</b> — each key is a stage that GoWarm playbooks and diagnostics attach to. Pick from the dropdown; leave blank to exclude a CRM stage.
+                Mapping onto this org's <b>{proposal.orgStages.length} canonical stages</b> — each key is a stage that GoWarm playbooks attach to. Pick from the dropdown; leave blank to exclude a CRM stage.
+                {proposal.orgLevelContext && (
+                  <span> Org-level engines on top: {proposal.orgLevelContext.diagnosticOverrides > 0
+                    ? `${proposal.orgLevelContext.diagnosticOverrides} diagnostic threshold overrides`
+                    : 'diagnostic thresholds at defaults'}
+                    {proposal.orgLevelContext.dealHealthConfigured ? ' · deal-health scoring configured' : ''} (these apply across all stages, not per stage).
+                  </span>
+                )}
               </div>
             )}
             <table style={{ borderCollapse: 'collapse', width: '100%' }}>
               <thead><tr>
-                <th style={thS}>CRM stage</th><th style={thS}>Maps to key</th><th style={thS}>Confidence</th><th style={thS}>Why</th>
+                <th style={thS}>CRM stage</th><th style={thS}>Maps to key</th>
+                {proposal.orgStages && proposal.orgStages.length > 0 && <th style={thS}>What attaches</th>}
+                <th style={thS}>Confidence</th><th style={thS}>Why</th>
               </tr></thead>
               <tbody>
                 {(proposal.proposals || []).map(p => (
@@ -536,6 +583,24 @@ export default function OAAssessment() {
                         />
                       )}
                     </td>
+                    {proposal.orgStages && proposal.orgStages.length > 0 && (
+                      <td style={{ ...tdS, fontSize: 12 }}>
+                        {(() => {
+                          const key = editMap[p.crmStage];
+                          if (!key) return <span style={{ color: MUTED }}>excluded — nothing fires</span>;
+                          const c = (proposal.stageConsequences || {})[key];
+                          if (!c) return <span style={{ color: MUTED }}>—</span>;
+                          return (
+                            <span>
+                              <b>{c.plays}</b> play{c.plays === 1 ? '' : 's'}
+                              {c.playbooks > 0 && <span style={{ color: MUTED }}> in {c.playbooks} playbook{c.playbooks === 1 ? '' : 's'}</span>}
+                              {c.hasGuidance && <span> · guidance ✓</span>}
+                              {c.plays === 0 && !c.hasGuidance && <span style={{ color: WARN }}> — stage defined but nothing attached yet</span>}
+                            </span>
+                          );
+                        })()}
+                      </td>
+                    )}
                     <td style={tdS}><span style={chip(CONF_COLOR[p.confidence] || MUTED)}>{p.confidence}</span></td>
                     <td style={{ ...tdS, color: MUTED, fontSize: 12 }}>{p.rationale}</td>
                   </tr>
