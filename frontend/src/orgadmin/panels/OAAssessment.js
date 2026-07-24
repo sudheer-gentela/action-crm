@@ -40,6 +40,143 @@ const thS   = { ...tdS, fontWeight: 600, color: MUTED, fontSize: 12, textTransfo
 const STATUS_COLOR = { frozen: OK, computing: WARN, pending: WARN, failed: BAD };
 const CONF_COLOR   = { high: OK, medium: WARN, low: BAD, none: MUTED };
 
+/** Tabbed viewer over the frozen schema snapshot (GET /crm-connections/:id/schema). */
+function DiscoveryViewer({ schema, warnings, capturedAt, onClose }) {
+  const [tab, setTab] = React.useState('fields');
+  const objects = schema.objects || [];
+  const fields = schema.fields || {};
+  const [objName, setObjName] = React.useState(Object.keys(fields)[0] || '');
+  const [customOnly, setCustomOnly] = React.useState(false);
+  const [lowFillOnly, setLowFillOnly] = React.useState(false);
+
+  const rows = (fields[objName] || []).filter(f =>
+    (!customOnly || f.custom) && (!lowFillOnly || (f.fillRate != null && f.fillRate < 0.1)));
+
+  const fillBar = (f) => f.fillRate == null ? <span style={{ color: MUTED }}>—</span> : (
+    <span title={`${(f.fillRate * 100).toFixed(1)}%${f.fillRateSampled ? ' (sampled)' : ''}`}>
+      <span style={{ display: 'inline-block', width: 60, height: 8, background: '#f3f4f6', borderRadius: 4, marginRight: 6, verticalAlign: 'middle' }}>
+        <span style={{ display: 'block', width: `${Math.round(f.fillRate * 60)}px`, height: 8, borderRadius: 4, background: f.fillRate < 0.1 ? BAD : f.fillRate < 0.3 ? WARN : OK }} />
+      </span>
+      {(f.fillRate * 100).toFixed(0)}%{f.fillRateSampled ? '*' : ''}
+    </span>
+  );
+
+  const tabBtn = (id, label) => (
+    <button key={id} style={{ ...btn, ...(tab === id ? { background: '#111827', color: '#fff', borderColor: '#111827' } : {}) }} onClick={() => setTab(id)}>{label}</button>
+  );
+
+  const allWarnings = [...(warnings || []), ...((schema.limits_notes || []).map(n => ({ kind: 'limit', detail: n })))];
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(17,24,39,.55)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+         onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{ background: '#fff', borderRadius: 10, width: 'min(1000px, 96vw)', height: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', borderBottom: '1px solid #e5e7eb' }}>
+          <div>
+            <strong style={{ fontSize: 14 }}>Discovery results</strong>
+            <span style={{ color: MUTED, fontSize: 12, marginLeft: 8 }}>frozen {capturedAt ? new Date(capturedAt).toLocaleString() : ''}</span>
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {tabBtn('fields', `Objects & Fields (${objects.length})`)}
+            {tabBtn('stages', `Stages (${(schema.stage_defs || []).length})`)}
+            {tabBtn('automation', 'Automation & Rules')}
+            {tabBtn('caveats', `Caveats (${allWarnings.length})`)}
+            <button style={btn} onClick={onClose}>Close</button>
+          </div>
+        </div>
+        <div style={{ flex: 1, overflow: 'auto', padding: 16 }}>
+          {tab === 'fields' && (
+            <div>
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+                <select style={btn} value={objName} onChange={e => setObjName(e.target.value)}>
+                  {Object.keys(fields).map(o => {
+                    const meta = objects.find(x => x.name === o);
+                    return <option key={o} value={o}>{o}{meta?.custom ? ' (custom)' : ''} · {(fields[o] || []).length} fields</option>;
+                  })}
+                </select>
+                <label style={{ fontSize: 13 }}><input type="checkbox" checked={customOnly} onChange={e => setCustomOnly(e.target.checked)} /> custom only</label>
+                <label style={{ fontSize: 13 }}><input type="checkbox" checked={lowFillOnly} onChange={e => setLowFillOnly(e.target.checked)} /> low fill (&lt;10%)</label>
+                {objects.filter(o => o.custom).length > 0 && (
+                  <span style={{ fontSize: 12.5, color: MUTED }}>
+                    Custom objects related to deals/accounts: {objects.filter(o => o.custom).map(o => o.name).join(', ')}
+                  </span>
+                )}
+              </div>
+              <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+                <thead><tr><th style={thS}>Field</th><th style={thS}>Type</th><th style={thS}>Flags</th><th style={thS}>Fill rate</th><th style={thS}>Picklist values</th></tr></thead>
+                <tbody>{rows.map(f => (
+                  <tr key={f.name} style={f.fillRate != null && f.fillRate < 0.1 && f.custom ? { background: '#FEF2F2' } : undefined}>
+                    <td style={tdS}><b>{f.label || f.name}</b><div style={{ color: MUTED, fontSize: 11.5 }}>{f.name}</div></td>
+                    <td style={tdS}>{f.type}</td>
+                    <td style={{ ...tdS, fontSize: 12 }}>
+                      {f.custom && <span style={chip(BLUE)}>custom</span>}{' '}
+                      {f.required && <span style={chip(WARN)}>required</span>}{' '}
+                      {f.historyTracked && <span style={chip(MUTED)}>history</span>}{' '}
+                      {f.calculated && <span style={chip(MUTED)}>formula</span>}
+                    </td>
+                    <td style={tdS}>{fillBar(f)}</td>
+                    <td style={{ ...tdS, fontSize: 12, color: MUTED, maxWidth: 260 }}>{(f.picklistValues || []).slice(0, 8).join(', ')}{(f.picklistValues || []).length > 8 ? '…' : ''}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+              <div style={{ fontSize: 11.5, color: MUTED, marginTop: 6 }}>* sampled fill rate (HubSpot). Red rows: custom fields under 10% populated — config-debt candidates.</div>
+            </div>
+          )}
+          {tab === 'stages' && (
+            <div>
+              <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+                <thead><tr><th style={thS}>Stage</th><th style={thS}>Probability</th><th style={thS}>Closed</th><th style={thS}>Won</th><th style={thS}>Order</th><th style={thS}>Pipeline</th></tr></thead>
+                <tbody>{(schema.stage_defs || []).map((st, i) => (
+                  <tr key={i}>
+                    <td style={tdS}><b>{st.label}</b></td>
+                    <td style={tdS}>{st.defaultProbability != null ? `${st.defaultProbability}%` : '—'}</td>
+                    <td style={tdS}>{st.isClosed ? 'yes' : ''}</td>
+                    <td style={tdS}>{st.isWon ? 'yes' : ''}</td>
+                    <td style={tdS}>{st.sortOrder ?? ''}</td>
+                    <td style={{ ...tdS, color: MUTED }}>{st.pipelineLabel || ''}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+              {(schema.pipelines || []).length > 1 && (
+                <div style={{ color: WARN, fontSize: 12.5, marginTop: 8 }}>
+                  {schema.pipelines.length} pipelines / record types detected — aggregate metrics blend them where the stage map merges; per-pipeline splits are the recommended follow-up cut.
+                </div>
+              )}
+            </div>
+          )}
+          {tab === 'automation' && (
+            <div>
+              <h4 style={{ margin: '0 0 6px' }}>Validation rules ({(schema.validation_rules || []).length})</h4>
+              {(schema.validation_rules || []).length === 0 ? <div style={{ color: MUTED, fontSize: 13 }}>None readable.</div> : (
+                <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+                  <thead><tr><th style={thS}>Object</th><th style={thS}>Rule</th><th style={thS}>Active</th><th style={thS}>Error message shown to reps</th></tr></thead>
+                  <tbody>{(schema.validation_rules || []).map((v, i) => (
+                    <tr key={i}><td style={tdS}>{v.object}</td><td style={tdS}>{v.name}</td><td style={tdS}>{v.active ? 'yes' : 'no'}</td><td style={{ ...tdS, color: MUTED }}>{v.errorMessage || ''}</td></tr>
+                  ))}</tbody>
+                </table>
+              )}
+              <h4 style={{ margin: '14px 0 6px' }}>Automation inventory</h4>
+              <div style={{ fontSize: 13 }}>
+                Active flows: <b>{schema.automation?.flows ?? 'not readable'}</b> · Workflow rules: <b>{schema.automation?.workflowRules ?? 'not readable'}</b>
+                <div style={{ color: MUTED, fontSize: 12, marginTop: 4 }}>Names and per-object breakdown arrive with the discovery extensions (Drop 2).</div>
+              </div>
+            </div>
+          )}
+          {tab === 'caveats' && (
+            allWarnings.length === 0 ? <div style={{ color: MUTED, fontSize: 13 }}>None — discovery read everything it asked for.</div> : (
+              <ul style={{ fontSize: 13, lineHeight: 1.7 }}>
+                {allWarnings.map((w, i) => (
+                  <li key={i}><b>{w.kind}</b>{w.object ? ` (${w.object}${w.field ? '.' + w.field : ''})` : ''}: {typeof w.detail === 'string' ? w.detail : JSON.stringify(w.detail)}</li>
+                ))}
+              </ul>
+            )
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function OAAssessment() {
   const API = process.env.REACT_APP_API_URL;
   const token = localStorage.getItem('token') || localStorage.getItem('authToken');
@@ -56,6 +193,8 @@ export default function OAAssessment() {
   const [snapshots, setSnapshots]     = React.useState([]);
   const [reports, setReports]         = React.useState({});     // snapshotId → report meta
   const [viewer, setViewer]           = React.useState(null);   // { html }
+  const [schemaView, setSchemaView]   = React.useState(null);   // { schema, warnings, capturedAt }
+  const [seeding, setSeeding]         = React.useState(false);
   const [busy, setBusy]               = React.useState('');     // which action is running
   const [error, setError]             = React.useState('');
   const [notice, setNotice]           = React.useState('');
@@ -113,6 +252,26 @@ export default function OAAssessment() {
   }, [connId, loadDetail, loadSnapshots]);
 
   // ── actions ────────────────────────────────────────────────────────────────
+
+  const openSchemaViewer = async () => {
+    setBusy('schema'); setError('');
+    try {
+      const b = await jfetch(`/crm-connections/${connId}/schema`);
+      setSchemaView({ schema: b.snapshot.schema, warnings: b.snapshot.warnings, capturedAt: b.snapshot.captured_at });
+    } catch (e) { fail(e, 'Failed to load discovery results'); }
+    finally { setBusy(''); }
+  };
+
+  const adoptDefaultStages = async () => {
+    if (!window.confirm('Adopt GoWarm default sales stages for this org?\n\nStages ONLY are created (no playbooks) — the mapping proposal will then map the CRM stages onto them.')) return;
+    setSeeding(true); setError('');
+    try {
+      const b = await jfetch('/crm-connections/seed-default-stages', { method: 'POST' });
+      flash(`Seeded ${b.seeded} default stages`);
+      await loadProposal();
+    } catch (e) { fail(e, 'Seeding failed'); }
+    finally { setSeeding(false); }
+  };
 
   const runDiscovery = async () => {
     setBusy('discover'); setError('');
@@ -268,6 +427,11 @@ export default function OAAssessment() {
           <button style={btnP} disabled={!connId || busy === 'discover'} onClick={runDiscovery}>
             {busy === 'discover' ? 'Discovering…' : hasFrozenSchema ? 'Re-run discovery' : 'Run discovery'}
           </button>
+          {hasFrozenSchema && (
+            <button style={btn} disabled={busy === 'schema'} onClick={openSchemaViewer}>
+              {busy === 'schema' ? 'Loading…' : 'View discovery results'}
+            </button>
+          )}
           {schemaSnap && (
             <span style={{ fontSize: 13 }}>
               Latest: <span style={chip(STATUS_COLOR[schemaSnap.status] || MUTED)}>{schemaSnap.status}</span>
@@ -289,9 +453,26 @@ export default function OAAssessment() {
 
         {proposal && (
           <div style={{ marginTop: 12 }}>
-            {proposal.mode === 'identity' && (
-              <div style={{ fontSize: 12.5, color: WARN, marginBottom: 8 }}>
-                Identity mode: this org has no playbook stages (assessment), so keys default to the CRM's own stage names.
+            {proposal.mode === 'identity' && (!proposal.orgStages || proposal.orgStages.length === 0) && (
+              <div style={{ border: '1px solid #FDE68A', background: '#FFFBEB', borderRadius: 8, padding: 12, marginBottom: 10, fontSize: 13 }}>
+                <b>This org has no canonical stages yet.</b> Choose how the assessment's stage keys are defined:
+                <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                  <button style={btn} disabled title="Current mode">✓ Use the CRM's own stages (identity — active)</button>
+                  <button style={btn} disabled={seeding} onClick={adoptDefaultStages}>
+                    {seeding ? 'Seeding…' : 'Adopt GoWarm default stages'}
+                  </button>
+                  <a href="#/org-admin/stages" style={{ ...btn, textDecoration: 'none', display: 'inline-block' }}>Define my own stages →</a>
+                </div>
+                <div style={{ color: MUTED, fontSize: 12, marginTop: 8 }}>
+                  <b>What these keys do:</b> in identity mode they only name the rows of the baseline report — the org is measured in its own stage language.
+                  Adopting or defining canonical stages maps the CRM onto a stage model that GoWarm playbooks, diagnostic rules, and deal health can later attach to
+                  (stages only are created now; playbooks arrive if/when the org converts to a full customer).
+                </div>
+              </div>
+            )}
+            {proposal.orgStages && proposal.orgStages.length > 0 && (
+              <div style={{ fontSize: 12.5, color: MUTED, marginBottom: 8 }}>
+                Mapping onto this org's <b>{proposal.orgStages.length} canonical stages</b> — each key is a stage that GoWarm playbooks and diagnostics attach to. Pick from the dropdown; leave blank to exclude a CRM stage.
               </div>
             )}
             <table style={{ borderCollapse: 'collapse', width: '100%' }}>
@@ -303,12 +484,25 @@ export default function OAAssessment() {
                   <tr key={p.crmStage}>
                     <td style={tdS}>{p.crmLabel || p.crmStage}</td>
                     <td style={tdS}>
-                      <input
-                        style={{ ...btn, padding: '4px 8px', width: 180 }}
-                        value={editMap[p.crmStage] ?? ''}
-                        onChange={e => setEditMap(prev => ({ ...prev, [p.crmStage]: e.target.value }))}
-                        placeholder="(unmapped)"
-                      />
+                      {proposal.orgStages && proposal.orgStages.length > 0 ? (
+                        <select
+                          style={{ ...btn, padding: '4px 8px', width: 200 }}
+                          value={editMap[p.crmStage] ?? ''}
+                          onChange={e => setEditMap(prev => ({ ...prev, [p.crmStage]: e.target.value }))}
+                        >
+                          <option value="">(unmapped — exclude)</option>
+                          {proposal.orgStages.map(st => (
+                            <option key={st.key} value={st.key}>{st.name} ({st.key}{st.stage_type !== 'active' ? ` · ${st.stage_type}` : ''})</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          style={{ ...btn, padding: '4px 8px', width: 180 }}
+                          value={editMap[p.crmStage] ?? ''}
+                          onChange={e => setEditMap(prev => ({ ...prev, [p.crmStage]: e.target.value }))}
+                          placeholder="(unmapped)"
+                        />
+                      )}
                     </td>
                     <td style={tdS}><span style={chip(CONF_COLOR[p.confidence] || MUTED)}>{p.confidence}</span></td>
                     <td style={{ ...tdS, color: MUTED, fontSize: 12 }}>{p.rationale}</td>
@@ -377,6 +571,15 @@ export default function OAAssessment() {
           </table>
         )}
       </div>
+
+      {schemaView && (
+        <DiscoveryViewer
+          schema={schemaView.schema}
+          warnings={schemaView.warnings}
+          capturedAt={schemaView.capturedAt}
+          onClose={() => setSchemaView(null)}
+        />
+      )}
 
       {/* Report viewer modal */}
       {viewer && (

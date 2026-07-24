@@ -146,6 +146,9 @@ router.get('/:id/mapping-proposal', async (req, res) => {
     res.json({
       success: true,
       currentStageMap: (conn.settings && conn.settings.stage_map) || {},
+      // The org's canonical stages (empty on unseeded assessment orgs).
+      // Drives the mapping UI: dropdowns when present, mode chooser when not.
+      orgStages: stagesRes.rows,
       ...proposal,
     });
   } catch (err) {
@@ -325,6 +328,39 @@ router.patch('/:id/baseline-config', requireRole('admin', 'owner'), async (req, 
     res.json({ success: true, baseline_config: merged, flags });
   } catch (err) {
     console.error('[crm-connections] baseline-config error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── POST /seed-default-stages ────────────────────────────────────────────────
+// Mapping mode 2 for unseeded (assessment) orgs: adopt GoWarm's default
+// SALES stages — stages ONLY, no playbooks, so the org stays honest to its
+// unseeded assessment nature. Reuses orgSeed.upsertStages (idempotent
+// ON CONFLICT upsert — the same path convert-to-standard runs later, so no
+// duplicate-seeding hazard). Guarded: refuses when sales stages already
+// exist, to keep this a mode CHOICE rather than a reset button.
+
+router.post('/seed-default-stages', requireRole('admin', 'owner'), async (req, res) => {
+  try {
+    const existing = await pool.query(
+      `SELECT count(*)::int AS n FROM pipeline_stages
+        WHERE org_id = $1 AND pipeline = 'sales'`, [req.orgId]);
+    if (existing.rows[0].n > 0) {
+      return res.status(409).json({
+        success: false,
+        error: `This org already has ${existing.rows[0].n} sales stages — manage them on the Stages page instead`,
+      });
+    }
+    const { upsertStages } = require('../services/orgSeed.service');
+    await upsertStages(pool, req.orgId, 'sales');
+    const rows = await pool.query(
+      `SELECT key, name, stage_type, sort_order, is_terminal
+         FROM pipeline_stages
+        WHERE org_id = $1 AND pipeline = 'sales' AND is_active = true
+        ORDER BY sort_order ASC`, [req.orgId]);
+    res.json({ success: true, seeded: rows.rows.length, orgStages: rows.rows });
+  } catch (err) {
+    console.error('[crm-connections] seed-default-stages error:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });

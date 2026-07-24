@@ -1853,4 +1853,4 @@ async function getSeedStatus(orgId) {
   }, {});
 }
 
-module.exports = { seedOrg, seedModulePlaybook, getSeedStatus };
+module.exports = { seedOrg, seedModulePlaybook, getSeedStatus, upsertStages };
