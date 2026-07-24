@@ -155,7 +155,9 @@ async function discoverSalesforce(sfClient, opts = {}) {
 
   // ── 5. Validation rules + automation inventory (Tooling API) ──────────────
   const validationRules = [];
-  let automation = { flows: null, workflowRules: null };
+  // Backward-compatible shape: counts stay at .flows/.workflowRules (the
+  // findings engine reads those); named lists ride alongside.
+  let automation = { flows: null, workflowRules: null, flowList: [], workflowRuleList: [] };
   const toolingBase = `${sfClient.instanceUrl}/services/data/v59.0/tooling`;
   try {
     const vr = await sfClient._request('GET',
@@ -176,19 +178,69 @@ async function discoverSalesforce(sfClient, opts = {}) {
     limitsNotes.push(`Validation rules not readable with granted permissions (${err.message}) — permission-set recipe grants Tooling read; report will note the gap.`);
   }
   try {
+    // FlowDefinitionView: one row per flow, ActiveVersionId set when active.
     const fl = await sfClient._request('GET',
       `${toolingBase}/query?q=${encodeURIComponent(
-        "SELECT COUNT() FROM Flow WHERE Status = 'Active'")}`);
+        "SELECT ApiName, Label, ProcessType, TriggerType FROM FlowDefinitionView " +
+        "WHERE ActiveVersionId != null")}`);
+    automation.flowList = (fl.records || []).map(r => ({
+      apiName: r.ApiName, label: r.Label,
+      processType: r.ProcessType || null,   // AutoLaunchedFlow | Flow | Workflow(PB) | ...
+      triggerType: r.TriggerType || null,   // RecordAfterSave | Scheduled | null(screen)
+    }));
+    automation.flows = automation.flowList.length;
+  } catch (err) {
+    limitsNotes.push(`Flow inventory not readable (${err.message}).`);
+  }
+  try {
     const wf = await sfClient._request('GET',
       `${toolingBase}/query?q=${encodeURIComponent(
-        "SELECT COUNT() FROM WorkflowRule")}`);
-    automation = {
-      flows:         fl.totalSize ?? null,
-      workflowRules: wf.totalSize ?? null,
-    };
+        "SELECT Name, TableEnumOrId FROM WorkflowRule")}`);
+    automation.workflowRuleList = (wf.records || []).map(r => ({
+      name: r.Name, object: r.TableEnumOrId || null,
+    }));
+    automation.workflowRules = automation.workflowRuleList.length;
   } catch (err) {
-    limitsNotes.push(`Automation inventory not readable (${err.message}).`);
+    limitsNotes.push(`Workflow-rule inventory not readable (${err.message}).`);
   }
+
+  // ── 5b. Record counts for related custom objects ─────────────────────────
+  // Splits live process objects from config-debt shells. One COUNT() per
+  // object, capped at 20 objects to respect API budgets.
+  const customList = [...relatedCustomObjects].slice(0, 20);
+  const recordCounts = new Map();
+  for (const objName of customList) {
+    try {
+      const res = await sfClient.query(`SELECT COUNT() FROM ${objName}`);
+      recordCounts.set(objName, res.totalSize ?? null);
+    } catch (err) {
+      // Non-queryable or FLS-blocked — leave uncounted, note once.
+    }
+  }
+  if (relatedCustomObjects.size > 20) {
+    limitsNotes.push(`${relatedCustomObjects.size} related custom objects found; record counts sampled for the first 20.`);
+  }
+
+  // ── 5c. Ownership context (queues + role hierarchy) ───────────────────────
+  let ownership = { queues: [], roleCount: null, roleDepth: null };
+  try {
+    const q = await sfClient.query(
+      "SELECT Name FROM Group WHERE Type = 'Queue' ORDER BY Name LIMIT 50");
+    ownership.queues = q.records.map(r => r.Name);
+  } catch (err) { /* optional context — skip silently */ }
+  try {
+    const roles = await sfClient.query('SELECT Id, ParentRoleId FROM UserRole');
+    ownership.roleCount = roles.records.length;
+    // depth via parent-chain walk
+    const parent = new Map(roles.records.map(r => [r.Id, r.ParentRoleId || null]));
+    let depth = 0;
+    for (const id of parent.keys()) {
+      let d = 1, cur = parent.get(id), guard = 0;
+      while (cur && guard++ < 50) { d++; cur = parent.get(cur) ?? null; }
+      depth = Math.max(depth, d);
+    }
+    ownership.roleDepth = ownership.roleCount ? depth : null;
+  } catch (err) { /* optional context — skip silently */ }
 
   // ── 6. Fill rates: exact aggregates over the history window ───────────────
   // COUNT(field) counts non-null. Denominator is COUNT(Id) in the same window.
@@ -199,8 +251,10 @@ async function discoverSalesforce(sfClient, opts = {}) {
     crm_type: 'salesforce',
     objects: [
       ...allObjects.filter(o => SF_CORE_OBJECTS.includes(o.name)),
-      ...allObjects.filter(o => relatedCustomObjects.has(o.name)),
+      ...allObjects.filter(o => relatedCustomObjects.has(o.name))
+        .map(o => ({ ...o, recordCount: recordCounts.get(o.name) ?? null })),
     ],
+    ownership,
     fields,
     stage_defs: stageDefs,
     pipelines,
@@ -259,6 +313,7 @@ async function discoverHubSpot(hsAdapter, opts = {}) {
   const warnings = [];
   const limitsNotes = [
     'HubSpot has no validation-rule analog; process-enforcement findings rely on pipeline stage requirements and workflow inventory only.',
+    'HubSpot workflow names require the automation scope, which the assessment scope set deliberately excludes; the report notes automation as not inventoried for HubSpot.',
     `Deal-property fill rates are sampled over the ${FILL_RATE_SAMPLE} most recently modified deals (no aggregate API), flagged fillRateSampled:true.`,
   ];
 

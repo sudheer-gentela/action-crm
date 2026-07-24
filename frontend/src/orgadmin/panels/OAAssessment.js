@@ -98,7 +98,11 @@ function DiscoveryViewer({ schema, warnings, capturedAt, onClose }) {
                 <label style={{ fontSize: 13 }}><input type="checkbox" checked={lowFillOnly} onChange={e => setLowFillOnly(e.target.checked)} /> low fill (&lt;10%)</label>
                 {objects.filter(o => o.custom).length > 0 && (
                   <span style={{ fontSize: 12.5, color: MUTED }}>
-                    Custom objects related to deals/accounts: {objects.filter(o => o.custom).map(o => o.name).join(', ')}
+                    Custom objects related to deals/accounts:{' '}
+                    {objects.filter(o => o.custom).map(o =>
+                      `${o.name}${o.recordCount != null ? ` (~${o.recordCount.toLocaleString()} records)` : ''}`
+                    ).join(', ')}
+                    {objects.some(o => o.custom && o.recordCount === 0) && ' — zero-record objects are config-debt shells'}
                   </span>
                 )}
               </div>
@@ -155,11 +159,39 @@ function DiscoveryViewer({ schema, warnings, capturedAt, onClose }) {
                   ))}</tbody>
                 </table>
               )}
-              <h4 style={{ margin: '14px 0 6px' }}>Automation inventory</h4>
-              <div style={{ fontSize: 13 }}>
-                Active flows: <b>{schema.automation?.flows ?? 'not readable'}</b> · Workflow rules: <b>{schema.automation?.workflowRules ?? 'not readable'}</b>
-                <div style={{ color: MUTED, fontSize: 12, marginTop: 4 }}>Names and per-object breakdown arrive with the discovery extensions (Drop 2).</div>
-              </div>
+              <h4 style={{ margin: '14px 0 6px' }}>Active flows ({schema.automation?.flows ?? 'not readable'})</h4>
+              {(schema.automation?.flowList || []).length === 0 ? (
+                <div style={{ color: MUTED, fontSize: 13 }}>None active (or not readable — see caveats).</div>
+              ) : (
+                <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+                  <thead><tr><th style={thS}>Flow</th><th style={thS}>Type</th><th style={thS}>Trigger</th></tr></thead>
+                  <tbody>{(schema.automation.flowList || []).map((f, i) => (
+                    <tr key={i}><td style={tdS}><b>{f.label}</b><div style={{ color: MUTED, fontSize: 11.5 }}>{f.apiName}</div></td>
+                      <td style={tdS}>{f.processType || ''}</td>
+                      <td style={tdS}>{f.triggerType || 'screen / manual'}</td></tr>
+                  ))}</tbody>
+                </table>
+              )}
+              <h4 style={{ margin: '14px 0 6px' }}>Workflow rules ({schema.automation?.workflowRules ?? 'not readable'})</h4>
+              {(schema.automation?.workflowRuleList || []).length === 0 ? (
+                <div style={{ color: MUTED, fontSize: 13 }}>None (legacy automation retired, or not readable).</div>
+              ) : (
+                <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+                  <thead><tr><th style={thS}>Rule</th><th style={thS}>Object</th></tr></thead>
+                  <tbody>{(schema.automation.workflowRuleList || []).map((w, i) => (
+                    <tr key={i}><td style={tdS}>{w.name}</td><td style={tdS}>{w.object || ''}</td></tr>
+                  ))}</tbody>
+                </table>
+              )}
+              {schema.ownership && (
+                <div style={{ fontSize: 13, marginTop: 14 }}>
+                  <h4 style={{ margin: '0 0 6px' }}>Ownership context</h4>
+                  Queues: <b>{(schema.ownership.queues || []).length}</b>
+                  {(schema.ownership.queues || []).length > 0 && <span style={{ color: MUTED }}> ({schema.ownership.queues.slice(0, 8).join(', ')}{schema.ownership.queues.length > 8 ? '…' : ''})</span>}
+                  {' '}· Roles: <b>{schema.ownership.roleCount ?? '—'}</b>
+                  {schema.ownership.roleDepth != null && <span> (hierarchy depth {schema.ownership.roleDepth})</span>}
+                </div>
+              )}
             </div>
           )}
           {tab === 'caveats' && (
