@@ -143,7 +143,7 @@ class ActionWriter {
          $12, $13,
          $14, $15, $16,
          $17,
-         'yet_to_start', NOW()
+         'not_started', NOW()
        )
        ${conflictClause}
        RETURNING id`,

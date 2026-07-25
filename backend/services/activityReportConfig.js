@@ -21,7 +21,7 @@
 //
 // The seven states are derived in routes/reporting.routes.js from
 // status + completed_at/completed_by + auto_completed on both action tables
-// (deals 'yet_to_start' normalizes to 'pending'). Keep VALID_STATES in
+// (deals now use canonical 'not_started'; prospecting still uses 'pending'). Keep VALID_STATES in
 // lockstep with that CASE expression.
 // ─────────────────────────────────────────────────────────────────────────────
 

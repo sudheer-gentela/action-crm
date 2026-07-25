@@ -357,7 +357,7 @@ class PlayCompletionService {
            $8, $9,
            'playbook', 'playbook_play',
            $10,
-           $11, 'yet_to_start', NOW()
+           $11, 'not_started', NOW()
          )
          ON CONFLICT (${config.entityFkCol}, ${config.playFkCol})
          WHERE ${config.entityFkCol} IS NOT NULL AND ${config.playFkCol} IS NOT NULL

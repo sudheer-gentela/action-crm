@@ -55,15 +55,30 @@ function assertTransition(from, to) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Case number generator
 // Format: CASE-0001, CASE-0042 etc. — sequential per org.
-// Uses a FOR UPDATE lock on the max row to avoid race conditions.
+//
+// B2 fix: the previous version used `... MAX(...) ... FOR UPDATE`, which
+// PostgreSQL rejects — "FOR UPDATE is not allowed with aggregate functions"
+// (SQLSTATE 0A000). That threw on every call, so createCase() never completed
+// and no case was ever created.
+//
+// We serialize per-org numbering with a transaction-scoped advisory lock
+// instead. The lock is released automatically on COMMIT/ROLLBACK. The sole
+// caller (createCase, below) runs inside withOrgTransaction, which issues a
+// real BEGIN/COMMIT — verified in config/database.js — so the lock spans the
+// insert that consumes the number. The UNIQUE (org_id, case_number) index
+// remains the hard backstop.
 // ─────────────────────────────────────────────────────────────────────────────
 async function nextCaseNumber(client, orgId) {
+  await client.query(
+    `SELECT pg_advisory_xact_lock(hashtext($1))`,
+    [`case_number:${orgId}`]
+  );
+
   const r = await client.query(
     `SELECT COALESCE(MAX(CAST(SUBSTRING(case_number FROM 6) AS INTEGER)), 0) + 1 AS next
      FROM cases
      WHERE org_id = $1
-       AND case_number ~ '^CASE-[0-9]+$'
-     FOR UPDATE`,
+       AND case_number ~ '^CASE-[0-9]+$'`,
     [orgId]
   );
   const n = r.rows[0].next;
@@ -185,7 +200,7 @@ async function firePlaybookPlays(orgId, caseId, stageKey) {
       await pool.query(
         `INSERT INTO case_plays
            (org_id, case_id, play_id, status, assigned_role_id, due_at)
-         VALUES ($1, $2, $3, 'pending', $4, $5)
+         VALUES ($1, $2, $3, 'not_started', $4, $5)
          ON CONFLICT (case_id, play_id) DO NOTHING`,
         [orgId, caseId, play.id, assignedRoleId, dueAt]
       );
@@ -219,7 +234,7 @@ async function firePlaybookPlays(orgId, caseId, stageKey) {
                $6, $6, $7,
                $8, $9,
                'playbook', 'playbook_play',
-               $10, 'yet_to_start', NOW()
+               $10, 'not_started', NOW()
              )
              ON CONFLICT DO NOTHING`,
             [

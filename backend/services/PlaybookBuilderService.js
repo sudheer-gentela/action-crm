@@ -795,7 +795,7 @@ async function getPlaybookStats(playbook_id) {
        pp.channel,
        COUNT(dpi.id) AS total_fires,
        COUNT(CASE WHEN dpi.status = 'completed' THEN 1 END) AS completed,
-       COUNT(CASE WHEN dpi.status = 'yet_to_start' THEN 1 END) AS yet_to_start,
+       COUNT(CASE WHEN dpi.status = 'not_started' THEN 1 END) AS not_started,
        COUNT(CASE WHEN dpi.status = 'in_progress'  THEN 1 END) AS in_progress,
        ROUND(
          COUNT(CASE WHEN dpi.status = 'completed' THEN 1 END)::numeric /

@@ -1893,7 +1893,8 @@ function _emptyTotals() {
 //     auto_cleared   auto_completed = true (engine closed it)
 //     rep_completed  completed_at set / status 'completed', not auto
 //     snoozed | in_progress | skipped | failed   (per status)
-//     pending        everything else ('pending', deals 'yet_to_start')
+//     pending        everything else (prospecting 'pending', deals 'not_started',
+//                    and — see note — canonical 'blocked' / 'cancelled')
 //   Cohort semantics: created_at within the window; state as of query time.
 //
 //   Sources: prospecting_actions.source passed through verbatim; deals split
@@ -2068,7 +2069,7 @@ router.get('/activity', async (req, res) => {
              WHERE a.user_id = $2
                AND COALESCE(a.auto_completed, FALSE) = FALSE
                AND a.completed_at IS NULL
-               AND a.status IN ('yet_to_start','in_progress','snoozed')
+               AND a.status IN ('not_started','in_progress','blocked','snoozed')
           ) open_actions
           ORDER BY created_at ASC
           LIMIT 20`,

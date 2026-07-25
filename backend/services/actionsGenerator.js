@@ -241,7 +241,7 @@ async function insertAction(action, userId, orgId, assigneeUserId = null) {
        $21,$22,$23,
        $24,$25,
        $26,
-       'yet_to_start',NOW()
+       'not_started',NOW()
      ) RETURNING id`,
     [
       orgId,

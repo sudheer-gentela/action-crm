@@ -128,7 +128,7 @@ async function upsertChurnAction(client, { orgId, assigneeId, ctx, connection, e
             'churn_risk', 'churn_risk', $5, $6,
             'high', NOW(), 'email', false,
             'auto_generated', $7, 'prospecting', $8,
-            $9, 'yet_to_start', NOW(), NOW()
+            $9, 'not_started', NOW(), NOW()
       WHERE NOT EXISTS (
         SELECT 1 FROM actions
          WHERE org_id = $1 AND account_id = $3

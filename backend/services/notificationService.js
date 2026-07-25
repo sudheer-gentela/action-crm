@@ -58,7 +58,12 @@ async function findActionsForImmediateNotification(orgId) {
     JOIN users u ON u.id = a.user_id
     LEFT JOIN user_preferences up ON up.user_id = a.user_id AND up.org_id = a.org_id
     WHERE a.org_id  = $1
-      AND a.status  = 'pending'
+      -- B18: this read 'pending', which has never been a valid actions status
+      -- (pre-70 the set was yet_to_start|in_progress|completed|snoozed), so this
+      -- query matched zero rows and overdue alerts never fired. Canonical open
+      -- states only; 'snoozed' is deliberate deferral and is not overdue, which
+      -- matches the plays_overdue rule in handover_deliverable_rollup.
+      AND a.status IN ('not_started', 'in_progress', 'blocked')
       AND a.due_date IS NOT NULL
       AND a.due_date < NOW()
       AND a.notification_sent_at IS NULL
@@ -97,7 +102,8 @@ async function findActionsForDailyDigest(orgId) {
     JOIN users u ON u.id = a.user_id
     LEFT JOIN user_preferences up ON up.user_id = a.user_id AND up.org_id = a.org_id
     WHERE a.org_id  = $1
-      AND a.status  = 'pending'
+      -- B18: see note above — 'pending' never matched. Canonical open states only.
+      AND a.status IN ('not_started', 'in_progress', 'blocked')
       AND a.due_date IS NOT NULL
       AND a.due_date < NOW()
       AND COALESCE((up.preferences->'notifications'->>'daily_digest')::boolean, true) = true

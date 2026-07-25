@@ -68,7 +68,7 @@ const VALID_NEXT_STEPS = new Set([
 ]);
 
 const VALID_STATUS = new Set([
-  'yet_to_start', 'in_progress', 'completed', 'snoozed',
+  'not_started', 'in_progress', 'blocked', 'completed', 'skipped', 'cancelled', 'snoozed',
 ]);
 
 class ActionPersister {
@@ -207,7 +207,7 @@ class ActionPersister {
            $13, $14,
            'auto_generated', $15,
            $16, $17, $18,
-           'yet_to_start', NOW(), NOW()
+           'not_started', NOW(), NOW()
          )
          ON CONFLICT ${conflictCols}
          DO UPDATE SET

@@ -33,7 +33,10 @@ const STRAP_SECTIONS = [
 ];
 
 const STATUS_CONFIG = {
-  yet_to_start: { label: 'Yet to Start', icon: '○', color: '#6b7280', next: 'in_progress' },
+  not_started: { label: 'Not Started', icon: '○', color: '#6b7280', next: 'in_progress' },
+  blocked:     { label: 'Blocked',      icon: '⊘', color: '#dc2626', next: 'in_progress' },
+  skipped:     { label: 'Skipped',      icon: '⤼', color: '#9ca3af', next: null },
+  cancelled:   { label: 'Cancelled',    icon: '✕', color: '#9ca3af', next: null },
   in_progress:  { label: 'In Progress',  icon: '◑', color: '#3b82f6', next: 'completed'  },
   completed:    { label: 'Completed',    icon: '●', color: '#10b981', next: null          },
 };
@@ -533,7 +536,7 @@ function ManualLogModal({ action, onComplete, onInProgress, onClose }) {
 
 function StatusStepper({ action, onStatusChange, onStart }) {
   const [updating, setUpdating] = useState(false);
-  const cfg = STATUS_CONFIG[action.status] || STATUS_CONFIG.yet_to_start;
+  const cfg = STATUS_CONFIG[action.status] || STATUS_CONFIG.not_started;
 
   async function advance() {
     if (!cfg.next || updating) return;
@@ -646,7 +649,10 @@ const MODULE_META = {
 };
 
 const STATUS_META = {
-  yet_to_start: { icon: '○', label: 'To Start',    color: '#9ca3af' },
+  not_started: { icon: '○', label: 'To Start',  color: '#9ca3af' },
+  blocked:     { icon: '⊘', label: 'Blocked',   color: '#dc2626' },
+  skipped:     { icon: '⤼', label: 'Skipped',   color: '#9ca3af' },
+  cancelled:   { icon: '✕', label: 'Cancelled', color: '#9ca3af' },
   in_progress:  { icon: '◑', label: 'In Progress', color: '#f59e0b' },
   completed:    { icon: '●', label: 'Done',        color: '#10b981' },
   snoozed:      { icon: '😴', label: 'Snoozed', color: '#8b5cf6' },
@@ -671,7 +677,7 @@ function getColumnValue(action, colKey) {
     case 'contact':  return action.contact ? `${action.contact.firstName || ''} ${action.contact.lastName || ''}`.trim() : (action.prospect ? `${action.prospect.firstName || ''} ${action.prospect.lastName || ''}`.trim() : '');
     case 'due':      return action.dueDate || '';
     case 'priority': return action.priority || 'medium';
-    case 'status':   return action.status || 'yet_to_start';
+    case 'status':   return action.status || 'not_started';
     case 'source':   return action.source || '';
     case 'account':  return action.deal?.account || action.prospect?.companyName || '';
     case 'stage':    return action.deal?.stage || action.prospect?.stage || '';
@@ -722,7 +728,7 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
     }
     // Status sort order
     if (sortKey === 'status') {
-      const order = { yet_to_start: 1, in_progress: 2, snoozed: 3, completed: 4 };
+      const order = { blocked: 1, in_progress: 2, not_started: 3, snoozed: 4, completed: 5, skipped: 6, cancelled: 7 };
       aVal = order[aVal] || 1;
       bVal = order[bVal] || 1;
       return sortDir === 'asc' ? aVal - bVal : bVal - aVal;
@@ -875,7 +881,7 @@ function ActionsTable({ actions, onStatusChange, onStart, onSnoozeClick, onUnsno
         {sorted.map((action, i) => {
         const ch = CHANNEL_META[action.nextStep] || CHANNEL_META.email;
         const pri = PRIORITY_COLORS[action.priority] || PRIORITY_COLORS.medium;
-        const st = STATUS_META[action.status] || STATUS_META.yet_to_start;
+        const st = STATUS_META[action.status] || STATUS_META.not_started;
         const due = tableDueLabel(action.dueDate);
         const src = SOURCE_META[action.source] || SOURCE_DEFAULT;
         const isComplete = action.status === 'completed';
@@ -1167,14 +1173,17 @@ function ActionCard({ action, onStatusChange, onStart, onSnoozeClick, onUnsnooze
 // Grey = not started, Amber = in progress, Green = completed.
 
 const STRAP_ACTION_STATUS = {
-  yet_to_start: { label: 'Not started', pill: { background: '#F1EFE8', color: '#5F5E5A' }, next: 'in_progress' },
+  not_started: { label: 'Not started', pill: { background: '#F1EFE8', color: '#5F5E5A' }, next: 'in_progress' },
+  blocked:     { label: 'Blocked',     pill: { background: '#FBE9E7', color: '#C0392B' }, next: 'in_progress' },
+  skipped:     { label: 'Skipped',     pill: { background: '#F1EFE8', color: '#9ca3af' }, next: null },
+  cancelled:   { label: 'Cancelled',   pill: { background: '#F1EFE8', color: '#9ca3af' }, next: null },
   in_progress:  { label: 'In progress', pill: { background: '#FAEEDA', color: '#854F0B' }, next: 'completed'  },
   completed:    { label: 'Completed',   pill: { background: '#EAF3DE', color: '#3B6D11' }, next: null         },
 };
 
 function StrapActionStatusPill({ act, onStatusChanged }) {
   const [updating, setUpdating] = useState(false);
-  const cfg = STRAP_ACTION_STATUS[act.status] || STRAP_ACTION_STATUS.yet_to_start;
+  const cfg = STRAP_ACTION_STATUS[act.status] || STRAP_ACTION_STATUS.not_started;
 
   async function advance(e) {
     e.stopPropagation();
@@ -1182,8 +1191,8 @@ function StrapActionStatusPill({ act, onStatusChanged }) {
     setUpdating(true);
     try {
       const isProspecting = act.action_table === 'prospecting_actions';
-      // prospecting_actions uses 'pending' instead of 'yet_to_start'
-      const statusToSend = isProspecting && cfg.next === 'yet_to_start' ? 'pending' : cfg.next;
+      // prospecting_actions uses 'pending' instead of canonical 'not_started' (D19)
+      const statusToSend = isProspecting && cfg.next === 'not_started' ? 'pending' : cfg.next;
       const endpoint = isProspecting
         ? `/prospecting-actions/${act.action_id}/status`
         : `/actions/${act.action_id}/status`;
@@ -2150,7 +2159,7 @@ export default function ActionsView({ openActionId, onActionOpened }) {
       let nextAction = null;
 
       if (isProspecting) {
-        const statusMap = { yet_to_start: 'pending', in_progress: 'in_progress', completed: 'completed' };
+        const statusMap = { not_started: 'pending', in_progress: 'in_progress', completed: 'completed' };
         const mappedStatus = statusMap[newStatus] || newStatus;
         await apiFetch(`/prospecting-actions/${apiId}/status`, {
           method: 'PATCH',
@@ -2192,7 +2201,7 @@ export default function ActionsView({ openActionId, onActionOpened }) {
             source:          nextAction.source,
             sourceRule:      nextAction.source_rule,
             nextStep:        nextAction.next_step || 'email',
-            status:          'yet_to_start',
+            status:          'not_started',
             dueDate:         nextAction.due_date,
             deal:            action?.deal || null,
             contact:         null,
@@ -2294,7 +2303,7 @@ export default function ActionsView({ openActionId, onActionOpened }) {
       if (emailData.actionId) {
         setActions(prev => prev.map(a =>
           a.id === emailData.actionId
-            ? { ...a, status: a.status === 'yet_to_start' ? 'in_progress' : a.status }
+            ? { ...a, status: a.status === 'not_started' ? 'in_progress' : a.status }
             : a
         ));
       }
@@ -2377,7 +2386,7 @@ export default function ActionsView({ openActionId, onActionOpened }) {
       await apiFetch(endpoint, { method: 'PATCH' });
       setActions(prev =>
         prev.map(a => isTarget(a)
-          ? { ...a, status: 'yet_to_start', snoozedUntil: null, snoozeReason: null, snoozeDuration: null }
+          ? { ...a, status: 'not_started', snoozedUntil: null, snoozeReason: null, snoozeDuration: null }
           : a
         ).filter(a => {
           // If we're on snoozed view, remove it after unsnooze
@@ -2436,7 +2445,7 @@ export default function ActionsView({ openActionId, onActionOpened }) {
           priority:     result.action.priority,
           title:        result.action.title,
           description:  result.action.description,
-          status:       'yet_to_start',
+          status:       'not_started',
           source:       'manual',
           nextStep:     result.action.next_step || 'email',
           dueDate:      result.action.due_date,
@@ -2450,7 +2459,7 @@ export default function ActionsView({ openActionId, onActionOpened }) {
       alert('Failed to create action: ' + err.message);
     }
   }
-  const yetToStart = actions.filter(a => a.status === 'yet_to_start').length;
+  const yetToStart = actions.filter(a => a.status === 'not_started').length;
   const inProgress = actions.filter(a => a.status === 'in_progress').length;
   const snoozed    = actions.filter(a => a.status === 'snoozed').length;
   const completed  = actions.filter(a => a.status === 'completed').length;

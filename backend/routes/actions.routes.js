@@ -52,7 +52,7 @@ function mapActionRow(row) {
     sourceId:                row.source_id,
     nextStep:                row.next_step || 'email',
     isInternal:              row.is_internal || false,
-    status:                  row.status || (row.completed ? 'completed' : 'yet_to_start'),
+    status:                  row.status || (row.completed ? 'completed' : 'not_started'),
     completed:               row.completed,
     completedAt:             row.completed_at,
     completedBy:             row.completed_by,
@@ -134,7 +134,12 @@ const BASE_QUERY = `
 
 const ORDER_CLAUSE = `
   ORDER BY
-    CASE a.status WHEN 'yet_to_start' THEN 1 WHEN 'in_progress' THEN 2 WHEN 'snoozed' THEN 3 ELSE 4 END,
+    CASE a.status
+      WHEN 'blocked'     THEN 1
+      WHEN 'in_progress' THEN 2
+      WHEN 'not_started' THEN 3
+      WHEN 'snoozed'     THEN 4
+      ELSE 5 END,
     CASE a.priority WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END,
     a.due_date ASC NULLS LAST
 `;
@@ -326,7 +331,7 @@ router.get('/straps/:id/actions', async (req, res) => {
         CASE sa.action_table
           WHEN 'actions' THEN a.status
           WHEN 'prospecting_actions' THEN
-            CASE pa.status WHEN 'pending' THEN 'yet_to_start' ELSE pa.status END
+            CASE pa.status WHEN 'pending' THEN 'not_started' ELSE pa.status END
         END AS status,
         CASE sa.action_table
           WHEN 'actions' THEN a.next_step
@@ -928,7 +933,7 @@ router.get('/unified', async (req, res) => {
     let ppIdx = pIdx;
 
     if (status) {
-      const statusMap = { yet_to_start: 'pending' };
+      const statusMap = { not_started: 'pending' };
       const mappedStatus = statusMap[status] || status;
       prospectWhere += ` AND pa.status = $${ppIdx}`; prospectParams.push(mappedStatus); ppIdx++;
     }
@@ -961,7 +966,7 @@ router.get('/unified', async (req, res) => {
       SELECT
         'prospecting' AS action_source,
         pa.id, pa.title, pa.description, pa.action_type, pa.priority,
-        CASE pa.status WHEN 'pending' THEN 'yet_to_start' ELSE pa.status END AS status,
+        CASE pa.status WHEN 'pending' THEN 'not_started' ELSE pa.status END AS status,
         pa.source, NULL AS source_rule, NULL AS source_id,
         pa.channel AS next_step, FALSE AS is_internal,
         pa.due_date, pa.created_at, pa.updated_at,
@@ -1000,9 +1005,9 @@ router.get('/unified', async (req, res) => {
     ];
 
     allActions.sort((a, b) => {
-      const statusOrder = { yet_to_start: 1, in_progress: 2, snoozed: 3, completed: 4, skipped: 5 };
-      const sA = statusOrder[a.status] || 4;
-      const sB = statusOrder[b.status] || 4;
+      const statusOrder = { blocked: 1, in_progress: 2, not_started: 3, snoozed: 4, completed: 5, skipped: 6, cancelled: 7 };
+      const sA = statusOrder[a.status] ?? 99;
+      const sB = statusOrder[b.status] ?? 99;
       if (sA !== sB) return sA - sB;
       const priorityOrder = { critical: 1, high: 2, medium: 3, low: 4 };
       const pA = priorityOrder[a.priority] || 3;
@@ -1045,7 +1050,7 @@ router.post('/', async (req, res) => {
       `INSERT INTO actions
          (org_id, user_id, deal_id, contact_id, contract_id, prospect_id, type, action_type, priority,
           title, description, context, due_date, is_internal, status, source, source_module)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10,$11,$12,$13,'yet_to_start','manual',$14)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10,$11,$12,$13,'not_started','manual',$14)
        RETURNING *`,
       [
         req.orgId,
@@ -1105,7 +1110,7 @@ router.put('/:id', async (req, res) => {
 router.patch('/:id/status', async (req, res) => {
   try {
     const { status } = req.body;
-    const VALID = ['yet_to_start', 'in_progress', 'completed'];
+    const VALID = ['not_started', 'in_progress', 'blocked', 'snoozed', 'completed', 'skipped', 'cancelled'];
     if (!VALID.includes(status)) {
       return res.status(400).json({ error: { message: `status must be one of: ${VALID.join(', ')}` } });
     }
@@ -1188,7 +1193,7 @@ router.patch('/:id/status', async (req, res) => {
                    playbook_play_id, status, suggested_action, created_at
                  ) VALUES (
                    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-                   'playbook','playbook_gate_unlock',$11,$12,'yet_to_start',$13,NOW()
+                   'playbook','playbook_gate_unlock',$11,$12,'not_started',$13,NOW()
                  ) RETURNING *`,
                 [
                   req.orgId, req.user.userId,
@@ -1315,12 +1320,12 @@ router.patch('/:id/snooze', async (req, res) => {
 });
 
 // ── PATCH /:id/unsnooze ───────────────────────────────────────
-// Clears snooze fields and returns action to 'yet_to_start'.
+// Clears snooze fields and returns action to 'not_started'.
 router.patch('/:id/unsnooze', async (req, res) => {
   try {
     const result = await db.query(
       `UPDATE actions
-       SET status          = 'yet_to_start',
+       SET status          = 'not_started',
            snoozed_until   = NULL,
            snooze_reason   = NULL,
            snooze_duration = NULL,
@@ -1437,7 +1442,7 @@ function mapUnifiedAction(row, source) {
     sourceId:                row.source_id,
     nextStep:                row.next_step || row.channel || 'email',
     isInternal:              row.is_internal || false,
-    status:                  row.status || 'yet_to_start',
+    status:                  row.status || 'not_started',
     completed:               row.status === 'completed',
     completedAt:             row.completed_at,
     completedBy:             row.completed_by,

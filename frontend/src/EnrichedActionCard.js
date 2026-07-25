@@ -10,7 +10,7 @@
 //
 //   const handleMarkDone = async (action) => {
 //     try {
-//       // actions.status CHECK: 'yet_to_start'|'in_progress'|'completed'|'snoozed'
+//       // actions.status CHECK: 'not_started'|'in_progress'|'blocked'|'snoozed'|'completed'|'skipped'|'cancelled'
 //       await apiService.patch(`/api/actions/${action.id}`, {
 //         status: 'completed',
 //         completed: true,
@@ -69,7 +69,7 @@
 //   action.deal_id          — for linking back to the deal
 //   action.priority         — 'high'|'medium'|'low' (actions.priority is VARCHAR(20))
 //   action.due_date         — timestamp
-//   action.status           — 'yet_to_start'|'in_progress'|'completed'|'snoozed'
+//   action.status           — 'not_started'|'in_progress'|'blocked'|'snoozed'|'completed'|'skipped'|'cancelled'
 //
 // play_instance_id comes from deal_play_instances.id, joined when fetching actions.
 // You can add it via: LEFT JOIN deal_play_instances dpi ON dpi.action_id = actions.id

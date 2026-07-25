@@ -95,7 +95,7 @@ function DealActionRow({ action, onStatusChange, onSnoozeClick, onUnsnooze, onDe
         <div className="dap-action-row__actions">
           {!isCompleted && !isSnoozed && (
             <>
-              {action.status === 'yet_to_start' && (
+              {action.status === 'not_started' && (
                 <button
                   className="dap-btn dap-btn--start"
                   onClick={() => onStatusChange(action.id, 'in_progress')}
@@ -272,7 +272,7 @@ export default function DealActionsPanel({ deal }) {
       await apiFetch(`/actions/${actionId}/unsnooze`, { method: 'PATCH' });
       setActions(prev => prev.map(a =>
         a.id === actionId
-          ? { ...a, status: 'yet_to_start', snoozedUntil: null, snoozeReason: null, snoozeDuration: null }
+          ? { ...a, status: 'not_started', snoozedUntil: null, snoozeReason: null, snoozeDuration: null }
           : a
       ));
     } catch (err) {

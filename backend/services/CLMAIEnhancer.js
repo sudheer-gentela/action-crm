@@ -110,7 +110,7 @@ Respond ONLY with a JSON array:
              type, action_type, title, description,
              priority, next_step, source, source_rule,
              due_date, status, created_at
-           ) VALUES ($1,$2,$3,$4,$4,$5,$6,$7,$8,'ai_generated','clm_ai',$9,'yet_to_start',NOW())`,
+           ) VALUES ($1,$2,$3,$4,$4,$5,$6,$7,$8,'ai_generated','clm_ai',$9,'not_started',NOW())`,
           [orgId, userId, contract.id,
            next_step === 'document' ? 'document_prep' : 'follow_up',
            a.title.substring(0, 120), a.description || null,

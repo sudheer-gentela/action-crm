@@ -145,7 +145,7 @@ If no additional actions are needed, return [].`;
                  type, action_type, title, description, priority,
                  next_step, source, source_rule, suggested_action,
                  due_date, status, created_at
-               ) VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,'ai_generated','strap_ai',$11,$12,'yet_to_start',NOW())
+               ) VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,'ai_generated','strap_ai',$11,$12,'not_started',NOW())
                RETURNING id, title`,
               [orgId, userId, strap.id,
                strap.entity_type === 'deal' ? strap.entity_id : null,

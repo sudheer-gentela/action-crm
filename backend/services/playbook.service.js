@@ -584,7 +584,7 @@ async function firePlaybookPlays({ orgId, playbookId, stageKey, entityType, enti
              (org_id, case_id, play_id, title, description, channel,
               priority, execution_type, is_gate, due_date, sort_order,
               stage_key, assigned_to, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending')
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'not_started')
            ON CONFLICT (case_id, play_id) DO NOTHING`,
           [orgId, entityId, play.id, play.title, play.description || null,
            play.channel || null, play.priority || 'medium',
@@ -597,7 +597,7 @@ async function firePlaybookPlays({ orgId, playbookId, stageKey, entityType, enti
           `INSERT INTO contract_play_instances
              (org_id, contract_id, play_id, stage_key, title, description, channel,
               priority, execution_type, is_gate, due_date, sort_order, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'pending')
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'not_started')
            ON CONFLICT (contract_id, play_id) DO NOTHING`,
           [orgId, entityId, play.id, stageKey, play.title, play.description || null,
            play.channel || null, play.priority || 'medium',
@@ -610,7 +610,7 @@ async function firePlaybookPlays({ orgId, playbookId, stageKey, entityType, enti
           `INSERT INTO deal_play_instances
              (org_id, deal_id, play_id, stage_key, title, description, channel,
               priority, execution_type, is_gate, due_date, sort_order, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'pending')
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'not_started')
            ON CONFLICT (deal_id, play_id) DO NOTHING`,
           [orgId, entityId, play.id, stageKey, play.title, play.description || null,
            play.channel || null, play.priority || 'medium',

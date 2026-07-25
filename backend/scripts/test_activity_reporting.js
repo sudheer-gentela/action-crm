@@ -3,7 +3,7 @@
  *
  * Covers:
  *   • Atom derivation — seven mutually exclusive states across both action
- *     tables; deals 'yet_to_start' → pending; auto_completed wins over
+ *     tables; deals 'not_started' → pending; auto_completed wins over
  *     status='completed'; states sum to generated per source.
  *   • Cohort boundaries — created before window excluded; created inside +
  *     completed after "now" is impossible, but completed long after creation
@@ -118,10 +118,10 @@ async function main() {
     await seedPA('pending',   { created: outWin });                       // outside cohort
     await seedPA('completed', { completed: true, source: 'signal' });    // second source
 
-    // Deals actions for manager: yet_to_start → pending; playbook vs manual.
+    // Deals actions for manager: not_started → pending; playbook vs manual.
     await c.query(
       `INSERT INTO actions (user_id, title, type, status, source_rule, created_at)
-       VALUES ($1, 'seed-deal-1', 'task', 'yet_to_start', 'health_2a_no_buyer', $2),
+       VALUES ($1, 'seed-deal-1', 'task', 'not_started', 'health_2a_no_buyer', $2),
               ($1, 'seed-deal-2', 'task', 'completed',    NULL,                 $2)`,
       [mgrId, inWin.toISOString()]
     );
@@ -188,7 +188,7 @@ async function main() {
       [mgrScope.userIds, winStart, winEnd]
     )).rows;
     const getD = (src, st) => atomsDeals.find(r => r.source === src && r.state === st)?.n || 0;
-    check("atoms: deals 'yet_to_start' normalizes to pending (playbook)", getD('playbook', 'pending') === 1, atomsDeals);
+    check("atoms: deals 'not_started' normalizes to pending (playbook)", getD('playbook', 'pending') === 1, atomsDeals);
     check('atoms: deals manual completed → rep_completed', getD('manual', 'rep_completed') === 1, atomsDeals);
 
     // Rep self-scope must not see manager's deals atoms.

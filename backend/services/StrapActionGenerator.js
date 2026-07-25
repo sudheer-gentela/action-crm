@@ -219,7 +219,7 @@ class StrapActionGenerator {
                next_step, is_internal,
                source, source_rule,
                due_date, status, created_at
-             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'strap',$11,$12,'yet_to_start',NOW())
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'strap',$11,$12,'not_started',NOW())
              RETURNING id`,
             [
               orgId, assigneeUserId, dealId, strap.id,
@@ -336,7 +336,7 @@ class StrapActionGenerator {
           const r = await db.query(
             `DELETE FROM actions
              WHERE id = $1 AND org_id = $2 AND source = 'strap'
-               AND status IN ('yet_to_start', 'in_progress')
+               AND status IN ('not_started', 'in_progress')
              RETURNING id`,
             [row.action_id, orgId]
           );

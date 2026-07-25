@@ -149,12 +149,12 @@ class PlaybookPlayService {
       const coOwnerRoles = roles.filter(r => r.ownership_type === 'co_owner');
 
       // Determine initial status
-      let initialStatus = 'active';
+      let initialStatus = 'not_started';
       if (play.execution_type === 'sequential' && play.depends_on && play.depends_on.length > 0) {
         // Check if all dependencies are completed
         const allDepsComplete = await this._areDependenciesComplete(dealId, play.depends_on);
         if (!allDepsComplete) {
-          initialStatus = 'pending';
+          initialStatus = 'blocked';
         }
       }
 
@@ -234,7 +234,7 @@ class PlaybookPlayService {
 
       // Create action row if instance is active
       let actionId = null;
-      if (initialStatus === 'active' && assignees.length > 0) {
+      if (initialStatus === 'not_started' && assignees.length > 0) {
         actionId = await this._createActionForPlay(instance, assignees[0], orgId);
         if (actionId) {
           await db.query(
@@ -329,10 +329,10 @@ class PlaybookPlayService {
       }
 
       // Handover plays use same dependency logic as regular plays
-      let initialStatus = 'active';
+      let initialStatus = 'not_started';
       if (play.execution_type === 'sequential' && play.depends_on && play.depends_on.length > 0) {
         const allDepsComplete = await this._areDependenciesComplete(dealId, play.depends_on);
-        if (!allDepsComplete) initialStatus = 'pending';
+        if (!allDepsComplete) initialStatus = 'blocked';
       }
 
       const dueDate = new Date();
@@ -379,7 +379,7 @@ class PlaybookPlayService {
 
       // Create action assigned to resolved user
       let actionId = null;
-      if (initialStatus === 'active' && assignee) {
+      if (initialStatus === 'not_started' && assignee) {
         actionId = await this._createActionForPlay(instance, assignee, orgId);
         if (actionId) {
           await db.query(
@@ -406,7 +406,7 @@ class PlaybookPlayService {
     const result = await db.query(
       `UPDATE deal_play_instances
        SET status = 'completed', completed_at = NOW(), completed_by = $1, updated_at = NOW()
-       WHERE id = $2 AND org_id = $3 AND status IN ('active', 'pending')
+       WHERE id = $2 AND org_id = $3 AND status IN ('not_started', 'in_progress', 'blocked', 'snoozed')
        RETURNING *`,
       [userId, instanceId, orgId]
     );
@@ -441,7 +441,7 @@ class PlaybookPlayService {
     const result = await db.query(
       `UPDATE deal_play_instances
        SET status = 'skipped', overridden_by = $1, updated_at = NOW()
-       WHERE id = $2 AND org_id = $3 AND status IN ('active', 'pending')
+       WHERE id = $2 AND org_id = $3 AND status IN ('not_started', 'in_progress', 'blocked', 'snoozed')
        RETURNING *`,
       [userId, instanceId, orgId]
     );
@@ -629,7 +629,7 @@ class PlaybookPlayService {
          title, description, channel, priority,
          execution_type, is_gate, due_date, sort_order,
          status, is_manual, overridden_by
-       ) VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, 'parallel', $8, $9, $10, 'active', TRUE, $11)
+       ) VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, 'parallel', $8, $9, $10, 'not_started', TRUE, $11)
        RETURNING *`,
       [
         dealId, orgId, stageKey,
@@ -710,7 +710,7 @@ class PlaybookPlayService {
       `SELECT dpi.id, dpi.play_id, pp.depends_on
        FROM deal_play_instances dpi
        LEFT JOIN playbook_plays pp ON pp.id = dpi.play_id
-       WHERE dpi.deal_id = $1 AND dpi.status = 'pending'
+       WHERE dpi.deal_id = $1 AND dpi.status = 'blocked'
          AND pp.depends_on IS NOT NULL
          AND $2 = ANY(pp.depends_on)`,
       [dealId, completedPlayId]
@@ -728,7 +728,7 @@ class PlaybookPlayService {
       if (allDepsComplete) {
         // Activate this play
         await db.query(
-          `UPDATE deal_play_instances SET status = 'active', updated_at = NOW()
+          `UPDATE deal_play_instances SET status = 'not_started', updated_at = NOW()
            WHERE id = $1`,
           [pending.id]
         );
@@ -791,7 +791,7 @@ class PlaybookPlayService {
            source, source_rule,
            due_date, status, completed,
            metadata
-         ) VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8, $9, 'playbook', 'playbook_play', $10, 'yet_to_start', false, $11)
+         ) VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8, $9, 'playbook', 'playbook_play', $10, 'not_started', false, $11)
          RETURNING id`,
         [
           orgId,
