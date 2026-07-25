@@ -712,7 +712,7 @@ export default function OAAssessment() {
         {snapshots.length > 0 && (
           <table style={{ borderCollapse: 'collapse', width: '100%', marginTop: 12 }}>
             <thead><tr>
-              <th style={thS}>#</th><th style={thS}>Status</th><th style={thS}>Captured</th><th style={thS}>Window</th><th style={thS}>Report</th>
+              <th style={thS}>#</th><th style={thS}>Status</th><th style={thS}>Captured</th><th style={thS}>Defs</th><th style={thS}>Window</th><th style={thS}>Report</th>
             </tr></thead>
             <tbody>
               {snapshots.map(s => {
@@ -728,8 +728,16 @@ export default function OAAssessment() {
                     <td style={tdS}>
                       <span style={chip(STATUS_COLOR[s.status] || MUTED)}>{s.status}</span>
                       {s.error_detail && <div style={{ color: BAD, fontSize: 12 }}>{s.error_detail}</div>}
+                      {s.status === 'failed' && (
+                        <button style={{ ...btn, padding: '2px 8px', fontSize: 12, marginTop: 4 }}
+                          onClick={async () => {
+                            try { await jfetch(`/baseline/snapshots/${s.id}`, { method: 'DELETE' }); await loadSnapshots(connId); }
+                            catch (e) { fail(e, 'Dismiss failed'); }
+                          }}>Dismiss</button>
+                      )}
                     </td>
                     <td style={tdS}>{new Date(s.captured_at).toLocaleString()}</td>
+                    <td style={{ ...tdS, color: MUTED }}>v{s.metric_defs_version}</td>
                     <td style={{ ...tdS, color: MUTED }}>{s.history_from?.slice(0, 10)} → {s.history_to?.slice(0, 10)}</td>
                     <td style={tdS}>
                       {s.status !== 'frozen' ? <span style={{ color: MUTED }}>—</span> : !rep ? (

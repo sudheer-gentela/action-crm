@@ -234,4 +234,23 @@ router.post('/reports/:id/revoke-share', requireRole('admin', 'owner'), async (r
   }
 });
 
+// ── DELETE /snapshots/:id — failed snapshots only ────────────────────────────
+// Frozen snapshots are immutable evidence (DB trigger enforces); failed rows
+// are noise and dismissible. The status guard is in the WHERE, so a frozen
+// id is simply not matched — no way to reach the trigger, no way to delete
+// evidence.
+router.delete('/snapshots/:id', requireRole('admin', 'owner'), async (req, res) => {
+  try {
+    const del = await pool.query(
+      `DELETE FROM baseline_snapshots WHERE id = $1 AND org_id = $2 AND status = 'failed'`,
+      [req.params.id, req.orgId]);
+    if (!del.rowCount) {
+      return res.status(409).json({ success: false, error: 'Only failed snapshots can be dismissed' });
+    }
+    res.json({ success: true, deleted: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;
