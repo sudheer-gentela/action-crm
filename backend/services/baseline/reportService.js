@@ -292,7 +292,7 @@ function renderHtml({ snap, findings, scoreboard, thresholds, narrative, brandin
       <p class="fine">Every deal this snapshot saw in the ${_dt(snap.history_from)} → ${_dt(snap.history_to)} window, with the values each metric consumed.
       "History only" = appears in stage history but closed outside the close-date window. "Unmapped stage" = excluded from stage metrics (see caveats).
       ${sfBase ? 'Deal names link to the Salesforce record for verification.' : ''}</p>
-      <table><thead><tr><th>Deal</th><th>Stage</th><th>Status</th><th>Amount</th><th>Created</th><th>Days in stage</th><th>Stalled</th><th>Act. 30d</th><th>Contacts</th><th>Owner</th></tr></thead>
+      <table><thead><tr><th>Deal</th><th>Stage</th><th>Status</th><th>Amount</th><th>Created</th><th>Days in stage</th><th>Stalled</th><th>Last activity</th><th>Contacts</th><th>Owner</th></tr></thead>
       <tbody>${inventory.map(d => `<tr${d.stalled ? ' style="background:#FEF2F2"' : ''}>
         <td>${dealLink(d.crmId, d.name || d.crmId)}</td>
         <td>${_esc(d.rawStage || '')}</td>
@@ -301,7 +301,7 @@ function renderHtml({ snap, findings, scoreboard, thresholds, narrative, brandin
         <td>${d.createdAt ? _dt(d.createdAt) : ''}</td>
         <td>${d.dwellDays != null ? d.dwellDays : ''}</td>
         <td>${d.stalled ? 'yes' : ''}</td>
-        <td>${d.activityLast30 == null ? '' : (d.activityLast30 ? 'yes' : 'no')}</td>
+        <td>${d.lastActivityAt ? _dt(d.lastActivityAt) : (d.activityLast30 == null ? '' : 'none logged')}</td>
         <td>${d.contactRoleCount != null ? d.contactRoleCount : ''}</td>
         <td>${_esc(d.ownerName || '')}</td></tr>`).join('')}</tbody></table>
     </section>` : `

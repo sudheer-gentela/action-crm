@@ -351,15 +351,17 @@ async function _executeCapture(orgId, prep) {
     const inv = new Map();
     for (const d of openDeals) {
       const resolved = resolver.resolve(d.stage);
-      const dwell = d.stageChangedAt
-        ? Number(((new Date(captureAt) - new Date(d.stageChangedAt)) / 86400000).toFixed(1)) : null;
+      const dwellBasis = d.stageChangedAt || d.createdAt;   // never-moved fallback (1.2.0)
+      const dwell = dwellBasis
+        ? Number(((new Date(captureAt) - new Date(dwellBasis)) / 86400000).toFixed(1)) : null;
       inv.set(d.crmId, {
         crmId: d.crmId, name: d.name || null,
         rawStage: d.stage, stageKey: resolved ? resolved.key : null,
         status: resolved ? (resolved.isClosed ? (resolved.isWon ? 'won' : 'lost') : 'open') : 'unmapped_stage',
         amount: d.amount, createdAt: d.createdAt || null, closeDate: null,
         dwellDays: dwell, stalled: stalledSet.has(d.crmId),
-        activityLast30: d.activityLast30, contactRoleCount: d.contactRoleCount,
+        activityLast30: d.activityLast30, lastActivityAt: d.lastActivityAt || null,
+        contactRoleCount: d.contactRoleCount,
         ownerName: d.ownerName || null,
       });
     }
@@ -478,6 +480,7 @@ async function _sfOpenDeals(sfClient, captureAt, cfg, warnings) {
       createdAt: r.CreatedDate,
       stageChangedAt: r.LastStageChangeDate || null,
       ownerName: r.Owner ? r.Owner.Name : null,
+      lastActivityAt: r.LastActivityDate || null,
       segmentValues: Object.fromEntries(segFields.map(f => [f, _axisValue(r, f)])),
       contactRoleCount: null,                 // attached separately
       activityLast14: lastAct == null ? null : (lastAct <= 14 ? 1 : 0),
@@ -590,6 +593,7 @@ async function _hsPullDeals(hsAdapter, captureAt, cfg, ownerMap, warnings) {
           createdAt: p.createdate || null,
           stageChangedAt: p.hs_date_entered_current_stage || null,
           ownerName: ownerMap.get(String(p.hubspot_owner_id)) || p.hubspot_owner_id || null,
+          lastActivityAt: p.notes_last_contacted || null,
           segmentValues,
           contactRoleCount: (p.num_associated_contacts != null && p.num_associated_contacts !== '')
             ? Number(p.num_associated_contacts) : null,

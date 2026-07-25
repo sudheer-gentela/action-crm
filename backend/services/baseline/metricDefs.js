@@ -36,7 +36,12 @@
 
 // 1.1.0: evidence gains dealInventory (drill-through layer). Metric
 // FORMULAS are unchanged from 1.0.0 — the bump marks the evidence contract.
-const METRIC_DEFS_VERSION = '1.1.0';
+// 1.2.0: stall dwell falls back to deal CREATED date when the stage never
+// changed (Salesforce leaves LastStageChangeDate null in that case — a
+// never-moved deal has been in its stage since creation, and treating
+// that as unknown hid exactly the deadest pipelines). Evidence contract
+// unchanged from 1.1.0.
+const METRIC_DEFS_VERSION = '1.2.0';
 
 // ── small stats helpers ──────────────────────────────────────────────────────
 
@@ -232,8 +237,10 @@ function computeStall(openDeals, cycleByStage, stageResolver, captureAt) {
     const ageDays = d.createdAt ? (now - new Date(d.createdAt).getTime()) / DAY_MS : null;
     if (ageDays != null) ages.push(ageDays);
 
-    const dwellDays = d.stageChangedAt
-      ? (now - new Date(d.stageChangedAt).getTime()) / DAY_MS : null;
+    // Never-moved deals: stage dwell = age since creation (see 1.2.0 note).
+    const dwellBasis = d.stageChangedAt || d.createdAt;
+    const dwellDays = dwellBasis
+      ? (now - new Date(dwellBasis).getTime()) / DAY_MS : null;
     const threshold = cycleByStage[resolved.key] && cycleByStage[resolved.key].p75Days;
     if (dwellDays != null && threshold != null && dwellDays > threshold) {
       stalled.push({

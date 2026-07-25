@@ -719,7 +719,12 @@ export default function OAAssessment() {
                 const rep = reports[s.id];
                 return (
                   <tr key={s.id}>
-                    <td style={tdS}>{s.id}</td>
+                    <td style={tdS}>
+                      {s.status === 'frozen' && reports[s.id] ? (
+                        <button style={{ ...btn, padding: '2px 8px', fontSize: 12.5, textDecoration: 'underline', border: 'none' }}
+                          title="Open report" onClick={() => viewReport(reports[s.id].id)}>#{s.id}</button>
+                      ) : `#${s.id}`}
+                    </td>
                     <td style={tdS}>
                       <span style={chip(STATUS_COLOR[s.status] || MUTED)}>{s.status}</span>
                       {s.error_detail && <div style={{ color: BAD, fontSize: 12 }}>{s.error_detail}</div>}
