@@ -41,7 +41,13 @@
 // never-moved deal has been in its stage since creation, and treating
 // that as unknown hid exactly the deadest pipelines). Evidence contract
 // unchanged from 1.1.0.
-const METRIC_DEFS_VERSION = '1.2.0';
+// 1.3.0: stall threshold gains an absolute floor. Self-calibration (each
+// stage's own p75) is impossible on orgs with no stage history — which are
+// often the DEADEST pipelines, exactly the ones that must flag. When a
+// stage has no historical p75, dwell beyond stall_fallback_days (default
+// 90) counts as stalled, and the finding states which threshold applied.
+const METRIC_DEFS_VERSION = '1.3.0';
+const STALL_FALLBACK_DAYS = 90;
 
 // ── small stats helpers ──────────────────────────────────────────────────────
 
@@ -241,12 +247,14 @@ function computeStall(openDeals, cycleByStage, stageResolver, captureAt) {
     const dwellBasis = d.stageChangedAt || d.createdAt;
     const dwellDays = dwellBasis
       ? (now - new Date(dwellBasis).getTime()) / DAY_MS : null;
-    const threshold = cycleByStage[resolved.key] && cycleByStage[resolved.key].p75Days;
+    const stageP75 = cycleByStage[resolved.key] ? cycleByStage[resolved.key].p75Days : null;
+    const threshold = stageP75 != null ? stageP75 : STALL_FALLBACK_DAYS;
+    const thresholdSource = stageP75 != null ? 'stage_p75' : 'fallback_days';
     if (dwellDays != null && threshold != null && dwellDays > threshold) {
       stalled.push({
         crmId: d.crmId, stage: resolved.key,
         dwellDays: Number(dwellDays.toFixed(1)),
-        thresholdDays: threshold,
+        thresholdDays: threshold, thresholdSource,
         amount: d.amount != null ? Number(d.amount) : null,
       });
     }

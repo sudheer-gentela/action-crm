@@ -10,6 +10,13 @@ router.use(orgContext);
 // ── GET /api/actions/unified ─────────────────────────────────────────────────
 // Returns combined deal + prospecting actions for the unified Actions view.
 // Supports ?source=all|deals|prospecting, ?scope=mine|team|org
+//
+// VOCABULARY NOTE (2026_70 / D19):
+//   actions (deal side) uses the canonical vocabulary:
+//     not_started | in_progress | blocked | snoozed | completed | skipped | cancelled
+//   prospecting_actions deliberately keeps its own vocabulary (pending | ...).
+//   The two branches below therefore filter DIFFERENT status sets on purpose.
+//   Do not "unify" them — see D19.
 router.get('/unified', async (req, res) => {
   try {
     const { scope = 'mine', source = 'all' } = req.query;
@@ -31,7 +38,7 @@ router.get('/unified', async (req, res) => {
 
     const results = { dealActions: [], prospectingActions: [] };
 
-    // Fetch deal actions
+    // Fetch deal actions (canonical vocabulary)
     if (source === 'all' || source === 'deals') {
       const dealActionsRes = await db.query(
         `SELECT a.*, d.name AS deal_name, d.stage AS deal_stage, d.value AS deal_value,
@@ -40,9 +47,14 @@ router.get('/unified', async (req, res) => {
          LEFT JOIN deals d ON a.deal_id = d.id
          LEFT JOIN accounts acc ON d.account_id = acc.id
          WHERE a.org_id = $1 ${ownerFilter}
-           AND a.status IN ('pending','in_progress','snoozed')
+           AND a.status IN ('not_started','in_progress','blocked','snoozed')
          ORDER BY
-           CASE a.status WHEN 'pending' THEN 1 WHEN 'in_progress' THEN 2 WHEN 'snoozed' THEN 3 ELSE 4 END,
+           CASE a.status
+             WHEN 'blocked'     THEN 1
+             WHEN 'in_progress' THEN 2
+             WHEN 'not_started' THEN 3
+             WHEN 'snoozed'     THEN 4
+             ELSE 5 END,
            CASE a.priority WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 ELSE 4 END,
            a.due_date ASC NULLS LAST`,
         params
@@ -61,7 +73,7 @@ router.get('/unified', async (req, res) => {
       }));
     }
 
-    // Fetch prospecting actions
+    // Fetch prospecting actions (prospecting keeps its own vocabulary — D19)
     if (source === 'all' || source === 'prospecting') {
       const pActionsRes = await db.query(
         `SELECT pa.*,
@@ -73,6 +85,7 @@ router.get('/unified', async (req, res) => {
          FROM prospecting_actions pa
          LEFT JOIN prospects p ON pa.prospect_id = p.id
          WHERE pa.org_id = $1 ${ownerFilter}
+           -- prospecting_actions keeps its own vocabulary (D19); do NOT map to canonical here
            AND pa.status IN ('pending','in_progress','snoozed')
          ORDER BY
            CASE pa.status WHEN 'pending' THEN 1 WHEN 'in_progress' THEN 2 WHEN 'snoozed' THEN 3 ELSE 4 END,
