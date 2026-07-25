@@ -83,7 +83,7 @@ class SalesforceClient {
       const msg = Array.isArray(sfErrors)
         ? sfErrors.map(e => `${e.errorCode}: ${e.message}`).join('; ')
         : err.message;
-      throw new Error(`Salesforce API error on ${method} ${path}: ${msg}`);
+      throw new Error(`Salesforce API error on ${method} ${url}: ${msg}`);
     }
   }
 

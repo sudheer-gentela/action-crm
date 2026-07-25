@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict LBuFmer5Q7epkL12En3HmsSPpVv3uDDwwN2V6unw8GxM31mGqXMZQtvrup8cNE1
+\restrict TiI8splXxM0wunH2ELeEYKPJCjfQjGFG7SMMtJok24nR7KHWAf9PQcjqPCp0bYr
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -157,6 +157,23 @@ CREATE FUNCTION public.set_updated_at() RETURNS trigger
     AS $$
 BEGIN
   NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: sync_action_completed(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.sync_action_completed() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  NEW.completed := (NEW.status = 'completed');
+  IF NEW.status = 'completed' AND NEW.completed_at IS NULL THEN
+    NEW.completed_at := now();
+  END IF;
   RETURN NEW;
 END;
 $$;
@@ -657,8 +674,6 @@ CREATE TABLE public.actions (
     auto_completed boolean DEFAULT false,
     completion_confidence integer,
     completion_evidence jsonb,
-    pending_suggestions jsonb[],
-    dismissed_suggestions jsonb[],
     requires_external_evidence boolean DEFAULT false,
     health_param character varying(10) DEFAULT NULL::character varying,
     source_rule character varying(80) DEFAULT NULL::character varying,
@@ -681,7 +696,7 @@ CREATE TABLE public.actions (
     source_module character varying(50),
     external_refs jsonb DEFAULT '{}'::jsonb NOT NULL,
     CONSTRAINT actions_next_step_check CHECK (((next_step)::text = ANY ((ARRAY['email'::character varying, 'call'::character varying, 'whatsapp'::character varying, 'linkedin'::character varying, 'slack'::character varying, 'document'::character varying, 'internal_task'::character varying])::text[]))),
-    CONSTRAINT actions_status_check CHECK (((status)::text = ANY ((ARRAY['yet_to_start'::character varying, 'in_progress'::character varying, 'completed'::character varying, 'snoozed'::character varying])::text[]))),
+    CONSTRAINT actions_status_check CHECK (((status)::text = ANY ((ARRAY['not_started'::character varying, 'in_progress'::character varying, 'blocked'::character varying, 'snoozed'::character varying, 'completed'::character varying, 'skipped'::character varying, 'cancelled'::character varying])::text[]))),
     CONSTRAINT chk_actions_source_module CHECK (((source_module IS NULL) OR ((source_module)::text = ANY ((ARRAY['deals'::character varying, 'prospecting'::character varying, 'contracts'::character varying, 'handovers'::character varying, 'service'::character varying, 'agency'::character varying, 'general'::character varying])::text[]))))
 );
 
@@ -719,13 +734,6 @@ COMMENT ON COLUMN public.actions.keywords IS 'Keywords used for matching complet
 --
 
 COMMENT ON COLUMN public.actions.completion_evidence IS 'JSON evidence of what triggered completion: {type: email/meeting, id: 123, snippet: "..."}';
-
-
---
--- Name: COLUMN actions.pending_suggestions; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON COLUMN public.actions.pending_suggestions IS 'Array of pending completion suggestions awaiting user review';
 
 
 --
@@ -1251,7 +1259,7 @@ CREATE TABLE public.case_plays (
     org_id integer NOT NULL,
     case_id integer NOT NULL,
     play_id integer NOT NULL,
-    status character varying(20) DEFAULT 'pending'::character varying NOT NULL,
+    status character varying(20) DEFAULT 'not_started'::character varying NOT NULL,
     assigned_to integer,
     assigned_role_id integer,
     due_at timestamp with time zone,
@@ -1269,7 +1277,7 @@ CREATE TABLE public.case_plays (
     is_manual boolean DEFAULT false NOT NULL,
     action_id integer,
     stage_key text,
-    CONSTRAINT case_plays_status_check CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'completed'::character varying, 'skipped'::character varying])::text[])))
+    CONSTRAINT case_plays_status_check CHECK (((status)::text = ANY ((ARRAY['not_started'::character varying, 'in_progress'::character varying, 'blocked'::character varying, 'snoozed'::character varying, 'completed'::character varying, 'skipped'::character varying, 'cancelled'::character varying])::text[])))
 );
 
 
@@ -2138,14 +2146,14 @@ CREATE TABLE public.contract_play_instances (
     is_gate boolean DEFAULT false NOT NULL,
     due_date date,
     sort_order integer DEFAULT 0 NOT NULL,
-    status text DEFAULT 'pending'::text NOT NULL,
+    status text DEFAULT 'not_started'::text NOT NULL,
     is_manual boolean DEFAULT false NOT NULL,
     action_id integer,
     completed_at timestamp with time zone,
     completed_by integer,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT contract_play_instances_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'active'::text, 'completed'::text, 'skipped'::text])))
+    CONSTRAINT contract_play_instances_status_check CHECK ((status = ANY (ARRAY['not_started'::text, 'in_progress'::text, 'blocked'::text, 'snoozed'::text, 'completed'::text, 'skipped'::text, 'cancelled'::text])))
 );
 
 
@@ -2797,7 +2805,7 @@ CREATE TABLE public.deal_play_instances (
     is_gate boolean DEFAULT false NOT NULL,
     due_date date,
     sort_order integer DEFAULT 0 NOT NULL,
-    status text DEFAULT 'pending'::text NOT NULL,
+    status text DEFAULT 'not_started'::text NOT NULL,
     is_manual boolean DEFAULT false NOT NULL,
     overridden_by integer,
     completed_at timestamp with time zone,
@@ -2806,7 +2814,8 @@ CREATE TABLE public.deal_play_instances (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     playbook_id integer,
-    due_anchor character varying(20) DEFAULT 'created'::character varying NOT NULL
+    due_anchor character varying(20) DEFAULT 'created'::character varying NOT NULL,
+    CONSTRAINT deal_play_instances_status_check CHECK ((status = ANY (ARRAY['not_started'::text, 'in_progress'::text, 'blocked'::text, 'snoozed'::text, 'completed'::text, 'skipped'::text, 'cancelled'::text])))
 );
 
 
@@ -3732,14 +3741,14 @@ CREATE VIEW public.handover_deliverable_rollup AS
     h.go_live_date,
     (h.go_live_date - CURRENT_DATE) AS days_to_go_live,
     count(DISTINCT dpi.id) AS plays_total,
-    count(DISTINCT dpi.id) FILTER (WHERE (dpi.status = ANY (ARRAY['completed'::text, 'skipped'::text]))) AS plays_done,
-    count(DISTINCT dpi.id) FILTER (WHERE ((dpi.status <> ALL (ARRAY['completed'::text, 'skipped'::text])) AND (dpi.due_date < CURRENT_DATE))) AS plays_overdue,
-    count(DISTINCT dpi.id) FILTER (WHERE (dpi.is_gate AND (dpi.status <> ALL (ARRAY['completed'::text, 'skipped'::text])))) AS gates_open,
+    count(DISTINCT dpi.id) FILTER (WHERE (dpi.status = ANY (ARRAY['completed'::text, 'skipped'::text, 'cancelled'::text]))) AS plays_done,
+    count(DISTINCT dpi.id) FILTER (WHERE ((dpi.status <> ALL (ARRAY['completed'::text, 'skipped'::text, 'cancelled'::text, 'snoozed'::text])) AND (dpi.due_date < CURRENT_DATE))) AS plays_overdue,
+    count(DISTINCT dpi.id) FILTER (WHERE (dpi.is_gate AND (dpi.status <> ALL (ARRAY['completed'::text, 'skipped'::text, 'cancelled'::text])))) AS gates_open,
     count(DISTINCT c.id) AS commitments_total,
     count(DISTINCT c.id) FILTER (WHERE ((c.status)::text = ANY ((ARRAY['met'::character varying, 'waived'::character varying, 'breached'::character varying])::text[]))) AS commitments_closed,
     count(DISTINCT c.id) FILTER (WHERE (((c.status)::text = ANY ((ARRAY['open'::character varying, 'in_progress'::character varying])::text[])) AND (c.due_date < CURRENT_DATE))) AS commitments_overdue,
     count(DISTINCT c.id) FILTER (WHERE ((c.status)::text = 'breached'::text)) AS commitments_breached,
-    ((count(DISTINCT dpi.id) FILTER (WHERE (dpi.is_gate AND (dpi.status <> ALL (ARRAY['completed'::text, 'skipped'::text])))) = 0) AND (count(DISTINCT c.id) FILTER (WHERE ((c.status)::text = ANY ((ARRAY['open'::character varying, 'in_progress'::character varying])::text[]))) = 0)) AS is_closeable
+    ((count(DISTINCT dpi.id) FILTER (WHERE (dpi.is_gate AND (dpi.status <> ALL (ARRAY['completed'::text, 'skipped'::text, 'cancelled'::text])))) = 0) AND (count(DISTINCT c.id) FILTER (WHERE ((c.status)::text = ANY ((ARRAY['open'::character varying, 'in_progress'::character varying])::text[]))) = 0)) AS is_closeable
    FROM (((public.sales_handovers h
      LEFT JOIN public.sales_handover_plays shp ON ((shp.handover_id = h.id)))
      LEFT JOIN public.deal_play_instances dpi ON ((dpi.id = shp.play_instance_id)))
@@ -3751,7 +3760,7 @@ CREATE VIEW public.handover_deliverable_rollup AS
 -- Name: VIEW handover_deliverable_rollup; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON VIEW public.handover_deliverable_rollup IS 'Per-handover deliverable aggregate: play + commitment counts, overdue counts, and is_closeable. Read by handover.service.list() and canClose().';
+COMMENT ON VIEW public.handover_deliverable_rollup IS 'Per-handover deliverable aggregate: play + commitment counts, overdue counts, and is_closeable. Read by handover.service.list() and canClose(). Canonical status vocabulary as of 2026_70.';
 
 
 --
@@ -4671,6 +4680,52 @@ CREATE TABLE public.org_slack_installs (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT org_slack_installs_status_chk CHECK ((status = ANY (ARRAY['active'::text, 'revoked'::text])))
 );
+
+
+--
+-- Name: org_status_labels; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.org_status_labels (
+    id bigint NOT NULL,
+    org_id integer NOT NULL,
+    entity_class text NOT NULL,
+    canonical_status text NOT NULL,
+    display_label text NOT NULL,
+    display_order integer DEFAULT 0 NOT NULL,
+    color text,
+    is_hidden boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT osl_entity_chk CHECK ((entity_class = ANY (ARRAY['action'::text, 'play'::text, 'commitment'::text]))),
+    CONSTRAINT osl_status_chk CHECK ((((entity_class = ANY (ARRAY['action'::text, 'play'::text])) AND (canonical_status = ANY (ARRAY['not_started'::text, 'in_progress'::text, 'blocked'::text, 'snoozed'::text, 'completed'::text, 'skipped'::text, 'cancelled'::text]))) OR ((entity_class = 'commitment'::text) AND (canonical_status = ANY (ARRAY['open'::text, 'in_progress'::text, 'met'::text, 'waived'::text, 'breached'::text])))))
+);
+
+
+--
+-- Name: TABLE org_status_labels; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.org_status_labels IS 'Per-org display labels for the CLOSED canonical status vocabulary. Relabelling only ΓÇö orgs cannot add, remove or merge states. Applied at API serialization; never used in query predicates.';
+
+
+--
+-- Name: org_status_labels_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.org_status_labels_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: org_status_labels_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.org_status_labels_id_seq OWNED BY public.org_status_labels.id;
 
 
 --
@@ -8616,6 +8671,13 @@ ALTER TABLE ONLY public.org_skill_installs ALTER COLUMN id SET DEFAULT nextval('
 
 
 --
+-- Name: org_status_labels id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_status_labels ALTER COLUMN id SET DEFAULT nextval('public.org_status_labels_id_seq'::regclass);
+
+
+--
 -- Name: organizations id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -9943,6 +10005,22 @@ ALTER TABLE ONLY public.org_skill_installs
 
 ALTER TABLE ONLY public.org_slack_installs
     ADD CONSTRAINT org_slack_installs_pkey PRIMARY KEY (org_id);
+
+
+--
+-- Name: org_status_labels org_status_labels_org_id_entity_class_canonical_status_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_status_labels
+    ADD CONSTRAINT org_status_labels_org_id_entity_class_canonical_status_key UNIQUE (org_id, entity_class, canonical_status);
+
+
+--
+-- Name: org_status_labels org_status_labels_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_status_labels
+    ADD CONSTRAINT org_status_labels_pkey PRIMARY KEY (id);
 
 
 --
@@ -12820,6 +12898,13 @@ CREATE INDEX idx_org_skill_installs_org ON public.org_skill_installs USING btree
 
 
 --
+-- Name: idx_org_status_labels_lookup; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_org_status_labels_lookup ON public.org_status_labels USING btree (org_id, entity_class);
+
+
+--
 -- Name: idx_org_twilio_accounts_subaccount_sid; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -14630,6 +14715,13 @@ CREATE TRIGGER trg_reschedule_go_live AFTER UPDATE OF go_live_date ON public.sal
 --
 
 CREATE TRIGGER trg_signal_defs_updated_at BEFORE UPDATE ON public.signal_defs FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+
+
+--
+-- Name: actions trg_sync_action_completed; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_sync_action_completed BEFORE INSERT OR UPDATE OF status ON public.actions FOR EACH ROW EXECUTE FUNCTION public.sync_action_completed();
 
 
 --
@@ -18526,5 +18618,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict LBuFmer5Q7epkL12En3HmsSPpVv3uDDwwN2V6unw8GxM31mGqXMZQtvrup8cNE1
+\unrestrict TiI8splXxM0wunH2ELeEYKPJCjfQjGFG7SMMtJok24nR7KHWAf9PQcjqPCp0bYr
 
