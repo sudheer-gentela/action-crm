@@ -68,6 +68,7 @@ export default function AgencyView() {
   const [loading,        setLoading]        = useState(true);
   const [error,          setError]          = useState('');
   const [selectedClient, setSelectedClient] = useState(null);
+  const [pendingClientTab, setPendingClientTab] = useState(null); // 2026_71 deep-link target tab
   const [showCreate,     setShowCreate]     = useState(false);
 
   const loadClients = useCallback(async () => {
@@ -95,11 +96,32 @@ export default function AgencyView() {
     }
   }, []);
 
+  // 2026_71 — deep-link from the thread-blocked resolution modal straight to a
+  // client's Senders tab. sessionStorage covers a fresh AgencyView mount; the
+  // 'agency-deeplink' event covers the case where AgencyView is already mounted.
+  useEffect(() => {
+    const applyDeepLink = (d) => {
+      if (!d || !d.clientId) return;
+      try { sessionStorage.removeItem('gwc_agency_deeplink'); } catch { /* ignore */ }
+      setSelectedClient(parseInt(d.clientId));
+      setPendingClientTab(d.tab || null);
+    };
+    try {
+      const raw = sessionStorage.getItem('gwc_agency_deeplink');
+      if (raw) applyDeepLink(JSON.parse(raw));
+    } catch { /* ignore */ }
+    const onEvent = (e) => applyDeepLink(e.detail);
+    window.addEventListener('agency-deeplink', onEvent);
+    return () => window.removeEventListener('agency-deeplink', onEvent);
+  }, []);
+
   if (selectedClient) {
     return (
       <ClientDetail
+        key={selectedClient}
         clientId={selectedClient}
-        onBack={() => { setSelectedClient(null); loadClients(); }}
+        initialTab={pendingClientTab}
+        onBack={() => { setSelectedClient(null); setPendingClientTab(null); loadClients(); }}
       />
     );
   }
@@ -399,8 +421,8 @@ function ClientCard({ client, onClick }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // CLIENT DETAIL
 // ─────────────────────────────────────────────────────────────────────────────
-function ClientDetail({ clientId, onBack }) {
-  const [tab,         setTab]         = useState('overview');
+function ClientDetail({ clientId, onBack, initialTab }) {
+  const [tab,         setTab]         = useState(initialTab || 'overview');
   const [data,        setData]        = useState(null);
   const [loading,     setLoading]     = useState(true);
   const [error,       setError]       = useState('');

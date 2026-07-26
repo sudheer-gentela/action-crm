@@ -1077,6 +1077,7 @@ router.get('/enrollments/:enrollId/eligible-senders', async (req, res) => {
 
     res.json({
       isClient:        !!clientId,
+      clientId:        clientId,
       currentSenderId: enr.pinned_sender_account_id || null,
       senders:         sr.rows,
     });
