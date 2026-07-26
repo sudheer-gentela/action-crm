@@ -79,6 +79,16 @@ function fmt(row) {
     createdBy:              row.created_by,
     submittedAt:            row.submitted_at,
     acknowledgedAt:         row.acknowledged_at,
+    // ── closure (2026_64) ──
+    // These columns exist on sales_handovers and are returned by getById()/
+    // advanceStatus(), but were previously dropped here — so the closure_summary
+    // a rep is REQUIRED to enter when cancelling was write-only and invisible in
+    // the UI. Mapped now (additive; no query or behaviour change).
+    completedAt:            row.completed_at   ?? null,
+    completedBy:            row.completed_by   ?? null,
+    cancelledAt:            row.cancelled_at   ?? null,
+    cancelledBy:            row.cancelled_by   ?? null,
+    closureSummary:         row.closure_summary ?? null,
     updatedAt:              row.updated_at,
     createdAt:              row.created_at,
     // joined

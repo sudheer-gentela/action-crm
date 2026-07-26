@@ -213,12 +213,16 @@ router.get('/', async (req, res) => {
 // POST /api/sequences  — body: { name, description, require_approval, ai_enabled, steps: [{channel, delay_days, subject_template, body_template, task_note, require_approval}] }
 router.post('/', async (req, res) => {
   const { name, description, require_approval = true, ai_enabled = false, personalize_config_default = null, steps = [], visibility = 'shared', allow_manager_edit = false, stop_on_connection_accept = false,
-          thread_replies = false, pin_sender = false, thread_subject_mode = 'keep', thread_failover_mode = 'defer' } = req.body;
+          thread_replies = false, pin_sender = false, thread_subject_mode = 'keep', thread_failover_mode = 'defer',
+          body_format = 'html' } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: { message: 'name is required' } });
   const vis = visibility === 'private' ? 'private' : 'shared';
 
   // Threaded-reply config (2026_71). Clamp enums to the CHECK-constrained values
   // and enforce the invariant: threading forces sender pinning on.
+  // 2026_76: html unless explicitly plain. Unknown values fall back rather than
+  // hitting the CHECK constraint with a 500.
+  const bodyFormat         = body_format === 'plain' ? 'plain' : 'html';
   const threadReplies      = thread_replies === true;
   const pinSender          = threadReplies ? true : (pin_sender === true);
   const threadSubjectMode  = thread_subject_mode === 're' ? 're' : 'keep';
@@ -230,13 +234,15 @@ router.post('/', async (req, res) => {
 
     const seqRes = await client.query(
       `INSERT INTO sequences (org_id, name, description, created_by, require_approval, ai_enabled, personalize_config_default, visibility, allow_manager_edit, stop_on_connection_accept,
-                             thread_replies, pin_sender, thread_subject_mode, thread_failover_mode)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
+                             thread_replies, pin_sender, thread_subject_mode, thread_failover_mode,
+                             body_format)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
       [req.orgId, name.trim(), description || null, req.user.userId, require_approval,
        ai_enabled === true,
        personalize_config_default ? JSON.stringify(personalize_config_default) : null,
        vis, allow_manager_edit === true, stop_on_connection_accept === true,
-       threadReplies, pinSender, threadSubjectMode, threadFailoverMode]
+       threadReplies, pinSender, threadSubjectMode, threadFailoverMode,
+       bodyFormat]
     );
     const seq = seqRes.rows[0];
 
@@ -2849,7 +2855,8 @@ router.get('/:id', async (req, res) => {
 // PUT /api/sequences/:id
 router.put('/:id', async (req, res) => {
   const { name, description, require_approval, ai_enabled, personalize_config_default, visibility, allow_manager_edit, stop_on_connection_accept,
-          thread_replies, pin_sender, thread_subject_mode, thread_failover_mode } = req.body;
+          thread_replies, pin_sender, thread_subject_mode, thread_failover_mode,
+          body_format } = req.body;
   try {
     // Ownership gate — only the owner (or an admin, or a permitted manager) may
     // edit. Peers can view a shared sequence but not change it.
@@ -2866,6 +2873,56 @@ router.put('/:id', async (req, res) => {
     //   undefined → don't touch (COALESCE keeps existing)
     //   null      → explicitly clear (revert to user/system default in cascade)
     //   object    → set new override
+    // ── 2026_76: body_format ─────────────────────────────────────────────────
+    // Changing the wire format of a sequence that has active enrollments is
+    // REFUSED. In-flight threads already have sent messages stored in the old
+    // format, and the quote builder embeds a parent's body verbatim — so a
+    // mid-flight switch would either dump raw markup into a plain-text reply or
+    // strip every line break from an HTML one. attachQuotedHistory() guards
+    // against emitting broken markup by skipping the quote, but silently losing
+    // quoted history on a live campaign is still a bad outcome. Better to refuse.
+    //
+    // A no-op write (same value) is allowed through, so a client that always PUTs
+    // the whole object is not blocked from editing anything else.
+    const bfProvided = body_format !== undefined;
+    const bfParam    = body_format === 'plain' ? 'plain' : 'html';
+
+    if (bfProvided) {
+      const { rows: cur } = await pool.query(
+        `SELECT body_format FROM sequences WHERE id = $1 AND org_id = $2`,
+        [req.params.id, req.orgId]
+      );
+      if (!cur.length) {
+        return res.status(404).json({ error: { message: 'Not found' } });
+      }
+      const currentFormat = cur[0].body_format || 'html';
+
+      if (currentFormat !== bfParam) {
+        const { rows: act } = await pool.query(
+          `SELECT count(*)::int AS n
+             FROM sequence_enrollments
+            WHERE sequence_id = $1 AND status = 'active'`,
+          [req.params.id]
+        );
+        if (act[0].n > 0) {
+          return res.status(409).json({
+            error: {
+              message:
+                `Cannot change the email format while ${act[0].n} enrollment` +
+                `${act[0].n === 1 ? ' is' : 's are'} active. Messages already sent in ` +
+                `this thread are ${currentFormat === 'plain' ? 'plain text' : 'HTML'}, and ` +
+                `mixing formats would break the quoted history on replies. ` +
+                `Pause or complete the active enrollments first, or clone the ` +
+                `sequence and set the format on the copy.`,
+              code: 'BODY_FORMAT_LOCKED',
+              activeEnrollments: act[0].n,
+              currentFormat,
+            },
+          });
+        }
+      }
+    }
+
     const pcdParam = personalize_config_default === undefined
       ? null
       : (personalize_config_default === null ? null : JSON.stringify(personalize_config_default));
@@ -2907,6 +2964,7 @@ router.put('/:id', async (req, res) => {
         pin_sender           = CASE WHEN $17::boolean THEN $18::boolean ELSE pin_sender END,
         thread_subject_mode  = CASE WHEN $19::boolean THEN $20 ELSE thread_subject_mode END,
         thread_failover_mode = CASE WHEN $21::boolean THEN $22 ELSE thread_failover_mode END,
+        body_format          = CASE WHEN $23::boolean THEN $24 ELSE body_format END,
         updated_at=NOW()
         WHERE id=$13 AND org_id=$14 RETURNING *`,
       [name, description || null,
@@ -2920,7 +2978,8 @@ router.put('/:id', async (req, res) => {
        trProvided, trParam,
        psProvided, psParam,
        tsmProvided, tsmParam,
-       tfmProvided, tfmParam]
+       tfmProvided, tfmParam,
+       bfProvided, bfParam]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Not found' } });
     res.json({ sequence: rows[0] });

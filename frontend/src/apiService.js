@@ -698,15 +698,17 @@ twilio: {
     create:    (dealId)      => api.post('/handovers/sales', { dealId }),
     getById:   (id)          => api.get(`/handovers/sales/${id}`),
     update:    (id, data)    => api.put(`/handovers/sales/${id}`, data),
-    setStatus: (id, status)  => api.patch(`/handovers/sales/${id}/status`, { status }),
+    setStatus: (id, status, closureSummary) => api.patch(`/handovers/sales/${id}/status`, { status, closureSummary }),
     canSubmit: (id)          => api.get(`/handovers/sales/${id}/can-submit`),
+    canClose:  (id)          => api.get(`/handovers/sales/${id}/can-close`),
 
     addStakeholder:    (id, data) => api.post(`/handovers/sales/${id}/stakeholders`, data),
     updateStakeholder: (id, sid, data) => api.put(`/handovers/sales/${id}/stakeholders/${sid}`, data),
     removeStakeholder: (id, sid)  => api.delete(`/handovers/sales/${id}/stakeholders/${sid}`),
 
-    addCommitment:    (id, data) => api.post(`/handovers/sales/${id}/commitments`, data),
-    removeCommitment: (id, cid)  => api.delete(`/handovers/sales/${id}/commitments/${cid}`),
+    addCommitment:    (id, data)      => api.post(`/handovers/sales/${id}/commitments`, data),
+    updateCommitment: (id, cid, data) => api.patch(`/handovers/sales/${id}/commitments/${cid}`, data),
+    removeCommitment: (id, cid)       => api.delete(`/handovers/sales/${id}/commitments/${cid}`),
 
     completePlay: (id, instanceId) => api.post(`/handovers/sales/${id}/plays/${instanceId}/complete`),
     toggleModule: (enabled) => api.patch('/handovers/admin/module', { enabled }),

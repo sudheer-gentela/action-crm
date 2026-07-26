@@ -132,6 +132,11 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
   const [pinSender, setPinSender] = useState(
     initialSequence?.pin_sender === true
   );
+  // 2026_76 — wire format. Locked while the sequence has active enrollments; the
+  // PUT returns 409 BODY_FORMAT_LOCKED and the save handler surfaces that message.
+  const [bodyFormat, setBodyFormat] = useState(
+    initialSequence?.body_format === 'plain' ? 'plain' : 'html'
+  );
   const [threadSubjectMode, setThreadSubjectMode] = useState(
     initialSequence?.thread_subject_mode === 're' ? 're' : 'keep'
   );
@@ -401,6 +406,7 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
             stop_on_connection_accept: stopOnConnectionAccept,
             thread_replies: threadReplies,
             pin_sender: threadReplies ? true : pinSender,
+            body_format:         bodyFormat,
             thread_subject_mode: threadSubjectMode,
             thread_failover_mode: threadFailoverMode,
             personalize_config_default: effectivePersonalizeDefault,
@@ -449,6 +455,7 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
             stop_on_connection_accept: stopOnConnectionAccept,
             thread_replies: threadReplies,
             pin_sender: threadReplies ? true : pinSender,
+            body_format:         bodyFormat,
             thread_subject_mode: threadSubjectMode,
             thread_failover_mode: threadFailoverMode,
             personalize_config_default: effectivePersonalizeDefault,
@@ -646,6 +653,32 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
             >
               <span style={tglKnob(pinEffective)} />
             </button>
+          </div>
+
+          {/* Email format — independent of threading */}
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 6 }}>
+              Email format
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {segButton('html', bodyFormat, setBodyFormat, 'HTML', 'Formatted links and line breaks; open and click tracking available')}
+              {segButton('plain', bodyFormat, setBodyFormat, 'Plain text', 'Sent as text/plain — no tracking possible')}
+            </div>
+            {bodyFormat === 'plain' && (
+              <div style={{ fontSize: 11, color: '#b45309', marginTop: 6, lineHeight: 1.5 }}>
+                Plain text disables <strong>open and click tracking</strong> for this
+                sequence. A tracking pixel is an image and rewritten links are anchor
+                tags — neither survives plain text, so reporting will show zero opens
+                and zero clicks here. That is expected, not a fault.
+              </div>
+            )}
+            {initialSequence?.id && (
+              <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 6 }}>
+                Format can’t be changed while enrollments are active — replies would
+                mix formats and break their quoted history. Pause them first, or clone
+                the sequence.
+              </div>
+            )}
           </div>
 
           {/* Reply subject — threading only */}

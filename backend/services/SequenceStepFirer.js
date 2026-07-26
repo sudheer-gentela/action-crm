@@ -464,17 +464,16 @@ function _escapeHtml(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-// Gmail-style attribution: "On Tue, 22 Jul 2026 at 14:05, Name <addr> wrote:"
-function _quoteAttribution(sentAt, fromName, fromAddress) {
+// Gmail-style attribution, returned as RAW TEXT. The HTML branch escapes it; the
+// plain branch must not, or recipients see &lt; and &amp; literally.
+function _quoteAttributionText(sentAt, fromName, fromAddress) {
   const d = sentAt ? new Date(sentAt) : new Date();
   const stamp = d.toLocaleString('en-GB', {
     weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
     hour: '2-digit', minute: '2-digit', hour12: false,
   });
-  const who = fromName
-    ? `${_escapeHtml(fromName)} &lt;${_escapeHtml(fromAddress)}&gt;`
-    : _escapeHtml(fromAddress);
-  return `On ${_escapeHtml(stamp)}, ${who} wrote:`;
+  const who = fromName ? `${fromName} <${fromAddress}>` : String(fromAddress || '');
+  return `On ${stamp}, ${who} wrote:`;
 }
 
 // Fetch the parent message's quote material for this conversation.
@@ -484,7 +483,7 @@ function _quoteAttribution(sentAt, fromName, fromAddress) {
 async function _loadQuotableParent(client, { conversationId, prospectId, orgId }) {
   if (!conversationId && !prospectId) return null;
   const { rows } = await client.query(
-    `SELECT subject, body_quotable, sent_at, from_address
+    `SELECT subject, body_quotable, body_format, sent_at, from_address
        FROM emails
       WHERE org_id = $1
         AND direction = 'sent'
@@ -501,15 +500,38 @@ async function _loadQuotableParent(client, { conversationId, prospectId, orgId }
 // Append the quote block. Body first, quote second — see the ordering note at the
 // signature call site; appendSignature() would otherwise see the parent's
 // signature inside the quote and suppress the new one.
-function attachQuotedHistory(bodyHtml, parent, senderDisplayName) {
-  if (!parent || !parent.body_quotable) return bodyHtml;
-  const attribution = _quoteAttribution(
+//
+// 2026_76: format must match. The parent's body_quotable is embedded verbatim, so
+// quoting an HTML parent into a plain reply would dump raw markup into the
+// recipient's inbox, and a plain parent into an HTML reply would lose every line
+// break. On mismatch we skip the quote entirely — threading still works from the
+// RFC headers, so the cost is one message without visible history rather than one
+// message that looks broken. Degrade, never corrupt.
+function attachQuotedHistory(body, parent, senderDisplayName, format = 'html') {
+  if (!parent || !parent.body_quotable) return body;
+
+  // NULL body_format means pre-2026_76, which was always HTML.
+  const parentFormat = parent.body_format || 'html';
+  if (parentFormat !== format) return body;
+
+  const attributionRaw = _quoteAttributionText(
     parent.sent_at, senderDisplayName || null, parent.from_address || ''
   );
+
+  if (format === 'plain') {
+    // RFC-conventional quoting: prefix every line of the parent with '> '.
+    // Nested quotes deepen naturally because the parent already carries its own.
+    const quoted = String(parent.body_quotable)
+      .split(/\r?\n/)
+      .map(line => (line.length ? `> ${line}` : '>'))
+      .join('\n');
+    return `${body}\n\n${attributionRaw}\n${quoted}`;
+  }
+
   return (
-    `${bodyHtml}` +
+    `${body}` +
     `<br><br><div class="gmail_quote">` +
-    `<div dir="ltr" class="gmail_attr">${attribution}</div>` +
+    `<div dir="ltr" class="gmail_attr">${_escapeHtml(attributionRaw)}</div>` +
     `<blockquote class="gmail_quote" ` +
     `style="margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex">` +
     `${parent.body_quotable}` +
@@ -1113,6 +1135,7 @@ const SequenceStepFirer = {
                 s.require_approval AS seq_require_approval,
                 s.ai_enabled AS seq_ai_enabled,
                 s.stop_on_connection_accept AS seq_stop_on_accept,
+                s.body_format          AS seq_body_format,
                 s.thread_replies       AS seq_thread_replies,
                 s.pin_sender           AS seq_pin_sender,
                 s.thread_subject_mode  AS seq_thread_subject_mode,
@@ -1992,19 +2015,33 @@ const SequenceStepFirer = {
           const sendBodyPlain = (step.include_signature !== false)
             ? appendSignature(sendBodyRaw, sender.signature)
             : sendBodyRaw;
-          let sendBodyHtml    = plainTextToHtml(sendBodyPlain);
+          // 2026_76: plain sequences go out as text/plain. sendBody is then the
+          // raw text, not HTML — plainTextToHtml would escape it and wrap it in
+          // markup the recipient would see literally.
+          const bodyFormat = enrollment.seq_body_format === 'plain' ? 'plain' : 'html';
+          let sendBodyHtml = bodyFormat === 'plain'
+            ? sendBodyPlain
+            : plainTextToHtml(sendBodyPlain);
 
           // Insights/WBR Phase 7 — open/click tracking decoration.
           // Triple-gated inside the service: org has an ACTIVE tracking
           // domain (no shared fallback, D40) AND campaign toggles on
           // (default OFF, D39). Never throws; on any failure the email goes
           // out untracked with the original HTML.
-          sendBodyHtml = await EmailTrackingService.decorateHtml(client, {
-            orgId: enrollment.org_id,
-            prospectId: enrollment.prospect_id,
-            stepLogId: logId,
-            html: sendBodyHtml,
-          });
+          //
+          // 2026_76: skipped entirely for plain sequences. The pixel is a 1x1 <img>
+          // and HREF_RE only matches <a href> — in text/plain the pixel would be
+          // visible markup and no link would be rewritten. Opens and clicks are
+          // therefore structurally unavailable on plain sequences, which the UI
+          // states next to the format control.
+          if (bodyFormat !== 'plain') {
+            sendBodyHtml = await EmailTrackingService.decorateHtml(client, {
+              orgId: enrollment.org_id,
+              prospectId: enrollment.prospect_id,
+              stepLogId: logId,
+              html: sendBodyHtml,
+            });
+          }
 
           // 2026_75: quote material for future replies.
           //
@@ -2017,7 +2054,11 @@ const SequenceStepFirer = {
           // signature and without any tracking.
           //
           // Grown below if a quote block is attached, so the chain accumulates.
-          let bodyQuotable = plainTextToHtml(sendBodyPlain);
+          // Matches the wire format, so a later reply quoting this row embeds
+          // like-for-like (see attachQuotedHistory's mismatch guard).
+          let bodyQuotable = bodyFormat === 'plain'
+            ? sendBodyPlain
+            : plainTextToHtml(sendBodyPlain);
 
           // ── Threaded-reply assembly (2026_71) ─────────────────────────────
           // REPLY          = server-thread anchor present → nest into it.
@@ -2049,10 +2090,10 @@ const SequenceStepFirer = {
               });
               if (parent) {
                 const who = sender.display_name || null;
-                sendBodyHtml = attachQuotedHistory(sendBodyHtml, parent, who);
+                sendBodyHtml = attachQuotedHistory(sendBodyHtml, parent, who, bodyFormat);
                 // Grow the stored copy too, so the NEXT reply quoting this message
                 // inherits the whole chain rather than restarting it.
-                bodyQuotable = attachQuotedHistory(bodyQuotable, parent, who);
+                bodyQuotable = attachQuotedHistory(bodyQuotable, parent, who, bodyFormat);
               }
             } catch (err) {
               // Quoting is cosmetic; never fail a send over it.
@@ -2089,13 +2130,15 @@ const SequenceStepFirer = {
           try {
             if (sender.provider === 'gmail') {
               sendResult = await sendGmailEmail(enrollment.enrolled_by, {
-                to: prospect.email, subject: outSubject, body: sendBodyHtml, isHtml: true,
+                to: prospect.email, subject: outSubject, body: sendBodyHtml,
+                isHtml: bodyFormat !== 'plain',
                 senderEmail: sender.email, accessToken: sender.access_token, refreshToken: sender.refresh_token,
                 thread: gmailThread,
               });
             } else if (sender.provider === 'outlook') {
               sendResult = await sendOutlookEmail(enrollment.enrolled_by, {
-                to: prospect.email, subject: outSubject, body: sendBodyHtml, isHtml: true,
+                to: prospect.email, subject: outSubject, body: sendBodyHtml,
+                isHtml: bodyFormat !== 'plain',
                 senderEmail: sender.email, accessToken: sender.access_token, refreshToken: sender.refresh_token,
                 thread: outlookThread,
               });
@@ -2213,14 +2256,14 @@ const SequenceStepFirer = {
                           to_address, from_address, sent_at,
                           prospect_id, sender_account_id, provider,
                           conversation_id, external_id, external_data,
-                          body_quotable)
+                          body_quotable, body_format)
                   VALUES ($1, $2, 'sent', $3, $4, $5, $6, NOW(), $7, $8, $9, $10, $11, $12::jsonb,
-                          $13)
+                          $13, $14)
                RETURNING id`,
             [enrollment.org_id, enrollment.enrolled_by, outSubject, sendBodyHtml,
              prospect.email, sender.email, enrollment.prospect_id, sender.id, sender.provider,
              provThreadId, provMsgId, JSON.stringify(provExtData),
-             bodyQuotable]
+             bodyQuotable, bodyFormat]
           );
           const emailId = emailRes.rows[0].id;
 

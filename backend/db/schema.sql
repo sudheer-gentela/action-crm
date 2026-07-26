@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict zdj8T2rmVNfIrd70fjkAeQqv81BltpQfpuSIN8CGPUTUsrYXkcsncO6mR2Fj5Pa
+\restrict Nq9ZHZloWS8BcKduMGiNpSpRqJVvoffgDBHl81GYQP7IAM4rm0iURbia5aI8w5m
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -724,6 +724,9 @@ CREATE TABLE public.actions (
     playbook_name character varying(255),
     source_module character varying(50),
     external_refs jsonb DEFAULT '{}'::jsonb NOT NULL,
+    intended_role_id integer,
+    assignment_source text,
+    CONSTRAINT actions_assignment_source_check CHECK (((assignment_source IS NULL) OR (assignment_source = ANY (ARRAY['role_holder'::text, 'team_queue'::text, 'project_owner'::text, 'manual_override'::text, 'reassigned'::text])))),
     CONSTRAINT actions_next_step_check CHECK (((next_step)::text = ANY ((ARRAY['email'::character varying, 'call'::character varying, 'whatsapp'::character varying, 'linkedin'::character varying, 'slack'::character varying, 'document'::character varying, 'internal_task'::character varying])::text[]))),
     CONSTRAINT actions_status_check CHECK (((status)::text = ANY ((ARRAY['not_started'::character varying, 'in_progress'::character varying, 'blocked'::character varying, 'snoozed'::character varying, 'completed'::character varying, 'skipped'::character varying, 'cancelled'::character varying])::text[]))),
     CONSTRAINT chk_actions_source_module CHECK (((source_module IS NULL) OR ((source_module)::text = ANY ((ARRAY['deals'::character varying, 'prospecting'::character varying, 'contracts'::character varying, 'handovers'::character varying, 'service'::character varying, 'agency'::character varying, 'general'::character varying])::text[]))))
@@ -770,6 +773,20 @@ COMMENT ON COLUMN public.actions.completion_evidence IS 'JSON evidence of what t
 --
 
 COMMENT ON COLUMN public.actions.contract_id IS 'FK to contracts. Set when this action was generated for or manually linked to a contract.';
+
+
+--
+-- Name: COLUMN actions.intended_role_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.actions.intended_role_id IS 'org_roles.id that should own this action per its play''s owner role. Retained even when unresolvable, so an unfilled role is queryable. NULL = not play-derived.';
+
+
+--
+-- Name: COLUMN actions.assignment_source; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.actions.assignment_source IS 'Which PlayRouteResolver tier produced user_id. project_owner means no holder of intended_role_id was found ΓÇö surface this in the UI. As of 2026_73.';
 
 
 --
@@ -3447,6 +3464,7 @@ CREATE TABLE public.emails (
     prospect_id integer,
     provider character varying(20) DEFAULT 'outlook'::character varying,
     sender_account_id integer,
+    body_quotable text,
     CONSTRAINT emails_tag_source_check CHECK ((tag_source = ANY (ARRAY['auto'::text, 'manual'::text, 'team'::text])))
 );
 
@@ -3463,6 +3481,13 @@ COMMENT ON COLUMN public.emails.external_id IS 'Outlook message ID for deduplica
 --
 
 COMMENT ON COLUMN public.emails.external_data IS 'Additional Outlook metadata (conversationId, importance, etc.)';
+
+
+--
+-- Name: COLUMN emails.body_quotable; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.emails.body_quotable IS 'The outbound HTML body as it stood immediately before EmailTrackingService decoration ΓÇö signature included, tracking pixel and rewritten links absent. Source for the quoted-history block on threaded replies. Never send this directly; it is quote material only. NULL for rows written before 2026_75 and for inbound mail.';
 
 
 --
@@ -5027,7 +5052,8 @@ CREATE TABLE public.playbook_play_roles (
     play_id integer NOT NULL,
     role_id integer NOT NULL,
     ownership_type text DEFAULT 'co_owner'::text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT playbook_play_roles_ownership_type_check CHECK ((ownership_type = ANY (ARRAY['owner'::text, 'co_owner'::text])))
 );
 
 
@@ -6730,6 +6756,7 @@ CREATE TABLE public.sequence_steps (
     personalize_config jsonb,
     step_intent text,
     delay_hours integer DEFAULT 0 NOT NULL,
+    include_signature boolean DEFAULT true NOT NULL,
     CONSTRAINT sequence_steps_delay_hours_chk CHECK (((delay_hours >= 0) AND (delay_hours <= 23)))
 );
 
@@ -6746,6 +6773,13 @@ COMMENT ON COLUMN public.sequence_steps.step_intent IS 'Optional override for pe
 --
 
 COMMENT ON COLUMN public.sequence_steps.delay_hours IS 'Sub-day delay (0-23h) added to delay_days. Effective delay = delay_days*24 + delay_hours hours from the previous step. Hours > 0 on a manual channel (linkedin/task/call) bypasses the manualReleaseHour snap: the step is eligible from prev + delay, clamped forward only across disallowed send-window days.';
+
+
+--
+-- Name: COLUMN sequence_steps.include_signature; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sequence_steps.include_signature IS 'When false, the sender signature is NOT appended to this step''s outbound email. Default true preserves pre-2026_74 behaviour. Read as (include_signature !== false) so jsonb step snapshots taken before this column existed continue to include the signature.';
 
 
 --
@@ -11279,6 +11313,13 @@ CREATE INDEX idx_actions_type ON public.actions USING btree (action_type);
 
 
 --
+-- Name: idx_actions_unfilled_role; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_actions_unfilled_role ON public.actions USING btree (org_id, intended_role_id) WHERE (assignment_source = 'project_owner'::text);
+
+
+--
 -- Name: idx_actions_user; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -12459,6 +12500,13 @@ CREATE INDEX idx_emails_contact ON public.emails USING btree (contact_id);
 --
 
 CREATE INDEX idx_emails_conversation_id ON public.emails USING btree (conversation_id) WHERE (conversation_id IS NOT NULL);
+
+
+--
+-- Name: idx_emails_conversation_quotable; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_emails_conversation_quotable ON public.emails USING btree (conversation_id, sent_at DESC) WHERE (((direction)::text = 'sent'::text) AND (body_quotable IS NOT NULL));
 
 
 --
@@ -14527,6 +14575,13 @@ CREATE UNIQUE INDEX uq_pi_finding ON public.prospecting_insights USING btree (or
 
 
 --
+-- Name: uq_play_roles_one_owner; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_play_roles_one_owner ON public.playbook_play_roles USING btree (play_id) WHERE (ownership_type = 'owner'::text);
+
+
+--
 -- Name: uq_pmd_grain; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -15050,6 +15105,14 @@ ALTER TABLE ONLY public.actions
 
 ALTER TABLE ONLY public.actions
     ADD CONSTRAINT actions_deal_id_fkey FOREIGN KEY (deal_id) REFERENCES public.deals(id) ON DELETE CASCADE;
+
+
+--
+-- Name: actions actions_intended_role_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.actions
+    ADD CONSTRAINT actions_intended_role_id_fkey FOREIGN KEY (intended_role_id) REFERENCES public.org_roles(id) ON DELETE SET NULL;
 
 
 --
@@ -18735,5 +18798,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict zdj8T2rmVNfIrd70fjkAeQqv81BltpQfpuSIN8CGPUTUsrYXkcsncO6mR2Fj5Pa
+\unrestrict Nq9ZHZloWS8BcKduMGiNpSpRqJVvoffgDBHl81GYQP7IAM4rm0iURbia5aI8w5m
 
