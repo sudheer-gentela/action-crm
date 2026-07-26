@@ -828,6 +828,7 @@ router.get('/:id/campaigns', async (req, res) => {
               c.goal_qualified, c.start_date, c.end_date, c.created_at,
               c.default_sequence_id, c.owner_id,
               sq.name AS default_sequence_name,
+              sq.thread_replies AS default_sequence_thread_replies,
               u.first_name AS owner_first_name,
               u.last_name  AS owner_last_name,
               COUNT(p.id) FILTER (WHERE p.deleted_at IS NULL)::int                              AS prospect_count,
@@ -839,7 +840,7 @@ router.get('/:id/campaigns', async (req, res) => {
          LEFT JOIN users     u  ON u.id  = c.owner_id
          LEFT JOIN prospects p  ON p.campaign_id = c.id AND p.org_id = c.org_id
         WHERE c.org_id = $1 AND c.client_id = $2 ${statusFilter}
-     GROUP BY c.id, sq.name, u.first_name, u.last_name
+     GROUP BY c.id, sq.name, sq.thread_replies, u.first_name, u.last_name
      ORDER BY c.created_at DESC`,
       params
     );

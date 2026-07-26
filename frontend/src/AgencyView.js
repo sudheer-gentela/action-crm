@@ -1279,7 +1279,12 @@ function ClientCampaignsTab({ clientId }) {
                     <span style={{ fontSize: 12, color: '#6b7280', textTransform: 'capitalize' }}>{c.status}</span>
                   )}
                 </td>
-                <td style={{ padding: '10px 14px', color: '#374151' }}>{c.default_sequence_name || '—'}</td>
+                <td style={{ padding: '10px 14px', color: '#374151' }}>
+                  {c.default_sequence_name || '—'}
+                  {c.default_sequence_thread_replies && (
+                    <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, color: '#0F9D8E', background: '#e6f7f6', border: '1px solid #0F9D8E40', borderRadius: 8, padding: '1px 6px', whiteSpace: 'nowrap' }} title="Follow-up emails are sent as threaded replies from a single pinned mailbox">🧵 Threaded</span>
+                  )}
+                </td>
                 <td style={{ padding: '10px 14px', color: '#6b7280' }}>{owner || '—'}</td>
                 <td style={{ padding: '10px 14px', color: '#374151' }}>{c.prospect_count}</td>
                 <td style={{ padding: '10px 14px', color: '#3b82f6' }}>{c.active_count}</td>

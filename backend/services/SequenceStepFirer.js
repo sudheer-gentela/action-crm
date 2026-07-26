@@ -171,7 +171,7 @@ async function resolveSender(dbClient, orgId, userId, clientId) {
 // 'client_sender_required' (Phase 3, 2026_53): the prospect's client has no
 // active client-owned sender AND clients.require_client_sender is set — the
 // caller must FAIL the step visibly, never fall back to the rep's mailbox.
-async function pickEmailSenderWithCapacity(dbClient, orgId, userId, clientId, settings, now = new Date(), allowedSenderIds = null) {
+async function pickEmailSenderWithCapacity(dbClient, orgId, userId, clientId, settings, now = new Date(), allowedSenderIds = null, pinnedSenderId = null) {
   const defaultLimit    = settings?.defaultDailyLimit ?? 50;
   const ceiling         = settings?.dailyLimitCeiling ?? 100;
   const defaultMinDelay = settings?.defaultMinDelayMinutes ?? 5;
@@ -185,12 +185,18 @@ async function pickEmailSenderWithCapacity(dbClient, orgId, userId, clientId, se
   // the chosen accounts. NULL/empty = all of the rep's senders (prior behaviour).
   // Only applies to rep-owned senders; client-scoped senders are not narrowed.
   const allowed = (Array.isArray(allowedSenderIds) && allowedSenderIds.length) ? allowedSenderIds : null;
+  // Sender pin (2026_71 — threaded / pin_sender enrollments). Unlike `allowed`
+  // (a rep-only campaign restriction), the pin narrows BOTH rep and CLIENT
+  // pools to the single stamped mailbox, so a threaded reply always leaves from
+  // the address that opened the thread. NULL = no pin (normal rotation).
+  const pin = (Number.isInteger(pinnedSenderId) && pinnedSenderId > 0) ? pinnedSenderId : null;
   let rows = [];
   if (clientId) {
     const r = await dbClient.query(
       `SELECT ${cols} FROM prospecting_sender_accounts
-        WHERE org_id=$1 AND client_id=$2 AND is_active=true`,
-      [orgId, clientId]
+        WHERE org_id=$1 AND client_id=$2 AND is_active=true
+          AND ($3::int IS NULL OR id = $3)`,
+      [orgId, clientId, pin]
     );
     rows = r.rows;
     // Client has no active sender. Phase 3 (2026_53): a client that requires
@@ -211,8 +217,9 @@ async function pickEmailSenderWithCapacity(dbClient, orgId, userId, clientId, se
       const rr = await dbClient.query(
         `SELECT ${cols} FROM prospecting_sender_accounts
           WHERE org_id=$1 AND user_id=$2 AND client_id IS NULL AND is_active=true
-            AND ($3::int[] IS NULL OR id = ANY($3))`,
-        [orgId, userId, allowed]
+            AND ($3::int[] IS NULL OR id = ANY($3))
+            AND ($4::int IS NULL OR id = $4)`,
+        [orgId, userId, allowed, pin]
       );
       rows = rr.rows;
     }
@@ -220,8 +227,9 @@ async function pickEmailSenderWithCapacity(dbClient, orgId, userId, clientId, se
     const r = await dbClient.query(
       `SELECT ${cols} FROM prospecting_sender_accounts
         WHERE org_id=$1 AND user_id=$2 AND client_id IS NULL AND is_active=true
-          AND ($3::int[] IS NULL OR id = ANY($3))`,
-      [orgId, userId, allowed]
+          AND ($3::int[] IS NULL OR id = ANY($3))
+          AND ($4::int IS NULL OR id = $4)`,
+      [orgId, userId, allowed, pin]
     );
     rows = r.rows;
   }
@@ -1782,11 +1790,12 @@ const SequenceStepFirer = {
           const pinOn         = threadingOn || enrollment.seq_pin_sender === true;
           const failoverBreak = pinOn && enrollment.seq_thread_failover_mode === 'break';
           const pinnedSenderId = pinOn ? (enrollment.pinned_sender_account_id || null) : null;
-          const effectiveAllowedSenderIds =
-            (pinOn && pinnedSenderId) ? [pinnedSenderId] : allowedSenderIds;
 
+          // Pass the campaign restriction (rep-only) and the pin (rep + client)
+          // as SEPARATE args — the pin must narrow client mailboxes too, which
+          // the campaign restriction deliberately never does.
           const pick = await pickEmailSenderWithCapacity(
-            client, enrollment.org_id, enrollment.enrolled_by, clientId, settings, new Date(), effectiveAllowedSenderIds
+            client, enrollment.org_id, enrollment.enrolled_by, clientId, settings, new Date(), allowedSenderIds, pinnedSenderId
           );
           if (pick.status === 'all_maxed' || pick.status === 'cooling_down') {
             console.log(
