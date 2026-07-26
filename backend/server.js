@@ -153,6 +153,11 @@ app.use((req, res, next) => {
   });
 });
 
+// WhatsApp webhook — mounted BEFORE express.json so the /webhooks/* raw-body
+// middleware above is the only thing that touches the stream (signature
+// verification needs the exact bytes). Meta calls this unauthenticated.
+app.use('/webhooks/whatsapp', require('./routes/whatsapp-webhook.routes'));
+
 // Body parsers — raised to 5MB to support bulk CSV import (the prospects/bulk
 // endpoint accepts up to 500 prospects per call, which can exceed Express's
 // default 100KB limit for rows with multi-field data + LinkedIn URLs).
@@ -238,6 +243,7 @@ app.use('/api/prompts',       require('./routes/prompts.routes'));
 app.use('/api/salesforce',    require('./routes/salesforce.routes'));
 app.use('/api/hubspot',       require('./routes/hubspot.routes'));
 app.use('/api/slack',         require('./routes/slack.routes'));   // ← add this line
+app.use('/api/whatsapp',      require('./routes/whatsapp.routes'));
 app.use('/api/crm-connections', require('./routes/crm-connections.routes'));
 app.use('/api/baseline',        require('./routes/baseline.routes'));
 

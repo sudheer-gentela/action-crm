@@ -99,28 +99,8 @@ function fmtCurrency(v) {
 
 // A due-date chip shared by plays and commitments. Overdue → red; otherwise a
 // muted "Due <date>". Renders nothing when there is no due date.
-function DueChip({ dueDate, isOverdue, daysOverdue, dueAnchor, dueOffsetDays }) {
-  if (!dueDate) {
-    // go_live-anchored plays are unscheduled until the go-live date is entered.
-    // Show their intent (relative to go-live) rather than a blank.
-    if (dueAnchor === 'go_live') {
-      const off = Number(dueOffsetDays) || 0;
-      const label = off === 0
-        ? 'Due: on go-live'
-        : off < 0
-          ? `Due: ${Math.abs(off)}d before go-live`
-          : `Due: ${off}d after go-live`;
-      return (
-        <span style={{
-          fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 4,
-          background: '#eef2ff', color: '#3730a3', whiteSpace: 'nowrap',
-        }}>
-          {label}
-        </span>
-      );
-    }
-    return null;
-  }
+function DueChip({ dueDate, isOverdue, daysOverdue }) {
+  if (!dueDate) return null;
   if (isOverdue) {
     return (
       <span style={{
@@ -231,7 +211,7 @@ function PlaySection({ play, canEdit, onComplete }) {
             <span style={{ marginLeft: 8, fontSize: 10, color: '#dc2626', fontWeight: 700 }}>GATE</span>
           )}
         </div>
-        {!isDone && <DueChip dueDate={play.dueDate} isOverdue={play.isOverdue} daysOverdue={play.daysOverdue} dueAnchor={play.dueAnchor} dueOffsetDays={play.dueOffsetDays} />}
+        {!isDone && <DueChip dueDate={play.dueDate} isOverdue={play.isOverdue} daysOverdue={play.daysOverdue} />}
         {isDone && play.completedAt && (
           <span style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>{fmtDate(play.completedAt)}</span>
         )}
@@ -1017,7 +997,115 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users }) {
             )}
           </section>
         )}
+
+        {/* WhatsApp delivery thread */}
+        <section style={{ marginBottom: 24 }}>
+          <WhatsAppPanel handoverId={detail.id} />
+        </section>
       </div>
+    </div>
+  );
+}
+
+// ── WhatsAppPanel: delivery conversation on the handover ──────────────────────
+
+function WhatsAppPanel({ handoverId }) {
+  const [data,    setData]    = useState(null);
+  const [text,    setText]    = useState('');
+  const [sending, setSending] = useState(false);
+  const [err,     setErr]     = useState('');
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await apiService.whatsapp.handoverThread(handoverId);
+      setData(res.data);
+    } catch (e) {
+      setData({ thread: null, windowOpen: false, messages: [] });
+    } finally {
+      setLoading(false);
+    }
+  }, [handoverId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const send = async () => {
+    const body = text.trim();
+    if (!body) return;
+    setSending(true); setErr('');
+    try {
+      await apiService.whatsapp.sendToHandover(handoverId, { text: body });
+      setText('');
+      await load();
+    } catch (e) {
+      const er = e?.response?.data?.error || {};
+      if (er.code === 'NOT_CONNECTED') setErr('WhatsApp is not connected for this org yet.');
+      else if (er.code === 'WINDOW_CLOSED') setErr('The 24-hour window is closed — an approved template is required to re-open the conversation.');
+      else setErr(er.message || 'Could not send message.');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const windowOpen = data?.windowOpen;
+  const messages   = data?.messages || [];
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+        <h4 style={{ margin: 0, fontSize: 14, color: '#374151' }}>💬 WhatsApp delivery thread</h4>
+        {!loading && (
+          <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999,
+            color: windowOpen ? '#065f46' : '#92400e',
+            background: windowOpen ? '#dcfce7' : '#fef3c7' }}>
+            {windowOpen ? '24h window open' : 'window closed — template required'}
+          </span>
+        )}
+      </div>
+
+      <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: '#f9fafb', padding: 12,
+        maxHeight: 260, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {loading ? (
+          <div style={{ color: '#9ca3af', fontSize: 13 }}>Loading…</div>
+        ) : messages.length === 0 ? (
+          <div style={{ color: '#9ca3af', fontSize: 13 }}>No messages yet.</div>
+        ) : messages.map(m => {
+          const out = m.direction === 'outbound';
+          return (
+            <div key={m.id} style={{ alignSelf: out ? 'flex-end' : 'flex-start', maxWidth: '78%' }}>
+              <div style={{ padding: '7px 10px', borderRadius: 10, fontSize: 13, lineHeight: 1.4,
+                background: out ? '#dcf8c6' : '#ffffff',
+                border: `1px solid ${out ? '#c5eeae' : '#e5e7eb'}`, color: '#111827' }}>
+                {m.is_automated && (
+                  <span style={{ fontSize: 10, fontWeight: 700, color: '#6b7280', display: 'block', marginBottom: 2 }}>AUTOMATED</span>
+                )}
+                {m.body}
+              </div>
+              <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2, textAlign: out ? 'right' : 'left' }}>
+                {out ? (m.from_name || 'Delivery team') : (m.from_name || 'Customer')}{m.status ? ` · ${m.status}` : ''}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <textarea
+          value={text}
+          onChange={e => setText(e.target.value)}
+          placeholder={windowOpen ? 'Type a message…' : 'Window closed — a template is required to message'}
+          rows={2}
+          style={{ flex: 1, resize: 'vertical', padding: '8px 10px', borderRadius: 6,
+            border: '1px solid #d1d5db', fontSize: 13, fontFamily: 'inherit' }}
+        />
+        <button onClick={send} disabled={sending || !text.trim()} style={{
+          alignSelf: 'flex-end', padding: '8px 16px', borderRadius: 6, border: 'none',
+          background: (sending || !text.trim()) ? '#9ca3af' : '#16a34a', color: '#fff',
+          fontSize: 13, fontWeight: 600, cursor: (sending || !text.trim()) ? 'default' : 'pointer' }}>
+          {sending ? 'Sending…' : 'Send'}
+        </button>
+      </div>
+      {err && <div style={{ marginTop: 6, fontSize: 12, color: '#991b1b' }}>{err}</div>}
     </div>
   );
 }

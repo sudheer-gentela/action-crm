@@ -716,6 +716,18 @@ twilio: {
   },
 
   // ══════════════════════════════════════════════════════════
+  // WhatsApp channel
+  // ══════════════════════════════════════════════════════════
+
+  whatsapp: {
+    account:        ()         => api.get('/whatsapp/account'),
+    connect:        (data)     => api.post('/whatsapp/connect', data),
+    disconnect:     ()         => api.delete('/whatsapp/account'),
+    handoverThread: (id)       => api.get(`/whatsapp/handovers/${id}/thread`),
+    sendToHandover: (id, body) => api.post(`/whatsapp/handovers/${id}/messages`, body),
+  },
+
+  // ══════════════════════════════════════════════════════════
   // Service / Customer Support Module
   // ══════════════════════════════════════════════════════════
   support: {

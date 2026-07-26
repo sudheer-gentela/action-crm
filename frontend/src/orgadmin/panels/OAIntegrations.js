@@ -4,6 +4,7 @@
 import React, { useState, useEffect } from 'react';
 import OAMeetingSettings from '../../OAMeetingSettings';
 import SlackConnect from '../../SlackConnect';
+import WhatsAppConnect from '../../WhatsAppConnect';
 import { apiService } from '../../apiService';
 
 export default function OAIntegrations({ orgId }) {
@@ -108,6 +109,7 @@ export default function OAIntegrations({ orgId }) {
     { id: 'email-calendar', label: '📧 Email & Calendar' },
     { id: 'meeting',        label: '🎙️ Meeting & Transcripts' },
     { id: 'slack',          label: '💬 Slack Notifications' },
+    { id: 'whatsapp',       label: '💚 WhatsApp Business' },
   ];
 
   const subTabStyle = (id) => ({
@@ -309,6 +311,9 @@ export default function OAIntegrations({ orgId }) {
           <SlackConnect />
         </div>
       )}
+
+      {/* ── WhatsApp Business tab ───────────────────────────────────── */}
+      {subTab === 'whatsapp' && <WhatsAppConnect />}
     </div>
   );
 }
