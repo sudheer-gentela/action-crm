@@ -631,7 +631,8 @@ router.get('/', async (req, res) => {
          LEFT JOIN clients   cl ON cl.id = c.client_id
          LEFT JOIN prospects p  ON p.campaign_id = c.id AND p.org_id = c.org_id
         WHERE c.org_id = $1 ${statusFilter} ${ownerFilter}
-     GROUP BY c.id, pb.name, sq.name, u.first_name, u.last_name, cl.name
+     GROUP BY c.id, pb.name, sq.id, sq.name, sq.thread_replies,
+              u.first_name, u.last_name, cl.name
      ORDER BY c.created_at DESC`,
       params
     );
