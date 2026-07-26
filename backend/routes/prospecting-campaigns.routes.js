@@ -95,6 +95,7 @@ async function loadCampaign(orgId, id) {
     `SELECT c.*,
             pb.name AS playbook_name,
             sq.name AS default_sequence_name,
+            sq.thread_replies AS default_sequence_thread_replies,
             u.first_name AS owner_first_name,
             u.last_name  AS owner_last_name,
             cl.name AS client_name
@@ -600,6 +601,7 @@ router.get('/', async (req, res) => {
       `SELECT c.*,
               pb.name AS playbook_name,
               sq.name AS default_sequence_name,
+            sq.thread_replies AS default_sequence_thread_replies,
               u.first_name AS owner_first_name,
               u.last_name  AS owner_last_name,
               cl.name AS client_name,

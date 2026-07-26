@@ -611,7 +611,24 @@ app.listen(PORT, () => {
     });
 
 
-    console.log('✅ Cron jobs initialized (proposals hourly, CLM hourly+daily, sequences 1m, SF write-back 04:30 UTC, stuck calls 30m, campaign SLA 09:00 UTC)');
+    // Daily 08:00 UTC: threaded-sequence block digest (2026_71). Reminds owners
+    // of enrollments still paused because their pinned sending mailbox is
+    // unavailable, until they reconnect it, switch senders, or stop the sequence.
+    cron.schedule('0 8 * * *', async () => {
+      try {
+        const { pool } = require('./config/database');
+        const { sent, owners, blocked } =
+          await require('./services/ThreadedSequenceDigest').sendDailyDigests(pool);
+        if (sent > 0) {
+          console.log(`🧵 ThreadedSeq Digest Cron: ${sent} digest(s) to ${owners} owner(s), ${blocked} blocked enrollment(s)`);
+        }
+      } catch (err) {
+        console.error('🧵 ThreadedSeq Digest Cron error:', err.message);
+      }
+    });
+
+
+    console.log('✅ Cron jobs initialized (proposals hourly, CLM hourly+daily, sequences 1m, SF write-back 04:30 UTC, stuck calls 30m, campaign SLA 09:00 UTC, threaded-seq digest 08:00 UTC)');
   } catch (err) {
     console.error('⚠️  Failed to initialize cron jobs:', err.message);
   }

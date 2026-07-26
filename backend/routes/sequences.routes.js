@@ -212,21 +212,31 @@ router.get('/', async (req, res) => {
 
 // POST /api/sequences  — body: { name, description, require_approval, ai_enabled, steps: [{channel, delay_days, subject_template, body_template, task_note, require_approval}] }
 router.post('/', async (req, res) => {
-  const { name, description, require_approval = true, ai_enabled = false, personalize_config_default = null, steps = [], visibility = 'shared', allow_manager_edit = false, stop_on_connection_accept = false } = req.body;
+  const { name, description, require_approval = true, ai_enabled = false, personalize_config_default = null, steps = [], visibility = 'shared', allow_manager_edit = false, stop_on_connection_accept = false,
+          thread_replies = false, pin_sender = false, thread_subject_mode = 'keep', thread_failover_mode = 'defer' } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: { message: 'name is required' } });
   const vis = visibility === 'private' ? 'private' : 'shared';
+
+  // Threaded-reply config (2026_71). Clamp enums to the CHECK-constrained values
+  // and enforce the invariant: threading forces sender pinning on.
+  const threadReplies      = thread_replies === true;
+  const pinSender          = threadReplies ? true : (pin_sender === true);
+  const threadSubjectMode  = thread_subject_mode === 're' ? 're' : 'keep';
+  const threadFailoverMode = thread_failover_mode === 'break' ? 'break' : 'defer';
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
     const seqRes = await client.query(
-      `INSERT INTO sequences (org_id, name, description, created_by, require_approval, ai_enabled, personalize_config_default, visibility, allow_manager_edit, stop_on_connection_accept)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      `INSERT INTO sequences (org_id, name, description, created_by, require_approval, ai_enabled, personalize_config_default, visibility, allow_manager_edit, stop_on_connection_accept,
+                             thread_replies, pin_sender, thread_subject_mode, thread_failover_mode)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
       [req.orgId, name.trim(), description || null, req.user.userId, require_approval,
        ai_enabled === true,
        personalize_config_default ? JSON.stringify(personalize_config_default) : null,
-       vis, allow_manager_edit === true, stop_on_connection_accept === true]
+       vis, allow_manager_edit === true, stop_on_connection_accept === true,
+       threadReplies, pinSender, threadSubjectMode, threadFailoverMode]
     );
     const seq = seqRes.rows[0];
 
@@ -2718,7 +2728,8 @@ router.get('/:id', async (req, res) => {
 
 // PUT /api/sequences/:id
 router.put('/:id', async (req, res) => {
-  const { name, description, require_approval, ai_enabled, personalize_config_default, visibility, allow_manager_edit, stop_on_connection_accept } = req.body;
+  const { name, description, require_approval, ai_enabled, personalize_config_default, visibility, allow_manager_edit, stop_on_connection_accept,
+          thread_replies, pin_sender, thread_subject_mode, thread_failover_mode } = req.body;
   try {
     // Ownership gate — only the owner (or an admin, or a permitted manager) may
     // edit. Peers can view a shared sequence but not change it.
@@ -2752,6 +2763,18 @@ router.put('/:id', async (req, res) => {
     const soaProvided = stop_on_connection_accept !== undefined;
     const soaParam = stop_on_connection_accept === true;
 
+    // Threaded-reply config (2026_71). Same undefined→leave-as-is idiom.
+    // Invariant: turning threading ON forces pin_sender ON in the same write.
+    const trProvided = thread_replies !== undefined;
+    const trParam    = thread_replies === true;
+    const forcePin   = trProvided && trParam;
+    const psProvided = forcePin || (pin_sender !== undefined);
+    const psParam    = forcePin ? true : (pin_sender === true);
+    const tsmProvided = thread_subject_mode !== undefined;
+    const tsmParam    = thread_subject_mode === 're' ? 're' : 'keep';
+    const tfmProvided = thread_failover_mode !== undefined;
+    const tfmParam    = thread_failover_mode === 'break' ? 'break' : 'defer';
+
     const { rows } = await pool.query(
       `UPDATE sequences SET name=$1, description=$2,
         require_approval=COALESCE($3, require_approval),
@@ -2760,6 +2783,10 @@ router.put('/:id', async (req, res) => {
         visibility = CASE WHEN $7::boolean THEN $8 ELSE visibility END,
         allow_manager_edit = CASE WHEN $9::boolean THEN $10::boolean ELSE allow_manager_edit END,
         stop_on_connection_accept = CASE WHEN $11::boolean THEN $12::boolean ELSE stop_on_connection_accept END,
+        thread_replies       = CASE WHEN $15::boolean THEN $16::boolean ELSE thread_replies END,
+        pin_sender           = CASE WHEN $17::boolean THEN $18::boolean ELSE pin_sender END,
+        thread_subject_mode  = CASE WHEN $19::boolean THEN $20 ELSE thread_subject_mode END,
+        thread_failover_mode = CASE WHEN $21::boolean THEN $22 ELSE thread_failover_mode END,
         updated_at=NOW()
         WHERE id=$13 AND org_id=$14 RETURNING *`,
       [name, description || null,
@@ -2769,7 +2796,11 @@ router.put('/:id', async (req, res) => {
        visProvided, visParam,
        ameProvided, ameParam,
        soaProvided, soaParam,
-       req.params.id, req.orgId]
+       req.params.id, req.orgId,
+       trProvided, trParam,
+       psProvided, psParam,
+       tsmProvided, tsmParam,
+       tfmProvided, tfmParam]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Not found' } });
     res.json({ sequence: rows[0] });

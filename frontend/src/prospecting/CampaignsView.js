@@ -570,6 +570,9 @@ function CampaignRow({ campaign: c, isLast, onClick, onConfigClick, currentUserI
           📋 {c.playbook_name || 'No playbook'}
           {'  ·  '}
           📨 {c.default_sequence_name || 'No default sequence'}
+          {c.default_sequence_thread_replies && (
+            <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, color: '#0F9D8E', background: '#e6f7f6', border: '1px solid #0F9D8E40', borderRadius: 8, padding: '1px 6px', verticalAlign: 'middle', whiteSpace: 'nowrap' }} title="Follow-up emails are sent as threaded replies from a single pinned mailbox">🧵 Threaded</span>
+          )}
           {showOwner && <span style={{ marginLeft: 10 }}>👤 {ownerName}</span>}
         </div>
       </div>
@@ -1814,7 +1817,11 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
               fontSize: 12, color: '#6b7280', lineHeight: 1.7,
             }}>
               <div>📋 Playbook: {data.campaign.playbook_name || '— none —'}</div>
-              <div>📨 Default sequence: {data.campaign.default_sequence_name || '— none —'}</div>
+              <div>📨 Default sequence: {data.campaign.default_sequence_name || '— none —'}
+                {data.campaign.default_sequence_thread_replies && (
+                  <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, color: '#0F9D8E', background: '#e6f7f6', border: '1px solid #0F9D8E40', borderRadius: 8, padding: '1px 6px', verticalAlign: 'middle', whiteSpace: 'nowrap' }} title="Follow-up emails are sent as threaded replies from a single pinned mailbox">🧵 Threaded</span>
+                )}
+              </div>
               {(data.campaign.start_date || data.campaign.end_date) && (
                 <div>📅 {data.campaign.start_date || '?'} → {data.campaign.end_date || '?'}</div>
               )}

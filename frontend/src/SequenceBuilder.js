@@ -123,6 +123,46 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
   const [stopOnConnectionAccept, setStopOnConnectionAccept] = useState(
     initialSequence?.stop_on_connection_accept === true
   );
+
+  // 2026_71: threaded replies + sender pin
+  const [threadReplies, setThreadReplies] = useState(
+    initialSequence?.thread_replies === true
+  );
+  const [pinSender, setPinSender] = useState(
+    initialSequence?.pin_sender === true
+  );
+  const [threadSubjectMode, setThreadSubjectMode] = useState(
+    initialSequence?.thread_subject_mode === 're' ? 're' : 'keep'
+  );
+  const [threadFailoverMode, setThreadFailoverMode] = useState(
+    initialSequence?.thread_failover_mode === 'break' ? 'break' : 'defer'
+  );
+  // Threading forces pinning on (mandatory); the pin toggle is shown checked+disabled.
+  const pinEffective = threadReplies || pinSender;
+  const tglTrack = (on, disabled = false) => ({
+    position: 'relative', width: 40, height: 22, borderRadius: 11, border: 'none',
+    cursor: disabled ? 'not-allowed' : 'pointer', flexShrink: 0,
+    background: on ? TEAL : '#d1d5db', opacity: disabled ? 0.6 : 1, transition: 'background 0.2s',
+  });
+  const tglKnob = (on) => ({
+    position: 'absolute', top: 3, left: on ? 21 : 3, width: 16, height: 16,
+    borderRadius: '50%', background: '#fff', transition: 'left 0.2s',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+  });
+  const segButton = (val, cur, set, label, hint) => (
+    <button
+      type="button"
+      onClick={() => set(val)}
+      style={{
+        flex: 1, textAlign: 'left', padding: '8px 10px', borderRadius: 6, cursor: 'pointer',
+        background: cur === val ? TEAL_LIGHT : '#fff',
+        border: `1px solid ${cur === val ? TEAL : '#e5e7eb'}`,
+      }}
+    >
+      <div style={{ fontSize: 12, fontWeight: 600, color: cur === val ? TEAL : '#374151' }}>{label}</div>
+      <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>{hint}</div>
+    </button>
+  );
   const [steps, setSteps] = useState(
     (initialSequence?.steps || []).length > 0
       ? initialSequence.steps.map(s => ({
@@ -355,6 +395,10 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
             visibility,
             allow_manager_edit: allowManagerEdit,
             stop_on_connection_accept: stopOnConnectionAccept,
+            thread_replies: threadReplies,
+            pin_sender: threadReplies ? true : pinSender,
+            thread_subject_mode: threadSubjectMode,
+            thread_failover_mode: threadFailoverMode,
             personalize_config_default: effectivePersonalizeDefault,
           }),
         });
@@ -399,6 +443,10 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
             visibility,
             allow_manager_edit: allowManagerEdit,
             stop_on_connection_accept: stopOnConnectionAccept,
+            thread_replies: threadReplies,
+            pin_sender: threadReplies ? true : pinSender,
+            thread_subject_mode: threadSubjectMode,
+            thread_failover_mode: threadFailoverMode,
             personalize_config_default: effectivePersonalizeDefault,
             steps: stepsPayload,
           }),
@@ -547,6 +595,78 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
               boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
             }} />
           </button>
+        </div>
+
+        {/* 2026_71: Threaded replies + sender pin */}
+        <div style={{
+          padding: '12px 14px', borderRadius: 8,
+          background: threadReplies ? TEAL_LIGHT : '#f9fafb',
+          border: `1px solid ${threadReplies ? TEAL + '40' : '#e5e7eb'}`,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>
+                🧵 Send follow-ups as threaded replies
+              </div>
+              <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
+                {threadReplies
+                  ? 'Each email step after the first is sent as a reply in the same thread — same subject, same mailbox.'
+                  : 'Each email step is sent as a new standalone email (default).'}
+              </div>
+            </div>
+            <button type="button" onClick={() => setThreadReplies(v => !v)} style={tglTrack(threadReplies)}>
+              <span style={tglKnob(threadReplies)} />
+            </button>
+          </div>
+
+          {/* Pin to one mailbox — forced + disabled while threading is on */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 14 }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>
+                📌 Pin to one sending mailbox
+              </div>
+              <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
+                {threadReplies
+                  ? 'Required for threaded replies — every step sends from the mailbox that opened the thread. Rotation is off.'
+                  : (pinSender
+                      ? 'One mailbox for the whole enrollment. Sender rotation is off.'
+                      : 'Sender rotation is on (default) — steps may go from different mailboxes.')}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => { if (!threadReplies) setPinSender(v => !v); }}
+              disabled={threadReplies}
+              title={threadReplies ? 'Pinning is required while threaded replies are on' : undefined}
+              style={tglTrack(pinEffective, threadReplies)}
+            >
+              <span style={tglKnob(pinEffective)} />
+            </button>
+          </div>
+
+          {/* Reply subject — threading only */}
+          {threadReplies && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 6 }}>Reply subject</div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {segButton('keep', threadSubjectMode, setThreadSubjectMode, 'Keep original', 'Reuse the first email\'s subject as-is')}
+                {segButton('re', threadSubjectMode, setThreadSubjectMode, 'Add “Re:”', 'Prefix the subject with Re:')}
+              </div>
+            </div>
+          )}
+
+          {/* Failover — relevant whenever a mailbox is pinned */}
+          {pinEffective && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 6 }}>
+                If the pinned mailbox can’t send
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {segButton('defer', threadFailoverMode, setThreadFailoverMode, 'Pause & notify', 'Pause the enrollment and remind the owner daily until fixed')}
+                {segButton('break', threadFailoverMode, setThreadFailoverMode, 'Switch sender', 'Send from another mailbox (thread resets)')}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Tone & Goal */}
