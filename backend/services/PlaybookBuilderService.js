@@ -504,7 +504,40 @@ async function updatePlay(play_id, updates) {
   return result.rows[0];
 }
 
+// Soft-delete (B17 / D29): deactivate rather than DELETE. Hard-deleting a play
+// severs every live deal_play_instances / case_plays / contract_play_instances /
+// actions row derived from it. Deactivated plays stop being instantiated for free
+// because activateStage* filter is_active = TRUE, while existing instances keep
+// their lineage. As of 2026_72 the FKs are ON DELETE RESTRICT, so a hard delete
+// of an in-use play is refused by the database as well.
 async function deletePlay(play_id) {
+  const result = await pool.query(
+    `UPDATE playbook_plays
+       SET is_active = false, updated_at = NOW()
+     WHERE id = $1
+     RETURNING id`,
+    [play_id]
+  );
+  return result.rows[0] || null;
+}
+
+// Hard delete, permitted only when nothing references the play. The RESTRICT FKs
+// are the real guard; this pre-check exists to return a clean 409 rather than a
+// raw constraint-violation stack trace.
+async function deletePlayHard(play_id) {
+  const inUse = await pool.query(
+    `SELECT 1 FROM deal_play_instances     WHERE play_id = $1
+     UNION ALL SELECT 1 FROM case_plays              WHERE play_id = $1
+     UNION ALL SELECT 1 FROM contract_play_instances WHERE play_id = $1
+     UNION ALL SELECT 1 FROM actions                 WHERE playbook_play_id = $1
+     LIMIT 1`,
+    [play_id]
+  );
+  if (inUse.rows.length > 0) {
+    const err = new Error('Cannot delete a play that has live instances or actions; deactivate it instead.');
+    err.status = 409;
+    throw err;
+  }
   await pool.query(`DELETE FROM playbook_plays WHERE id = $1`, [play_id]);
 }
 
@@ -815,7 +848,7 @@ module.exports = {
   resolveAccess,
   listPlaybooks, getPlaybook, createPlaybook, updatePlaybook, archivePlaybook,
   getVersionHistory, createDraftVersion, submitVersionForApproval, approveVersion, rejectVersion,
-  getPlays, createPlay, updatePlay, deletePlay,
+  getPlays, createPlay, updatePlay, deletePlay, deletePlayHard,
   listRegistrations, getRegistration, createRegistration, updateRegistration,
   submitRegistration, approveRegistration, rejectRegistration, requestChanges,
   getTeamGrants, addTeamGrant, removeTeamGrant,

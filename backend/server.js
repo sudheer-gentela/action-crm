@@ -451,12 +451,26 @@ app.listen(PORT, () => {
   console.log(`║     Env:  ${(process.env.NODE_ENV || 'development').padEnd(28)}║`);
   console.log(`╚═══════════════════════════════════════╝\n`);
 
+  // Local-safety switch. With DISABLE_CRON=true nothing scheduled or queued runs:
+  // no sequence sends, no threaded-digest mail, no notifications, no sweeps. Set
+  // it in backend/.env for local development so a dev box can never act as a
+  // second sender against production data.
+  //
+  // Because the cron handle below becomes a no-op stub rather than being removed,
+  // any cron.schedule(...) added later is covered automatically — no edit needed.
+  const backgroundEnabled = process.env.DISABLE_CRON !== 'true';
+  if (!backgroundEnabled) {
+    console.log('⏸  DISABLE_CRON=true — Bull worker + all cron schedules skipped');
+  }
+
   // ── Bull queue worker ───────────────────────────────────────────────────
-  try {
-    require('./jobs/worker');
-    console.log('✅ Bull queue worker initialized');
-  } catch (err) {
-    console.error('❌ Bull worker failed to start — queue processing disabled:', err.message);
+  if (backgroundEnabled) {
+    try {
+      require('./jobs/worker');
+      console.log('✅ Bull queue worker initialized');
+    } catch (err) {
+      console.error('❌ Bull worker failed to start — queue processing disabled:', err.message);
+    }
   }
 
   // ── Twilio (Phase 3) config check ───────────────────────────────────────
@@ -472,9 +486,13 @@ app.listen(PORT, () => {
 
   // ── Cron jobs ───────────────────────────────────────────────────────────
   try {
-    const cron = require('node-cron');
-    require('./jobs/modelDiscoveryScheduler').startScheduler();
-    require('./jobs/senderTokenHealthScheduler').startScheduler();
+    // No-op stub when disabled, so every cron.schedule(...) below — including any
+    // added in future — needs no modification.
+    const cron = backgroundEnabled ? require('node-cron') : { schedule: () => {} };
+    if (backgroundEnabled) {
+      require('./jobs/modelDiscoveryScheduler').startScheduler();
+      require('./jobs/senderTokenHealthScheduler').startScheduler();
+    }
 
     // Hourly: expire stale agent proposals
     cron.schedule('0 * * * *', async () => {

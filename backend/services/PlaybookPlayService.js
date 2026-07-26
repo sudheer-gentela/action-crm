@@ -7,11 +7,38 @@
 //   - Handle sequential dependencies
 //   - Gate checking for stage advancement
 //   - Complete / skip / reassign plays
+//
+// CHANGES (Phase A, 2026_70):
+//   A5  — _createActionForPlay no longer collides on uq_actions_deal_source_rule.
+//         It now sets playbook_play_id + source_module and upserts on
+//         (deal_id, playbook_play_id), the index reserved for playbook tasks.
+//         source_rule is left NULL (that index is reserved for Type-A diagnostic
+//         alerts — see PlaybookActionGenerator.js). Errors are re-raised, not
+//         swallowed, so a real failure is visible instead of silently NULLing
+//         action_id.
+//   B13 — activateStageForPlaybook now joins playbook_play_roles so role-based
+//         assignment actually works for the handover path (previously SELECT pp.*
+//         left play.roles undefined and every play fell through to deal.owner_id).
+//   A5-containment (Q6, option a-plus) — _createActionForPlay RE-RAISES, which is
+//         correct: a persistence helper must not decide policy, and swallowing is
+//         what caused B10. Containment is therefore the CALLER's job and is applied
+//         per play. One play failing to link can no longer abort the whole stage
+//         activation, and the failure is surfaced in the returned `warnings` array
+//         rather than vanishing. An instance left with action_id NULL is exactly
+//         the state A9's backfill repairs, so it is recoverable, not corruption.
+//         This is deliberately NOT silent swallowing — the difference from the
+//         original bug is that every failure is both logged AND returned.
+//   D20 — canonical status vocabulary throughout:
+//         not_started | in_progress | blocked | snoozed | completed | skipped | cancelled
+//         Play "active" (ready) → not_started; play "pending" (waiting) → blocked.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const db = require('../config/database');
 const { resolveForPlay } = require('./PlayRouteResolver');
 const { evaluateConditions } = require('./playbook.service');
+
+// Canonical statuses a play can hold while still "open" (not terminal).
+const OPEN_PLAY_STATUSES = ['not_started', 'in_progress', 'blocked', 'snoozed'];
 
 class PlaybookPlayService {
 
@@ -148,10 +175,10 @@ class PlaybookPlayService {
       const roles = typeof play.roles === 'string' ? JSON.parse(play.roles) : play.roles;
       const coOwnerRoles = roles.filter(r => r.ownership_type === 'co_owner');
 
-      // Determine initial status
+      // Determine initial status.
+      // 'not_started' = ready to work; 'blocked' = waiting on sequential deps.
       let initialStatus = 'not_started';
       if (play.execution_type === 'sequential' && play.depends_on && play.depends_on.length > 0) {
-        // Check if all dependencies are completed
         const allDepsComplete = await this._areDependenciesComplete(dealId, play.depends_on);
         if (!allDepsComplete) {
           initialStatus = 'blocked';
@@ -232,14 +259,26 @@ class PlaybookPlayService {
         }
       }
 
-      // Create action row if instance is active
+      // Create action row if instance is ready to work.
+      // Contained per play: _createActionForPlay re-raises, and we catch here so a
+      // single failure cannot strand the rest of the stage. Surfaced, never silent.
       let actionId = null;
       if (initialStatus === 'not_started' && assignees.length > 0) {
-        actionId = await this._createActionForPlay(instance, assignees[0], orgId);
-        if (actionId) {
-          await db.query(
-            `UPDATE deal_play_instances SET action_id = $1 WHERE id = $2`,
-            [actionId, instance.id]
+        try {
+          actionId = await this._createActionForPlay(instance, assignees[0], orgId, 'deals');
+          if (actionId) {
+            await db.query(
+              `UPDATE deal_play_instances SET action_id = $1 WHERE id = $2`,
+              [actionId, instance.id]
+            );
+          }
+        } catch (err) {
+          warnings.push(
+            `Play "${play.title}" was created but could not be linked to an action: ${err.message}`
+          );
+          console.error(
+            `[PlaybookPlayService] action link failed for instance ${instance.id} (play ${play.id}):`,
+            err.message
           );
         }
       }
@@ -264,8 +303,12 @@ class PlaybookPlayService {
    * than looking up the deal's assigned playbook.
    *
    * Used by HandoverService to fire the handover_s2i playbook independently
-   * of whatever sales playbook the deal has assigned. Assigns plays to the
-   * deal owner rather than role-based deal team members.
+   * of whatever sales playbook the deal has assigned.
+   *
+   * B13 fix: this now joins playbook_play_roles (as activateStage does) so
+   * role-based assignment works. It still falls back to the deal owner when a
+   * play has no role or no role holder resolves — which is the correct default
+   * for handover work that hasn't had implementation roles configured yet.
    *
    * @param {number} dealId
    * @param {string} stageKey
@@ -277,12 +320,24 @@ class PlaybookPlayService {
   static async activateStageForPlaybook(dealId, stageKey, orgId, userId, playbookId) {
     const warnings = [];
 
-    // Get plays for this stage from the specific playbook
+    // Get plays for this stage from the specific playbook, WITH roles (B13).
     const playsResult = await db.query(
-      `SELECT pp.*
+      `SELECT pp.*,
+              COALESCE(
+                json_agg(json_build_object(
+                  'role_id', ppr.role_id,
+                  'role_name', dr.name,
+                  'role_key', dr.key,
+                  'ownership_type', ppr.ownership_type
+                )) FILTER (WHERE ppr.id IS NOT NULL),
+                '[]'
+              ) AS roles
        FROM playbook_plays pp
+       LEFT JOIN playbook_play_roles ppr ON ppr.play_id = pp.id
+       LEFT JOIN org_roles dr ON dr.id = ppr.role_id
        WHERE pp.playbook_id = $1 AND pp.stage_key = $2 AND pp.is_active = TRUE
          AND (pp.trigger_mode IS NULL OR pp.trigger_mode = 'stage_change')
+       GROUP BY pp.id
        ORDER BY pp.sort_order ASC`,
       [playbookId, stageKey]
     );
@@ -328,7 +383,8 @@ class PlaybookPlayService {
         if (!evaluateConditions(conditions, dealContext)) continue;
       }
 
-      // Handover plays use same dependency logic as regular plays
+      // Handover plays use same dependency logic as regular plays.
+      // 'not_started' = ready; 'blocked' = waiting on sequential deps.
       let initialStatus = 'not_started';
       if (play.execution_type === 'sequential' && play.depends_on && play.depends_on.length > 0) {
         const allDepsComplete = await this._areDependenciesComplete(dealId, play.depends_on);
@@ -356,13 +412,17 @@ class PlaybookPlayService {
 
       const instance = instResult.rows[0];
 
-      // Resolve assignee via PlayRouteResolver — respects role routing + team queue
-      // Falls back to deal owner, then caller userId
+      // Resolve assignee via PlayRouteResolver — respects role routing + team queue.
+      // Now that roles are joined (B13), primaryRole is populated when the play
+      // defines one; otherwise we fall back to deal owner, then caller.
       const plays_roles = Array.isArray(play.roles)
         ? play.roles
         : (play.roles ? (typeof play.roles === 'string' ? JSON.parse(play.roles) : play.roles) : []);
 
-      const primaryRole = plays_roles.find(r => r.ownership_type === 'owner') || plays_roles[0] || null;
+      const primaryRole = plays_roles.find(r => r.ownership_type === 'owner')
+        || plays_roles.find(r => r.ownership_type === 'co_owner')
+        || plays_roles[0]
+        || null;
 
       const assignedUserIds = await resolveForPlay({
         orgId,
@@ -374,17 +434,46 @@ class PlaybookPlayService {
       });
       const assignedUserId = assignedUserIds[0] || (deal?.owner_id) || userId;
       const assignee = assignedUserId
-        ? { userId: assignedUserId, name: '' }
+        ? { userId: assignedUserId, name: '', roleId: primaryRole?.role_id || null }
         : null;
 
-      // Create action assigned to resolved user
+      // Record the assignee so reassignment and gate views work for handover
+      // plays the same way they do for deal plays.
+      if (assignee) {
+        try {
+          await db.query(
+            `INSERT INTO deal_play_assignees (instance_id, user_id, role_id, assigned_by)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (instance_id, user_id) DO NOTHING`,
+            [instance.id, assignee.userId, assignee.roleId, userId]
+          );
+        } catch (err) {
+          console.error('Failed to record handover play assignee:', err.message);
+        }
+      }
+
+      // Create action assigned to resolved user.
+      // Contained per play. This matters most here: handover.service.js links the
+      // returned instances into sales_handover_plays AFTER this loop, so letting an
+      // exception escape would lose the handover↔play linkage for every play,
+      // including the ones that succeeded.
       let actionId = null;
       if (initialStatus === 'not_started' && assignee) {
-        actionId = await this._createActionForPlay(instance, assignee, orgId);
-        if (actionId) {
-          await db.query(
-            'UPDATE deal_play_instances SET action_id = $1 WHERE id = $2',
-            [actionId, instance.id]
+        try {
+          actionId = await this._createActionForPlay(instance, assignee, orgId, 'handovers');
+          if (actionId) {
+            await db.query(
+              'UPDATE deal_play_instances SET action_id = $1 WHERE id = $2',
+              [actionId, instance.id]
+            );
+          }
+        } catch (err) {
+          warnings.push(
+            `Handover play "${play.title}" was created but could not be linked to an action: ${err.message}`
+          );
+          console.error(
+            `[PlaybookPlayService] handover action link failed for instance ${instance.id} (play ${play.id}):`,
+            err.message
           );
         }
       }
@@ -417,7 +506,9 @@ class PlaybookPlayService {
 
     const instance = result.rows[0];
 
-    // Also complete the linked action if any
+    // Also complete the linked action if any.
+    // (actions.completed is kept in sync by trg_sync_action_completed, but we
+    //  set it explicitly too so this works regardless of trigger state.)
     if (instance.action_id) {
       await db.query(
         `UPDATE actions SET status = 'completed', completed = true,
@@ -520,7 +611,9 @@ class PlaybookPlayService {
       enforcement = def.rows[0]?.gate_enforcement || 'advisory';
     }
 
-    // Find incomplete gate instances for this stage
+    // Find incomplete gate instances for this stage.
+    // A gate clears on completed OR skipped OR cancelled (an abandoned gate must
+    // not block advancement forever — matches handover_deliverable_rollup).
     const gatesResult = await db.query(
       `SELECT dpi.id, dpi.title, dpi.status,
               COALESCE(
@@ -532,7 +625,7 @@ class PlaybookPlayService {
        LEFT JOIN deal_play_assignees dpa ON dpa.instance_id = dpi.id
        LEFT JOIN users u ON u.id = dpa.user_id
        WHERE dpi.deal_id = $1 AND dpi.stage_key = $2
-         AND dpi.is_gate = TRUE AND dpi.status NOT IN ('completed', 'skipped')
+         AND dpi.is_gate = TRUE AND dpi.status NOT IN ('completed', 'skipped', 'cancelled')
        GROUP BY dpi.id
        ORDER BY dpi.sort_order`,
       [dealId, stageKey]
@@ -652,24 +745,38 @@ class PlaybookPlayService {
       }
     }
 
-    // Create action for first assignee
+    // Create action for first assignee.
+    // Manual plays have no playbook_play_id, so _createActionForPlay dedupes on
+    // the play_instance_id in metadata rather than the (deal_id, play) index.
     if (assigneeIds && assigneeIds.length > 0) {
       const firstUser = await db.query(
         `SELECT id, first_name || ' ' || last_name AS name FROM users WHERE id = $1`,
         [assigneeIds[0]]
       );
       if (firstUser.rows.length > 0) {
-        const actionId = await this._createActionForPlay(
-          instance,
-          { userId: firstUser.rows[0].id, name: firstUser.rows[0].name },
-          orgId
-        );
-        if (actionId) {
-          await db.query(
-            `UPDATE deal_play_instances SET action_id = $1 WHERE id = $2`,
-            [actionId, instance.id]
+        // Contained: a manual play that cannot be linked is still a valid play.
+        // Re-raising here would fail the whole addManualPlay call after the
+        // instance row is already committed.
+        try {
+          const actionId = await this._createActionForPlay(
+            instance,
+            { userId: firstUser.rows[0].id, name: firstUser.rows[0].name },
+            orgId,
+            'deals'
           );
-          instance.action_id = actionId;
+          if (actionId) {
+            await db.query(
+              `UPDATE deal_play_instances SET action_id = $1 WHERE id = $2`,
+              [actionId, instance.id]
+            );
+            instance.action_id = actionId;
+          }
+        } catch (err) {
+          console.error(
+            `[PlaybookPlayService] action link failed for manual play instance ${instance.id}:`,
+            err.message
+          );
+          instance.link_warning = `Play created but not linked to an action: ${err.message}`;
         }
       }
     }
@@ -683,6 +790,8 @@ class PlaybookPlayService {
 
   /**
    * Check if all dependency plays are completed or skipped.
+   * (cancelled also counts as resolved — a cancelled predecessor should not
+   *  block its successors forever.)
    */
   static async _areDependenciesComplete(dealId, dependsOnPlayIds) {
     if (!dependsOnPlayIds || dependsOnPlayIds.length === 0) return true;
@@ -692,7 +801,7 @@ class PlaybookPlayService {
        FROM deal_play_instances
        WHERE deal_id = $1
          AND play_id = ANY($2)
-         AND status NOT IN ('completed', 'skipped')`,
+         AND status NOT IN ('completed', 'skipped', 'cancelled')`,
       [dealId, dependsOnPlayIds]
     );
 
@@ -700,12 +809,13 @@ class PlaybookPlayService {
   }
 
   /**
-   * When a play completes, check if any pending plays depended on it and activate them.
+   * When a play completes, check if any blocked plays depended on it and
+   * activate them.
    */
   static async _resolveDependencies(dealId, completedPlayId, orgId, userId) {
     if (!completedPlayId) return [];
 
-    // Find pending instances whose depends_on includes this play
+    // Find blocked instances whose depends_on includes this play
     const pendingResult = await db.query(
       `SELECT dpi.id, dpi.play_id, pp.depends_on
        FROM deal_play_instances dpi
@@ -749,13 +859,30 @@ class PlaybookPlayService {
         );
 
         if (assigneeResult.rows.length > 0 && instance) {
-          const actionId = await this._createActionForPlay(
-            instance, assigneeResult.rows[0], orgId
+          // Derive source_module from whether this instance belongs to a handover.
+          const hv = await db.query(
+            `SELECT 1 FROM sales_handover_plays WHERE play_instance_id = $1 LIMIT 1`,
+            [pending.id]
           );
-          if (actionId) {
-            await db.query(
-              `UPDATE deal_play_instances SET action_id = $1 WHERE id = $2`,
-              [actionId, pending.id]
+          const sourceModule = hv.rows.length > 0 ? 'handovers' : 'deals';
+
+          // Contained: unblocking play N+1 must not fail because its action
+          // could not be created — the status transition to 'not_started' has
+          // already been committed above and is the semantically important part.
+          try {
+            const actionId = await this._createActionForPlay(
+              instance, assigneeResult.rows[0], orgId, sourceModule
+            );
+            if (actionId) {
+              await db.query(
+                `UPDATE deal_play_instances SET action_id = $1 WHERE id = $2`,
+                [actionId, pending.id]
+              );
+            }
+          } catch (err) {
+            console.error(
+              `[PlaybookPlayService] action link failed while unblocking instance ${pending.id}:`,
+              err.message
             );
           }
         }
@@ -769,29 +896,109 @@ class PlaybookPlayService {
 
   /**
    * Create an action row in the actions table for a play instance.
+   *
+   * A5 fix. Previously this hardcoded source_rule='playbook_play' with no
+   * playbook_play_id, so the SECOND play on any deal collided on
+   * uq_actions_deal_source_rule (deal_id, source_rule) — the index reserved
+   * for Type-A diagnostic alerts — threw, was swallowed, and left action_id
+   * NULL. Result: no play ever linked to an action.
+   *
+   * Now:
+   *   - sets playbook_play_id (the correct dedupe key for playbook tasks)
+   *   - leaves source_rule NULL (frees the diagnostic index)
+   *   - sets source_module so the unified Actions view can group by module
+   *   - upserts on the partial unique index uq_actions_deal_play
+   *     (deal_id, playbook_play_id) so re-firing a stage is idempotent
+   *   - re-raises on unexpected errors instead of silently returning null
+   *
+   * @param {object} instance      deal_play_instances row
+   * @param {object} assignee      { userId, name }
+   * @param {number} orgId
+   * @param {string} sourceModule  'deals' | 'handovers'  (defaults 'deals')
+   * @returns {number|null} action id
    */
-  static async _createActionForPlay(instance, assignee, orgId) {
-    try {
-      const channelMap = {
-        email:             'email',
-        call:              'call',
-        meeting:           'call',
-        document:          'document',
-        internal_task:     'document',
-        handover_section:  'document',   // handover form section → task action
-        handover_document: 'document',   // file attachment play  → task action
-      };
+  static async _createActionForPlay(instance, assignee, orgId, sourceModule = 'deals') {
+    const channelMap = {
+      email:             'email',
+      call:              'call',
+      meeting:           'call',
+      document:          'document',
+      internal_task:     'document',
+      handover_section:  'document',   // handover form section → task action
+      handover_document: 'document',   // file attachment play  → task action
+    };
 
+    const metadata = JSON.stringify({
+      play_instance_id: instance.id,
+      play_id: instance.play_id,
+      stage_key: instance.stage_key,
+    });
+
+    // Manual plays have no playbook_play_id; they can't use the (deal_id,
+    // playbook_play_id) index, so fall back to a plain insert. Playbook-derived
+    // plays upsert idempotently on that index.
+    const hasPlayId = instance.play_id != null;
+
+    try {
+      if (hasPlayId) {
+        const result = await db.query(
+          `INSERT INTO actions (
+             org_id, user_id, deal_id,
+             title, description,
+             type, action_type, priority,
+             next_step, is_internal,
+             source, source_rule, source_module,
+             playbook_play_id,
+             due_date, status, completed,
+             metadata
+           ) VALUES (
+             $1, $2, $3, $4, $5, $6, $6, $7, $8, $9,
+             'playbook', NULL, $10,
+             $11,
+             $12, 'not_started', false, $13
+           )
+           ON CONFLICT (deal_id, playbook_play_id)
+             WHERE deal_id IS NOT NULL AND playbook_play_id IS NOT NULL
+           DO UPDATE SET
+             user_id   = EXCLUDED.user_id,
+             due_date  = EXCLUDED.due_date,
+             updated_at = NOW()
+           RETURNING id`,
+          [
+            orgId,
+            assignee.userId,
+            instance.deal_id,
+            instance.title,
+            instance.description || 'Playbook play: ' + instance.title,
+            instance.channel === 'meeting' ? 'meeting_schedule'
+              : (instance.channel === 'email' ? 'email_send' : 'task_complete'),
+            instance.priority || 'medium',
+            channelMap[instance.channel] || 'document',
+            instance.channel === 'internal_task' || instance.channel === 'document',
+            sourceModule,
+            instance.play_id,
+            instance.due_date,
+            metadata,
+          ]
+        );
+        return result.rows[0]?.id || null;
+      }
+
+      // Manual play — no playbook_play_id.
       const result = await db.query(
         `INSERT INTO actions (
            org_id, user_id, deal_id,
            title, description,
            type, action_type, priority,
            next_step, is_internal,
-           source, source_rule,
+           source, source_rule, source_module,
            due_date, status, completed,
            metadata
-         ) VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8, $9, 'playbook', 'playbook_play', $10, 'not_started', false, $11)
+         ) VALUES (
+           $1, $2, $3, $4, $5, $6, $6, $7, $8, $9,
+           'playbook', NULL, $10,
+           $11, 'not_started', false, $12
+         )
          RETURNING id`,
         [
           orgId,
@@ -799,23 +1006,23 @@ class PlaybookPlayService {
           instance.deal_id,
           instance.title,
           instance.description || 'Playbook play: ' + instance.title,
-          instance.channel === 'meeting' ? 'meeting_schedule' : (instance.channel === 'email' ? 'email_send' : 'task_complete'),
+          instance.channel === 'meeting' ? 'meeting_schedule'
+            : (instance.channel === 'email' ? 'email_send' : 'task_complete'),
           instance.priority || 'medium',
           channelMap[instance.channel] || 'document',
           instance.channel === 'internal_task' || instance.channel === 'document',
+          sourceModule,
           instance.due_date,
-          JSON.stringify({
-            play_instance_id: instance.id,
-            play_id: instance.play_id,
-            stage_key: instance.stage_key,
-          })
+          metadata,
         ]
       );
-
       return result.rows[0]?.id || null;
+
     } catch (err) {
-      console.error('Failed to create action for play:', err.message);
-      return null;
+      // Re-raise: a failure here previously vanished and left action_id NULL,
+      // which is exactly the bug (B10) this method now fixes. Surface it.
+      console.error('Failed to create action for play (instance %s):', instance.id, err.message);
+      throw err;
     }
   }
 }

@@ -368,14 +368,44 @@ router.put('/:playId/roles', adminOnly, async (req, res) => {
 
 router.delete('/:playId', adminOnly, async (req, res) => {
   try {
+    // Soft-delete by default (B17 / D29): deactivate so live instances keep their
+    // lineage. ?hard=true forces a real delete, which the DB refuses via the
+    // RESTRICT FKs added in 2026_72 if anything still references the play.
+    const hard = req.query.hard === 'true';
+
+    if (hard) {
+      const inUse = await db.query(
+        `SELECT 1 FROM deal_play_instances     WHERE play_id = $1
+         UNION ALL SELECT 1 FROM case_plays              WHERE play_id = $1
+         UNION ALL SELECT 1 FROM contract_play_instances WHERE play_id = $1
+         UNION ALL SELECT 1 FROM actions                 WHERE playbook_play_id = $1
+         LIMIT 1`,
+        [req.params.playId]
+      );
+      if (inUse.rows.length > 0) {
+        return res.status(409).json({
+          error: { message: 'Play has live instances or actions; deactivate it instead of deleting.' },
+        });
+      }
+      const del = await db.query(
+        `DELETE FROM playbook_plays WHERE id = $1 AND org_id = $2 RETURNING id`,
+        [req.params.playId, req.orgId]
+      );
+      if (del.rows.length === 0) {
+        return res.status(404).json({ error: { message: 'Play not found' } });
+      }
+      return res.json({ success: true, deleted: 'hard' });
+    }
+
     const result = await db.query(
-      `DELETE FROM playbook_plays WHERE id = $1 AND org_id = $2 RETURNING id`,
+      `UPDATE playbook_plays SET is_active = false, updated_at = NOW()
+       WHERE id = $1 AND org_id = $2 RETURNING id`,
       [req.params.playId, req.orgId]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ error: { message: 'Play not found' } });
     }
-    res.json({ success: true });
+    res.json({ success: true, deleted: 'soft' });
   } catch (err) {
     console.error('Delete play error:', err);
     res.status(500).json({ error: { message: 'Failed to delete play' } });
