@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict TiI8splXxM0wunH2ELeEYKPJCjfQjGFG7SMMtJok24nR7KHWAf9PQcjqPCp0bYr
+\restrict 7gNCpejCpae1zQesOUvsalFqeiKGBj1ef7ipbt3JezWV4q0U0oh3a80ZY7N4vCz
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -170,13 +170,42 @@ CREATE FUNCTION public.sync_action_completed() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
-  NEW.completed := (NEW.status = 'completed');
-  IF NEW.status = 'completed' AND NEW.completed_at IS NULL THEN
-    NEW.completed_at := now();
+  IF TG_OP = 'INSERT' THEN
+    -- An explicit completed = true wins and drags status with it. Cannot have
+    -- come from the column default (false), so it is always intentional.
+    IF NEW.completed IS TRUE AND NEW.status IS DISTINCT FROM 'completed' THEN
+      NEW.status := 'completed';
+    ELSE
+      NEW.completed := (NEW.status = 'completed');
+    END IF;
+  ELSE
+    -- UPDATE OF status ΓÇö status is authoritative, unchanged from 2026_70.
+    NEW.completed := (NEW.status = 'completed');
   END IF;
+
+  IF NEW.status = 'completed' THEN
+    -- Stamp only if absent, so an imported completion date is preserved rather
+    -- than being overwritten with now().
+    IF NEW.completed_at IS NULL THEN
+      NEW.completed_at := now();
+    END IF;
+  ELSE
+    -- problem 2: leaving these set makes a reopened action read as completed to
+    -- anything keyed on completed_at (e.g. ACTION_STATE_CASE).
+    NEW.completed_at := NULL;
+    NEW.completed_by := NULL;
+  END IF;
+
   RETURN NEW;
 END;
 $$;
+
+
+--
+-- Name: FUNCTION sync_action_completed(); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.sync_action_completed() IS 'Keeps actions.completed / completed_at in step with actions.status. status is authoritative on UPDATE; on INSERT an explicit completed = true promotes status to completed so imported finished work survives. completed_at is preserved if supplied, stamped if absent, cleared on reopen. As of 2026_70c.';
 
 
 --
@@ -677,7 +706,7 @@ CREATE TABLE public.actions (
     requires_external_evidence boolean DEFAULT false,
     health_param character varying(10) DEFAULT NULL::character varying,
     source_rule character varying(80) DEFAULT NULL::character varying,
-    status character varying DEFAULT 'yet_to_start'::character varying,
+    status character varying DEFAULT 'not_started'::character varying,
     is_internal boolean DEFAULT false,
     completed_by integer,
     next_step character varying,
@@ -18618,5 +18647,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict TiI8splXxM0wunH2ELeEYKPJCjfQjGFG7SMMtJok24nR7KHWAf9PQcjqPCp0bYr
+\unrestrict 7gNCpejCpae1zQesOUvsalFqeiKGBj1ef7ipbt3JezWV4q0U0oh3a80ZY7N4vCz
 

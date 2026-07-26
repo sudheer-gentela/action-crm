@@ -6,6 +6,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const { google } = require('googleapis');
+const crypto = require('crypto');
 const { getTokenByUserId, saveUserToken, refreshUserToken } = require('./tokenService');
 
 // ── OAuth2 Client ─────────────────────────────────────────────────────────────
@@ -182,7 +183,7 @@ async function fetchEmailById(userId, emailId) {
  * If accessToken is provided (prospecting sender accounts), uses those tokens directly
  * instead of loading from oauth_tokens — so the email goes out from the correct address.
  */
-async function sendEmail(userId, { to, subject, body, isHtml = false, accessToken = null, refreshToken = null, senderEmail = null }) {
+async function sendEmail(userId, { to, subject, body, isHtml = false, accessToken = null, refreshToken = null, senderEmail = null, thread = null }) {
   let auth;
 
   if (accessToken) {
@@ -277,18 +278,48 @@ async function sendEmail(userId, { to, subject, body, isHtml = false, accessToke
   const gmail = google.gmail({ version: 'v1', auth });
 
   const contentType = isHtml ? 'text/html' : 'text/plain';
-  const raw = _encodeEmail(to, subject, body, contentType);
 
-  const sendRes = await gmail.users.messages.send({
-    userId: 'me',
-    requestBody: { raw },
-  });
+  // ── Threading assembly (opt-in, 2026_71) ──────────────────────────────────
+  // thread = {}                        -> ROOT: mint a Message-ID, no nesting.
+  // thread = { threadId, inReplyTo, references } -> REPLY: nest + set headers.
+  // thread.verifyMessageId (optional)  -> read the stored Message-Id back.
+  let rfcMessageId = null;
+  const extraHeaders = {};
+  const requestBody  = {};
+
+  if (thread) {
+    rfcMessageId = _generateRfcMessageId(senderEmail);
+    extraHeaders['Message-ID'] = rfcMessageId;
+    if (thread.inReplyTo)  extraHeaders['In-Reply-To'] = thread.inReplyTo;
+    if (thread.references) extraHeaders['References']   = thread.references;
+    // Gmail nests only when the Subject matches the thread's subject — the
+    // caller is responsible for passing the reused root subject.
+    if (thread.threadId)   requestBody.threadId = thread.threadId;
+  }
+
+  requestBody.raw = _encodeEmail(to, subject, body, contentType, extraHeaders);
+
+  const sendRes = await gmail.users.messages.send({ userId: 'me', requestBody });
 
   const messageId = sendRes.data.id || null;
   const threadId  = sendRes.data.threadId || null;
-  console.log(`📤 Sent email via Gmail (${senderEmail || 'default'}) to ${to} — messageId: ${messageId}`);
 
-  return { messageId, threadId };
+  // Optional belt-and-suspenders: confirm the stored Message-Id matches the wire.
+  if (thread && thread.verifyMessageId && messageId) {
+    try {
+      const meta = await gmail.users.messages.get({
+        userId: 'me', id: messageId, format: 'metadata', metadataHeaders: ['Message-Id'],
+      });
+      const hdr = (meta.data.payload?.headers || [])
+        .find(h => h.name && h.name.toLowerCase() === 'message-id');
+      if (hdr && hdr.value) rfcMessageId = hdr.value;
+    } catch (e) {
+      console.warn('Gmail Message-Id read-back failed (non-fatal):', e.message);
+    }
+  }
+
+  console.log(`📤 Sent email via Gmail (${senderEmail || 'default'}) to ${to} — messageId: ${messageId}, thread: ${threadId || 'n/a'}`);
+  return { messageId, threadId, rfcMessageId };
 }
 
 // ── Calendar ──────────────────────────────────────────────────────────────────
@@ -398,15 +429,29 @@ function _parseGmailMessage(msg) {
   };
 }
 
-function _encodeEmail(to, subject, body, contentType) {
-  const lines = [
+// RFC822 Message-ID generator (2026_71). Gmail's send response returns a
+// *resource id*, not the RFC822 Message-ID that In-Reply-To/References need, so
+// we mint our own, inject it, and return it for the caller to chain.
+function _generateRfcMessageId(senderEmail) {
+  const domain = (senderEmail && senderEmail.includes('@'))
+    ? senderEmail.split('@')[1].trim()
+    : 'gowarmcrm.com';
+  return `<gwc-${crypto.randomUUID()}@${domain}>`;
+}
+
+function _encodeEmail(to, subject, body, contentType, extraHeaders = {}) {
+  const headerLines = [
     `To: ${to}`,
     `Subject: ${subject}`,
     `Content-Type: ${contentType}; charset=utf-8`,
-    '',
-    body,
   ];
-  const raw = lines.join('\r\n');
+  // Threading headers (Message-ID / In-Reply-To / References) when present.
+  for (const [key, value] of Object.entries(extraHeaders)) {
+    if (value !== null && value !== undefined && value !== '') {
+      headerLines.push(`${key}: ${value}`);
+    }
+  }
+  const raw = [...headerLines, '', body].join('\r\n');
   return Buffer.from(raw).toString('base64url');
 }
 

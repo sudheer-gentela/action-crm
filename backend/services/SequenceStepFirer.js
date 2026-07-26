@@ -43,6 +43,7 @@ const { sendEmail: sendGmailEmail }   = require('./googleService');
 const EmailTrackingService            = require('./EmailTrackingService');   // Insights/WBR Phase 7
 const { sendEmail: sendOutlookEmail } = require('./outlookService');
 const { plainTextToHtml }             = require('./emailFormatter');
+const ThreadedSequenceNotifier        = require('./ThreadedSequenceNotifier');   // 2026_71 threaded-reply pause/notify
 const PersonalizationDispatcher       = require('./PersonalizationDispatcher');  // lazy JIT personalisation
 const LinkedInAutomationConfig        = require('./linkedinAutomationConfig');   // org→user→system auto-connect gate
 const SenderTokenHealth               = require('./SenderTokenHealth');          // dead-credential detect / deactivate / notify
@@ -824,6 +825,80 @@ async function failAndPause(client, info) {
   }
 }
 
+// ── Threaded-reply helpers (2026_71) ─────────────────────────────────────────
+
+/**
+ * Resolve the wire subject for a threaded REPLY. 'keep' returns the root
+ * subject verbatim (Gmail nests on subject match); 're' prefixes "Re: " unless
+ * one is already present. Never double-prefixes.
+ */
+function applyThreadSubject(subject, mode) {
+  const s = (subject || '').trim();
+  if (mode === 're') {
+    return /^re\s*:/i.test(s) ? s : `Re: ${s}`;
+  }
+  return s; // 'keep' (default)
+}
+
+/**
+ * Pause an enrollment whose PINNED sender can't send (threaded / pin_sender in
+ * 'defer' failover mode). Unlike failAndPause this fires an IMMEDIATE owner
+ * notification carrying the three resolution options, and marks the row with a
+ * distinct stop_reason ('thread_sender_blocked') the daily digest scans for.
+ *
+ * The pause UPDATE is guarded by status='active' + RETURNING so the notify only
+ * fires on the transition INTO the blocked state — a later tick that finds it
+ * already paused updates 0 rows and stays silent (no duplicate alerts). The
+ * daily digest (threadedSequenceDigest.js) handles the recurring reminder.
+ */
+async function pauseThreadBlocked(client, info) {
+  const {
+    orgId, enrollmentId, stepId, prospectId, enrolledBy,
+    seqName, seqId, stepOrder, senderId, reason,
+  } = info;
+  const msg = String(reason || 'Pinned sending mailbox unavailable.').slice(0, 1000);
+
+  // Fail the in-flight row (if any).
+  await client.query(
+    `UPDATE sequence_step_logs
+        SET status='failed', error_message=$3, fired_at=NOW()
+      WHERE enrollment_id=$1 AND sequence_step_id=$2
+        AND status IN ('scheduled','sending')`,
+    [enrollmentId, stepId, msg]
+  );
+
+  // Pause with the digest sentinel — only if currently active (dedup guard).
+  const paused = await client.query(
+    `UPDATE sequence_enrollments
+        SET status='paused', stop_reason='thread_sender_blocked'
+      WHERE id=$1 AND status='active'
+      RETURNING id`,
+    [enrollmentId]
+  );
+  if (paused.rowCount === 0) return; // already parked — stay silent
+
+  try {
+    await ThreadedSequenceNotifier.notifyBlocked(client, {
+      orgId, userId: enrolledBy, enrollmentId, seqId, seqName, stepOrder, senderId, reason: msg,
+    });
+  } catch (e) {
+    console.warn(`pauseThreadBlocked: notify failed for enrollment ${enrollmentId}:`, e.message);
+  }
+
+  try {
+    await client.query(
+      `INSERT INTO prospecting_activities
+                   (org_id, prospect_id, user_id, activity_type, description, metadata)
+            VALUES ($1, $2, $3, 'sequence_thread_blocked', $4, $5)`,
+      [orgId, prospectId, enrolledBy,
+       `Threaded sequence paused — ${seqName || 'sequence'} step ${stepOrder ?? '?'}: ${msg}`,
+       JSON.stringify({ enrollmentId, stepId, stepOrder: stepOrder ?? null, senderId, reason: msg })]
+    );
+  } catch (e) {
+    console.warn(`pauseThreadBlocked: activity log failed for enrollment ${enrollmentId}:`, e.message);
+  }
+}
+
 /**
  * Reclaim rows stuck in 'sending' (worker crashed between claim and finalize).
  * Per the no-auto-retry policy a possibly-half-sent email is treated as a
@@ -960,6 +1035,10 @@ const SequenceStepFirer = {
                 s.require_approval AS seq_require_approval,
                 s.ai_enabled AS seq_ai_enabled,
                 s.stop_on_connection_accept AS seq_stop_on_accept,
+                s.thread_replies       AS seq_thread_replies,
+                s.pin_sender           AS seq_pin_sender,
+                s.thread_subject_mode  AS seq_thread_subject_mode,
+                s.thread_failover_mode AS seq_thread_failover_mode,
                 p.campaign_id AS prospect_campaign_id,
                 pc.stop_on_reply AS camp_stop_on_reply,
                 p.channel_data->'linkedin'->>'connection_status' AS li_connection_status,
@@ -1690,8 +1769,24 @@ const SequenceStepFirer = {
           const allowedSenderIds = await getCampaignSenderIds(
             enrollment.org_id, enrollment.prospect_campaign_id
           );
+
+          // ── Threaded-reply / sender-pin resolution (2026_71) ──────────────
+          // A threaded enrollment (or one on a pin_sender sequence) is locked to
+          // ONE mailbox for its whole life so replies come from the same address
+          // that opened the thread. Once the first email stamps
+          // pinned_sender_account_id, restrict the pool to it — the picker's
+          // capacity/cooldown logic then yields the normal DEFER when that one
+          // mailbox is at cap (it simply waits, exactly like today). A revoked /
+          // inactive pinned sender is handled explicitly below per failover mode.
+          const threadingOn   = enrollment.seq_thread_replies === true;
+          const pinOn         = threadingOn || enrollment.seq_pin_sender === true;
+          const failoverBreak = pinOn && enrollment.seq_thread_failover_mode === 'break';
+          const pinnedSenderId = pinOn ? (enrollment.pinned_sender_account_id || null) : null;
+          const effectiveAllowedSenderIds =
+            (pinOn && pinnedSenderId) ? [pinnedSenderId] : allowedSenderIds;
+
           const pick = await pickEmailSenderWithCapacity(
-            client, enrollment.org_id, enrollment.enrolled_by, clientId, settings, new Date(), allowedSenderIds
+            client, enrollment.org_id, enrollment.enrolled_by, clientId, settings, new Date(), effectiveAllowedSenderIds
           );
           if (pick.status === 'all_maxed' || pick.status === 'cooling_down') {
             console.log(
@@ -1701,6 +1796,34 @@ const SequenceStepFirer = {
             continue;
           }
           if (pick.status === 'no_accounts' || pick.status === 'client_sender_required' || !pick.sender) {
+            // Pinned enrollment whose one mailbox is now gone/inactive (2026_71).
+            if (pinOn && pinnedSenderId && pick.status === 'no_accounts') {
+              if (failoverBreak) {
+                // break mode: drop the pin + thread anchor; next tick re-picks
+                // from the full pool and starts a fresh thread root.
+                await client.query(
+                  `UPDATE sequence_enrollments
+                      SET pinned_sender_account_id = NULL,
+                          thread_conversation_id   = NULL,
+                          thread_last_message_id   = NULL,
+                          thread_references        = NULL
+                    WHERE id = $1`,
+                  [enrollment.id]
+                );
+                errors++;
+                continue;
+              }
+              // defer mode: pause + notify immediately (daily digest follows).
+              await pauseThreadBlocked(client, {
+                orgId: enrollment.org_id, enrollmentId: enrollment.id, stepId: step.id,
+                prospectId: enrollment.prospect_id, enrolledBy: enrollment.enrolled_by,
+                seqName: enrollment.seq_name, seqId: enrollment.seq_id,
+                stepOrder: enrollment.current_step, senderId: pinnedSenderId,
+                reason: 'The pinned sending mailbox is disconnected or inactive.',
+              });
+              errors++;
+              continue;
+            }
             await failAndPause(client, {
               orgId: enrollment.org_id, enrollmentId: enrollment.id, stepId: step.id,
               prospectId: enrollment.prospect_id, enrolledBy: enrollment.enrolled_by,
@@ -1788,17 +1911,45 @@ const SequenceStepFirer = {
             html: sendBodyHtml,
           });
 
+          // ── Threaded-reply assembly (2026_71) ─────────────────────────────
+          // ROOT  = no thread anchor stamped on this enrollment yet.
+          // REPLY = anchor present → reuse the root subject (Gmail nests on
+          //         subject match; Outlook createReply sets it) per subject mode,
+          //         and carry the provider reply pointers.
+          const isThreadReply = threadingOn && !!enrollment.thread_conversation_id;
+          const outSubject = isThreadReply
+            ? applyThreadSubject(enrollment.thread_root_subject || sendSubject, enrollment.seq_thread_subject_mode)
+            : sendSubject;
+
+          let gmailThread = null, outlookThread = null;
+          if (threadingOn) {
+            if (sender.provider === 'gmail') {
+              gmailThread = isThreadReply
+                ? { threadId:  enrollment.thread_conversation_id,
+                    inReplyTo:  enrollment.thread_last_message_id || null,
+                    references: enrollment.thread_references || enrollment.thread_last_message_id || null }
+                : {}; // root: mint a Message-ID, no server-side nesting yet
+            } else if (sender.provider === 'outlook') {
+              outlookThread = isThreadReply
+                ? { replyToMessageId: enrollment.thread_last_message_id }
+                : {}; // root: draft-then-send to capture ids
+            }
+          }
+          let sendResult = null;
+
           // Dispatch. On throw → fail + pause (no retry), then defer to owner.
           try {
             if (sender.provider === 'gmail') {
-              await sendGmailEmail(enrollment.enrolled_by, {
-                to: prospect.email, subject: sendSubject, body: sendBodyHtml, isHtml: true,
+              sendResult = await sendGmailEmail(enrollment.enrolled_by, {
+                to: prospect.email, subject: outSubject, body: sendBodyHtml, isHtml: true,
                 senderEmail: sender.email, accessToken: sender.access_token, refreshToken: sender.refresh_token,
+                thread: gmailThread,
               });
             } else if (sender.provider === 'outlook') {
-              await sendOutlookEmail(enrollment.enrolled_by, {
-                to: prospect.email, subject: sendSubject, body: sendBodyHtml, isHtml: true,
+              sendResult = await sendOutlookEmail(enrollment.enrolled_by, {
+                to: prospect.email, subject: outSubject, body: sendBodyHtml, isHtml: true,
                 senderEmail: sender.email, accessToken: sender.access_token, refreshToken: sender.refresh_token,
+                thread: outlookThread,
               });
             } else {
               throw new Error(`Unsupported sender provider: ${sender.provider}`);
@@ -1821,6 +1972,33 @@ const SequenceStepFirer = {
                 userId: enrollment.enrolled_by,
                 reason: sendErr.message,
               });
+              // Pinned/threaded enrollment (2026_71): do NOT fail over to a
+              // different mailbox — that changes the From address and breaks the
+              // thread. In DEFER mode, pause + notify immediately (daily digest
+              // nags until the owner resolves). In BREAK mode, drop the anchor so
+              // the next sender starts a fresh root, then fall through to failover.
+              if (pinOn && pinnedSenderId && !failoverBreak) {
+                await pauseThreadBlocked(client, {
+                  orgId: enrollment.org_id, enrollmentId: enrollment.id, stepId: step.id,
+                  prospectId: enrollment.prospect_id, enrolledBy: enrollment.enrolled_by,
+                  seqName: enrollment.seq_name, seqId: enrollment.seq_id,
+                  stepOrder: enrollment.current_step, senderId: pinnedSenderId,
+                  reason: 'The pinned sending mailbox needs to be reconnected.',
+                });
+                errors++;
+                continue;
+              }
+              if (pinOn && pinnedSenderId && failoverBreak) {
+                await client.query(
+                  `UPDATE sequence_enrollments
+                      SET pinned_sender_account_id = NULL,
+                          thread_conversation_id   = NULL,
+                          thread_last_message_id   = NULL,
+                          thread_references        = NULL
+                    WHERE id = $1`,
+                  [enrollment.id]
+                );
+              }
               // Is there still a sender that can carry this (now or after its
               // cooldown/daily window)? The picker already excludes the
               // just-deactivated one (is_active=false on the same connection).
@@ -1865,17 +2043,71 @@ const SequenceStepFirer = {
           }
 
           // ── Success: persist the sent email ────────────────────────
+          // Provider threading ids (2026_71): reuse conversation_id + external_id
+          // + external_data (the "separate change, flagged not smuggled" noted in
+          // routes/sequences.routes.js). Gmail: external_id = the RFC822 Message-ID
+          // we minted (chained as In-Reply-To next step); Outlook: external_id = the
+          // immutable Graph id (the createReply target). Outlook internetMessageId
+          // is stashed in external_data. All null when threading is off.
+          const provThreadId = sender.provider === 'gmail'
+            ? (sendResult?.threadId || null)
+            : (sendResult?.conversationId || null);
+          const provMsgId = sender.provider === 'gmail'
+            ? (sendResult?.rfcMessageId || null)
+            : (sendResult?.messageId || null);
+          const provExtData = sender.provider === 'outlook'
+            ? { internetMessageId: sendResult?.internetMessageId || null }
+            : {};
+
           const emailRes = await client.query(
             `INSERT INTO emails
                          (org_id, user_id, direction, subject, body,
                           to_address, from_address, sent_at,
-                          prospect_id, sender_account_id, provider)
-                  VALUES ($1, $2, 'sent', $3, $4, $5, $6, NOW(), $7, $8, $9)
+                          prospect_id, sender_account_id, provider,
+                          conversation_id, external_id, external_data)
+                  VALUES ($1, $2, 'sent', $3, $4, $5, $6, NOW(), $7, $8, $9, $10, $11, $12::jsonb)
                RETURNING id`,
-            [enrollment.org_id, enrollment.enrolled_by, sendSubject, sendBodyHtml,
-             prospect.email, sender.email, enrollment.prospect_id, sender.id, sender.provider]
+            [enrollment.org_id, enrollment.enrolled_by, outSubject, sendBodyHtml,
+             prospect.email, sender.email, enrollment.prospect_id, sender.id, sender.provider,
+             provThreadId, provMsgId, JSON.stringify(provExtData)]
           );
           const emailId = emailRes.rows[0].id;
+
+          // Stamp / advance the cached thread anchor on the enrollment (2026_71).
+          // Read came free with se.*, so this single UPDATE is the whole per-send
+          // cost — no fan-out reads regardless of firer volume. thread_references
+          // is consumed only on the Gmail path; harmless for Outlook.
+          if (threadingOn && provMsgId) {
+            if (isThreadReply) {
+              await client.query(
+                `UPDATE sequence_enrollments
+                    SET thread_last_message_id = $2,
+                        thread_references = COALESCE(thread_references || ' ' || $2, $2)
+                  WHERE id = $1`,
+                [enrollment.id, provMsgId]
+              );
+            } else {
+              // Root — lock the anchor and pin the sender for the rest of life.
+              await client.query(
+                `UPDATE sequence_enrollments
+                    SET thread_conversation_id   = $2,
+                        thread_root_subject      = $3,
+                        thread_last_message_id   = $4,
+                        thread_references        = $4,
+                        pinned_sender_account_id = COALESCE(pinned_sender_account_id, $5)
+                  WHERE id = $1`,
+                [enrollment.id, provThreadId, outSubject, provMsgId, sender.id]
+              );
+            }
+          } else if (pinOn && !enrollment.pinned_sender_account_id) {
+            // pin_sender ON without threading: still lock the sender post-first-send.
+            await client.query(
+              `UPDATE sequence_enrollments
+                  SET pinned_sender_account_id = COALESCE(pinned_sender_account_id, $2)
+                WHERE id = $1`,
+              [enrollment.id, sender.id]
+            );
+          }
 
           await client.query(
             `UPDATE prospecting_sender_accounts

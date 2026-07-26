@@ -264,6 +264,7 @@ async function sendEmail(userId, {
   to, subject, body, isHtml = false,
   replyToId = null, saveToSentItems = true,
   accessToken = null, refreshToken = null, senderEmail = null,
+  thread = null,
 }) {
   try {
     const client = accessToken
@@ -281,6 +282,51 @@ async function sendEmail(userId, {
       ],
     };
 
+    // ── Threaded path (opt-in, 2026_71): draft-then-send to capture ids ───────
+    // /sendMail and /reply return 202 No Content — they never hand back the
+    // created message, so we can't capture the id/conversationId needed to thread
+    // the NEXT step. The threaded path creates the message as a draft (which DOES
+    // return those) and then sends it. Immutable IDs (Prefer header) keep the id
+    // valid across the Drafts→Sent move so it stays a usable createReply target.
+    if (thread) {
+      const IMMUTABLE = 'IdType="ImmutableId"';
+      let draft;
+
+      if (thread.replyToMessageId) {
+        // createReply nests in the same conversation and seeds In-Reply-To/
+        // References automatically; we overwrite the body (drop quoted history)
+        // and set the subject to whatever the caller resolved (keep vs Re:).
+        draft = await client
+          .api(`/me/messages/${thread.replyToMessageId}/createReply`)
+          .header('Prefer', IMMUTABLE)
+          .post({});
+        const patch = { body: { contentType: isHtml ? 'HTML' : 'Text', content: body } };
+        if (subject) patch.subject = subject;
+        await client
+          .api(`/me/messages/${draft.id}`)
+          .header('Prefer', IMMUTABLE)
+          .patch(patch);
+      } else {
+        // Root of the thread — create a fresh draft we can send and read ids off.
+        draft = await client
+          .api('/me/messages')
+          .header('Prefer', IMMUTABLE)
+          .post(message);
+      }
+
+      await client
+        .api(`/me/messages/${draft.id}/send`)
+        .post({});
+
+      console.log(`📤 Sent threaded email via Outlook (${senderEmail || 'default'}) to ${to} — msgId: ${draft.id}, conv: ${draft.conversationId || 'n/a'}`);
+      return {
+        messageId:         draft.id,
+        conversationId:    draft.conversationId    || null,
+        internetMessageId: draft.internetMessageId || null,
+      };
+    }
+
+    // ── Fast path (unchanged) ──────────────────────────────────────
     if (replyToId) {
       // Reply to an existing thread — Graph puts it in the same conversation
       await client
@@ -294,6 +340,7 @@ async function sendEmail(userId, {
     }
 
     console.log(`📤 Sent email via Outlook (${senderEmail || 'default'}) to ${to} — subject: "${subject}"`);
+    return { messageId: null, conversationId: null, internetMessageId: null };
   } catch (error) {
     console.error('Error sending email via Outlook:', error);
     throw new Error(`Failed to send email: ${error.message}`);

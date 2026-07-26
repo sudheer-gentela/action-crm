@@ -30,6 +30,7 @@
 
 const express = require('express');
 const { sendEmail: sendGmailEmail }   = require('../services/googleService');
+const ThreadedSequenceNotifier        = require('../services/ThreadedSequenceNotifier'); // 2026_71
 const { sendEmail: sendOutlookEmail } = require('../services/outlookService');
 const { plainTextToHtml }             = require('../services/emailFormatter');
 const router  = express.Router();
@@ -1566,7 +1567,12 @@ router.post('/drafts/:logId/send', async (req, res) => {
               ss.step_intent,
               se.enrolled_by, se.sequence_id,
               se.current_step, se.org_id AS enroll_org_id,
-              s.name AS sequence_name
+              se.pinned_sender_account_id,
+              se.thread_conversation_id, se.thread_root_subject,
+              se.thread_last_message_id, se.thread_references,
+              s.name AS sequence_name,
+              s.thread_replies, s.pin_sender,
+              s.thread_subject_mode, s.thread_failover_mode
          FROM sequence_step_logs ssl
          JOIN sequence_steps ss       ON ss.id  = ssl.sequence_step_id
          JOIN sequence_enrollments se ON se.id  = ssl.enrollment_id
@@ -1698,6 +1704,31 @@ router.post('/drafts/:logId/send', async (req, res) => {
       sender = r.rows[0];
     }
 
+    // ── Threaded/pinned enrollment: force the pinned mailbox (2026_71) ─────
+    // A threaded (or pin_sender) enrollment must send from the SAME mailbox that
+    // opened the thread. Override whatever step 2 resolved. If that mailbox is
+    // gone/inactive, return the 3 resolution options rather than silently
+    // sending from a different address (which would break the thread).
+    const threadingOn = draft.thread_replies === true;
+    const pinOn = threadingOn || draft.pin_sender === true;
+    if (pinOn && draft.pinned_sender_account_id &&
+        (!sender || sender.id !== draft.pinned_sender_account_id)) {
+      const pr = await client.query(
+        `SELECT * FROM prospecting_sender_accounts WHERE id=$1 AND org_id=$2`,
+        [draft.pinned_sender_account_id, req.orgId]
+      );
+      if (!pr.rows.length || pr.rows[0].is_active !== true) {
+        return res.status(409).json({
+          error: {
+            message: 'This threaded sequence is pinned to a mailbox that is disconnected or inactive. Reconnect it, switch to a different sender from the same user, or stop the sequence.',
+            code: 'THREAD_SENDER_BLOCKED',
+            resolutionOptions: ThreadedSequenceNotifier.RESOLUTION_OPTIONS,
+          },
+        });
+      }
+      sender = pr.rows[0];
+    }
+
     // ── 3. Reset daily counter if new day ─────────────────────────────────
     if (new Date(sender.last_reset_at).toDateString() !== new Date().toDateString()) {
       await client.query(
@@ -1743,26 +1774,53 @@ router.post('/drafts/:logId/send', async (req, res) => {
     //   a) The draft stays in the queue — the rep can retry after reconnecting
     //   b) We never write a ghost 'sent' record to the DB
     // The frontend catches the 502 and shows the error on the draft card.
+    // ── Threaded-reply assembly (2026_71) ──────────────────────────────────
+    // ROOT = no anchor yet (this approved send opens the thread); REPLY = reuse
+    // the root subject per subject mode and carry provider reply pointers.
+    const isThreadReply = threadingOn && !!draft.thread_conversation_id;
+    const rootSubject = draft.thread_root_subject || draft.subject || '';
+    const outSubject = isThreadReply
+      ? (draft.thread_subject_mode === 're'
+          ? (/^re\s*:/i.test(rootSubject.trim()) ? rootSubject : `Re: ${rootSubject}`)
+          : rootSubject)
+      : draft.subject;
+    let gmailThread = null, outlookThread = null;
+    if (threadingOn) {
+      if (sender.provider === 'gmail') {
+        gmailThread = isThreadReply
+          ? { threadId: draft.thread_conversation_id, inReplyTo: draft.thread_last_message_id || null,
+              references: draft.thread_references || draft.thread_last_message_id || null }
+          : {};
+      } else if (sender.provider === 'outlook') {
+        outlookThread = isThreadReply
+          ? { replyToMessageId: draft.thread_last_message_id }
+          : {};
+      }
+    }
+    let sendResult = null;
+
     try {
       if (sender.provider === 'gmail') {
-        await sendGmailEmail(req.user.userId, {
+        sendResult = await sendGmailEmail(req.user.userId, {
           to:           prospect.email,
-          subject:      draft.subject,
+          subject:      outSubject,
           body:         htmlBody,
           isHtml:       true,
           senderEmail:  sender.email,
           accessToken:  sender.access_token,
           refreshToken: sender.refresh_token,
+          thread:       gmailThread,
         });
       } else if (sender.provider === 'outlook') {
-        await sendOutlookEmail(req.user.userId, {
+        sendResult = await sendOutlookEmail(req.user.userId, {
           to:           prospect.email,
-          subject:      draft.subject,
+          subject:      outSubject,
           body:         htmlBody,
           isHtml:       true,
           senderEmail:  sender.email,
           accessToken:  sender.access_token,
           refreshToken: sender.refresh_token,
+          thread:       outlookThread,
         });
       }
     } catch (err) {
@@ -1781,16 +1839,61 @@ router.post('/drafts/:logId/send', async (req, res) => {
     await client.query('BEGIN');
 
     // ── 7. Save email to DB ────────────────────────────────────────────────
+    // Provider threading ids (2026_71): reuse conversation_id + external_id +
+    // external_data, matching the firer's outbound INSERT.
+    const provThreadId = sender.provider === 'gmail'
+      ? (sendResult?.threadId || null)
+      : (sendResult?.conversationId || null);
+    const provMsgId = sender.provider === 'gmail'
+      ? (sendResult?.rfcMessageId || null)
+      : (sendResult?.messageId || null);
+    const provExtData = sender.provider === 'outlook'
+      ? { internetMessageId: sendResult?.internetMessageId || null }
+      : {};
+
     const emailRes = await client.query(
       `INSERT INTO emails
          (org_id, user_id, direction, subject, body,
-          to_address, from_address, sent_at, prospect_id, sender_account_id, provider)
-       VALUES ($1,$2,'sent',$3,$4,$5,$6,CURRENT_TIMESTAMP,$7,$8,$9)
+          to_address, from_address, sent_at, prospect_id, sender_account_id, provider,
+          conversation_id, external_id, external_data)
+       VALUES ($1,$2,'sent',$3,$4,$5,$6,CURRENT_TIMESTAMP,$7,$8,$9,$10,$11,$12::jsonb)
        RETURNING *`,
-      [req.orgId, req.user.userId, draft.subject, bodyToSend,
-       prospect.email, sender.email, draft.prospect_id, sender.id, sender.provider]
+      [req.orgId, req.user.userId, outSubject, bodyToSend,
+       prospect.email, sender.email, draft.prospect_id, sender.id, sender.provider,
+       provThreadId, provMsgId, JSON.stringify(provExtData)]
     );
     const newEmail = emailRes.rows[0];
+
+    // Stamp / advance the thread anchor + pin the sender (2026_71).
+    if (threadingOn && provMsgId) {
+      if (isThreadReply) {
+        await client.query(
+          `UPDATE sequence_enrollments
+              SET thread_last_message_id = $2,
+                  thread_references = COALESCE(thread_references || ' ' || $2, $2)
+            WHERE id = $1`,
+          [draft.enrollment_id, provMsgId]
+        );
+      } else {
+        await client.query(
+          `UPDATE sequence_enrollments
+              SET thread_conversation_id   = $2,
+                  thread_root_subject      = $3,
+                  thread_last_message_id   = $4,
+                  thread_references        = $4,
+                  pinned_sender_account_id = COALESCE(pinned_sender_account_id, $5)
+            WHERE id = $1`,
+          [draft.enrollment_id, provThreadId, outSubject, provMsgId, sender.id]
+        );
+      }
+    } else if (draft.pin_sender === true && !draft.pinned_sender_account_id) {
+      await client.query(
+        `UPDATE sequence_enrollments
+            SET pinned_sender_account_id = COALESCE(pinned_sender_account_id, $2)
+          WHERE id = $1`,
+        [draft.enrollment_id, sender.id]
+      );
+    }
 
     // ── 8. Flip draft → sent ───────────────────────────────────────────────
     await client.query(
