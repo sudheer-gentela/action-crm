@@ -54,6 +54,7 @@ async function notifyBlocked(client, { orgId, userId, enrollmentId, seqId, seqNa
     'sequence_enrollment', enrollmentId,
     {
       seqId: seqId || null,
+      seqName: seqName || null,
       stepOrder: stepOrder ?? null,
       senderId: senderId || null,
       reason: reason || null,

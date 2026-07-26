@@ -1048,6 +1048,122 @@ router.post('/enrollments/:enrollId/resume', async (req, res) => {
   }
 });
 
+// ── GET /api/sequences/enrollments/:enrollId/eligible-senders (2026_71) ──────
+// Mailboxes this enrollment can switch its pin to: the CLIENT's senders for a
+// client prospect, otherwise the enrolling rep's own senders. Active only.
+router.get('/enrollments/:enrollId/eligible-senders', async (req, res) => {
+  try {
+    const er = await pool.query(
+      `SELECT se.id, se.enrolled_by, se.pinned_sender_account_id,
+              p.client_id AS prospect_client_id
+         FROM sequence_enrollments se
+         JOIN prospects p ON p.id = se.prospect_id
+        WHERE se.id = $1 AND se.org_id = $2`,
+      [req.params.enrollId, req.orgId]
+    );
+    if (!er.rows.length) return res.status(404).json({ error: { message: 'Enrollment not found' } });
+    const enr = er.rows[0];
+    const clientId = enr.prospect_client_id || null;
+
+    const sr = clientId
+      ? await pool.query(
+          `SELECT id, email, provider, display_name FROM prospecting_sender_accounts
+            WHERE org_id=$1 AND client_id=$2 AND is_active=true ORDER BY email`,
+          [req.orgId, clientId])
+      : await pool.query(
+          `SELECT id, email, provider, display_name FROM prospecting_sender_accounts
+            WHERE org_id=$1 AND user_id=$2 AND client_id IS NULL AND is_active=true ORDER BY email`,
+          [req.orgId, enr.enrolled_by]);
+
+    res.json({
+      isClient:        !!clientId,
+      currentSenderId: enr.pinned_sender_account_id || null,
+      senders:         sr.rows,
+    });
+  } catch (err) {
+    console.error('GET /enrollments/:enrollId/eligible-senders', err);
+    res.status(500).json({ error: { message: 'Failed to load eligible senders' } });
+  }
+});
+
+// ── POST /api/sequences/enrollments/:enrollId/switch-sender (2026_71) ────────
+// Resolution for a thread-blocked enrollment: repin to a different mailbox from
+// the SAME pool (client's senders for a client prospect, else the rep's own),
+// reset the server-side thread (the new mailbox opens its own), and resume if
+// paused. The subject + message-id history is KEPT so the next send is a
+// "carry-over root" that preserves recipient-side threading.
+router.post('/enrollments/:enrollId/switch-sender', async (req, res) => {
+  const { sender_account_id } = req.body;
+  if (!sender_account_id) {
+    return res.status(400).json({ error: { message: 'sender_account_id is required' } });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const er = await client.query(
+      `SELECT se.id, se.enrolled_by, se.status,
+              p.client_id AS prospect_client_id
+         FROM sequence_enrollments se
+         JOIN prospects p ON p.id = se.prospect_id
+        WHERE se.id = $1 AND se.org_id = $2
+        FOR UPDATE OF se`,
+      [req.params.enrollId, req.orgId]
+    );
+    if (!er.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: { message: 'Enrollment not found' } });
+    }
+    const enr = er.rows[0];
+    const clientId = enr.prospect_client_id || null;
+
+    // Target must be active AND in the correct pool — never an arbitrary sender.
+    const sq = clientId
+      ? await client.query(
+          `SELECT id, email FROM prospecting_sender_accounts
+            WHERE id=$1 AND org_id=$2 AND client_id=$3 AND is_active=true`,
+          [sender_account_id, req.orgId, clientId])
+      : await client.query(
+          `SELECT id, email FROM prospecting_sender_accounts
+            WHERE id=$1 AND org_id=$2 AND user_id=$3 AND client_id IS NULL AND is_active=true`,
+          [sender_account_id, req.orgId, enr.enrolled_by]);
+    if (!sq.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: { message: 'That mailbox is not available for this enrollment — it must be an active sender for the same ' + (clientId ? 'client' : 'user') + '.' },
+      });
+    }
+
+    // Repin + reset server thread (keep subject/message-id history) + resume if paused.
+    await client.query(
+      `UPDATE sequence_enrollments
+          SET pinned_sender_account_id = $2,
+              thread_conversation_id   = NULL,
+              status        = CASE WHEN status='paused' THEN 'active' ELSE status END,
+              next_step_due = CASE WHEN status='paused' THEN NOW()    ELSE next_step_due END,
+              stop_reason   = CASE WHEN status='paused' THEN NULL     ELSE stop_reason END
+        WHERE id = $1`,
+      [enr.id, sender_account_id]
+    );
+
+    // Clear the failed/in-flight rows so the firer re-materializes cleanly.
+    await client.query(
+      `UPDATE sequence_step_logs SET status='skipped'
+        WHERE enrollment_id=$1 AND org_id=$2 AND status IN ('scheduled','sending','failed')`,
+      [enr.id, req.orgId]
+    );
+
+    await client.query('COMMIT');
+    res.json({ ok: true, switchedTo: sq.rows[0].email });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('POST /enrollments/:enrollId/switch-sender', err);
+    res.status(500).json({ error: { message: 'Failed to switch sender' } });
+  } finally {
+    client.release();
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DRAFT ROUTES
 // ─────────────────────────────────────────────────────────────────────────────

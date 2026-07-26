@@ -1921,27 +1921,43 @@ const SequenceStepFirer = {
           });
 
           // ── Threaded-reply assembly (2026_71) ─────────────────────────────
-          // ROOT  = no thread anchor stamped on this enrollment yet.
-          // REPLY = anchor present → reuse the root subject (Gmail nests on
-          //         subject match; Outlook createReply sets it) per subject mode,
-          //         and carry the provider reply pointers.
-          const isThreadReply = threadingOn && !!enrollment.thread_conversation_id;
-          const outSubject = isThreadReply
+          // REPLY          = server-thread anchor present → nest into it.
+          // CARRY-OVER ROOT = the pinned mailbox was SWITCHED (switch-sender):
+          //   no server thread on the new mailbox yet, but the prior thread's
+          //   subject + message-ids survive on the enrollment. Send as a root
+          //   that REUSES the subject and (Gmail) carries In-Reply-To/References
+          //   so the recipient still sees one continuous thread; the new mailbox
+          //   then owns the server thread going forward.
+          // FRESH ROOT     = no thread history at all → brand-new email.
+          const isThreadReply   = threadingOn && !!enrollment.thread_conversation_id;
+          const isCarryOverRoot = threadingOn && !enrollment.thread_conversation_id
+                                    && !!enrollment.thread_last_message_id;
+          const reuseSubject = isThreadReply || isCarryOverRoot;
+          const outSubject = reuseSubject
             ? applyThreadSubject(enrollment.thread_root_subject || sendSubject, enrollment.seq_thread_subject_mode)
             : sendSubject;
 
           let gmailThread = null, outlookThread = null;
           if (threadingOn) {
             if (sender.provider === 'gmail') {
-              gmailThread = isThreadReply
-                ? { threadId:  enrollment.thread_conversation_id,
-                    inReplyTo:  enrollment.thread_last_message_id || null,
-                    references: enrollment.thread_references || enrollment.thread_last_message_id || null }
-                : {}; // root: mint a Message-ID, no server-side nesting yet
+              if (isThreadReply) {
+                gmailThread = { threadId:  enrollment.thread_conversation_id,
+                                inReplyTo:  enrollment.thread_last_message_id || null,
+                                references: enrollment.thread_references || enrollment.thread_last_message_id || null };
+              } else if (isCarryOverRoot) {
+                // New mailbox → no threadId, but carry headers for recipient-side threading.
+                gmailThread = { inReplyTo:  enrollment.thread_last_message_id || null,
+                                references: enrollment.thread_references || enrollment.thread_last_message_id || null };
+              } else {
+                gmailThread = {}; // fresh root: mint a Message-ID, no nesting
+              }
             } else if (sender.provider === 'outlook') {
+              // Outlook can only createReply within the same mailbox, so a
+              // carry-over root falls back to a fresh draft-send (subject
+              // continuity only — Graph owns the reply headers).
               outlookThread = isThreadReply
                 ? { replyToMessageId: enrollment.thread_last_message_id }
-                : {}; // root: draft-then-send to capture ids
+                : {};
             }
           }
           let sendResult = null;
@@ -2095,8 +2111,20 @@ const SequenceStepFirer = {
                   WHERE id = $1`,
                 [enrollment.id, provMsgId]
               );
+            } else if (isCarryOverRoot) {
+              // Switched mailbox just opened its own server thread — adopt it,
+              // keep the original subject, and extend the References chain. The
+              // pin was already reassigned by the switch-sender endpoint.
+              await client.query(
+                `UPDATE sequence_enrollments
+                    SET thread_conversation_id = $2,
+                        thread_last_message_id = $3,
+                        thread_references = COALESCE(thread_references || ' ' || $3, $3)
+                  WHERE id = $1`,
+                [enrollment.id, provThreadId, provMsgId]
+              );
             } else {
-              // Root — lock the anchor and pin the sender for the rest of life.
+              // Fresh root — lock the anchor and pin the sender for the rest of life.
               await client.query(
                 `UPDATE sequence_enrollments
                     SET thread_conversation_id   = $2,

@@ -10,6 +10,7 @@ import { createPortal } from 'react-dom';
 import api from './apiService';
 import { writeHash } from './hashNav';
 import './NotificationBell.css';
+import SwitchSenderModal from './SwitchSenderModal';
 
 const DEFAULT_POLL_MS = 600_000; // 10 min default; org can override via backend (organizations.settings.notifications.bell_poll_seconds)
 
@@ -31,6 +32,8 @@ const TYPE_CONFIG = {
   notification_immediate: { icon: '🚨', label: 'Overdue',      color: '#dc2626' },
   notification_digest:    { icon: '📋', label: 'Daily Digest', color: '#d97706' },
   sender_token_revoked:   { icon: '⚠️', label: 'Sender disconnected', color: '#dc2626' },
+  thread_sender_blocked:        { icon: '🧵', label: 'Threaded sequence paused', color: '#dc2626' },
+  thread_sender_blocked_digest: { icon: '🧵', label: 'Threaded sequences paused', color: '#d97706' },
 };
 function getTypeConfig(type) {
   return TYPE_CONFIG[type] || { icon: '🔔', label: 'Notification', color: '#6366f1' };
@@ -44,6 +47,7 @@ export default function NotificationBell({ onNavigateToAction }) {
   const [notifications, setNotifications] = useState([]);
   const [unreadCount,   setUnreadCount]   = useState(0);
   const [open,          setOpen]          = useState(false);
+  const [resolveEnroll, setResolveEnroll] = useState(null); // 2026_71 thread-blocked resolution
   const [loading,       setLoading]       = useState(false);
   const [pollMs,        setPollMs]        = useState(DEFAULT_POLL_MS);
   const dropdownRef = useRef(null);   // bell wrapper (for outside-click)
@@ -192,6 +196,11 @@ export default function NotificationBell({ onNavigateToAction }) {
       goHash('#/prospecting/calls');
     } else if (notif.entity_type === 'network') {
       goHash('#/prospecting/network');
+    } else if (notif.entity_type === 'sequence_enrollment') {
+      // 2026_71 — thread-blocked enrollment: open the resolution modal
+      // (switch sender / reconnect / stop) instead of navigating.
+      setResolveEnroll({ id: notif.entity_id, seqName: md.seqName || md.seq_name || null });
+      setOpen(false);
     } else if (md.action_ids?.length) {
       // Digest — navigate to actions view
       if (onNavigateToAction) onNavigateToAction(null);
@@ -292,6 +301,14 @@ export default function NotificationBell({ onNavigateToAction }) {
           )}
         </div>,
         document.body
+      )}
+      {resolveEnroll && (
+        <SwitchSenderModal
+          enrollmentId={resolveEnroll.id}
+          seqName={resolveEnroll.seqName}
+          onClose={() => setResolveEnroll(null)}
+          onResolved={() => fetchNotifications()}
+        />
       )}
     </div>
   );
