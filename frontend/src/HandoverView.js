@@ -151,6 +151,36 @@ function HandoverRow({ handover: h, selected, onClick }) {
           {fmtCurrency(h.contractValue)}
         </div>
       )}
+      <RowChips h={h} />
+    </div>
+  );
+}
+
+// Compact deliverable signal for a list row — overdue count and commitment
+// progress. Silent on quiet rows (nothing overdue, no commitments) and on
+// terminal handovers, so the sidebar stays scannable.
+function RowChips({ h }) {
+  const isTerminal = h.status === 'completed' || h.status === 'cancelled';
+  const overdue = (h.playsOverdue || 0) + (h.commitmentsOverdue || 0);
+  const cTotal  = h.commitmentsTotal || 0;
+  const cClosed = h.commitmentsClosed || 0;
+
+  if (isTerminal || (overdue === 0 && cTotal === 0)) return null;
+
+  return (
+    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 5 }}>
+      {overdue > 0 && (
+        <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
+          background: '#fee2e2', color: '#991b1b' }}>
+          ⚠ {overdue} overdue
+        </span>
+      )}
+      {cTotal > 0 && (
+        <span style={{ fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 4,
+          background: '#eef2ff', color: '#3730a3' }}>
+          {cClosed}/{cTotal} commitments
+        </span>
+      )}
     </div>
   );
 }
@@ -297,10 +327,11 @@ function StakeholderSection({ stakeholders, canEdit, onAdd, onRemove }) {
 // One commitment. Read-only unless canManage, in which case it expands to edit
 // due date + status (and, for waived/breached, the required closure note).
 
-function CommitmentRow({ commitment: c, canManage, onUpdate, onRemove }) {
+function CommitmentRow({ commitment: c, canManage, users, onUpdate, onRemove }) {
   const [editing, setEditing] = useState(false);
   const [dueDate, setDueDate] = useState(c.dueDate ? c.dueDate.slice(0, 10) : '');
   const [status,  setStatus]  = useState(c.status || 'open');
+  const [owner,   setOwner]   = useState(c.ownerUserId != null ? String(c.ownerUserId) : '');
   const [note,    setNote]    = useState(c.closureNote || '');
   const [saving,  setSaving]  = useState(false);
   const [rowErr,  setRowErr]  = useState('');
@@ -312,6 +343,7 @@ function CommitmentRow({ commitment: c, canManage, onUpdate, onRemove }) {
   const resetForm = () => {
     setDueDate(c.dueDate ? c.dueDate.slice(0, 10) : '');
     setStatus(c.status || 'open');
+    setOwner(c.ownerUserId != null ? String(c.ownerUserId) : '');
     setNote(c.closureNote || '');
     setRowErr('');
   };
@@ -326,6 +358,7 @@ function CommitmentRow({ commitment: c, canManage, onUpdate, onRemove }) {
       // note-required check has it to read.
       const data = {
         dueDate: dueDate || null,
+        ownerUserId: owner ? parseInt(owner, 10) : null,
         status,
         ...(note.trim() ? { closureNote: note.trim() } : {}),
       };
@@ -387,6 +420,16 @@ function CommitmentRow({ commitment: c, canManage, onUpdate, onRemove }) {
                 ))}
               </select>
             </div>
+            <div style={{ minWidth: 150 }}>
+              <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 3 }}>Owner</div>
+              <select value={owner} onChange={e => setOwner(e.target.value)} disabled={saving}
+                style={{ fontSize: 12, padding: '4px 8px', borderRadius: 4, border: '1px solid #d1d5db', maxWidth: 200 }}>
+                <option value="">Unassigned</option>
+                {(users || []).map(u => (
+                  <option key={u.id} value={u.id}>{u.name}</option>
+                ))}
+              </select>
+            </div>
           </div>
           {noteRequired && (
             <div style={{ marginBottom: 8 }}>
@@ -419,19 +462,25 @@ function CommitmentRow({ commitment: c, canManage, onUpdate, onRemove }) {
 
 // ── CommitmentsSection ────────────────────────────────────────────────────────
 
-function CommitmentsSection({ commitments, canManage, onAdd, onUpdate, onRemove }) {
+function CommitmentsSection({ commitments, canManage, users, onAdd, onUpdate, onRemove }) {
   const [adding,  setAdding]  = useState(false);
   const [desc,    setDesc]    = useState('');
   const [type,    setType]    = useState('promise');
   const [dueDate, setDueDate] = useState('');
+  const [owner,   setOwner]   = useState('');
   const [saving,  setSaving]  = useState(false);
 
   const handleAdd = async () => {
     if (!desc.trim()) return;
     setSaving(true);
     try {
-      await onAdd({ description: desc.trim(), commitmentType: type, dueDate: dueDate || null });
-      setDesc(''); setType('promise'); setDueDate(''); setAdding(false);
+      await onAdd({
+        description: desc.trim(),
+        commitmentType: type,
+        dueDate: dueDate || null,
+        ownerUserId: owner ? parseInt(owner, 10) : null,
+      });
+      setDesc(''); setType('promise'); setDueDate(''); setOwner(''); setAdding(false);
     } finally { setSaving(false); }
   };
 
@@ -447,6 +496,7 @@ function CommitmentsSection({ commitments, canManage, onAdd, onUpdate, onRemove 
           key={c.id}
           commitment={c}
           canManage={canManage}
+          users={users}
           onUpdate={onUpdate}
           onRemove={onRemove}
         />
@@ -475,11 +525,21 @@ function CommitmentsSection({ commitments, canManage, onAdd, onUpdate, onRemove 
           <textarea value={desc} onChange={e => setDesc(e.target.value)} disabled={saving}
             placeholder="Describe the commitment, risk, or flag…" rows={2}
             style={{ width: '100%', fontSize: 12, padding: '6px 8px', borderRadius: 4, border: '1px solid #d1d5db', resize: 'vertical', boxSizing: 'border-box' }} />
-          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', marginTop: 8 }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', marginTop: 8, flexWrap: 'wrap' }}>
             <div>
               <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 3 }}>Due date (optional)</div>
               <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} disabled={saving}
                 style={{ fontSize: 12, padding: '4px 8px', borderRadius: 4, border: '1px solid #d1d5db' }} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 3 }}>Owner (optional)</div>
+              <select value={owner} onChange={e => setOwner(e.target.value)} disabled={saving}
+                style={{ fontSize: 12, padding: '4px 8px', borderRadius: 4, border: '1px solid #d1d5db', maxWidth: 200 }}>
+                <option value="">Unassigned</option>
+                {(users || []).map(u => (
+                  <option key={u.id} value={u.id}>{u.name}</option>
+                ))}
+              </select>
             </div>
             <button onClick={handleAdd} disabled={saving || !desc.trim()} style={{
               fontSize: 12, padding: '4px 12px', borderRadius: 4, background: '#0369a1', color: '#fff', border: 'none', cursor: 'pointer',
@@ -533,7 +593,7 @@ function DeliverableRollup({ rollup }) {
 
 // ── HandoverDetail ────────────────────────────────────────────────────────────
 
-function HandoverDetail({ handover: h, onRefresh, viewMode }) {
+function HandoverDetail({ handover: h, onRefresh, viewMode, users }) {
   const [detail,    setDetail]    = useState(null);
   const [canSubmit, setCanSubmit] = useState(false);
   const [closeInfo, setCloseInfo] = useState(null); // { canClose, blockers, rollup }
@@ -916,6 +976,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode }) {
           <CommitmentsSection
             commitments={commitments}
             canManage={canManageCommitments}
+            users={users}
             onAdd={handleAddCommitment}
             onUpdate={handleUpdateCommitment}
             onRemove={handleRemoveCommitment}
@@ -982,6 +1043,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
   const [loading,     setLoading]     = useState(true);
   const [searchTerm,  setSearchTerm]  = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [users,       setUsers]       = useState([]); // org members for owner pickers
 
   const loadList = useCallback(async () => {
     setLoading(true);
@@ -994,6 +1056,16 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
   }, [tab]);
 
   useEffect(() => { loadList(); setSelected(null); }, [loadList]);
+
+  // Org members for the commitment owner picker — fetched once, shared across
+  // the detail panel. Failure is non-fatal: the picker just shows "Unassigned".
+  useEffect(() => {
+    let alive = true;
+    apiService.handovers.assignableUsers()
+      .then(res => { if (alive) setUsers(res.data?.users || []); })
+      .catch(() => { if (alive) setUsers([]); });
+    return () => { alive = false; };
+  }, []);
 
   // Deep-link: open specific handover if passed in
   useEffect(() => {
@@ -1093,6 +1165,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
             key={selected.id}
             handover={selected}
             viewMode={tab}
+            users={users}
             onRefresh={loadList}
           />
         )}

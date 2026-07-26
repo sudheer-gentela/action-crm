@@ -357,7 +357,16 @@ async function list(orgId, userId, { scope = 'mine', status } = {}) {
        u_cb.first_name || ' ' || u_cb.last_name  AS created_by_name,
        COUNT(DISTINCT shp.id)::int               AS total_plays,
        COUNT(DISTINCT shp.id) FILTER (WHERE shp.completed_at IS NOT NULL)::int AS completed_plays,
-       COUNT(DISTINCT s.id)::int                 AS stakeholder_count
+       COUNT(DISTINCT s.id)::int                 AS stakeholder_count,
+       -- Deliverable rollup (2026_64). 1:1 with the handover, so joining it
+       -- neither multiplies rows nor disturbs the COUNT(DISTINCT ...) above.
+       r.plays_overdue::int                      AS r_plays_overdue,
+       r.gates_open::int                         AS r_gates_open,
+       r.commitments_total::int                  AS r_commitments_total,
+       r.commitments_closed::int                 AS r_commitments_closed,
+       r.commitments_overdue::int                AS r_commitments_overdue,
+       r.days_to_go_live                         AS r_days_to_go_live,
+       r.is_closeable                            AS r_is_closeable
      FROM sales_handovers h
      JOIN deals    d      ON d.id  = h.deal_id
      JOIN accounts a      ON a.id  = h.account_id
@@ -365,8 +374,11 @@ async function list(orgId, userId, { scope = 'mine', status } = {}) {
      LEFT JOIN users u_cb ON u_cb.id = h.created_by
      LEFT JOIN sales_handover_plays shp ON shp.handover_id = h.id
      LEFT JOIN sales_handover_stakeholders s  ON s.handover_id = h.id
+     LEFT JOIN handover_deliverable_rollup r  ON r.handover_id = h.id
      WHERE ${conditions.join(' AND ')}
-     GROUP BY h.id, d.name, a.name, u_so.first_name, u_so.last_name, u_cb.first_name, u_cb.last_name
+     GROUP BY h.id, d.name, a.name, u_so.first_name, u_so.last_name, u_cb.first_name, u_cb.last_name,
+              r.plays_overdue, r.gates_open, r.commitments_total, r.commitments_closed,
+              r.commitments_overdue, r.days_to_go_live, r.is_closeable
      ORDER BY h.created_at DESC`,
     params
   );
@@ -376,6 +388,14 @@ async function list(orgId, userId, { scope = 'mine', status } = {}) {
     totalPlays:      r.total_plays,
     completedPlays:  r.completed_plays,
     stakeholderCount: r.stakeholder_count,
+    // Deliverable rollup (2026_64) — drives the list-row chips.
+    playsOverdue:       r.r_plays_overdue        ?? 0,
+    gatesOpen:          r.r_gates_open           ?? 0,
+    commitmentsTotal:   r.r_commitments_total    ?? 0,
+    commitmentsClosed:  r.r_commitments_closed   ?? 0,
+    commitmentsOverdue: r.r_commitments_overdue  ?? 0,
+    daysToGoLive:       r.r_days_to_go_live      ?? null,
+    isCloseable:        r.r_is_closeable         ?? null,
   }));
 }
 
@@ -1260,9 +1280,39 @@ async function generateForHandoverEvent(handoverId, orgId, eventType) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── Assignable users ──────────────────────────────────────────────────────────
+// Org-scoped, non-super list of members who can own a commitment (or, later, be
+// picked as a service owner). Membership + active state live in org_users — NOT
+// on users — and a user can belong to multiple orgs, so we scope through
+// org_users rather than users.org_id.
+async function listAssignableUsers(orgId) {
+  const { rows } = await pool.query(
+    `SELECT u.id,
+            u.first_name,
+            u.last_name,
+            u.first_name || ' ' || u.last_name AS name,
+            u.email,
+            ou.role
+     FROM org_users ou
+     JOIN users u ON u.id = ou.user_id
+     WHERE ou.org_id = $1 AND ou.is_active = TRUE
+     ORDER BY u.first_name, u.last_name`,
+    [orgId]
+  );
+  return rows.map(r => ({
+    id:        r.id,
+    name:      r.name,
+    firstName: r.first_name,
+    lastName:  r.last_name,
+    email:     r.email,
+    role:      r.role,
+  }));
+}
+
 module.exports = {
   initiate,
   list,
+  listAssignableUsers,    // org-scoped member list for owner pickers
   getById,
   update,
   advanceStatus,

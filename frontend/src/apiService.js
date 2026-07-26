@@ -711,6 +711,7 @@ twilio: {
     removeCommitment: (id, cid)       => api.delete(`/handovers/sales/${id}/commitments/${cid}`),
 
     completePlay: (id, instanceId) => api.post(`/handovers/sales/${id}/plays/${instanceId}/complete`),
+    assignableUsers: () => api.get('/handovers/assignable-users'),
     toggleModule: (enabled) => api.patch('/handovers/admin/module', { enabled }),
   },
 

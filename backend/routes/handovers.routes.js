@@ -30,6 +30,21 @@ const handoverService   = require('../services/handover.service');
 router.use(authenticateToken);
 router.use(orgContext);
 
+// ── GET /assignable-users ─────────────────────────────────────────────────────
+// Org-scoped member list for the commitment owner picker (non-super). Kept on
+// the handovers router so it inherits auth + orgContext; can be promoted to a
+// general /org-users endpoint later without changing the query.
+
+router.get('/assignable-users', async (req, res) => {
+  try {
+    const users = await handoverService.listAssignableUsers(req.orgId);
+    res.json({ users });
+  } catch (err) {
+    console.error('List assignable users error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
 // ── GET /sales ────────────────────────────────────────────────────────────────
 
 router.get('/sales', async (req, res) => {
