@@ -81,6 +81,7 @@ function blankStep(order) {
     subject_template: '',
     body_template:    '',
     task_note:        '',
+    include_signature: true,   // 2026_74 — matches the DB default
     require_approval:    null, // null = inherit from sequence
     personalize_config:  null, // null = inherit from sequence default → user pref → SYSTEM_DEFAULT
     step_intent:         null, // Slice 3: null = auto-infer; explicit = override
@@ -167,6 +168,9 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
     (initialSequence?.steps || []).length > 0
       ? initialSequence.steps.map(s => ({
           ...s,
+          // 2026_74 — must come AFTER the spread, or ...s reinstates the raw
+          // (possibly undefined) value. undefined means signature on.
+          include_signature: s.include_signature !== false,
           _id:                s.id,
           mode:               s.mode || 'manual',
           ai_generated:       false,
@@ -892,6 +896,23 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
               step={step}
               index={idx}
               total={steps.length}
+              threadReplies={threadReplies}
+              /* With threading on, every email step AFTER the first is sent as a
+                 reply and the firer reuses the root subject — the step's own
+                 subject_template is discarded. Tell the card so it can show the
+                 inherited value read-only instead of inviting an edit that has
+                 no effect. */
+              isThreadReplyStep={
+                threadReplies &&
+                step.channel === 'email' &&
+                idx > steps.findIndex(s => s.channel === 'email')
+              }
+              inheritedSubject={(() => {
+                const root = steps.find(s => s.channel === 'email');
+                const base = (root?.subject_template || '').trim();
+                if (!base) return '';
+                return threadSubjectMode === 're' && !/^re:/i.test(base) ? `Re: ${base}` : base;
+              })()}
               aiEnabled={aiEnabled}
               expanded={expandedStep === step._id}
               seqRequireApproval={requireApproval}
@@ -948,7 +969,7 @@ export default function SequenceBuilder({ sequence: initialSequence, onSave, onC
 // STEP CARD
 // ─────────────────────────────────────────────────────────────────────────────
 
-function StepCard({ step, index, total, aiEnabled = true, expanded, seqRequireApproval, seqPersonalizeDefault, userPersonalizePref, onToggle, onChange, onRemove, onToggleMode, onMoveUp, onMoveDown }) {
+function StepCard({ step, index, total, aiEnabled = true, expanded, seqRequireApproval, seqPersonalizeDefault, userPersonalizePref, threadReplies = false, isThreadReplyStep = false, inheritedSubject = '', onToggle, onChange, onRemove, onToggleMode, onMoveUp, onMoveDown }) {
   const channelCfg = CHANNEL_OPTIONS.find(c => c.value === step.channel) || CHANNEL_OPTIONS[0];
   // When the sequence's master AI switch is off, every step behaves as a plain
   // manual template regardless of its stored mode — and the AI affordances
@@ -957,6 +978,64 @@ function StepCard({ step, index, total, aiEnabled = true, expanded, seqRequireAp
   const hasContent = channelCfg.hasContent;
 
   const isEmailChannel = step.channel === 'email';
+
+  // Threaded replies inherit the root subject; the firer discards this step's own
+  // subject_template (SequenceStepFirer resolves outSubject from
+  // thread_root_subject). Render the inherited value read-only rather than an
+  // editable box whose contents never reach the wire.
+  // 2026_74: per-step signature control. Email only — LinkedIn signature handling
+  // is separate and connection requests never carry one.
+  const includeSignature = step.include_signature !== false;
+  const signatureToggle = isEmailChannel ? (
+    <label
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8, marginTop: 10,
+        fontSize: 12, color: '#374151', cursor: 'pointer',
+      }}
+      title="When off, this step's email is sent without the sender's signature."
+    >
+      <input
+        type="checkbox"
+        checked={includeSignature}
+        onChange={e => onChange('include_signature', e.target.checked)}
+      />
+      Append sender signature
+      {!includeSignature && (
+        <span style={{ color: '#9ca3af' }}>— this step sends without a signature</span>
+      )}
+    </label>
+  ) : null;
+
+  const inheritedSubjectBlock = (
+    <div style={{ marginBottom: 10 }}>
+      <label style={labelStyle}>
+        Subject{' '}
+        <span style={{ fontWeight: 400, color: '#9ca3af', textTransform: 'none', letterSpacing: 0 }}>
+          — inherited from the first email
+        </span>
+      </label>
+      <div
+        style={{
+          ...inputStyle,
+          width: '100%',
+          background: '#f3f4f6',
+          color: inheritedSubject ? '#374151' : '#9ca3af',
+          cursor: 'not-allowed',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+        title={inheritedSubject || 'Set a subject on the first email step'}
+      >
+        {inheritedSubject || 'Set a subject on the first email step'}
+      </div>
+      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
+        Replies stay in the same thread, so they reuse the first email's subject.
+        Change it on the first step, or switch Keep&nbsp;original / Add&nbsp;“Re:” in
+        the Threaded&nbsp;replies panel above.
+      </div>
+    </div>
+  );
 
   // Personalization is meaningful only on channels where the AI writes copy
   // (email + linkedin) AND only when AI is enabled for the sequence.
@@ -1166,6 +1245,7 @@ function StepCard({ step, index, total, aiEnabled = true, expanded, seqRequireAp
                 </div>
               ) : hasContent ? (
                 <>
+                  {isThreadReplyStep ? inheritedSubjectBlock : (
                   <div style={{ marginBottom: 10 }}>
                     <label style={{ ...labelStyle, color: TEAL }}>
                       Subject <span style={{ fontWeight: 400, color: '#9ca3af', textTransform: 'none', letterSpacing: 0 }}>— AI generated, editable</span>
@@ -1173,6 +1253,8 @@ function StepCard({ step, index, total, aiEnabled = true, expanded, seqRequireAp
                     <input value={step.subject_template} onChange={e => onChange('subject_template', e.target.value)}
                       style={{ ...inputStyle, width: '100%', background: '#fff' }} />
                   </div>
+                  )}
+                  {signatureToggle}
                   <div>
                     <label style={{ ...labelStyle, color: TEAL }}>
                       Body <span style={{ fontWeight: 400, color: '#9ca3af', textTransform: 'none', letterSpacing: 0 }}>— AI generated, editable</span>
@@ -1196,11 +1278,14 @@ function StepCard({ step, index, total, aiEnabled = true, expanded, seqRequireAp
           {/* Manual mode */}
           {!isAI && hasContent && (
             <>
+              {isThreadReplyStep ? inheritedSubjectBlock : (
               <div>
                 <label style={labelStyle}>Subject Template</label>
                 <input value={step.subject_template} onChange={e => onChange('subject_template', e.target.value)}
                   placeholder="e.g. Quick question for {{first_name}}" style={{ ...inputStyle, width: '100%' }} />
               </div>
+              )}
+              {signatureToggle}
               <div>
                 <label style={labelStyle}>Body Template</label>
                 <textarea value={step.body_template} onChange={e => onChange('body_template', e.target.value)}

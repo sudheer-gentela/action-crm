@@ -447,6 +447,76 @@ function appendSignature(body, signature) {
   return body + `\n\n${trimmedSig}`;
 }
 
+// ── Quoted-history helpers (2026_75) ─────────────────────────────────────────
+//
+// Threaded replies previously carried correct RFC headers but no visible quoted
+// history: Gmail never adds any, and the Outlook path overwrote createReply's
+// natively-quoted draft body. These build the quote block ourselves so BOTH
+// providers produce identical output.
+//
+// Only the immediate parent is quoted. Its stored body_quotable already contains
+// the quote block that went out with it, so the chain reproduces itself — one
+// lookup per send rather than one per ancestor.
+
+function _escapeHtml(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// Gmail-style attribution: "On Tue, 22 Jul 2026 at 14:05, Name <addr> wrote:"
+function _quoteAttribution(sentAt, fromName, fromAddress) {
+  const d = sentAt ? new Date(sentAt) : new Date();
+  const stamp = d.toLocaleString('en-GB', {
+    weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+  const who = fromName
+    ? `${_escapeHtml(fromName)} &lt;${_escapeHtml(fromAddress)}&gt;`
+    : _escapeHtml(fromAddress);
+  return `On ${_escapeHtml(stamp)}, ${who} wrote:`;
+}
+
+// Fetch the parent message's quote material for this conversation.
+// Returns null when there is nothing quotable — a pre-2026_75 thread, or a first
+// send. Callers must treat null as "send without a quote block", never as an
+// error: threading still works from the headers alone.
+async function _loadQuotableParent(client, { conversationId, prospectId, orgId }) {
+  if (!conversationId && !prospectId) return null;
+  const { rows } = await client.query(
+    `SELECT subject, body_quotable, sent_at, from_address
+       FROM emails
+      WHERE org_id = $1
+        AND direction = 'sent'
+        AND body_quotable IS NOT NULL
+        AND ($2::text IS NULL OR conversation_id = $2)
+        AND ($3::int  IS NULL OR prospect_id     = $3)
+      ORDER BY sent_at DESC
+      LIMIT 1`,
+    [orgId, conversationId || null, conversationId ? null : (prospectId || null)]
+  );
+  return rows[0] || null;
+}
+
+// Append the quote block. Body first, quote second — see the ordering note at the
+// signature call site; appendSignature() would otherwise see the parent's
+// signature inside the quote and suppress the new one.
+function attachQuotedHistory(bodyHtml, parent, senderDisplayName) {
+  if (!parent || !parent.body_quotable) return bodyHtml;
+  const attribution = _quoteAttribution(
+    parent.sent_at, senderDisplayName || null, parent.from_address || ''
+  );
+  return (
+    `${bodyHtml}` +
+    `<br><br><div class="gmail_quote">` +
+    `<div dir="ltr" class="gmail_attr">${attribution}</div>` +
+    `<blockquote class="gmail_quote" ` +
+    `style="margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex">` +
+    `${parent.body_quotable}` +
+    `</blockquote></div>`
+  );
+}
+
 // ── Auto-send scheduling helpers (Level 2: pre-materialized scheduled rows) ────
 //
 // In auto-send mode (email step, effective require_approval = false) we create a
@@ -1673,7 +1743,10 @@ const SequenceStepFirer = {
             //              which never carry a signature
             //   call/task → no signature
             if (sender) {
-              if (step.channel === 'email' && sender.signature) {
+              // 2026_74: per-step opt-out. Read as !== false so jsonb step
+              // snapshots taken before the column existed keep their signature.
+              const wantsSignature = step.include_signature !== false;
+              if (step.channel === 'email' && sender.signature && wantsSignature) {
                 body = appendSignature(body, sender.signature);
               } else if (step.channel === 'linkedin' && effectiveIntent !== 'connection_request') {
                 const liSig = sender.linkedin_signature || sender.signature;
@@ -1905,7 +1978,20 @@ const SequenceStepFirer = {
           }
 
           // Signature + HTML applied at send time (stored body stays plain).
-          const sendBodyPlain = appendSignature(sendBodyRaw, sender.signature);
+          //
+          // 2026_74: per-step opt-out, read as !== false so pre-column jsonb step
+          // snapshots continue to include the signature.
+          //
+          // ORDER MATTERS, and it matters more once quoted history exists
+          // (2026_75). appendSignature() bails out when the signature text — or
+          // even just its first line — already appears anywhere in the body. A
+          // quote block carries the PREVIOUS email's signature, so if the quote
+          // were attached before this call, that guard would match and silently
+          // suppress the new signature on every reply. Signature first, quote
+          // afterwards. Do not reorder these.
+          const sendBodyPlain = (step.include_signature !== false)
+            ? appendSignature(sendBodyRaw, sender.signature)
+            : sendBodyRaw;
           let sendBodyHtml    = plainTextToHtml(sendBodyPlain);
 
           // Insights/WBR Phase 7 — open/click tracking decoration.
@@ -1919,6 +2005,19 @@ const SequenceStepFirer = {
             stepLogId: logId,
             html: sendBodyHtml,
           });
+
+          // 2026_75: quote material for future replies.
+          //
+          // Derived from sendBodyPlain, NOT from sendBodyHtml — sendBodyHtml has
+          // just been reassigned by decorateHtml and now carries this step's
+          // open-tracking pixel and rewritten click links. Quoting that into later
+          // replies would re-embed both, so every open of a later email would fire
+          // a false OPEN against this step and any click on a quoted link a false
+          // CLICK. plainTextToHtml(sendBodyPlain) is the same body with the
+          // signature and without any tracking.
+          //
+          // Grown below if a quote block is attached, so the chain accumulates.
+          let bodyQuotable = plainTextToHtml(sendBodyPlain);
 
           // ── Threaded-reply assembly (2026_71) ─────────────────────────────
           // REPLY          = server-thread anchor present → nest into it.
@@ -1936,6 +2035,30 @@ const SequenceStepFirer = {
           const outSubject = reuseSubject
             ? applyThreadSubject(enrollment.thread_root_subject || sendSubject, enrollment.seq_thread_subject_mode)
             : sendSubject;
+
+          // 2026_75 — quoted history, identical on both providers.
+          // Only for genuine replies and carry-over roots: a fresh root has no
+          // parent to quote. A null parent (pre-2026_75 thread, or nothing stored)
+          // degrades silently to no quote block; the RFC headers still thread it.
+          if (threadingOn && (isThreadReply || isCarryOverRoot)) {
+            try {
+              const parent = await _loadQuotableParent(client, {
+                conversationId: enrollment.thread_conversation_id || null,
+                prospectId:     enrollment.prospect_id,
+                orgId:          enrollment.org_id,
+              });
+              if (parent) {
+                const who = sender.display_name || null;
+                sendBodyHtml = attachQuotedHistory(sendBodyHtml, parent, who);
+                // Grow the stored copy too, so the NEXT reply quoting this message
+                // inherits the whole chain rather than restarting it.
+                bodyQuotable = attachQuotedHistory(bodyQuotable, parent, who);
+              }
+            } catch (err) {
+              // Quoting is cosmetic; never fail a send over it.
+              console.error('[SequenceStepFirer] quoted-history assembly failed:', err.message);
+            }
+          }
 
           let gmailThread = null, outlookThread = null;
           if (threadingOn) {
@@ -2089,12 +2212,15 @@ const SequenceStepFirer = {
                          (org_id, user_id, direction, subject, body,
                           to_address, from_address, sent_at,
                           prospect_id, sender_account_id, provider,
-                          conversation_id, external_id, external_data)
-                  VALUES ($1, $2, 'sent', $3, $4, $5, $6, NOW(), $7, $8, $9, $10, $11, $12::jsonb)
+                          conversation_id, external_id, external_data,
+                          body_quotable)
+                  VALUES ($1, $2, 'sent', $3, $4, $5, $6, NOW(), $7, $8, $9, $10, $11, $12::jsonb,
+                          $13)
                RETURNING id`,
             [enrollment.org_id, enrollment.enrolled_by, outSubject, sendBodyHtml,
              prospect.email, sender.email, enrollment.prospect_id, sender.id, sender.provider,
-             provThreadId, provMsgId, JSON.stringify(provExtData)]
+             provThreadId, provMsgId, JSON.stringify(provExtData),
+             bodyQuotable]
           );
           const emailId = emailRes.rows[0].id;
 

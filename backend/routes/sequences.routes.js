@@ -247,14 +247,17 @@ router.post('/', async (req, res) => {
         `INSERT INTO sequence_steps
                      (sequence_id, org_id, step_order, channel, delay_days, delay_hours,
                       subject_template, body_template, task_note, require_approval,
-                      personalize_config, step_intent)
-              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+                      personalize_config, step_intent, include_signature)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
         [seq.id, req.orgId, i + 1, s.channel, s.delay_days ?? 0, s.delay_hours ?? 0,
          s.subject_template || null, s.body_template || null, s.task_note || null,
          s.require_approval !== undefined ? s.require_approval : null,
          s.personalize_config ? JSON.stringify(s.personalize_config) : null,
          // Slice 3: step_intent — null means "auto-infer at dispatch time".
-         s.step_intent || null]
+         s.step_intent || null,
+         // 2026_74: omitted means true, so callers that don't know about the flag
+         // keep the signature.
+         s.include_signature !== false]
       );
       insertedSteps.push(sr.rows[0]);
     }
@@ -3006,7 +3009,7 @@ router.delete('/:id', async (req, res) => {
 // POST /api/sequences/:id/steps
 router.post('/:id/steps', async (req, res) => {
   const { channel, delay_days, delay_hours, subject_template, body_template, task_note,
-          require_approval, personalize_config, step_intent } = req.body;
+          require_approval, personalize_config, step_intent, include_signature } = req.body;
   if (!(await gateSequenceEdit(req, res, req.params.id))) return;
   const client = await pool.connect();
   try {
@@ -3025,13 +3028,14 @@ router.post('/:id/steps', async (req, res) => {
       `INSERT INTO sequence_steps
          (sequence_id, org_id, step_order, channel, delay_days, delay_hours,
           subject_template, body_template, task_note, require_approval,
-          personalize_config, step_intent)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+          personalize_config, step_intent, include_signature)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
       [req.params.id, req.orgId, nextOrder, channel, delay_days ?? 0, delay_hours ?? 0,
        subject_template || null, body_template || null, task_note || null,
        require_approval !== undefined ? require_approval : null,
        personalize_config ? JSON.stringify(personalize_config) : null,
-       step_intent || null]
+       step_intent || null,
+       include_signature !== false]
     );
     await client.query('COMMIT');
     res.status(201).json({ step: rows[0] });
@@ -3047,7 +3051,7 @@ router.post('/:id/steps', async (req, res) => {
 // PUT /api/sequences/:id/steps/:stepId
 router.put('/:id/steps/:stepId', async (req, res) => {
   const { channel, delay_days, delay_hours, subject_template, body_template, task_note,
-          require_approval, personalize_config, step_intent } = req.body;
+          require_approval, personalize_config, step_intent, include_signature } = req.body;
   if (!(await gateSequenceEdit(req, res, req.params.id))) return;
   const client = await pool.connect();
   try {
@@ -3076,6 +3080,11 @@ router.put('/:id/steps/:stepId', async (req, res) => {
     const raProvided = require_approval !== undefined;
     const raParam = require_approval === undefined ? null : require_approval; // null|true|false
 
+    // include_signature (2026_74) follows the same provided-flag convention:
+    // undefined → leave alone, boolean → set.
+    const isProvided = include_signature !== undefined;
+    const isParam    = include_signature !== undefined ? include_signature !== false : true;
+
     const { rows } = await client.query(
       `UPDATE sequence_steps
           SET channel=$1, delay_days=$2, delay_hours=$3, subject_template=$4,
@@ -3083,6 +3092,7 @@ router.put('/:id/steps/:stepId', async (req, res) => {
               require_approval = CASE WHEN $14::boolean THEN $7::boolean ELSE require_approval END,
               personalize_config = CASE WHEN $8::boolean THEN $9::jsonb ELSE personalize_config END,
               step_intent = CASE WHEN $10::boolean THEN $11::text ELSE step_intent END,
+              include_signature = CASE WHEN $15::boolean THEN $16::boolean ELSE include_signature END,
               updated_at=NOW()
         WHERE id=$12 AND sequence_id=$13
         RETURNING *`,
@@ -3092,7 +3102,8 @@ router.put('/:id/steps/:stepId', async (req, res) => {
        pcProvided, pcParam,
        siProvided, siParam,
        req.params.stepId, req.params.id,
-       raProvided]
+       raProvided,
+       isProvided, isParam]
     );
     if (!rows.length) {
       await client.query('ROLLBACK');
