@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict Nq9ZHZloWS8BcKduMGiNpSpRqJVvoffgDBHl81GYQP7IAM4rm0iURbia5aI8w5m
+\restrict 193FCsQdLzwW5ofpzQ5eUzsgJn1lha1Ea8CQvA1FmHgehzgWhNMOm6yiM6NPX3M
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -18798,5 +18798,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Nq9ZHZloWS8BcKduMGiNpSpRqJVvoffgDBHl81GYQP7IAM4rm0iURbia5aI8w5m
+\unrestrict 193FCsQdLzwW5ofpzQ5eUzsgJn1lha1Ea8CQvA1FmHgehzgWhNMOm6yiM6NPX3M
 

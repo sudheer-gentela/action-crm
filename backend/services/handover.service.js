@@ -180,6 +180,7 @@ function fmtPlay(row) {
     // ── deliverable tracking (2026_64) ──
     dueDate:         row.due_date   ?? null,
     dueAnchor:       row.due_anchor ?? 'created',
+    dueOffsetDays:   row.due_offset_days ?? null,
     isOverdue,
     daysOverdue:     isOverdue
       ? Math.floor((Date.now() - new Date(row.due_date)) / 86400000)
@@ -945,9 +946,11 @@ async function _getPlays(handoverId, orgId) {
        dpi.title, dpi.description, dpi.channel, dpi.is_gate,
        dpi.execution_type, dpi.sort_order, dpi.priority,
        dpi.status AS play_status, dpi.completed_by,
-       dpi.due_date, dpi.due_anchor
+       dpi.due_date, dpi.due_anchor,
+       pp.due_offset_days
      FROM sales_handover_plays shp
      JOIN deal_play_instances dpi ON dpi.id = shp.play_instance_id
+     LEFT JOIN playbook_plays pp   ON pp.id = dpi.play_id
      WHERE shp.handover_id = $1
        AND ($2::int IS NULL OR shp.org_id = $2)
      ORDER BY dpi.due_date ASC NULLS LAST, dpi.sort_order ASC`,

@@ -40,6 +40,40 @@ const { evaluateConditions } = require('./playbook.service');
 // Canonical statuses a play can hold while still "open" (not terminal).
 const OPEN_PLAY_STATUSES = ['not_started', 'in_progress', 'blocked', 'snoozed'];
 
+// ── Due-date anchoring (2026_64) ──────────────────────────────────────────────
+// A play's due date is measured either forward from instantiation ('created',
+// the default for every sales play) or backward from the handover's go-live
+// date ('go_live', where due_offset_days is normally negative, e.g. -14 for
+// "UAT sign-off two weeks before go-live"). go_live_date lives on
+// sales_handovers and is usually still NULL when plays are first instantiated,
+// so a go_live play is left unscheduled (due_date NULL) until the date is set,
+// at which point the go-live trigger fills it in.
+async function goLiveDateForDeal(dealId, orgId) {
+  const r = await db.query(
+    `SELECT to_char(go_live_date, 'YYYY-MM-DD') AS go_live_date
+       FROM sales_handovers
+      WHERE deal_id = $1 AND org_id = $2 AND go_live_date IS NOT NULL
+      ORDER BY id
+      LIMIT 1`,
+    [dealId, orgId]
+  );
+  return r.rows[0]?.go_live_date ?? null; // 'YYYY-MM-DD' | null
+}
+
+function computeInstanceDueDate(anchor, offsetDays, goLiveStr) {
+  if (anchor === 'go_live') {
+    if (!goLiveStr) return null; // unknown until go-live is set
+    const [y, m, d] = goLiveStr.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    dt.setUTCDate(dt.getUTCDate() + (Number(offsetDays) || 0)); // signed offset
+    return dt.toISOString().split('T')[0];
+  }
+  // 'created' (default): forward from today — behaviour unchanged.
+  const dt = new Date();
+  dt.setDate(dt.getDate() + (offsetDays || 3));
+  return dt.toISOString().split('T')[0];
+}
+
 class PlaybookPlayService {
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -155,6 +189,9 @@ class PlaybookPlayService {
       }
     }
 
+    // Resolve the handover's go-live date once (used by go_live-anchored plays).
+    const goLiveDate = await goLiveDateForDeal(dealId, orgId);
+
     for (const play of playsResult.rows) {
       // Skip if already instantiated
       if (existingPlayIds.has(play.id)) continue;
@@ -198,9 +235,11 @@ class PlaybookPlayService {
         }
       }
 
-      // Calculate due date
-      const dueDate = new Date();
-      dueDate.setDate(dueDate.getDate() + (play.due_offset_days || 3));
+      // Due date, honouring the play's anchor (2026_64). 'created' → forward
+      // from today (unchanged); 'go_live' → backward from go-live once known,
+      // else NULL until the go-live trigger schedules it.
+      const anchor  = play.due_anchor || 'created';
+      const dueDate = computeInstanceDueDate(anchor, play.due_offset_days, goLiveDate);
 
       // Create instance
       const instResult = await db.query(
@@ -208,14 +247,14 @@ class PlaybookPlayService {
            deal_id, org_id, play_id, stage_key,
            title, description, channel, priority,
            execution_type, is_gate, due_date, sort_order,
-           status
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+           status, due_anchor
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          RETURNING *`,
         [
           dealId, orgId, play.id, stageKey,
           play.title, play.description, play.channel, play.priority,
-          play.execution_type, play.is_gate, dueDate.toISOString().split('T')[0],
-          play.sort_order, initialStatus
+          play.execution_type, play.is_gate, dueDate,
+          play.sort_order, initialStatus, anchor
         ]
       );
 
@@ -405,6 +444,9 @@ class PlaybookPlayService {
 
     const instances = [];
 
+    // Resolve the handover's go-live date once (used by go_live-anchored plays).
+    const goLiveDate = await goLiveDateForDeal(dealId, orgId);
+
     for (const play of playsResult.rows) {
       if (existingPlayIds.has(play.id)) continue;
 
@@ -430,22 +472,22 @@ class PlaybookPlayService {
         if (!allDepsComplete) initialStatus = 'blocked';
       }
 
-      const dueDate = new Date();
-      dueDate.setDate(dueDate.getDate() + (play.due_offset_days || 3));
+      const anchor  = play.due_anchor || 'created';
+      const dueDate = computeInstanceDueDate(anchor, play.due_offset_days, goLiveDate);
 
       const instResult = await db.query(
         `INSERT INTO deal_play_instances (
            deal_id, org_id, play_id, stage_key,
            title, description, channel, priority,
            execution_type, is_gate, due_date, sort_order,
-           status
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+           status, due_anchor
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          RETURNING *`,
         [
           dealId, orgId, play.id, stageKey,
           play.title, play.description, play.channel, play.priority,
-          play.execution_type, play.is_gate, dueDate.toISOString().split('T')[0],
-          play.sort_order, initialStatus,
+          play.execution_type, play.is_gate, dueDate,
+          play.sort_order, initialStatus, anchor,
         ]
       );
 

@@ -99,8 +99,28 @@ function fmtCurrency(v) {
 
 // A due-date chip shared by plays and commitments. Overdue → red; otherwise a
 // muted "Due <date>". Renders nothing when there is no due date.
-function DueChip({ dueDate, isOverdue, daysOverdue }) {
-  if (!dueDate) return null;
+function DueChip({ dueDate, isOverdue, daysOverdue, dueAnchor, dueOffsetDays }) {
+  if (!dueDate) {
+    // go_live-anchored plays are unscheduled until the go-live date is entered.
+    // Show their intent (relative to go-live) rather than a blank.
+    if (dueAnchor === 'go_live') {
+      const off = Number(dueOffsetDays) || 0;
+      const label = off === 0
+        ? 'Due: on go-live'
+        : off < 0
+          ? `Due: ${Math.abs(off)}d before go-live`
+          : `Due: ${off}d after go-live`;
+      return (
+        <span style={{
+          fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 4,
+          background: '#eef2ff', color: '#3730a3', whiteSpace: 'nowrap',
+        }}>
+          {label}
+        </span>
+      );
+    }
+    return null;
+  }
   if (isOverdue) {
     return (
       <span style={{
@@ -211,7 +231,7 @@ function PlaySection({ play, canEdit, onComplete }) {
             <span style={{ marginLeft: 8, fontSize: 10, color: '#dc2626', fontWeight: 700 }}>GATE</span>
           )}
         </div>
-        {!isDone && <DueChip dueDate={play.dueDate} isOverdue={play.isOverdue} daysOverdue={play.daysOverdue} />}
+        {!isDone && <DueChip dueDate={play.dueDate} isOverdue={play.isOverdue} daysOverdue={play.daysOverdue} dueAnchor={play.dueAnchor} dueOffsetDays={play.dueOffsetDays} />}
         {isDone && play.completedAt && (
           <span style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>{fmtDate(play.completedAt)}</span>
         )}
