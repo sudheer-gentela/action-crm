@@ -300,7 +300,10 @@ class PlayCompletionService {
   static async _insertPlayAction(config, play, entityId, entity, orgId, userId) {
     // Resolve role-based assignees
     const roles = Array.isArray(play.roles) ? play.roles : [];
-    const primaryRole = roles.find(r => r.ownership_type === 'primary') || roles[0] || null;
+    // A7 / 2026_73a: vocabulary is 'owner' | 'co_owner'. This tested 'primary',
+    // which no writer ever stored, so it always fell through to roles[0] — an
+    // arbitrary pick with no ORDER BY behind it.
+    const primaryRole = roles.find(r => r.ownership_type === 'owner') || roles[0] || null;
 
     const assigneeIds = await resolveForPlay({
       orgId,

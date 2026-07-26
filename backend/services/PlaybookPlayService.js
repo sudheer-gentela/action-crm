@@ -61,6 +61,7 @@ class PlaybookPlayService {
     // 1. Find the deal's playbook
     const dealRow = await db.query(
       `SELECT d.playbook_id, d.stage_changed_at, d.close_date, d.updated_at,
+              d.owner_id,
               p.id AS pb_id
        FROM deals d
        LEFT JOIN playbooks p ON p.id = d.playbook_id
@@ -173,7 +174,19 @@ class PlaybookPlayService {
       }
 
       const roles = typeof play.roles === 'string' ? JSON.parse(play.roles) : play.roles;
+
+      // A7 / 2026_73b. The OWNER role drives assignment — exactly one action goes
+      // to its holder. Co-owner roles are REASSIGNMENT TARGETS: recorded on the
+      // instance so the UI can offer them, but not given work at creation.
+      //
+      // The `|| coOwnerRoles[0]` fallback matters: 2026_73b promotes one role per
+      // play to 'owner', but a play created through the builder before the UI
+      // supports designating an owner still arrives all-co_owner. Without the
+      // fallback such a play would silently produce zero assignees — which is
+      // exactly what happened between 73b landing and this code deploying.
+      const ownerRole    = roles.find(r => r.ownership_type === 'owner') || null;
       const coOwnerRoles = roles.filter(r => r.ownership_type === 'co_owner');
+      const assigningRole = ownerRole || coOwnerRoles[0] || null;
 
       // Determine initial status.
       // 'not_started' = ready to work; 'blocked' = waiting on sequential deps.
@@ -209,42 +222,19 @@ class PlaybookPlayService {
       const instance = instResult.rows[0];
       playIdToInstanceId[play.id] = instance.id;
 
-      // Assign co-owners from deal team, with PlayRouteResolver as fallback
+      // Resolve the single accountable assignee from the owner role, recording
+      // WHICH tier produced them so an unfilled role is visible rather than
+      // looking like a deliberate choice (actions.assignment_source, 2026_73a).
       const assignees = [];
-      for (const role of coOwnerRoles) {
-        const members = teamByRole[role.role_id] || [];
-        if (members.length === 0) {
-          // No deal-team member for this role — try team queue + owner fallback
-          const resolvedIds = await resolveForPlay({
-            orgId,
-            roleKey:      role.role_key || null,
-            roleId:       role.role_id  || null,
-            entity:       { id: dealId },
-            entityType:   'deal',
-            callerUserId: userId,
-          });
-          // Skip the deal-team-members lookup (already empty) — go straight to resolved
-          for (const resolvedId of resolvedIds) {
-            if (resolvedId === userId && resolvedIds.length > 1) continue; // prefer non-caller
-            try {
-              await db.query(
-                `INSERT INTO deal_play_assignees (instance_id, user_id, role_id, assigned_by)
-                 VALUES ($1, $2, $3, $4)
-                 ON CONFLICT (instance_id, user_id) DO NOTHING`,
-                [instance.id, resolvedId, role.role_id, userId]
-              );
-              assignees.push({ userId: resolvedId, name: '', roleKey: role.role_key });
-            } catch (err) {
-              console.error('Failed to assign play (resolver fallback):', err.message);
-            }
-            break; // only first resolved user for this role
-          }
-          if (assignees.length === 0) {
-            warnings.push(`No team member with role "${role.role_name}" for play "${play.title}" — used resolver fallback`);
-          }
-          continue;
-        }
-        for (const member of members) {
+      let assignmentSource = null;
+      const intendedRoleId = assigningRole ? assigningRole.role_id : null;
+
+      if (assigningRole) {
+        const members = teamByRole[assigningRole.role_id] || [];
+
+        if (members.length > 0) {
+          // Tier 1 — a project-team member holds the role.
+          const member = members[0];
           try {
             await db.query(
               `INSERT INTO deal_play_assignees (instance_id, user_id, role_id, assigned_by)
@@ -253,10 +243,51 @@ class PlaybookPlayService {
               [instance.id, member.user_id, member.role_id, userId]
             );
             assignees.push({ userId: member.user_id, name: member.name, roleKey: member.role_key });
+            assignmentSource = 'role_holder';
           } catch (err) {
             console.error('Failed to assign play:', err.message);
           }
+        } else {
+          // Tiers 2 and 3 — org team queue, then the deal owner. owner_id is now
+          // passed through; previously only { id: dealId } was sent, so
+          // _entityOwner() returned undefined and tier 3 could never fire here.
+          const resolvedIds = await resolveForPlay({
+            orgId,
+            roleKey:      assigningRole.role_key || null,
+            roleId:       assigningRole.role_id  || null,
+            entity:       { id: dealId, owner_id: dealMeta.owner_id },
+            entityType:   'deal',
+            callerUserId: userId,
+          });
+
+          for (const resolvedId of resolvedIds) {
+            if (resolvedId === userId && resolvedIds.length > 1) continue; // prefer non-caller
+            try {
+              await db.query(
+                `INSERT INTO deal_play_assignees (instance_id, user_id, role_id, assigned_by)
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (instance_id, user_id) DO NOTHING`,
+                [instance.id, resolvedId, assigningRole.role_id, userId]
+              );
+              assignees.push({ userId: resolvedId, name: '', roleKey: assigningRole.role_key });
+              // Distinguishing tier 2 from tier 3 without changing the shared
+              // resolver's contract: landing on the deal owner means no role
+              // holder was found anywhere.
+              assignmentSource = (resolvedId === dealMeta.owner_id) ? 'project_owner' : 'team_queue';
+            } catch (err) {
+              console.error('Failed to assign play (resolver fallback):', err.message);
+            }
+            break;
+          }
+
+          if (assignees.length === 0) {
+            warnings.push(`Nobody holds role "${assigningRole.role_name}" for play "${play.title}" and no fallback resolved — play left unassigned`);
+          } else if (assignmentSource === 'project_owner') {
+            warnings.push(`Nobody holds role "${assigningRole.role_name}" — play "${play.title}" assigned to the deal owner`);
+          }
         }
+      } else {
+        warnings.push(`Play "${play.title}" has no role assigned — cannot route it`);
       }
 
       // Create action row if instance is ready to work.
@@ -265,7 +296,10 @@ class PlaybookPlayService {
       let actionId = null;
       if (initialStatus === 'not_started' && assignees.length > 0) {
         try {
-          actionId = await this._createActionForPlay(instance, assignees[0], orgId, 'deals');
+          actionId = await this._createActionForPlay(
+            instance, assignees[0], orgId, 'deals',
+            { intendedRoleId, assignmentSource }
+          );
           if (actionId) {
             await db.query(
               `UPDATE deal_play_instances SET action_id = $1 WHERE id = $2`,
@@ -287,7 +321,12 @@ class PlaybookPlayService {
         ...instance,
         action_id: actionId,
         assignees,
-        roles: coOwnerRoles,
+        owner_role: ownerRole,
+        // Reassignment targets for this play, per A7 — the UI offers these when
+        // the assignee or their manager needs to move the work.
+        co_owner_roles: coOwnerRoles,
+        assignment_source: assignmentSource,
+        intended_role_id: intendedRoleId,
       });
     }
 
@@ -460,7 +499,15 @@ class PlaybookPlayService {
       let actionId = null;
       if (initialStatus === 'not_started' && assignee) {
         try {
-          actionId = await this._createActionForPlay(instance, assignee, orgId, 'handovers');
+          actionId = await this._createActionForPlay(
+          instance, assignee, orgId, 'handovers',
+          {
+            intendedRoleId:   primaryRole ? primaryRole.role_id : null,
+            assignmentSource: assignedUserIds.length === 0
+              ? 'project_owner'
+              : (assignedUserId === deal?.owner_id ? 'project_owner' : 'role_holder'),
+          }
+        );
           if (actionId) {
             await db.query(
               'UPDATE deal_play_instances SET action_id = $1 WHERE id = $2',
@@ -915,9 +962,15 @@ class PlaybookPlayService {
    * @param {object} assignee      { userId, name }
    * @param {number} orgId
    * @param {string} sourceModule  'deals' | 'handovers'  (defaults 'deals')
+   * @param {object} [provenance]   { intendedRoleId, assignmentSource } — A7 /
+   *        2026_73a. intendedRoleId is the role that SHOULD own this work, kept
+   *        even when unfilled. assignmentSource records which resolver tier
+   *        produced the assignee; 'project_owner' means nobody held the role.
    * @returns {number|null} action id
    */
-  static async _createActionForPlay(instance, assignee, orgId, sourceModule = 'deals') {
+  static async _createActionForPlay(instance, assignee, orgId, sourceModule = 'deals', provenance = {}) {
+    const intendedRoleId   = provenance.intendedRoleId   ?? null;
+    const assignmentSource = provenance.assignmentSource ?? null;
     const channelMap = {
       email:             'email',
       call:              'call',
@@ -950,19 +1003,23 @@ class PlaybookPlayService {
              source, source_rule, source_module,
              playbook_play_id,
              due_date, status, completed,
-             metadata
+             metadata,
+             intended_role_id, assignment_source
            ) VALUES (
              $1, $2, $3, $4, $5, $6, $6, $7, $8, $9,
              'playbook', NULL, $10,
              $11,
-             $12, 'not_started', false, $13
+             $12, 'not_started', false, $13,
+             $14, $15
            )
            ON CONFLICT (deal_id, playbook_play_id)
              WHERE deal_id IS NOT NULL AND playbook_play_id IS NOT NULL
            DO UPDATE SET
-             user_id   = EXCLUDED.user_id,
-             due_date  = EXCLUDED.due_date,
-             updated_at = NOW()
+             user_id           = EXCLUDED.user_id,
+             due_date          = EXCLUDED.due_date,
+             intended_role_id  = EXCLUDED.intended_role_id,
+             assignment_source = EXCLUDED.assignment_source,
+             updated_at        = NOW()
            RETURNING id`,
           [
             orgId,
@@ -979,6 +1036,8 @@ class PlaybookPlayService {
             instance.play_id,
             instance.due_date,
             metadata,
+            intendedRoleId,
+            assignmentSource,
           ]
         );
         return result.rows[0]?.id || null;

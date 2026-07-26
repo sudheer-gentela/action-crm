@@ -110,7 +110,7 @@ router.post('/', adminOnly, async (req, res) => {
     const {
       playbookId, stageKey, title, description, channel,
       sortOrder, executionType, dependsOn, isGate,
-      dueOffsetDays, priority, roleIds,
+      dueOffsetDays, priority, roleIds, ownerRoleId,
       fireConditions, suggestedAction, unlocksPlayId,
     } = req.body;
 
@@ -206,15 +206,35 @@ router.post('/', adminOnly, async (req, res) => {
 
     const play = result.rows[0];
 
-    // Set role co-owners
-    if (roleIds && roleIds.length > 0) {
-      for (const roleId of roleIds) {
-        await db.query(
-          `INSERT INTO playbook_play_roles (play_id, role_id, ownership_type)
-           VALUES ($1, $2, 'co_owner') ON CONFLICT DO NOTHING`,
-          [play.id, roleId]
-        );
-      }
+    // A7: one owner role (the action's assignee) plus optional co-owner roles
+    // (reassignment targets only). uq_play_roles_one_owner enforces the single
+    // owner at the database level, so ownerRoleId is excluded from co-owners here
+    // rather than relying on the caller to keep the two lists disjoint.
+    const coOwnerIds = (roleIds || []).filter(id => id !== ownerRoleId);
+
+    if (ownerRoleId) {
+      await db.query(
+        `INSERT INTO playbook_play_roles (play_id, role_id, ownership_type)
+         VALUES ($1, $2, 'owner') ON CONFLICT DO NOTHING`,
+        [play.id, ownerRoleId]
+      );
+    } else if (coOwnerIds.length > 0) {
+      // Backwards compatible: a caller that sends only roleIds (the pre-A7 shape)
+      // still gets a usable play. Promoting the first keeps it consistent with the
+      // one-owner rule instead of leaving it to activateStage's fallback.
+      await db.query(
+        `INSERT INTO playbook_play_roles (play_id, role_id, ownership_type)
+         VALUES ($1, $2, 'owner') ON CONFLICT DO NOTHING`,
+        [play.id, coOwnerIds.shift()]
+      );
+    }
+
+    for (const roleId of coOwnerIds) {
+      await db.query(
+        `INSERT INTO playbook_play_roles (play_id, role_id, ownership_type)
+         VALUES ($1, $2, 'co_owner') ON CONFLICT DO NOTHING`,
+        [play.id, roleId]
+      );
     }
 
     // Fetch with roles
@@ -334,6 +354,24 @@ router.put('/:playId/roles', adminOnly, async (req, res) => {
     );
     if (check.rows.length === 0) {
       return res.status(404).json({ error: { message: 'Play not found' } });
+    }
+
+    // A7: at most one owner. uq_play_roles_one_owner would reject a second with a
+    // raw unique-violation 500; validate up front so the client gets a 400 it can
+    // act on.
+    const owners = (roles || []).filter(r => r.ownershipType === 'owner');
+    if (owners.length > 1) {
+      return res.status(400).json({
+        error: { message: 'A play can have at most one owner role. Mark the others as co_owner.' },
+      });
+    }
+    const badType = (roles || []).find(
+      r => r.ownershipType && !['owner', 'co_owner'].includes(r.ownershipType)
+    );
+    if (badType) {
+      return res.status(400).json({
+        error: { message: `Invalid ownershipType "${badType.ownershipType}". Use 'owner' or 'co_owner'.` },
+      });
     }
 
     // Clear existing

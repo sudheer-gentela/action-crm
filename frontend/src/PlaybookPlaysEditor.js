@@ -55,6 +55,11 @@ function PlayForm({ play, roles, allPlays, onSave, onCancel, saving }) {
   const [aiTone, setAiTone]           = useState(play?.ai_config?.tone || '');
   const [aiSourcePlaybookId, setAiSourcePlaybookId] = useState(play?.ai_config?.source_playbook_id || '');
   const [aiCustomPrompt, setAiCustomPrompt] = useState(play?.ai_config?.custom_system_prompt || '');
+  // A7: a play has at most ONE owner role plus any number of co-owner roles.
+  // The owner's holder receives the action; co-owners are reassignment targets.
+  const [ownerRole, setOwnerRole] = useState(
+    (play?.roles || []).find(r => r.ownership_type === 'owner')?.role_id ?? null
+  );
   const [selectedRoles, setSelectedRoles] = useState(
     (play?.roles || []).filter(r => r.ownership_type === 'co_owner').map(r => r.role_id)
   );
@@ -67,6 +72,14 @@ function PlayForm({ play, roles, allPlays, onSave, onCancel, saving }) {
     setSelectedRoles(prev =>
       prev.includes(roleId) ? prev.filter(id => id !== roleId) : [...prev, roleId]
     );
+  }
+
+  // Owner and co-owner are disjoint: promoting a role to owner drops it from the
+  // co-owner list, so the two selections can never disagree.
+  function chooseOwner(roleId) {
+    const next = ownerRole === roleId ? null : roleId;
+    setOwnerRole(next);
+    if (next != null) setSelectedRoles(prev => prev.filter(id => id !== next));
   }
 
   function toggleDep(playId) {
@@ -101,6 +114,7 @@ function PlayForm({ play, roles, allPlays, onSave, onCancel, saving }) {
       scheduleConfig,
       generationMode,
       aiConfig: Object.keys(aiConfig || {}).length > 0 ? aiConfig : null,
+      ownerRoleId: ownerRole,
       roleIds: selectedRoles,
       dependsOn: executionType === 'sequential' ? dependsOn : null,
       fireConditions,
@@ -313,7 +327,45 @@ function PlayForm({ play, roles, allPlays, onSave, onCancel, saving }) {
       )}
 
       <div className="ppe-form__group">
-        <label>Role Co-Owners</label>
+        <label>Owner Role</label>
+        <div className="ppe-form__hint">
+          The action for this play is assigned to whoever holds this role — first from
+          the project team, then the role's org team queue, then the project owner.
+        </div>
+        <div className="ppe-role-grid">
+          {roles.map(role => (
+            <label
+              key={`owner-${role.id}`}
+              className={`ppe-role-chip ${ownerRole === role.id ? 'ppe-role-chip--selected' : ''}`}
+              title={role.org_role_key
+                ? `Team queue: org_role_key="${role.org_role_key}" — matched team exists`
+                : 'No team queue configured — falls back to the project owner'}
+            >
+              <input
+                type="radio"
+                name="ppe-owner-role"
+                checked={ownerRole === role.id}
+                onChange={() => chooseOwner(role.id)}
+                onClick={() => chooseOwner(role.id)}
+              />
+              {role.name}
+              {role.org_role_key
+                ? <span className="ppe-role-chip__queue-indicator ppe-role-chip__queue-indicator--matched" title={`Team queue: ${role.org_role_key}`}>✓</span>
+                : <span className="ppe-role-chip__queue-indicator ppe-role-chip__queue-indicator--missing" title="No team queue">–</span>
+              }
+            </label>
+          ))}
+        </div>
+        {ownerRole == null && (
+          <div className="ppe-form__hint ppe-form__hint--warn">
+            No owner role — this play's action will fall back to the first co-owner,
+            or to the project owner if there are none. Click a selected role again to clear it.
+          </div>
+        )}
+      </div>
+
+      <div className="ppe-form__group">
+        <label>Co-Owner Roles <span className="ppe-form__hint-inline">(reassignment targets — they don't receive the action)</span></label>
         <div className="ppe-role-grid">
           {roles.map(role => (
             <label
@@ -333,7 +385,9 @@ function PlayForm({ play, roles, allPlays, onSave, onCancel, saving }) {
           ))}
         </div>
         {selectedRoles.length === 0 && (
-          <div className="ppe-form__hint">Select at least one role to own this play</div>
+          <div className="ppe-form__hint">
+            Optional. Co-owners appear as reassignment options when the owner can't deliver.
+          </div>
         )}
         <div className="ppe-form__hint">
           ✓ = team queue configured (org_role_key set on a team) &nbsp;·&nbsp; – = falls back to entity owner
@@ -937,10 +991,18 @@ export default function PlaybookPlaysEditor({ playbookId, readOnly = false }) {
           method: 'PATCH',
           body: JSON.stringify(data),
         });
-        // Update roles separately
+        // Update roles separately. A7: the owner role goes first with
+        // ownershipType 'owner'; the rest are co-owners. This previously hardcoded
+        // 'co_owner' for everything, which is why no play could ever have an owner.
+        const rolePayload = [
+          ...(data.ownerRoleId ? [{ roleId: data.ownerRoleId, ownershipType: 'owner' }] : []),
+          ...data.roleIds
+            .filter(id => id !== data.ownerRoleId)
+            .map(id => ({ roleId: id, ownershipType: 'co_owner' })),
+        ];
         await apiFetch(`/playbook-plays/${editingPlay.id}/roles`, {
           method: 'PUT',
-          body: JSON.stringify({ roles: data.roleIds.map(id => ({ roleId: id, ownershipType: 'co_owner' })) }),
+          body: JSON.stringify({ roles: rolePayload }),
         });
       } else {
         // Create

@@ -193,7 +193,8 @@ async function firePlaybookPlays(orgId, caseId, stageKey) {
         : null;
 
       // Resolve assigned_role_id from play roles (first primary role)
-      const primaryRole = play.roles?.find(r => r.ownership_type === 'primary') || play.roles?.[0];
+      // A7 / 2026_73a: was 'primary', which was never stored — see PlayCompletionService.
+      const primaryRole = play.roles?.find(r => r.ownership_type === 'owner') || play.roles?.[0];
       const assignedRoleId = primaryRole?.role_id || null;
 
       // Insert case_play — ON CONFLICT DO NOTHING preserves idempotency
