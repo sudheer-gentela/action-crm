@@ -714,6 +714,7 @@ twilio: {
 
     completePlay: (id, instanceId, data) => api.post(`/handovers/sales/${id}/plays/${instanceId}/complete`, data || {}),
     teamMemberProjects: (userId) => api.get(`/handovers/team-members/${userId}/projects`),
+    personDashboard: (userId) => api.get(`/handovers/team-members/${userId}/dashboard`),
     commitmentActivity: (cid) => api.get(`/handovers/commitments/${cid}/activity`),
     assignableUsers: () => api.get('/handovers/assignable-users'),
     toggleModule: (enabled) => api.patch('/handovers/admin/module', { enabled }),

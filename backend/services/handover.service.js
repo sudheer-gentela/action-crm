@@ -1536,6 +1536,71 @@ async function getTeamMemberProjects(userId, orgId) {
   }));
 }
 
+/**
+ * Individual dashboard for a team member: the projects they're on, the
+ * deliverables they own (what's pending on them), and recent communications
+ * across their projects. Powers the person side-panel.
+ */
+async function getPersonDashboard(userId, orgId) {
+  const { rows: [person] } = await pool.query(
+    `SELECT id, first_name || ' ' || last_name AS name, email FROM users WHERE id = $1`,
+    [userId]
+  );
+
+  const projects = await getTeamMemberProjects(userId, orgId);
+
+  const { rows: deliverables } = await pool.query(
+    `SELECT c.id, c.description, c.status, c.due_date, c.commitment_type,
+            a.name AS account, h.id AS handover_id
+       FROM sales_handover_commitments c
+       JOIN sales_handovers h ON h.id = c.handover_id
+       JOIN accounts a ON a.id = h.account_id
+      WHERE c.org_id = $2 AND c.owner_user_id = $1
+      ORDER BY (c.status IN ('open','in_progress')) DESC, c.due_date NULLS LAST, c.id`,
+    [userId, orgId]
+  );
+
+  const { rows: emails } = await pool.query(
+    `SELECT e.id, 'email' AS channel, e.direction, e.subject, e.body,
+            e.from_address, COALESCE(e.sent_at, e.created_at) AS at, a.name AS account
+       FROM emails e
+       JOIN accounts a ON a.id = (SELECT account_id FROM deals WHERE id = e.deal_id)
+      WHERE e.org_id = $2 AND e.deal_id IN (SELECT deal_id FROM deal_team_members WHERE user_id = $1 AND org_id = $2)`,
+    [userId, orgId]
+  );
+  const { rows: wa } = await pool.query(
+    `SELECT m.id, 'whatsapp' AS channel, m.direction, NULL AS subject, m.body,
+            m.from_name AS from_address, COALESCE(m.sent_at, m.created_at) AS at, a.name AS account
+       FROM whatsapp_messages m
+       JOIN whatsapp_threads t ON t.id = m.thread_id
+       JOIN accounts a ON a.id = t.account_id
+      WHERE t.org_id = $2 AND t.deal_id IN (SELECT deal_id FROM deal_team_members WHERE user_id = $1 AND org_id = $2)`,
+    [userId, orgId]
+  );
+  const outbound = d => d === 'sent' || d === 'outbound';
+  const communications = [...emails, ...wa]
+    .map(m => ({
+      id: `${m.channel}-${m.id}`, channel: m.channel,
+      direction: outbound(m.direction) ? 'outbound' : 'inbound',
+      account: m.account, subject: m.subject,
+      body: m.body, at: m.at,
+      from: outbound(m.direction) ? 'Delivery team' : (m.from_address || 'Customer'),
+    }))
+    .sort((a, b) => new Date(b.at) - new Date(a.at))
+    .slice(0, 15);
+
+  return {
+    person: person || { id: userId, name: 'Unknown', email: null },
+    projects,
+    deliverables: deliverables.map(d => ({
+      id: d.id, description: d.description, status: d.status, dueDate: d.due_date,
+      commitmentType: d.commitment_type, account: d.account, handoverId: d.handover_id,
+      pending: ['open', 'in_progress'].includes(d.status),
+    })),
+    communications,
+  };
+}
+
 /** A deliverable's target + activity timeline — the deliverable drill-down. */
 async function getCommitmentActivity(commitmentId, orgId) {
   const { rows: [c] } = await pool.query(
@@ -1564,6 +1629,7 @@ module.exports = {
   initiate,
   list,
   getTeamMemberProjects,  // person drill-down
+  getPersonDashboard,     // person side-panel (individual dashboard)
   getCommitmentActivity,  // deliverable drill-down
   getPortfolio,           // Dashboard tab — portfolio aggregation
   getCommunications,      // Communications tab — email + WhatsApp timeline

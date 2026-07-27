@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 193FCsQdLzwW5ofpzQ5eUzsgJn1lha1Ea8CQvA1FmHgehzgWhNMOm6yiM6NPX3M
+\restrict ugxGcuhWgWlskiof0QQ2ZCTICC0UGlDsoVzNbEeZIrscvVMNLkQHS60BBYvz70P
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -103,13 +103,38 @@ CREATE FUNCTION public.reschedule_go_live_anchored_plays() RETURNS trigger
 DECLARE
   delta_days integer;
 BEGIN
-  IF NEW.go_live_date IS NULL OR OLD.go_live_date IS NULL THEN
+  -- Go-live cleared or still unset: leave existing dates untouched.
+  IF NEW.go_live_date IS NULL THEN
     RETURN NEW;
   END IF;
+
+  -- First-time set (NULL -> date): schedule anchored instances from scratch,
+  -- using each play's signed offset (e.g. -14 => go_live minus 14 days). A delta
+  -- shift cannot work from a NULL baseline, so compute the absolute date here.
+  IF OLD.go_live_date IS NULL THEN
+    UPDATE public.deal_play_instances dpi
+       SET due_date   = NEW.go_live_date + COALESCE(pp.due_offset_days, 0),
+           updated_at = now()
+      FROM public.playbook_plays pp
+     WHERE pp.id          = dpi.play_id
+       AND dpi.org_id     = NEW.org_id
+       AND dpi.due_anchor = 'go_live'
+       AND dpi.status NOT IN ('completed', 'skipped')
+       AND dpi.id IN (
+         SELECT shp.play_instance_id
+           FROM public.sales_handover_plays shp
+          WHERE shp.handover_id = NEW.id
+       );
+    RETURN NEW;
+  END IF;
+
+  -- No effective change.
   IF NEW.go_live_date = OLD.go_live_date THEN
     RETURN NEW;
   END IF;
 
+  -- Subsequent move (date -> date): shift already-scheduled dates by the delta,
+  -- preserving any per-instance adjustments. (Unchanged from 2026_64.)
   delta_days := NEW.go_live_date - OLD.go_live_date;
 
   UPDATE public.deal_play_instances dpi
@@ -2861,6 +2886,8 @@ CREATE TABLE public.deal_play_instances (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     playbook_id integer,
     due_anchor character varying(20) DEFAULT 'created'::character varying NOT NULL,
+    completion_note text,
+    completion_evidence jsonb,
     CONSTRAINT deal_play_instances_status_check CHECK ((status = ANY (ARRAY['not_started'::text, 'in_progress'::text, 'blocked'::text, 'snoozed'::text, 'completed'::text, 'skipped'::text, 'cancelled'::text])))
 );
 
@@ -6322,6 +6349,43 @@ ALTER SEQUENCE public.rule_violations_id_seq OWNED BY public.rule_violations.id;
 
 
 --
+-- Name: sales_handover_commitment_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sales_handover_commitment_events (
+    id integer NOT NULL,
+    commitment_id integer NOT NULL,
+    org_id integer NOT NULL,
+    event_type character varying(30) NOT NULL,
+    detail text,
+    from_status character varying(20),
+    to_status character varying(20),
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: sales_handover_commitment_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.sales_handover_commitment_events_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: sales_handover_commitment_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.sales_handover_commitment_events_id_seq OWNED BY public.sales_handover_commitment_events.id;
+
+
+--
 -- Name: sales_handover_commitments_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -8990,6 +9054,13 @@ ALTER TABLE ONLY public.rule_violations ALTER COLUMN id SET DEFAULT nextval('pub
 
 
 --
+-- Name: sales_handover_commitment_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_handover_commitment_events ALTER COLUMN id SET DEFAULT nextval('public.sales_handover_commitment_events_id_seq'::regclass);
+
+
+--
 -- Name: sales_handover_commitments id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -10486,6 +10557,14 @@ ALTER TABLE ONLY public.prospects
 
 ALTER TABLE ONLY public.rule_violations
     ADD CONSTRAINT rule_violations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sales_handover_commitment_events sales_handover_commitment_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_handover_commitment_events
+    ADD CONSTRAINT sales_handover_commitment_events_pkey PRIMARY KEY (id);
 
 
 --
@@ -13865,6 +13944,13 @@ CREATE INDEX idx_shc_handover_open_due ON public.sales_handover_commitments USIN
 --
 
 CREATE INDEX idx_shc_org_open_due ON public.sales_handover_commitments USING btree (org_id, due_date) WHERE ((status)::text = ANY ((ARRAY['open'::character varying, 'in_progress'::character varying])::text[]));
+
+
+--
+-- Name: idx_shce_commitment; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_shce_commitment ON public.sales_handover_commitment_events USING btree (commitment_id, created_at);
 
 
 --
@@ -17603,6 +17689,30 @@ ALTER TABLE ONLY public.rule_violations
 
 
 --
+-- Name: sales_handover_commitment_events sales_handover_commitment_events_commitment_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_handover_commitment_events
+    ADD CONSTRAINT sales_handover_commitment_events_commitment_id_fkey FOREIGN KEY (commitment_id) REFERENCES public.sales_handover_commitments(id) ON DELETE CASCADE;
+
+
+--
+-- Name: sales_handover_commitment_events sales_handover_commitment_events_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_handover_commitment_events
+    ADD CONSTRAINT sales_handover_commitment_events_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: sales_handover_commitment_events sales_handover_commitment_events_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_handover_commitment_events
+    ADD CONSTRAINT sales_handover_commitment_events_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
 -- Name: sales_handover_commitments sales_handover_commitments_closed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -18798,5 +18908,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 193FCsQdLzwW5ofpzQ5eUzsgJn1lha1Ea8CQvA1FmHgehzgWhNMOm6yiM6NPX3M
+\unrestrict ugxGcuhWgWlskiof0QQ2ZCTICC0UGlDsoVzNbEeZIrscvVMNLkQHS60BBYvz70P
 

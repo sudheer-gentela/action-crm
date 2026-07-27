@@ -290,6 +290,17 @@ router.get('/team-members/:userId/projects', async (req, res) => {
   }
 });
 
+// ── GET /team-members/:userId/dashboard — person side-panel ───────────────────
+
+router.get('/team-members/:userId/dashboard', async (req, res) => {
+  try {
+    res.json(await handoverService.getPersonDashboard(parseInt(req.params.userId), req.orgId));
+  } catch (err) {
+    console.error('Person dashboard error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
 // ── GET /commitments/:cid/activity — deliverable drill-down ───────────────────
 
 router.get('/commitments/:cid/activity', async (req, res) => {

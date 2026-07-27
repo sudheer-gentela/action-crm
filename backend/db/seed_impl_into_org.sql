@@ -26,6 +26,26 @@
 
 BEGIN;
 
+-- ── Self-provisioning schema (from migration 2026_66) ─────────────────────────
+-- Additive and idempotent, so this seed runs standalone even if the migration
+-- hasn't been applied yet. Safe to keep if the migration was already run.
+CREATE TABLE IF NOT EXISTS sales_handover_commitment_events (
+  id            serial PRIMARY KEY,
+  commitment_id integer     NOT NULL REFERENCES sales_handover_commitments(id) ON DELETE CASCADE,
+  org_id        integer     NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  event_type    varchar(30) NOT NULL,
+  detail        text,
+  from_status   varchar(20),
+  to_status     varchar(20),
+  created_by    integer REFERENCES users(id) ON DELETE SET NULL,
+  created_at    timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_shce_commitment
+  ON sales_handover_commitment_events (commitment_id, created_at);
+ALTER TABLE deal_play_instances ADD COLUMN IF NOT EXISTS completion_note     text;
+ALTER TABLE deal_play_instances ADD COLUMN IF NOT EXISTS completion_evidence jsonb;
+-- ──────────────────────────────────────────────────────────────────────────────
+
 DO $$
 DECLARE
   -- ─── CONFIG ──────────────────────────────────────────────────────────────
@@ -185,6 +205,14 @@ DECLARE
     "hakimpet":{"pm":"vikram.singh@impl-demo.team","impl":"prakash.nair@impl-demo.team"},
     "rairangpur":{"pm":"deepa.iyer@impl-demo.team","impl":"anil.reddy@impl-demo.team"},
     "sancta":{"pm":"vikram.singh@impl-demo.team","impl":"prakash.nair@impl-demo.team"}
+  }'::jsonb;
+  c_customer_teams jsonb := '{
+    "chengannur":[{"first":"Meera","last":"Pillai","role":"day_to_day_admin","title":"Operations Lead"},{"first":"Rahul","last":"Varma","role":"implementation_lead","title":"Project Lead"},{"first":"Sneha","last":"Iyer","role":"technical_lead","title":"Technical Lead"}],
+    "donbosco":[{"first":"Grace","last":"Fernandes","role":"day_to_day_admin","title":"Operations Lead"},{"first":"Thomas","last":"Sequeira","role":"implementation_lead","title":"Project Lead"},{"first":"Ravi","last":"Shetty","role":"technical_lead","title":"Technical Lead"}],
+    "cpwd":[{"first":"Sunita","last":"Devi","role":"day_to_day_admin","title":"Operations Lead"},{"first":"Alok","last":"Ranjan","role":"implementation_lead","title":"Project Lead"},{"first":"Manish","last":"Gupta","role":"technical_lead","title":"Technical Lead"}],
+    "hakimpet":[{"first":"Lakshmi","last":"Reddy","role":"day_to_day_admin","title":"Operations Lead"},{"first":"Venkat","last":"Rao","role":"implementation_lead","title":"Project Lead"},{"first":"Kiran","last":"Kumar","role":"technical_lead","title":"Technical Lead"}],
+    "rairangpur":[{"first":"Bijoy","last":"Das","role":"day_to_day_admin","title":"Operations Lead"},{"first":"Sushil","last":"Mahto","role":"implementation_lead","title":"Project Lead"},{"first":"Rina","last":"Soren","role":"technical_lead","title":"Technical Lead"}],
+    "sancta":[{"first":"Teresa","last":"Lobo","role":"day_to_day_admin","title":"Operations Lead"},{"first":"Vivek","last":"Menon","role":"implementation_lead","title":"Project Lead"},{"first":"Anita","last":"George","role":"technical_lead","title":"Technical Lead"}]
   }'::jsonb;
   pool      jsonb;
   v_role_ae integer; v_role_pm integer; v_role_impl integer; v_role_proc integer;
@@ -406,11 +434,7 @@ BEGIN
     IF TRUE THEN
       -- Build the customer team: create the contacts on the account, add as stakeholders.
       -- Seeded for every project (the customer team is known from the sale).
-      FOR com IN SELECT * FROM jsonb_array_elements('[
-        {"first":"Priya","last":"Menon","role":"day_to_day_admin","title":"Operations Lead"},
-        {"first":"Arjun","last":"Nair","role":"implementation_lead","title":"Project Lead"},
-        {"first":"Kavya","last":"Rao","role":"technical_lead","title":"Technical Lead"}
-      ]'::jsonb) LOOP
+      FOR com IN SELECT * FROM jsonb_array_elements(c_customer_teams->(proj->>'key')) LOOP
         INSERT INTO contacts (account_id, first_name, last_name, title, role_type, org_id, external_refs, user_id)
         VALUES (v_account, com->>'first', com->>'last', com->>'title', 'user', v_org_id,
                 '{"demo_seed":"impl_showcase_v1"}'::jsonb, v_sales)
