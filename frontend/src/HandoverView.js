@@ -1961,30 +1961,106 @@ function ServiceOwnerPicker({ detail, users, canEdit, onRefresh }) {
 
 // ── CommunicationsPanel: unified customer comms (email + WhatsApp) ────────────
 
+// WhatsApp templates the composer can send. Each `name` MUST exactly match a
+// template that has been APPROVED in Meta's WhatsApp Manager for this WABA, and
+// each entry in `variables` maps positionally to the body placeholders
+// {{1}}, {{2}}, … in order. `hello_world` is Meta's pre-approved, zero-variable
+// template and is always available (useful for smoke-testing). Add your own
+// approved templates here — they only work once Meta marks them Approved.
+const WA_TEMPLATES = [
+  {
+    name: 'hello_world',
+    language: 'en_US',
+    label: 'Hello World (test)',
+    description: "Meta's pre-approved test template. No variables — good for a first send.",
+    variables: [],
+  },
+  {
+    name: 'handover_intro',
+    language: 'en_US',
+    label: 'Handover intro',
+    description: 'Introduce the implementation owner and open the conversation. Requires Meta approval.',
+    variables: [
+      { label: 'Customer first name', placeholder: 'e.g. Priya' },
+      { label: 'Your name',           placeholder: 'e.g. Sudheer' },
+      { label: 'Company name',        placeholder: 'e.g. GoWarmCRM' },
+    ],
+  },
+];
+
 function CommunicationsPanel({ handoverId }) {
   const [items,   setItems]   = useState(null);
   const [text,    setText]    = useState('');
   const [sending, setSending] = useState(false);
   const [err,     setErr]     = useState('');
+  const [ok,      setOk]      = useState('');
   const [openComm,    setOpenComm]    = useState(null); // clicked bubble → detail
   const [openContact, setOpenContact] = useState(null); // "see all from" → customer panel
+
+  // WhatsApp 24-hour service window state, read from the thread endpoint.
+  const [windowOpen,      setWindowOpen]      = useState(null); // null = unknown / not connected
+  const [windowExpiresAt, setWindowExpiresAt] = useState(null);
+
+  // Composer mode + template selection.
+  const [mode,    setMode]    = useState('text');               // 'text' | 'template'
+  const [tplName, setTplName] = useState(WA_TEMPLATES[0].name);
+  const [tplArgs, setTplArgs] = useState({});                    // { [varIndex]: value }
+  const tpl = WA_TEMPLATES.find(t => t.name === tplName) || WA_TEMPLATES[0];
 
   const load = useCallback(async () => {
     try { const res = await apiService.handovers.communications(handoverId); setItems(res.data.items || []); }
     catch { setItems([]); }
+    // Best-effort window status. A missing thread or disconnected org just
+    // leaves the window closed, which forces template mode below.
+    try {
+      const t = await apiService.whatsapp.handoverThread(handoverId);
+      setWindowOpen(!!t.data.windowOpen);
+      setWindowExpiresAt(t.data.thread?.windowExpiresAt || null);
+    } catch { setWindowOpen(false); setWindowExpiresAt(null); }
   }, [handoverId]);
   useEffect(() => { load(); }, [load]);
 
+  // Default the composer to the only mode that can actually send: free-form text
+  // when the window is open, templates when it is closed.
+  useEffect(() => {
+    if (windowOpen === false) setMode('template');
+    else if (windowOpen === true) setMode('text');
+  }, [windowOpen]);
+
+  const mapErr = (e) => {
+    const er = e?.response?.data?.error || {};
+    if (er.code === 'NOT_CONNECTED') return 'WhatsApp is not connected for this org yet.';
+    if (er.code === 'WINDOW_CLOSED') return 'The 24-hour window is closed — send an approved template to re-open it.';
+    if (er.code === 'OPTED_OUT')     return 'This recipient has opted out of WhatsApp messages.';
+    if (String(er.code) === '132001' || String(er.code) === '132000')
+      return 'That template is not approved for this account (or the name/language does not match). Check WhatsApp Manager.';
+    if (String(er.code) === '131047') return 'Re-engagement required — the window is closed. Send a template instead.';
+    return er.message || 'Could not send.';
+  };
+
   const send = async () => {
     const body = text.trim(); if (!body) return;
-    setSending(true); setErr('');
-    try { await apiService.whatsapp.sendToHandover(handoverId, { text: body }); setText(''); await load(); }
-    catch (e) {
-      const er = e?.response?.data?.error || {};
-      if (er.code === 'NOT_CONNECTED') setErr('WhatsApp is not connected for this org yet.');
-      else if (er.code === 'WINDOW_CLOSED') setErr('The 24-hour window is closed — an approved template is required.');
-      else setErr(er.message || 'Could not send.');
-    } finally { setSending(false); }
+    setSending(true); setErr(''); setOk('');
+    try {
+      await apiService.whatsapp.sendToHandover(handoverId, { text: body });
+      setText(''); setOk('Message sent.'); await load();
+    } catch (e) { setErr(mapErr(e)); }
+    finally { setSending(false); }
+  };
+
+  const sendTemplate = async () => {
+    const templateVars = tpl.variables.map((_, i) => (tplArgs[i] || '').trim());
+    if (templateVars.some(v => !v)) { setErr('Fill in every template field before sending.'); return; }
+    setSending(true); setErr(''); setOk('');
+    try {
+      await apiService.whatsapp.sendToHandover(handoverId, {
+        templateName: tpl.name,
+        templateLanguage: tpl.language,
+        templateVars,
+      });
+      setTplArgs({}); setOk(`Template “${tpl.label}” sent.`); await load();
+    } catch (e) { setErr(mapErr(e)); }
+    finally { setSending(false); }
   };
 
   if (items === null) return <div style={{ color: '#9ca3af', fontSize: 13 }}>Loading communications…</div>;
@@ -2023,17 +2099,70 @@ function CommunicationsPanel({ handoverId }) {
           );
         })}
       </div>
-      <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-        <input value={text} onChange={e => setText(e.target.value)} placeholder="Send a WhatsApp message to the customer…"
-          onKeyDown={e => { if (e.key === 'Enter') send(); }}
-          style={{ flex: 1, padding: '8px 10px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 13 }} />
-        <button onClick={send} disabled={sending || !text.trim()} style={{
-          padding: '8px 16px', borderRadius: 6, border: 'none',
-          background: (sending || !text.trim()) ? '#9ca3af' : '#059669', color: '#fff',
-          fontSize: 13, fontWeight: 600, cursor: (sending || !text.trim()) ? 'default' : 'pointer' }}>
-          {sending ? 'Sending…' : 'Send'}
-        </button>
+      {/* Composer: Message vs Template, gated by the 24-hour window */}
+      <div style={{ marginTop: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
+          <div style={{ display: 'inline-flex', border: '1px solid #d1d5db', borderRadius: 6, overflow: 'hidden' }}>
+            {['text', 'template'].map(m => (
+              <button key={m} onClick={() => { setMode(m); setErr(''); setOk(''); }}
+                style={{ padding: '5px 12px', fontSize: 12, fontWeight: 600, border: 'none', cursor: 'pointer',
+                  background: mode === m ? '#059669' : '#fff', color: mode === m ? '#fff' : '#374151' }}>
+                {m === 'text' ? 'Message' : 'Template'}
+              </button>
+            ))}
+          </div>
+          {windowOpen === true && (
+            <span style={{ fontSize: 11, color: '#059669' }}>
+              ● Window open{windowExpiresAt ? ` · free-form until ${new Date(windowExpiresAt).toLocaleString()}` : ''}
+            </span>
+          )}
+          {windowOpen === false && (
+            <span style={{ fontSize: 11, color: '#b45309' }}>
+              ● Window closed · only an approved template can be sent until the customer replies
+            </span>
+          )}
+        </div>
+
+        {mode === 'text' ? (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input value={text} onChange={e => setText(e.target.value)} placeholder="Send a WhatsApp message to the customer…"
+              onKeyDown={e => { if (e.key === 'Enter') send(); }}
+              style={{ flex: 1, padding: '8px 10px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 13 }} />
+            <button onClick={send} disabled={sending || !text.trim()} style={{
+              padding: '8px 16px', borderRadius: 6, border: 'none',
+              background: (sending || !text.trim()) ? '#9ca3af' : '#059669', color: '#fff',
+              fontSize: 13, fontWeight: 600, cursor: (sending || !text.trim()) ? 'default' : 'pointer' }}>
+              {sending ? 'Sending…' : 'Send'}
+            </button>
+          </div>
+        ) : (
+          <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 12, background: '#fff' }}>
+            <label style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.3, display: 'block', marginBottom: 4 }}>Template</label>
+            <select value={tplName} onChange={e => { setTplName(e.target.value); setTplArgs({}); setErr(''); setOk(''); }}
+              style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 13, marginBottom: 6, boxSizing: 'border-box' }}>
+              {WA_TEMPLATES.map(t => <option key={t.name} value={t.name}>{t.label} — {t.language}</option>)}
+            </select>
+            {tpl.description && <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 10 }}>{tpl.description}</div>}
+
+            {tpl.variables.map((v, i) => (
+              <div key={i} style={{ marginBottom: 8 }}>
+                <label style={{ fontSize: 11, color: '#6b7280', display: 'block', marginBottom: 3 }}>{`{{${i + 1}}} · ${v.label}`}</label>
+                <input value={tplArgs[i] || ''} onChange={e => setTplArgs(a => ({ ...a, [i]: e.target.value }))}
+                  placeholder={v.placeholder || ''}
+                  style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 13, boxSizing: 'border-box' }} />
+              </div>
+            ))}
+
+            <button onClick={sendTemplate} disabled={sending} style={{
+              marginTop: 4, padding: '8px 16px', borderRadius: 6, border: 'none',
+              background: sending ? '#9ca3af' : '#059669', color: '#fff',
+              fontSize: 13, fontWeight: 600, cursor: sending ? 'default' : 'pointer' }}>
+              {sending ? 'Sending…' : 'Send template'}
+            </button>
+          </div>
+        )}
       </div>
+      {ok  && <div style={{ marginTop: 6, fontSize: 12, color: '#059669' }}>{ok}</div>}
       {err && <div style={{ marginTop: 6, fontSize: 12, color: '#991b1b' }}>{err}</div>}
       {openComm && <CommMessageModal message={openComm} onClose={() => setOpenComm(null)}
         onOpenContact={(c) => { setOpenComm(null); setOpenContact(c); }} />}
