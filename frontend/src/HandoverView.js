@@ -26,6 +26,26 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
+import { hashParts, hashSegment, writeHash } from './hashNav';
+
+// ── Deep-link parsing ─────────────────────────────────────────────────────────
+// #/handovers                         → My Handovers list
+// #/handovers/assigned                → Assigned-to-Me list
+// #/handovers/dashboard               → Dashboard tab
+// #/handovers/<id>[/<subtab>]         → open handover <id> (mine), subtab
+// #/handovers/assigned/<id>[/<subtab>]→ open handover <id> (assigned), subtab
+// subtab ∈ summary | details | communications  (summary omitted from the URL)
+function parseHandoverHash() {
+  const parts = hashParts();
+  if (parts[0] !== 'handovers') return { scope: 'mine', id: null, sub: 'summary' };
+  let i = 1, scope = 'mine';
+  if (parts[i] === 'assigned' || parts[i] === 'dashboard') { scope = parts[i]; i += 1; }
+  let id = null;
+  const n = parseInt(parts[i], 10);
+  if (Number.isInteger(n) && n > 0 && String(n) === parts[i]) { id = n; i += 1; }
+  const sub = ['summary', 'details', 'communications'].includes(parts[i]) ? parts[i] : 'summary';
+  return { scope, id, sub };
+}
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -658,7 +678,7 @@ function DeliverableRollup({ rollup }) {
 
 // ── HandoverDetail ────────────────────────────────────────────────────────────
 
-function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject }) {
+function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject, initialTab, onTabChange }) {
   const [detail,    setDetail]    = useState(null);
   const [canSubmit, setCanSubmit] = useState(false);
   const [closeInfo, setCloseInfo] = useState(null); // { canClose, blockers, rollup }
@@ -668,7 +688,9 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   const [success,   setSuccess]   = useState('');
   const [closureFor, setClosureFor] = useState(null); // 'completed' | 'cancelled' | null
   const [closureText, setClosureText] = useState('');
-  const [detailTab, setDetailTab] = useState('summary'); // 'summary' | 'details'
+  const [detailTab, setDetailTab] = useState(initialTab || 'summary'); // 'summary' | 'details' | 'communications'
+  // Keep the parent (and thus the URL hash) in step with the open sub-tab.
+  useEffect(() => { onTabChange?.(detailTab); }, [detailTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1668,6 +1690,8 @@ function CommunicationsPanel({ handoverId }) {
   const [text,    setText]    = useState('');
   const [sending, setSending] = useState(false);
   const [err,     setErr]     = useState('');
+  const [openComm,    setOpenComm]    = useState(null); // clicked bubble → detail
+  const [openContact, setOpenContact] = useState(null); // "see all from" → customer panel
 
   const load = useCallback(async () => {
     try { const res = await apiService.handovers.communications(handoverId); setItems(res.data.items || []); }
@@ -1704,7 +1728,8 @@ function CommunicationsPanel({ handoverId }) {
           const out = m.direction === 'outbound';
           const ch  = CH[m.channel] || { label: m.channel, color: '#6b7280', bg: '#f3f4f6' };
           return (
-            <div key={m.id} style={{ alignSelf: out ? 'flex-end' : 'flex-start', maxWidth: '80%' }}>
+            <div key={m.id} onClick={() => setOpenComm(m)} title="Open message"
+              style={{ alignSelf: out ? 'flex-end' : 'flex-start', maxWidth: '80%', cursor: 'pointer' }}>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 2, justifyContent: out ? 'flex-end' : 'flex-start' }}>
                 <span style={{ fontSize: 10, fontWeight: 700, color: ch.color, background: ch.bg, padding: '1px 6px', borderRadius: 5 }}>{ch.label}</span>
                 {m.isAutomated && <span style={{ fontSize: 10, color: '#6b7280' }}>automated</span>}
@@ -1734,6 +1759,9 @@ function CommunicationsPanel({ handoverId }) {
         </button>
       </div>
       {err && <div style={{ marginTop: 6, fontSize: 12, color: '#991b1b' }}>{err}</div>}
+      {openComm && <CommMessageModal message={openComm} onClose={() => setOpenComm(null)}
+        onOpenContact={(c) => { setOpenComm(null); setOpenContact(c); }} />}
+      {openContact && <CustomerContactPanel stakeholder={openContact} onClose={() => setOpenContact(null)} />}
     </div>
   );
 }
@@ -1773,7 +1801,7 @@ function ServiceNotes({ handoverId, initialNotes, onSaved }) {
 // ── HandoverView ──────────────────────────────────────────────────────────────
 
 export default function HandoverView({ openHandoverId, onHandoverOpened }) {
-  const [tab,         setTab]         = useState('mine');
+  const [tab,         setTab]         = useState(() => parseHandoverHash().scope || 'mine');
   const [handovers,   setHandovers]   = useState([]);
   const [selected,    setSelected]    = useState(null);
   const [loading,     setLoading]     = useState(true);
@@ -1781,6 +1809,9 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
   const [statusFilter, setStatusFilter] = useState('');
   const [users,       setUsers]       = useState([]); // org members for owner pickers
   const [pendingOpenId, setPendingOpenId] = useState(null); // dashboard → open a project
+  // Deep-link (refresh-survival): the handover id + sub-tab from the URL hash.
+  const [pendingHashId,  setPendingHashId]  = useState(() => parseHandoverHash().id);
+  const [detailSubTab,   setDetailSubTab]   = useState(() => parseHandoverHash().sub);
 
   const loadList = useCallback(async () => {
     setLoading(true);
@@ -1808,7 +1839,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
   useEffect(() => {
     if (openHandoverId && handovers.length > 0) {
       const found = handovers.find(h => h.id === openHandoverId);
-      if (found) { setSelected(found); onHandoverOpened?.(); }
+      if (found) { setSelected(found); setDetailSubTab('summary'); onHandoverOpened?.(); }
     }
   }, [openHandoverId, handovers, onHandoverOpened]);
 
@@ -1816,9 +1847,37 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
   useEffect(() => {
     if (pendingOpenId && handovers.length > 0) {
       const found = handovers.find(h => h.id === pendingOpenId);
-      if (found) { setSelected(found); setPendingOpenId(null); }
+      if (found) { setSelected(found); setDetailSubTab('summary'); setPendingOpenId(null); }
     }
   }, [pendingOpenId, handovers]);
+
+  // Refresh-survival: once the (scope-matched) list is loaded, open the handover
+  // named in the URL hash. The sub-tab was restored into detailSubTab already.
+  useEffect(() => {
+    if (!pendingHashId || handovers.length === 0) return;
+    const target = handovers.find(h => h.id === pendingHashId);
+    if (target) setSelected(target);
+    setPendingHashId(null);
+  }, [pendingHashId, handovers]);
+
+  // Mirror the current screen into the hash so a refresh lands back here.
+  // Only while Handovers is the active tab; held until any hash-restore resolves.
+  useEffect(() => {
+    if (hashSegment(0) !== 'handovers') return;
+    if (pendingHashId) return;
+    let parts;
+    if (tab === 'dashboard') {
+      parts = ['handovers', 'dashboard'];
+    } else if (selected) {
+      const sub = (detailSubTab && detailSubTab !== 'summary') ? detailSubTab : null;
+      parts = tab === 'assigned'
+        ? ['handovers', 'assigned', selected.id, sub]
+        : ['handovers', selected.id, sub];
+    } else {
+      parts = tab === 'assigned' ? ['handovers', 'assigned'] : ['handovers'];
+    }
+    writeHash(parts);
+  }, [tab, selected, detailSubTab, pendingHashId]);
 
   const handleOpenProject = (id) => { setTab('mine'); setPendingOpenId(id); };
 
@@ -1899,7 +1958,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
                 key={h.id}
                 handover={h}
                 selected={selected?.id === h.id}
-                onClick={() => setSelected(h)}
+                onClick={() => { setSelected(h); setDetailSubTab('summary'); }}
               />
             ))
           )}
@@ -1923,6 +1982,8 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
             users={users}
             onRefresh={loadList}
             onOpenProject={handleOpenProject}
+            initialTab={detailSubTab}
+            onTabChange={setDetailSubTab}
           />
         )}
       </div>

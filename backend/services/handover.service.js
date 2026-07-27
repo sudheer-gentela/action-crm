@@ -1482,15 +1482,24 @@ async function getCommunications(handoverId, orgId) {
   const dealId = hrows[0].deal_id;
 
   const emails = await pool.query(
-    `SELECT id, direction, subject, body, from_address, sent_at, created_at
-       FROM emails WHERE org_id = $1 AND deal_id = $2`,
+    `SELECT e.id, e.direction, e.subject, e.body, e.from_address, e.to_address, e.cc_addresses,
+            e.contact_id, ct.first_name || ' ' || ct.last_name AS contact_name,
+            e.sent_at, e.created_at
+       FROM emails e
+       LEFT JOIN contacts ct ON ct.id = e.contact_id
+      WHERE e.org_id = $1 AND e.deal_id = $2`,
     [orgId, dealId]
   );
   const wa = await pool.query(
     `SELECT m.id, m.direction, m.body, m.from_name, m.is_automated, m.status,
-            COALESCE(m.sent_at, m.created_at) AS at
+            COALESCE(m.sent_at, m.created_at) AS at,
+            t.group_subject, t.contact_id, ct.first_name || ' ' || ct.last_name AS contact_name,
+            (SELECT jsonb_agg(jsonb_build_object('name', p.display_name, 'side', p.side)
+                              ORDER BY p.side, p.display_name)
+               FROM whatsapp_thread_participants p WHERE p.thread_id = t.id) AS participants
        FROM whatsapp_messages m
        JOIN whatsapp_threads t ON t.id = m.thread_id
+       LEFT JOIN contacts ct ON ct.id = t.contact_id
       WHERE t.org_id = $1 AND t.handover_id = $2`,
     [orgId, handoverId]
   );
@@ -1503,6 +1512,9 @@ async function getCommunications(handoverId, orgId) {
       from: outbound(e.direction) ? 'Delivery team' : (e.from_address || 'Customer'),
       subject: e.subject, body: e.body,
       at: e.sent_at || e.created_at, isAutomated: false,
+      to: e.to_address || null, cc: _splitAddrs(e.cc_addresses),
+      groupSubject: null, participants: [],
+      contactId: e.contact_id || null, contactName: e.contact_name || null,
     })),
     ...wa.rows.map(m => ({
       id: `wa-${m.id}`, channel: 'whatsapp',
@@ -1510,6 +1522,9 @@ async function getCommunications(handoverId, orgId) {
       from: outbound(m.direction) ? 'Delivery team' : (m.from_name || 'Customer'),
       subject: null, body: m.body,
       at: m.at, isAutomated: !!m.is_automated,
+      to: null, cc: [],
+      groupSubject: m.group_subject || null, participants: m.participants || [],
+      contactId: m.contact_id || null, contactName: m.contact_name || null,
     })),
   ].sort((a, b) => new Date(a.at) - new Date(b.at));
 
