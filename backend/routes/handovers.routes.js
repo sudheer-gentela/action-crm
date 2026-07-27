@@ -278,6 +278,34 @@ router.post('/sales/:id/plays/:instanceId/complete', async (req, res) => {
   }
 });
 
+// ── POST /sales/:id/plays  — add an ad-hoc checklist item ─────────────────────
+
+router.post('/sales/:id/plays', async (req, res) => {
+  try {
+    const result = await handoverService.addPlay(
+      parseInt(req.params.id), req.orgId, req.user.userId, req.body || {}
+    );
+    res.json(result);
+  } catch (err) {
+    console.error('Add handover play error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── DELETE /sales/:id/plays/:instanceId  — remove an ad-hoc checklist item ─────
+
+router.delete('/sales/:id/plays/:instanceId', async (req, res) => {
+  try {
+    const result = await handoverService.removePlay(
+      parseInt(req.params.id), req.orgId, parseInt(req.params.instanceId)
+    );
+    res.json(result);
+  } catch (err) {
+    console.error('Remove handover play error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
 // ── GET /team-members/:userId/projects — person drill-down ────────────────────
 
 router.get('/team-members/:userId/projects', async (req, res) => {

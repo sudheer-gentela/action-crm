@@ -180,6 +180,12 @@ function fmtPlay(row) {
     priority:        row.priority,
     status:          row.play_status,
     completedBy:     row.completed_by,
+    // ── ownership + provenance ──
+    ownerUserId:     row.owner_user_id ?? null,
+    ownerName:       row.owner_name    ?? null,
+    playbookName:    row.playbook_name ?? null,
+    // Ad-hoc items are added directly on the handover — no playbook, no template.
+    isCustom:        row.play_id == null && row.playbook_id == null,
     // ── deliverable tracking (2026_64) ──
     dueDate:         row.due_date   ?? null,
     dueAnchor:       row.due_anchor ?? 'created',
@@ -959,6 +965,81 @@ async function completePlay(handoverId, playInstanceId, userId, orgId, data = {}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// AD-HOC CHECKLIST ITEMS — added directly on a handover (not from a playbook)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Add a one-off checklist item to a handover. It is a deal_play_instance with
+ * no playbook/template behind it (play_id and playbook_id NULL) — so it never
+ * fires downstream plays and is safe to delete. It shows in the checklist under
+ * an "Added on this handover" group.
+ */
+async function addPlay(handoverId, orgId, userId, data = {}) {
+  const title = (data.title || '').trim();
+  if (!title) throw Object.assign(new Error('A title is required.'), { status: 400 });
+
+  const { rows: [h] } = await pool.query(
+    `SELECT deal_id FROM sales_handovers WHERE id = $1 AND org_id = $2`,
+    [handoverId, orgId]
+  );
+  if (!h) throw Object.assign(new Error('Handover not found'), { status: 404 });
+
+  const ownerUserId = data.ownerUserId ? parseInt(data.ownerUserId, 10) : null;
+  const isGate = data.isGate === true;
+  const dueDate = data.dueDate || null;
+
+  const { rows: [inst] } = await pool.query(
+    `INSERT INTO deal_play_instances
+       (deal_id, org_id, playbook_id, play_id, stage_key, title, description,
+        channel, priority, execution_type, is_gate, due_date, due_anchor,
+        sort_order, status, owner_user_id)
+     VALUES ($1, $2, NULL, NULL, 'custom', $3, $4,
+             'internal_task', 'medium', 'parallel', $5, $6, 'created',
+             9000, 'not_started', $7)
+     RETURNING id`,
+    [h.deal_id, orgId, title, (data.description || '').trim() || null, isGate, dueDate, ownerUserId]
+  );
+
+  await pool.query(
+    `INSERT INTO sales_handover_plays (handover_id, play_instance_id, org_id)
+     VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+    [handoverId, inst.id, orgId]
+  );
+
+  const plays = await _getPlays(handoverId, orgId);
+  return { play: plays.find(p => p.playInstanceId === inst.id) || null };
+}
+
+/**
+ * Remove an ad-hoc checklist item. Guardrail: only items that are genuinely
+ * ad-hoc (no playbook, no template) can be deleted here — playbook-driven rows
+ * are managed through the playbook, not deleted off a single handover.
+ */
+async function removePlay(handoverId, orgId, playInstanceId) {
+  const { rows: [inst] } = await pool.query(
+    `SELECT dpi.id
+       FROM sales_handover_plays shp
+       JOIN deal_play_instances dpi ON dpi.id = shp.play_instance_id
+      WHERE shp.handover_id = $1 AND shp.play_instance_id = $2 AND shp.org_id = $3
+        AND dpi.play_id IS NULL AND dpi.playbook_id IS NULL`,
+    [handoverId, playInstanceId, orgId]
+  );
+  if (!inst) {
+    throw Object.assign(new Error('Only items added on this handover can be removed here.'), { status: 400 });
+  }
+
+  await pool.query(
+    `DELETE FROM sales_handover_plays WHERE handover_id = $1 AND play_instance_id = $2 AND org_id = $3`,
+    [handoverId, playInstanceId, orgId]
+  );
+  await pool.query(
+    `DELETE FROM deal_play_instances WHERE id = $1 AND org_id = $2`,
+    [playInstanceId, orgId]
+  );
+  return { removed: true };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // PRIVATE HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1020,9 +1101,14 @@ async function _getPlays(handoverId, orgId) {
        dpi.execution_type, dpi.sort_order, dpi.priority,
        dpi.status AS play_status, dpi.completed_by,
        dpi.due_date, dpi.due_anchor,
-       dpi.completion_note, dpi.completion_evidence
+       dpi.completion_note, dpi.completion_evidence,
+       dpi.play_id, dpi.playbook_id, dpi.owner_user_id,
+       ou.first_name || ' ' || ou.last_name AS owner_name,
+       pb.name AS playbook_name
      FROM sales_handover_plays shp
      JOIN deal_play_instances dpi ON dpi.id = shp.play_instance_id
+     LEFT JOIN users ou     ON ou.id = dpi.owner_user_id
+     LEFT JOIN playbooks pb ON pb.id = dpi.playbook_id
      WHERE shp.handover_id = $1
        AND ($2::int IS NULL OR shp.org_id = $2)
      ORDER BY dpi.due_date ASC NULLS LAST, dpi.sort_order ASC`,
@@ -1745,6 +1831,8 @@ module.exports = {
   updateCommitment,       // 2026_64 — commitment lifecycle
   removeCommitment,
   completePlay,
+  addPlay,                 // ad-hoc checklist item — add
+  removePlay,              // ad-hoc checklist item — remove
   // Nightly sweep — Phase 2
   runNightlySweep,
   buildHandoverContext,   // exported for testing / ad-hoc event triggers

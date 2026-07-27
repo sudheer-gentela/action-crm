@@ -44,6 +44,7 @@ CREATE INDEX IF NOT EXISTS idx_shce_commitment
   ON sales_handover_commitment_events (commitment_id, created_at);
 ALTER TABLE deal_play_instances ADD COLUMN IF NOT EXISTS completion_note     text;
 ALTER TABLE deal_play_instances ADD COLUMN IF NOT EXISTS completion_evidence jsonb;
+ALTER TABLE deal_play_instances ADD COLUMN IF NOT EXISTS owner_user_id       integer REFERENCES users(id);
 -- ──────────────────────────────────────────────────────────────────────────────
 
 DO $$
@@ -523,12 +524,12 @@ BEGIN
 
       INSERT INTO deal_play_instances (deal_id, org_id, play_id, playbook_id, stage_key, title, description,
                                        channel, priority, execution_type, is_gate, due_date,
-                                       sort_order, status, due_anchor, completed_at, completed_by)
+                                       sort_order, status, due_anchor, completed_at, completed_by, owner_user_id)
       VALUES (v_deal, v_org_id, play.id, v_hpb, play.stage_key, play.title, play.description,
               play.channel, COALESCE(play.priority,'high'), COALESCE(play.execution_type,'parallel'),
               COALESCE(play.is_gate, FALSE), v_due, COALESCE(play.sort_order, v_ord*10),
               v_status, COALESCE(play.due_anchor,'created'), v_comp_at,
-              CASE WHEN v_completed THEN v_sales END)
+              CASE WHEN v_completed THEN v_sales END, v_u_ae)
       RETURNING id INTO v_pi;
 
       INSERT INTO sales_handover_plays (handover_id, play_instance_id, org_id, completed_at)
@@ -565,13 +566,20 @@ BEGIN
         v_due := v_close + (dp->>'off')::int;
       END IF;
       v_comp_at := CASE WHEN v_completed THEN (v_close + (dp->>'off')::int)::timestamptz ELSE NULL END;
+      -- Delivery ownership by stage: procurement mobilizes, implementation builds,
+      -- the project manager runs sign-off.
+      v_owner := CASE dp->>'s'
+                   WHEN 'mobilize' THEN v_u_proc
+                   WHEN 'signoff'  THEN v_u_pm
+                   ELSE v_u_impl
+                 END;
 
       INSERT INTO deal_play_instances (deal_id, org_id, playbook_id, stage_key, title, description,
                                        channel, priority, execution_type, is_gate, due_date,
-                                       sort_order, status, due_anchor, completed_at, completed_by)
+                                       sort_order, status, due_anchor, completed_at, completed_by, owner_user_id)
       VALUES (v_deal, v_org_id, v_dpb, dp->>'s', dp->>'t', dp->>'t', 'internal_task',
               'medium', 'sequential', (dp->>'g')::boolean, v_due,
-              100 + v_ord * 10, v_status, dp->>'anchor', v_comp_at, CASE WHEN v_completed THEN v_impl END)
+              100 + v_ord * 10, v_status, dp->>'anchor', v_comp_at, CASE WHEN v_completed THEN v_impl END, v_owner)
       RETURNING id INTO v_pi;
 
       INSERT INTO sales_handover_plays (handover_id, play_instance_id, org_id, completed_at)
@@ -592,10 +600,10 @@ BEGIN
     IF (proj->>'esc')::boolean THEN
       INSERT INTO deal_play_instances (deal_id, org_id, playbook_id, stage_key, title, description,
                                        channel, priority, execution_type, is_gate, due_date,
-                                       sort_order, status, due_anchor)
+                                       sort_order, status, due_anchor, owner_user_id)
       VALUES (v_deal, v_org_id, v_dpb, 'installation', 'Weather-delay escalation & customer notice',
               'Notify the customer of a weather delay and rebaseline the go-live date.',
-              'whatsapp', 'high', 'parallel', FALSE, CURRENT_DATE + 1, 199, 'in_progress', 'created')
+              'whatsapp', 'high', 'parallel', FALSE, CURRENT_DATE + 1, 199, 'in_progress', 'created', v_u_impl)
       RETURNING id INTO v_pi;
       INSERT INTO sales_handover_plays (handover_id, play_instance_id, org_id)
       VALUES (v_handover, v_pi, v_org_id);

@@ -207,7 +207,7 @@ function RowChips({ h }) {
 
 // ── PlaySection ───────────────────────────────────────────────────────────────
 
-function PlaySection({ play, canEdit, onComplete }) {
+function PlaySection({ play, canEdit, onComplete, onRemove }) {
   // Done-state mirrors the backend gate, which treats a play as satisfied when
   // its status is 'completed' OR 'skipped' — not merely when completedAt is set.
   // (A skipped play has no completedAt but still clears the gate.)
@@ -223,6 +223,18 @@ function PlaySection({ play, canEdit, onComplete }) {
 
   const ev = play.completionEvidence;
   const EV_LABEL = { whatsapp: 'WhatsApp', email: 'Email', note: 'Note', document: 'Document' };
+  const CH_LABEL = { whatsapp: 'WhatsApp', email: 'Email', internal_task: 'Internal', call: 'Call', linkedin: 'LinkedIn' };
+
+  // Status pill — makes in_progress distinct from not_started (both looked the
+  // same before), and names the state in words rather than only an icon.
+  const STATUS = {
+    completed:   { label: 'Done',        color: '#065f46', bg: '#ecfdf5', bd: '#a7f3d0' },
+    skipped:     { label: 'Skipped',     color: '#6b7280', bg: '#f3f4f6', bd: '#e5e7eb' },
+    in_progress: { label: 'In progress', color: '#1d4ed8', bg: '#eff6ff', bd: '#bfdbfe' },
+    blocked:     { label: 'Blocked',     color: '#991b1b', bg: '#fef2f2', bd: '#fecaca' },
+    not_started: { label: 'Not started', color: '#6b7280', bg: '#f8fafc', bd: '#e5e7eb' },
+  };
+  const st = STATUS[play.status] || STATUS.not_started;
 
   const confirm = () => {
     const data = {};
@@ -232,42 +244,76 @@ function PlaySection({ play, canEdit, onComplete }) {
     setCapturing(false);
   };
 
+  const icon = isSkipped ? '⊘' : isDone ? '✅' : isGate ? '🔒' : play.status === 'in_progress' ? '🔄' : '⬜';
+
   return (
     <div style={{
       border: `1px solid ${isDone ? '#d1fae5' : isGate ? '#fecaca' : '#e5e7eb'}`,
       borderRadius: 8, padding: '12px 14px', marginBottom: 10,
       background: isDone ? '#f0fdf4' : '#fff',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontSize: 16 }}>{isSkipped ? '⊘' : isDone ? '✅' : isGate ? '🔒' : '⬜'}</span>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+        <span style={{ fontSize: 16, lineHeight: '20px' }}>{icon}</span>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: isDone ? '#065f46' : '#111827' }}>
-            {play.title}
-          </span>
-          {isGate && !isDone && (
-            <span style={{ marginLeft: 8, fontSize: 10, color: '#dc2626', fontWeight: 700 }}>GATE</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: isDone ? '#065f46' : '#111827' }}>
+              {play.title}
+            </span>
+            {isGate && !isDone && (
+              <span style={{ fontSize: 10, color: '#dc2626', fontWeight: 700 }}>GATE</span>
+            )}
+            {play.isCustom && (
+              <span style={{ fontSize: 10, color: '#7c3aed', fontWeight: 700, background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 4, padding: '0 5px' }}>added here</span>
+            )}
+          </div>
+          {play.description && (
+            <div style={{ fontSize: 12, color: '#6b7280', marginTop: 3, lineHeight: 1.4 }}>{play.description}</div>
+          )}
+          {/* Meta row: status · owner · channel */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 10, fontWeight: 600, color: st.color, background: st.bg, border: `1px solid ${st.bd}`, borderRadius: 10, padding: '1px 8px' }}>
+              {st.label}
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: play.ownerName ? '#374151' : '#9ca3af' }}>
+              {play.ownerName ? (
+                <>
+                  <span style={{ width: 18, height: 18, borderRadius: '50%', background: '#e0f2fe', color: '#0369a1',
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 700 }}>{initials(play.ownerName)}</span>
+                  {play.ownerName}
+                </>
+              ) : 'Unassigned'}
+            </span>
+            {play.channel && CH_LABEL[play.channel] && (
+              <span style={{ fontSize: 10, color: '#9ca3af' }}>· {CH_LABEL[play.channel]}</span>
+            )}
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          {!isDone && <DueChip dueDate={play.dueDate} isOverdue={play.isOverdue} daysOverdue={play.daysOverdue} />}
+          {isDone && play.completedAt && (
+            <span style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>{fmtDate(play.completedAt)}</span>
+          )}
+          {isDone && (ev || play.completionNote) && (
+            <button onClick={() => setShowEv(v => !v)} style={{
+              fontSize: 11, padding: '3px 8px', borderRadius: 4, background: '#ecfdf5',
+              color: '#065f46', border: '1px solid #a7f3d0', cursor: 'pointer' }}>
+              {showEv ? 'Hide evidence' : 'Evidence'}
+            </button>
+          )}
+          {!isDone && canEdit && !capturing && (
+            <button onClick={() => setCapturing(true)} style={{
+              fontSize: 11, padding: '3px 10px', borderRadius: 4,
+              background: '#0369a1', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600,
+            }}>
+              Mark done
+            </button>
+          )}
+          {play.isCustom && canEdit && onRemove && (
+            <button onClick={() => onRemove(play.playInstanceId)} title="Remove this item" style={{
+              fontSize: 15, lineHeight: 1, padding: '2px 6px', borderRadius: 4,
+              background: 'none', color: '#9ca3af', border: 'none', cursor: 'pointer' }}>×</button>
           )}
         </div>
-        {!isDone && <DueChip dueDate={play.dueDate} isOverdue={play.isOverdue} daysOverdue={play.daysOverdue} />}
-        {isDone && play.completedAt && (
-          <span style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>{fmtDate(play.completedAt)}</span>
-        )}
-        {isSkipped && <span style={{ fontSize: 11, color: '#6b7280' }}>Skipped</span>}
-        {isDone && (ev || play.completionNote) && (
-          <button onClick={() => setShowEv(v => !v)} style={{
-            fontSize: 11, padding: '3px 8px', borderRadius: 4, background: '#ecfdf5',
-            color: '#065f46', border: '1px solid #a7f3d0', cursor: 'pointer' }}>
-            {showEv ? 'Hide evidence' : 'Evidence'}
-          </button>
-        )}
-        {!isDone && canEdit && !capturing && (
-          <button onClick={() => setCapturing(true)} style={{
-            fontSize: 11, padding: '3px 10px', borderRadius: 4,
-            background: '#0369a1', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600,
-          }}>
-            Mark done
-          </button>
-        )}
       </div>
 
       {/* Evidence of how this item was closed */}
@@ -310,6 +356,107 @@ function PlaySection({ play, canEdit, onComplete }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Stage grouping for the handover checklist ─────────────────────────────────
+const STAGE_LABELS = {
+  mobilize: 'Mobilization', groundwork: 'Groundwork', installation: 'Installation',
+  finishing: 'Finishing', signoff: 'Sign-off', custom: 'Added on this handover',
+};
+function stageLabel(key) {
+  if (!key) return 'Other';
+  return STAGE_LABELS[key] || key.replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+// Group plays by stage, ordered by each group's earliest sort order; ad-hoc
+// ('custom') always last.
+function groupPlaysByStage(plays) {
+  const map = new Map();
+  for (const p of plays) {
+    const key = p.stageKey || 'other';
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(p);
+  }
+  const groups = [...map.entries()].map(([key, items]) => ({
+    key,
+    label: stageLabel(key),
+    items,
+    minSort: Math.min(...items.map(i => i.sortOrder ?? 9999)),
+    done: items.filter(i => ['completed', 'skipped'].includes(i.status)).length,
+  }));
+  groups.sort((a, b) => {
+    if (a.key === 'custom') return 1;
+    if (b.key === 'custom') return -1;
+    return a.minSort - b.minSort;
+  });
+  return groups;
+}
+
+// ── AddPlayForm: add an ad-hoc checklist item directly on a handover ───────────
+function AddPlayForm({ users, onAdd }) {
+  const [open,   setOpen]   = useState(false);
+  const [title,  setTitle]  = useState('');
+  const [desc,   setDesc]   = useState('');
+  const [due,    setDue]    = useState('');
+  const [owner,  setOwner]  = useState('');
+  const [gate,   setGate]   = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    if (!title.trim()) return;
+    setSaving(true);
+    try {
+      await onAdd({
+        title: title.trim(),
+        description: desc.trim() || undefined,
+        dueDate: due || undefined,
+        ownerUserId: owner || undefined,
+        isGate: gate,
+      });
+      setTitle(''); setDesc(''); setDue(''); setOwner(''); setGate(false); setOpen(false);
+    } finally { setSaving(false); }
+  };
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} style={{ fontSize: 12, padding: '6px 12px', borderRadius: 6,
+        background: '#fff', color: '#0369a1', border: '1px dashed #93c5fd', cursor: 'pointer', fontWeight: 600 }}>
+        + Add checklist item
+      </button>
+    );
+  }
+  return (
+    <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 12, background: '#f8fafc' }}>
+      <input value={title} onChange={e => setTitle(e.target.value)} placeholder="What needs to happen?"
+        style={{ width: '100%', fontSize: 13, padding: '7px 9px', borderRadius: 4, border: '1px solid #d1d5db', boxSizing: 'border-box', marginBottom: 8 }} />
+      <textarea value={desc} onChange={e => setDesc(e.target.value)} rows={2} placeholder="Description (optional)"
+        style={{ width: '100%', fontSize: 12, padding: '7px 9px', borderRadius: 4, border: '1px solid #d1d5db', boxSizing: 'border-box', resize: 'vertical', marginBottom: 8 }} />
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+        <label style={{ fontSize: 11, color: '#6b7280' }}>Owner
+          <select value={owner} onChange={e => setOwner(e.target.value)}
+            style={{ marginLeft: 6, fontSize: 12, padding: '4px 6px', borderRadius: 4, border: '1px solid #d1d5db' }}>
+            <option value="">Unassigned</option>
+            {(users || []).map(u => <option key={u.id} value={String(u.id)}>{u.name}</option>)}
+          </select>
+        </label>
+        <label style={{ fontSize: 11, color: '#6b7280' }}>Due
+          <input type="date" value={due} onChange={e => setDue(e.target.value)}
+            style={{ marginLeft: 6, fontSize: 12, padding: '4px 6px', borderRadius: 4, border: '1px solid #d1d5db' }} />
+        </label>
+        <label style={{ fontSize: 11, color: '#6b7280', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <input type="checkbox" checked={gate} onChange={e => setGate(e.target.checked)} /> Gate (blocks go-live)
+        </label>
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button onClick={submit} disabled={saving || !title.trim()} style={{ fontSize: 12, padding: '6px 14px', borderRadius: 4,
+          background: (saving || !title.trim()) ? '#9ca3af' : '#0369a1', color: '#fff', border: 'none', fontWeight: 600,
+          cursor: (saving || !title.trim()) ? 'default' : 'pointer' }}>
+          {saving ? 'Adding…' : 'Add item'}
+        </button>
+        <button onClick={() => setOpen(false)} style={{ fontSize: 12, padding: '6px 10px', borderRadius: 4,
+          background: '#f1f5f9', color: '#374151', border: 'none', cursor: 'pointer' }}>Cancel</button>
+      </div>
     </div>
   );
 }
@@ -762,6 +909,24 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     }
   };
 
+  const handleAddPlay = async (data) => {
+    try {
+      await apiService.handovers.addPlay(h.id, data);
+      await load();
+    } catch (err) {
+      flash('error', err?.response?.data?.error?.message || 'Could not add that item');
+    }
+  };
+
+  const handleRemovePlay = async (playInstanceId) => {
+    try {
+      await apiService.handovers.removePlay(h.id, playInstanceId);
+      await load();
+    } catch (err) {
+      flash('error', err?.response?.data?.error?.message || 'Could not remove that item');
+    }
+  };
+
   const handleAddStakeholder = async (data) => {
     await apiService.handovers.addStakeholder(h.id, data);
     await load();
@@ -1031,20 +1196,43 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
       {detailTab === 'details' && (
       <div style={{ padding: '16px 20px' }}>
 
-        {/* Handover Checklist (plays) */}
-        {plays.length > 0 && (
-          <section style={{ marginBottom: 24 }}>
-            <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#374151' }}>📋 Handover checklist</h4>
-            {plays.map(play => (
-              <PlaySection
-                key={play.id}
-                play={play}
-                canEdit={salesCanEdit}
-                onComplete={handleCompletePlay}
-              />
-            ))}
-          </section>
-        )}
+        {/* Handover Checklist (plays) — grouped by stage */}
+        <section style={{ marginBottom: 24 }}>
+          <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#374151' }}>📋 Handover checklist</h4>
+          {plays.length === 0 && (
+            <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 12 }}>No checklist items yet.</div>
+          )}
+          {groupPlaysByStage(plays).map(group => {
+            const pct = group.items.length ? Math.round((group.done / group.items.length) * 100) : 0;
+            return (
+              <div key={group.key} style={{ marginBottom: 18 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4, whiteSpace: 'nowrap' }}>
+                    {group.label}
+                  </span>
+                  <span style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>{group.done}/{group.items.length} done</span>
+                  <div style={{ flex: 1, height: 4, background: '#f1f5f9', borderRadius: 2, overflow: 'hidden' }}>
+                    <div style={{ width: `${pct}%`, height: '100%', background: pct === 100 ? '#10b981' : '#0369a1', transition: 'width 0.2s' }} />
+                  </div>
+                </div>
+                {group.items.map(play => (
+                  <PlaySection
+                    key={play.id}
+                    play={play}
+                    canEdit={salesCanEdit}
+                    onComplete={handleCompletePlay}
+                    onRemove={handleRemovePlay}
+                  />
+                ))}
+              </div>
+            );
+          })}
+          {salesCanEdit && (
+            <div style={{ marginTop: 4 }}>
+              <AddPlayForm users={users} onAdd={handleAddPlay} />
+            </div>
+          )}
+        </section>
 
         {/* Commercial terms summary */}
         {(detail.commercialTermsSummary || salesCanEdit) && (

@@ -713,6 +713,8 @@ twilio: {
     removeCommitment: (id, cid)       => api.delete(`/handovers/sales/${id}/commitments/${cid}`),
 
     completePlay: (id, instanceId, data) => api.post(`/handovers/sales/${id}/plays/${instanceId}/complete`, data || {}),
+    addPlay:    (id, data)       => api.post(`/handovers/sales/${id}/plays`, data),
+    removePlay: (id, instanceId) => api.delete(`/handovers/sales/${id}/plays/${instanceId}`),
     teamMemberProjects: (userId) => api.get(`/handovers/team-members/${userId}/projects`),
     personDashboard: (userId) => api.get(`/handovers/team-members/${userId}/dashboard`),
     contactCommunications: (contactId) => api.get(`/handovers/contacts/${contactId}/communications`),
