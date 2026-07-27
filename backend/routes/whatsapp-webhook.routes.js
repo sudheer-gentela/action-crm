@@ -42,16 +42,22 @@ router.post('/', async (req, res) => {
     try { payload = JSON.parse(req.rawBody); }
     catch { payload = (req.body && Object.keys(req.body).length) ? req.body : {}; }
 
+    const hasSig = !!req.get('x-hub-signature-256');
+    console.log(`[whatsapp] webhook POST received: bytes=${req.rawBody ? req.rawBody.length : 0}, signatureHeader=${hasSig}`);
+
     const ok = await whatsapp.verifySignature(
       req.rawBody, req.get('x-hub-signature-256'), payload
     );
-    if (!ok) return res.sendStatus(401);
+    if (!ok) {
+      console.warn('[whatsapp] webhook POST rejected (401): bad or unverifiable signature — check WHATSAPP_APP_SECRET (or the org App Secret) matches Meta App settings → Basic.');
+      return res.sendStatus(401);
+    }
 
     // Ack fast; Meta retries aggressively on non-2xx. Ingest is idempotent.
     res.sendStatus(200);
-    whatsapp.ingestWebhook(payload).catch(err =>
-      console.error('[whatsapp] webhook ingest error:', err.message)
-    );
+    whatsapp.ingestWebhook(payload)
+      .then(sum => console.log(`[whatsapp] webhook ingested: inbound=${sum.inbound}, statuses=${sum.statuses}`))
+      .catch(err => console.error('[whatsapp] webhook ingest error:', err.message));
   } catch (err) {
     console.error('[whatsapp] webhook error:', err.message);
     if (!res.headersSent) res.sendStatus(200);
