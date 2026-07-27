@@ -97,7 +97,7 @@ DECLARE
         {"d":"Mobilize to site within 2 weeks of advance receipt","type":"promise","due_in":14,"status":"open","owner":"impl"}
       ],
       "messages":[
-        {"dir":"outbound","auto":false,"body":"Welcome aboard! We are the delivery team for your multi-court project. We will confirm drawings and share a mobilization date shortly.","ago_h":30}
+        {"dir":"outbound","auto":false,"body":"Welcome aboard! We are the delivery team for your multi-court project. We will confirm drawings and share a mobilization date shortly.","ago_d":8}
       ]
     },
     {
@@ -113,8 +113,8 @@ DECLARE
         {"d":"Complete shockpad laying across full track","type":"promise","due_in":10,"status":"open","owner":"impl"}
       ],
       "messages":[
-        {"dir":"outbound","auto":false,"body":"All material and machinery have reached site. We are ready to start the shockpad work tomorrow morning.","ago_h":26},
-        {"dir":"inbound","auto":false,"body":"Great, gate access is arranged from 7 AM. Please share daily progress here.","ago_h":24}
+        {"dir":"outbound","auto":false,"body":"All material and machinery have reached site. We are ready to start the shockpad work tomorrow morning.","ago_d":18},
+        {"dir":"inbound","auto":false,"body":"Great, gate access is arranged from 7 AM. Please share daily progress here.","ago_d":16}
       ]
     },
     {
@@ -130,9 +130,9 @@ DECLARE
         {"d":"Monsoon exposure: outer-drain dewatering & concrete casting delayed by continuous rains","type":"red_flag","due_in":6,"status":"in_progress","owner":"impl"}
       ],
       "messages":[
-        {"dir":"outbound","auto":false,"body":"Pavilion-2 slab back-filling and electrical chamber slab-cover casting are in progress.","ago_h":72},
-        {"dir":"outbound","auto":true,"body":"Weather delay notice: continuous rains are affecting civil works. We are dewatering the outer drain and will rebaseline the go-live date this week.","ago_h":20},
-        {"dir":"inbound","auto":false,"body":"Understood. Please prioritise drainage so we do not lose more days. Keep us posted on the revised date.","ago_h":18}
+        {"dir":"outbound","auto":false,"body":"Pavilion-2 slab back-filling and electrical chamber slab-cover casting are in progress.","ago_d":26},
+        {"dir":"outbound","auto":true,"body":"Weather delay notice: continuous rains are affecting civil works. We are dewatering the outer drain and will rebaseline the go-live date this week.","ago_d":3},
+        {"dir":"inbound","auto":false,"body":"Understood. Please prioritise drainage so we do not lose more days. Keep us posted on the revised date.","ago_d":2}
       ]
     },
     {
@@ -148,9 +148,9 @@ DECLARE
         {"d":"Infill works slowed by intermittent rains","type":"risk","due_in":8,"status":"in_progress","owner":"impl"}
       ],
       "messages":[
-        {"dir":"outbound","auto":false,"body":"Turf stitching and white-line gluing done. Silica spreading is in progress.","ago_h":60},
-        {"dir":"outbound","auto":true,"body":"Weather note: infill work is slowed by intermittent rains. No change to go-live yet; we will flag early if that changes.","ago_h":22},
-        {"dir":"inbound","auto":false,"body":"Thanks for the heads up. Let us know if the go-live is at risk.","ago_h":20}
+        {"dir":"outbound","auto":false,"body":"Turf stitching and white-line gluing done. Silica spreading is in progress.","ago_d":24},
+        {"dir":"outbound","auto":true,"body":"Weather note: infill work is slowed by intermittent rains. No change to go-live yet; we will flag early if that changes.","ago_d":4},
+        {"dir":"inbound","auto":false,"body":"Thanks for the heads up. Let us know if the go-live is at risk.","ago_d":3}
       ]
     },
     {
@@ -166,8 +166,8 @@ DECLARE
         {"d":"Complete surface preparation and finishing before go-live","type":"promise","due_in":7,"status":"in_progress","owner":"impl"}
       ],
       "messages":[
-        {"dir":"outbound","auto":false,"body":"Aggregate leveling completed. Moving to surface preparation and finishing this week.","ago_h":48},
-        {"dir":"inbound","auto":false,"body":"Good progress. We will schedule the walkthrough once finishing is done.","ago_h":40}
+        {"dir":"outbound","auto":false,"body":"Aggregate leveling completed. Moving to surface preparation and finishing this week.","ago_d":17},
+        {"dir":"inbound","auto":false,"body":"Good progress. We will schedule the walkthrough once finishing is done.","ago_d":11}
       ]
     },
     {
@@ -184,8 +184,8 @@ DECLARE
         {"d":"Final walkthrough and maintenance handoff","type":"promise","due_in":-6,"status":"met","owner":"impl"}
       ],
       "messages":[
-        {"dir":"outbound","auto":false,"body":"Turf laying and line marking are complete. Requesting a walkthrough for sign-off.","ago_h":180},
-        {"dir":"inbound","auto":false,"body":"Walkthrough done, everything looks great. Project accepted. Thank you team!","ago_h":150}
+        {"dir":"outbound","auto":false,"body":"Turf laying and line marking are complete. Requesting a walkthrough for sign-off.","ago_d":8},
+        {"dir":"inbound","auto":false,"body":"Walkthrough done, everything looks great. Project accepted. Thank you team!","ago_d":4}
       ]
     }
   ]'::jsonb;
@@ -608,17 +608,17 @@ BEGIN
                                        from_phone, from_name, sent_at, delivered_at, read_at)
         VALUES (v_org_id, v_thread, 'inbound', 'text', msg->>'body', 'received',
                 proj#>>'{contact,phone}', (proj#>>'{contact,first}') || ' ' || (proj#>>'{contact,last}'),
-                now() - ((msg->>'ago_h')::int || ' hours')::interval,
-                now() - ((msg->>'ago_h')::int || ' hours')::interval,
-                now() - ((msg->>'ago_h')::int || ' hours')::interval);
+                now() - ((msg->>'ago_d')::int || ' days')::interval,
+                now() - ((msg->>'ago_d')::int || ' days')::interval,
+                now() - ((msg->>'ago_d')::int || ' days')::interval);
       ELSE
         INSERT INTO whatsapp_messages (org_id, thread_id, direction, message_type, body, status,
                                        sent_by_user_id, is_automated, sent_at, delivered_at, read_at)
         VALUES (v_org_id, v_thread, 'outbound', 'text', msg->>'body', 'read',
                 v_impl, (msg->>'auto')::boolean,
-                now() - ((msg->>'ago_h')::int || ' hours')::interval,
-                now() - ((msg->>'ago_h')::int || ' hours')::interval + interval '3 seconds',
-                now() - ((msg->>'ago_h')::int || ' hours')::interval + interval '2 minutes');
+                now() - ((msg->>'ago_d')::int || ' days')::interval,
+                now() - ((msg->>'ago_d')::int || ' days')::interval + interval '3 seconds',
+                now() - ((msg->>'ago_d')::int || ' days')::interval + interval '2 minutes');
       END IF;
     END LOOP;
 
@@ -631,8 +631,8 @@ BEGIN
                 'Re: ' || (proj->>'account') || ' — delivery update', msg->>'body',
                 lower(proj#>>'{contact,first}') || '.' || lower(proj#>>'{contact,last}') || '@' || (proj->>'domain'),
                 'delivery@impl-test.local',
-                now() - ((msg->>'ago_h')::int || ' hours')::interval,
-                now() - ((msg->>'ago_h')::int || ' hours')::interval,
+                now() - ((msg->>'ago_d')::int || ' days')::interval,
+                now() - ((msg->>'ago_d')::int || ' days')::interval,
                 'deliv-' || (proj->>'key'), 'outlook');
       ELSE
         INSERT INTO emails (org_id, user_id, deal_id, contact_id, direction, subject, body,
@@ -641,9 +641,9 @@ BEGIN
                 (proj->>'account') || ' — delivery update', msg->>'body',
                 'delivery@impl-test.local',
                 lower(proj#>>'{contact,first}') || '.' || lower(proj#>>'{contact,last}') || '@' || (proj->>'domain'),
-                now() - ((msg->>'ago_h')::int || ' hours')::interval,
-                now() - ((msg->>'ago_h')::int || ' hours')::interval + interval '2 hours',
-                now() - ((msg->>'ago_h')::int || ' hours')::interval,
+                now() - ((msg->>'ago_d')::int || ' days')::interval,
+                now() - ((msg->>'ago_d')::int || ' days')::interval + interval '2 hours',
+                now() - ((msg->>'ago_d')::int || ' days')::interval,
                 'deliv-' || (proj->>'key'), 'outlook');
       END IF;
     END LOOP;

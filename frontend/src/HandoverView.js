@@ -1137,6 +1137,8 @@ function Modal({ title, onClose, children }) {
 function PersonPanel({ member, onClose, onOpenProject }) {
   const [data, setData] = useState(null);
   const [panelTab, setPanelTab] = useState('projects'); // 'projects' | 'tasks' | 'comms'
+  const [commFilter, setCommFilter] = useState('all');  // account name filter for the comms tab
+  const [openComm, setOpenComm] = useState(null);       // clicked communication → detail overlay
   useEffect(() => {
     apiService.handovers.personDashboard(member.userId)
       .then(res => setData(res.data))
@@ -1148,6 +1150,10 @@ function PersonPanel({ member, onClose, onOpenProject }) {
   const pending  = (data?.deliverables || []).filter(d => d.pending);
   const CH = { email: { label: 'Email', color: '#7c3aed' }, whatsapp: { label: 'WhatsApp', color: '#059669' } };
   const first = (member.name || '').split(' ')[0];
+
+  // Distinct projects present in this person's comms, for the project filter.
+  const commAccounts = Array.from(new Set(comms.map(m => m.account).filter(Boolean))).sort();
+  const visibleComms = commFilter === 'all' ? comms : comms.filter(m => m.account === commFilter);
 
   const TABS = [
     { key: 'projects', label: 'Projects',       count: data ? projects.length : null },
@@ -1229,25 +1235,81 @@ function PersonPanel({ member, onClose, onOpenProject }) {
               {panelTab === 'comms' && (
                 comms.length === 0
                   ? <div style={{ fontSize: 12, color: '#9ca3af' }}>No recent communications.</div>
-                  : comms.map((m, i) => {
-                    const ch = CH[m.channel] || { label: m.channel, color: '#6b7280' };
-                    return (
-                      <div key={m.id} style={{ padding: '7px 0', borderTop: i === 0 ? 'none' : '1px solid #f3f4f6', fontSize: 12 }}>
-                        <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 2 }}>
-                          <span style={{ fontSize: 10, fontWeight: 700, color: ch.color }}>{ch.label}</span>
-                          <span style={{ color: '#9ca3af' }}>{m.account} · {m.direction === 'outbound' ? 'sent' : 'received'}</span>
-                          <span style={{ marginLeft: 'auto', color: '#9ca3af', fontSize: 10 }}>{m.at ? new Date(m.at).toLocaleDateString() : ''}</span>
+                  : (
+                    <>
+                      {commAccounts.length > 1 && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+                          <span style={{ fontSize: 11, color: '#6b7280' }}>Project</span>
+                          <select value={commFilter} onChange={e => setCommFilter(e.target.value)}
+                            style={{ flex: 1, fontSize: 12, padding: '4px 8px', borderRadius: 4, border: '1px solid #d1d5db', color: '#374151' }}>
+                            <option value="all">All projects ({comms.length})</option>
+                            {commAccounts.map(a => (
+                              <option key={a} value={a}>{a} ({comms.filter(m => m.account === a).length})</option>
+                            ))}
+                          </select>
                         </div>
-                        <div style={{ color: '#374151' }}>{m.subject ? <strong>{m.subject}: </strong> : null}{(m.body || '').slice(0, 120)}</div>
-                      </div>
-                    );
-                  })
+                      )}
+                      {visibleComms.length === 0 ? (
+                        <div style={{ fontSize: 12, color: '#9ca3af' }}>No communications for this project.</div>
+                      ) : visibleComms.map((m, i) => {
+                        const ch = CH[m.channel] || { label: m.channel, color: '#6b7280' };
+                        return (
+                          <div key={m.id} onClick={() => setOpenComm(m)} title="Open message"
+                            style={{ padding: '7px 0', borderTop: i === 0 ? 'none' : '1px solid #f3f4f6', fontSize: 12, cursor: 'pointer' }}>
+                            <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 2 }}>
+                              <span style={{ fontSize: 10, fontWeight: 700, color: ch.color }}>{ch.label}</span>
+                              <span style={{ color: '#9ca3af' }}>{m.account} · {m.direction === 'outbound' ? 'sent' : 'received'}</span>
+                              <span style={{ marginLeft: 'auto', color: '#9ca3af', fontSize: 10 }}>{m.at ? new Date(m.at).toLocaleDateString() : ''}</span>
+                            </div>
+                            <div style={{ color: '#374151' }}>{m.subject ? <strong>{m.subject}: </strong> : null}{(m.body || '').slice(0, 120)}{(m.body || '').length > 120 ? '…' : ''}</div>
+                          </div>
+                        );
+                      })}
+                    </>
+                  )
               )}
             </>
           )}
         </div>
       </div>
+      {openComm && <CommMessageModal message={openComm} onClose={() => setOpenComm(null)} />}
     </>
+  );
+}
+
+// ── CommMessageModal: full detail of one communication (person-panel drill-down)
+// Renders above the person side-panel (higher z-index). All fields come from the
+// person-dashboard payload, so no extra fetch is needed.
+
+function CommMessageModal({ message, onClose }) {
+  const CH = {
+    email:    { label: 'Email',    color: '#7c3aed', bg: '#f5f3ff' },
+    whatsapp: { label: 'WhatsApp', color: '#059669', bg: '#ecfdf5' },
+  };
+  const ch  = CH[message.channel] || { label: message.channel, color: '#6b7280', bg: '#f3f4f6' };
+  const out = message.direction === 'outbound';
+  const meta = [message.account, message.from ? `from ${message.from}` : null].filter(Boolean).join(' · ');
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 1100,
+      display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 10,
+        width: 'min(520px, 92vw)', maxHeight: '80vh', overflow: 'auto', boxShadow: '0 10px 40px rgba(0,0,0,0.2)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 18px', borderBottom: '1px solid #e5e7eb' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 10, fontWeight: 700, color: ch.color, background: ch.bg, padding: '2px 7px', borderRadius: 5 }}>{ch.label}</span>
+            <span style={{ fontSize: 13, color: '#6b7280' }}>{out ? 'Sent' : 'Received'}</span>
+          </div>
+          <button onClick={onClose} style={{ border: 'none', background: 'none', fontSize: 20, color: '#9ca3af', cursor: 'pointer', lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ padding: '16px 18px' }}>
+          {meta && <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 4 }}>{meta}</div>}
+          <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 14 }}>{message.at ? new Date(message.at).toLocaleString() : ''}</div>
+          {message.subject && <div style={{ fontSize: 15, fontWeight: 600, color: '#111827', marginBottom: 10 }}>{message.subject}</div>}
+          <div style={{ fontSize: 13, lineHeight: 1.6, color: '#374151', whiteSpace: 'pre-wrap' }}>{message.body || '(No message body.)'}</div>
+        </div>
+      </div>
+    </div>
   );
 }
 
