@@ -402,9 +402,8 @@ BEGIN
     VALUES (v_handover, v_org_id, v_contact,
             (proj#>>'{contact,first}') || ' ' || (proj#>>'{contact,last}'), 'go_live_approver', TRUE);
 
-    IF TRUE THEN
+    IF (proj->>'gate_cleared')::boolean THEN
       -- Build the customer team: create the contacts on the account, add as stakeholders.
-      -- Seeded for every project (the customer team is known from the sale).
       FOR com IN SELECT * FROM jsonb_array_elements('[
         {"first":"Priya","last":"Menon","role":"day_to_day_admin","title":"Operations Lead"},
         {"first":"Arjun","last":"Nair","role":"implementation_lead","title":"Project Lead"},
@@ -431,9 +430,7 @@ BEGIN
                                               closed_at, closed_by, closure_note)
       VALUES (
         v_handover, v_org_id, com->>'d', com->>'type', v_due, v_owner, v_status, v_sales,
-        CASE WHEN v_status IN ('met','waived','breached')
-             THEN v_due::timestamptz + ((length(com->>'d') % 4) || ' days')::interval
-             ELSE NULL END,
+        CASE WHEN v_status IN ('met','waived','breached') THEN v_due::timestamptz ELSE NULL END,
         CASE WHEN v_status IN ('met','waived','breached') THEN v_u_impl ELSE NULL END,
         CASE WHEN v_status = 'met' THEN 'Completed and verified on site.' ELSE NULL END
       );

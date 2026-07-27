@@ -1046,10 +1046,20 @@ const STAKE_ROLE = {
   other:               'Other',
 };
 
+// Days a completed commitment finished past its due date (0 if on time / undated).
+function lateDays(c) {
+  if (!c.closedAt || !c.dueDate) return 0;
+  const d = Math.floor((new Date(c.closedAt) - new Date(c.dueDate + 'T23:59:59')) / 86400000);
+  return d > 0 ? d : 0;
+}
+
 function HandoverSummary({ detail, users, canEdit, onRefresh }) {
   const team      = detail.dealTeam || [];
   const pb        = detail.playbook;
-  const openItems = (detail.commitments || []).filter(c => ['open', 'in_progress'].includes(c.status));
+  const allCommits = detail.commitments || [];
+  const openItems  = allCommits.filter(c => ['open', 'in_progress'].includes(c.status));
+  const doneItems  = allCommits.filter(c => ['met', 'waived', 'breached'].includes(c.status));
+  const onTimeCount = doneItems.filter(c => c.closedAt && lateDays(c) === 0).length;
   const gatePlays = (detail.plays || []).filter(p => p.isGate);
   const gatesDone = gatePlays.filter(p => ['completed', 'skipped'].includes(p.status)).length;
 
@@ -1146,6 +1156,45 @@ function HandoverSummary({ detail, users, canEdit, onRefresh }) {
           </div>
         ))}
       </div>
+
+      {/* Where we stand */}
+      <div style={card}>
+        <h4 style={h4}>📊 Where we stand</h4>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <div style={{ flex: 1, height: 8, background: '#f3f4f6', borderRadius: 4 }}>
+            <div style={{ width: `${allCommits.length ? Math.round((doneItems.length / allCommits.length) * 100) : 0}%`,
+              height: '100%', background: '#16a34a', borderRadius: 4 }} />
+          </div>
+          <span style={{ fontSize: 12, color: '#6b7280' }}>{doneItems.length}/{allCommits.length} done</span>
+        </div>
+        <div style={{ fontSize: 12, color: '#6b7280' }}>
+          {onTimeCount} on time · {Math.max(doneItems.length - onTimeCount, 0)} late · {openItems.length} open
+        </div>
+      </div>
+
+      {/* Completed deliverables — planned vs actual */}
+      {doneItems.length > 0 && (
+        <div style={card}>
+          <h4 style={h4}>✅ Completed deliverables ({doneItems.length})</h4>
+          {doneItems.map(c => {
+            const late = lateDays(c);
+            return (
+              <div key={c.id} style={{ padding: '7px 0', borderTop: '1px solid #f3f4f6', fontSize: 13 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ flex: 1 }}>{c.description}</span>
+                  {late > 0
+                    ? <span style={{ fontSize: 10, fontWeight: 600, color: '#dc2626' }}>{late}d late</span>
+                    : <span style={{ fontSize: 10, fontWeight: 600, color: '#16a34a' }}>on time</span>}
+                </div>
+                <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
+                  Due {c.dueDate ? fmtDate(c.dueDate) : '—'} · Completed {c.closedAt ? fmtDate(c.closedAt) : '—'}
+                  {c.closedByName ? ` · by ${c.closedByName}` : ''}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
