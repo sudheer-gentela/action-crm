@@ -1997,9 +1997,13 @@ function CommunicationsPanel({ handoverId }) {
   const [openComm,    setOpenComm]    = useState(null); // clicked bubble → detail
   const [openContact, setOpenContact] = useState(null); // "see all from" → customer panel
 
-  // WhatsApp 24-hour service window state, read from the thread endpoint.
-  const [windowOpen,      setWindowOpen]      = useState(null); // null = unknown / not connected
-  const [windowExpiresAt, setWindowExpiresAt] = useState(null);
+  // Recipient picker. Each target carries its own 24-hour window state, so the
+  // window banner and text/template gating are computed per selected recipient.
+  const [targets, setTargets] = useState([]);
+  const [selKey,  setSelKey]  = useState('');
+  const selected = targets.find(t => t.key === selKey) || targets[0] || null;
+  const windowOpen      = selected ? selected.windowOpen : null;
+  const windowExpiresAt = selected ? selected.windowExpiresAt : null;
 
   // Composer mode + template selection.
   const [mode,    setMode]    = useState('text');               // 'text' | 'template'
@@ -2010,31 +2014,40 @@ function CommunicationsPanel({ handoverId }) {
   const load = useCallback(async () => {
     try { const res = await apiService.handovers.communications(handoverId); setItems(res.data.items || []); }
     catch { setItems([]); }
-    // Best-effort window status. A missing thread or disconnected org just
-    // leaves the window closed, which forces template mode below.
+    // Selectable recipients (group + individuals), each with its own window.
     try {
-      const t = await apiService.whatsapp.handoverThread(handoverId);
-      setWindowOpen(!!t.data.windowOpen);
-      setWindowExpiresAt(t.data.thread?.windowExpiresAt || null);
-    } catch { setWindowOpen(false); setWindowExpiresAt(null); }
+      const res2 = await apiService.whatsapp.sendTargets(handoverId);
+      const ts = res2.data.targets || [];
+      setTargets(ts);
+      // Default to the first deliverable individual, else the first target.
+      setSelKey(prev => (prev && ts.some(t => t.key === prev))
+        ? prev
+        : (ts.find(t => t.type === 'individual')?.key || ts[0]?.key || ''));
+    } catch { setTargets([]); }
   }, [handoverId]);
   useEffect(() => { load(); }, [load]);
 
-  // Default the composer to the only mode that can actually send: free-form text
-  // when the window is open, templates when it is closed.
+  // Default the composer to the only mode that can send for THIS recipient:
+  // free-form text when their window is open, templates when it is closed.
   useEffect(() => {
     if (windowOpen === false) setMode('template');
     else if (windowOpen === true) setMode('text');
-  }, [windowOpen]);
+  }, [windowOpen, selKey]);
+
+  const recipientBody = () =>
+    !selected ? {}
+      : selected.type === 'group' ? { threadId: selected.threadId }
+      : { toPhone: selected.phone };
 
   const mapErr = (e) => {
     const er = e?.response?.data?.error || {};
-    if (er.code === 'NOT_CONNECTED') return 'WhatsApp is not connected for this org yet.';
-    if (er.code === 'WINDOW_CLOSED') return 'The 24-hour window is closed — send an approved template to re-open it.';
-    if (er.code === 'OPTED_OUT')     return 'This recipient has opted out of WhatsApp messages.';
+    if (er.code === 'NOT_CONNECTED')   return 'WhatsApp is not connected for this org yet.';
+    if (er.code === 'THREAD_NOT_FOUND') return 'That conversation is no longer available on this handover.';
+    if (er.code === 'WINDOW_CLOSED')   return 'The 24-hour window is closed for this recipient — send an approved template to re-open it.';
+    if (er.code === 'OPTED_OUT')       return 'This recipient has opted out of WhatsApp messages.';
     if (String(er.code) === '132001' || String(er.code) === '132000')
       return 'That template is not approved for this account (or the name/language does not match). Check WhatsApp Manager.';
-    if (String(er.code) === '131047') return 'Re-engagement required — the window is closed. Send a template instead.';
+    if (String(er.code) === '131047')  return 'Re-engagement required — the window is closed. Send a template instead.';
     return er.message || 'Could not send.';
   };
 
@@ -2042,8 +2055,8 @@ function CommunicationsPanel({ handoverId }) {
     const body = text.trim(); if (!body) return;
     setSending(true); setErr(''); setOk('');
     try {
-      await apiService.whatsapp.sendToHandover(handoverId, { text: body });
-      setText(''); setOk('Message sent.'); await load();
+      await apiService.whatsapp.sendToHandover(handoverId, { text: body, ...recipientBody() });
+      setText(''); setOk(`Message sent to ${selected ? selected.name : 'customer'}.`); await load();
     } catch (e) { setErr(mapErr(e)); }
     finally { setSending(false); }
   };
@@ -2057,8 +2070,9 @@ function CommunicationsPanel({ handoverId }) {
         templateName: tpl.name,
         templateLanguage: tpl.language,
         templateVars,
+        ...recipientBody(),
       });
-      setTplArgs({}); setOk(`Template “${tpl.label}” sent.`); await load();
+      setTplArgs({}); setOk(`Template “${tpl.label}” sent to ${selected ? selected.name : 'customer'}.`); await load();
     } catch (e) { setErr(mapErr(e)); }
     finally { setSending(false); }
   };
@@ -2099,8 +2113,39 @@ function CommunicationsPanel({ handoverId }) {
           );
         })}
       </div>
-      {/* Composer: Message vs Template, gated by the 24-hour window */}
+      {/* Composer: pick a recipient, then Message vs Template gated by the window */}
       <div style={{ marginTop: 10 }}>
+        {/* Recipient picker — a specific person, or the group (see note) */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, color: '#6b7280' }}>To:</span>
+          {targets.length === 0 ? (
+            <span style={{ fontSize: 12, color: '#9ca3af' }}>No reachable recipients on this handover.</span>
+          ) : (
+            <select value={selKey} onChange={e => { setSelKey(e.target.value); setErr(''); setOk(''); }}
+              style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 13, maxWidth: 320 }}>
+              {targets.some(t => t.type === 'individual') && (
+                <optgroup label="People">
+                  {targets.filter(t => t.type === 'individual').map(t => (
+                    <option key={t.key} value={t.key}>{t.name}{t.phone ? ` · +${t.phone}` : ''}{t.optedOut ? ' · opted out' : ''}</option>
+                  ))}
+                </optgroup>
+              )}
+              {targets.some(t => t.type === 'group') && (
+                <optgroup label="Groups">
+                  {targets.filter(t => t.type === 'group').map(t => (
+                    <option key={t.key} value={t.key}>{t.name} (group)</option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+          )}
+        </div>
+        {selected && selected.type === 'group' && (
+          <div style={{ fontSize: 11, color: '#b45309', marginBottom: 8 }}>
+            ⚠︎ {selected.note || 'Group send is not supported by the WhatsApp Cloud API yet.'} To reach one person now, pick them under “People”.
+          </div>
+        )}
+
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
           <div style={{ display: 'inline-flex', border: '1px solid #d1d5db', borderRadius: 6, overflow: 'hidden' }}>
             {['text', 'template'].map(m => (

@@ -163,8 +163,183 @@ async function getThreadForHandover(handoverId, orgId, { createIfMissing = false
 // ── Send ─────────────────────────────────────────────────────────────────────
 
 /**
- * Send a message on a handover's thread and persist it.
- * @param body { text?:string, templateName?:string, templateVars?:string[], templateLanguage?:string }
+ * Load a specific thread by id, scoped to the org and (optionally) verified to
+ * belong to the handover. Used when the caller explicitly picks a conversation
+ * (e.g. a group thread).
+ */
+async function getThreadById(threadId, orgId, handoverId) {
+  const { rows: [t] } = await pool.query(
+    `SELECT * FROM whatsapp_threads WHERE id = $1 AND org_id = $2`,
+    [threadId, orgId]
+  );
+  if (!t) return null;
+  if (handoverId != null && t.handover_id != null && t.handover_id !== handoverId) return null;
+  return t;
+}
+
+/**
+ * Find or open a DIRECT (1:1) thread to a specific phone, linked to the
+ * handover. This is how "send to a specific person" works — including a person
+ * who currently only exists as a participant inside a group thread.
+ */
+async function resolveDirectThreadByPhone(handoverId, orgId, phone, userId) {
+  const waPhone = normalizePhone(phone);
+  if (!waPhone) throw Object.assign(new Error('A valid recipient phone number is required'), { status: 400 });
+
+  const { rows: [existing] } = await pool.query(
+    `SELECT * FROM whatsapp_threads WHERE org_id = $1 AND wa_phone = $2 AND kind = 'direct'`,
+    [orgId, waPhone]
+  );
+  if (existing) {
+    if (existing.handover_id == null) {
+      await pool.query(`UPDATE whatsapp_threads SET handover_id = $1, updated_at = now() WHERE id = $2`,
+        [handoverId, existing.id]);
+      existing.handover_id = handoverId;
+    }
+    return existing;
+  }
+
+  const { rows: [ho] } = await pool.query(
+    `SELECT deal_id, account_id FROM sales_handovers WHERE id = $1 AND org_id = $2`,
+    [handoverId, orgId]
+  );
+  const { rows: [ct] } = await pool.query(
+    `SELECT c.id FROM sales_handover_stakeholders s JOIN contacts c ON c.id = s.contact_id
+      WHERE s.handover_id = $1 AND s.org_id = $2
+        AND regexp_replace(c.phone, '[^0-9]', '', 'g') = $3
+      LIMIT 1`,
+    [handoverId, orgId, waPhone]
+  );
+
+  const { rows: [thread] } = await pool.query(
+    `INSERT INTO whatsapp_threads
+       (org_id, kind, wa_phone, handover_id, deal_id, account_id, contact_id, status, created_by)
+     VALUES ($1, 'direct', $2, $3, $4, $5, $6, 'active', $7)
+     ON CONFLICT (org_id, wa_phone) WHERE kind = 'direct'
+       DO UPDATE SET handover_id = EXCLUDED.handover_id, updated_at = now()
+     RETURNING *`,
+    [orgId, waPhone, handoverId, ho?.deal_id ?? null, ho?.account_id ?? null, ct?.id ?? null, userId]
+  );
+  return thread;
+}
+
+/**
+ * Backward-compatible default recipient: prefer an existing DIRECT thread on the
+ * handover, else open one from the primary stakeholder. Deliberately never
+ * targets a group thread — a caller that wants the group must ask for it by id.
+ */
+async function preferredDirectThreadForHandover(handoverId, orgId, userId) {
+  const { rows: [direct] } = await pool.query(
+    `SELECT * FROM whatsapp_threads
+      WHERE org_id = $1 AND handover_id = $2 AND kind = 'direct' AND status = 'active'
+      ORDER BY id LIMIT 1`,
+    [orgId, handoverId]
+  );
+  if (direct) return direct;
+
+  const { rows: [cust] } = await pool.query(
+    `SELECT c.phone FROM sales_handover_stakeholders s JOIN contacts c ON c.id = s.contact_id
+      WHERE s.handover_id = $1 AND s.org_id = $2 AND c.phone IS NOT NULL
+      ORDER BY s.is_primary_contact DESC, s.id LIMIT 1`,
+    [handoverId, orgId]
+  );
+  if (!cust) throw Object.assign(new Error('No stakeholder with a phone number on this handover'), { status: 400 });
+  return resolveDirectThreadByPhone(handoverId, orgId, cust.phone, userId);
+}
+
+/**
+ * List selectable recipients for a handover so the UI can offer a "To" picker:
+ *   • one entry per group thread (structural — Cloud API can't deliver to groups
+ *     yet, flagged deliverable:false), and
+ *   • one entry per reachable individual: customer participants of those groups
+ *     plus handover stakeholders with a phone, de-duplicated by number.
+ * Each entry carries its own 24-hour window state so the composer can gate
+ * free-form text per recipient.
+ */
+async function listSendTargets(handoverId, orgId) {
+  const { rows: threads } = await pool.query(
+    `SELECT id, kind, wa_phone, wa_group_id, group_subject, opt_out_at, window_expires_at
+       FROM whatsapp_threads
+      WHERE org_id = $1 AND handover_id = $2 AND status = 'active'
+      ORDER BY id`,
+    [orgId, handoverId]
+  );
+
+  const groupThreads  = threads.filter(t => t.kind === 'group');
+  const directThreads = threads.filter(t => t.kind === 'direct');
+  const directByPhone = new Map(directThreads.map(t => [t.wa_phone, t]));
+
+  const targets = [];
+
+  for (const g of groupThreads) {
+    targets.push({
+      key: `thread:${g.id}`,
+      type: 'group',
+      threadId: g.id,
+      name: g.group_subject || 'Group',
+      phone: null,
+      windowOpen: waChannel.isWindowOpen(g),
+      windowExpiresAt: g.window_expires_at,
+      deliverable: false,
+      note: 'Group send is not supported by the WhatsApp Cloud API yet.',
+    });
+  }
+
+  const seen = new Set();
+  const addIndividual = (phone, name, contactId) => {
+    const p = normalizePhone(phone);
+    if (!p || seen.has(p)) return;
+    seen.add(p);
+    const dt = directByPhone.get(p);
+    targets.push({
+      key: `phone:${p}`,
+      type: 'individual',
+      threadId: dt ? dt.id : null,
+      name: name || p,
+      phone: p,
+      contactId: contactId ?? null,
+      windowOpen: dt ? waChannel.isWindowOpen(dt) : false,
+      windowExpiresAt: dt ? dt.window_expires_at : null,
+      deliverable: true,
+      optedOut: dt ? !!dt.opt_out_at : false,
+    });
+  };
+
+  if (groupThreads.length) {
+    const { rows: parts } = await pool.query(
+      `SELECT wa_phone, display_name, contact_id
+         FROM whatsapp_thread_participants
+        WHERE org_id = $1 AND side = 'customer' AND left_at IS NULL
+          AND thread_id = ANY($2::int[])
+        ORDER BY id`,
+      [orgId, groupThreads.map(g => g.id)]
+    );
+    for (const pt of parts) addIndividual(pt.wa_phone, pt.display_name, pt.contact_id);
+  }
+
+  const { rows: stake } = await pool.query(
+    `SELECT c.phone, c.first_name || ' ' || c.last_name AS full_name, c.id AS contact_id
+       FROM sales_handover_stakeholders s JOIN contacts c ON c.id = s.contact_id
+      WHERE s.handover_id = $1 AND s.org_id = $2 AND c.phone IS NOT NULL
+      ORDER BY s.is_primary_contact DESC, s.id`,
+    [handoverId, orgId]
+  );
+  for (const st of stake) addIndividual(st.phone, st.full_name, st.contact_id);
+
+  for (const dt of directThreads) addIndividual(dt.wa_phone, null, dt.contact_id);
+
+  return { targets };
+}
+
+/**
+ * Send a message on a handover, to a chosen recipient, and persist it.
+ * @param body {
+ *   text?, templateName?, templateVars?, templateLanguage?,   // what to send
+ *   threadId?,        // send on this exact thread (e.g. the group)
+ *   toPhone?          // send 1:1 to this number (a specific person)
+ * }
+ * With neither threadId nor toPhone, defaults to the handover's direct thread
+ * (created from the primary stakeholder if needed) — never a group.
  */
 async function sendToHandover(handoverId, orgId, userId, body) {
   const account = await waChannel.getAccount(orgId);
@@ -172,7 +347,17 @@ async function sendToHandover(handoverId, orgId, userId, body) {
     return { ok: false, code: 'NOT_CONNECTED', error: 'WhatsApp is not connected for this org' };
   }
 
-  const thread = await getThreadForHandover(handoverId, orgId, { createIfMissing: true, createdBy: userId });
+  let thread;
+  if (body.threadId) {
+    thread = await getThreadById(parseInt(body.threadId, 10), orgId, handoverId);
+    if (!thread) {
+      return { ok: false, code: 'THREAD_NOT_FOUND', error: 'That conversation was not found on this handover' };
+    }
+  } else if (body.toPhone) {
+    thread = await resolveDirectThreadByPhone(handoverId, orgId, body.toPhone, userId);
+  } else {
+    thread = await preferredDirectThreadForHandover(handoverId, orgId, userId);
+  }
 
   const template = body.templateName
     ? { name: body.templateName, language: body.templateLanguage || 'en', variables: body.templateVars || [] }
@@ -378,6 +563,7 @@ module.exports = {
   disconnect,
   getStatus,
   getThreadForHandover,
+  listSendTargets,
   sendToHandover,
   listMessages,
   verifyChallenge,

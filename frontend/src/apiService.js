@@ -733,6 +733,7 @@ twilio: {
     connect:        (data)     => api.post('/whatsapp/connect', data),
     disconnect:     ()         => api.delete('/whatsapp/account'),
     handoverThread: (id)       => api.get(`/whatsapp/handovers/${id}/thread`),
+    sendTargets:    (id)       => api.get(`/whatsapp/handovers/${id}/targets`),
     sendToHandover: (id, body) => api.post(`/whatsapp/handovers/${id}/messages`, body),
   },
 

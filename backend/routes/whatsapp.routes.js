@@ -65,6 +65,16 @@ router.get('/handovers/:handoverId/thread', async (req, res) => {
   }
 });
 
+// Selectable recipients (group + individuals) for the composer's "To" picker.
+router.get('/handovers/:handoverId/targets', async (req, res) => {
+  try {
+    const out = await whatsapp.listSendTargets(parseInt(req.params.handoverId, 10), req.orgId);
+    res.json(out);
+  } catch (e) {
+    res.status(e.status || 500).json({ error: { message: e.message } });
+  }
+});
+
 router.post('/handovers/:handoverId/messages', async (req, res) => {
   try {
     const result = await whatsapp.sendToHandover(
