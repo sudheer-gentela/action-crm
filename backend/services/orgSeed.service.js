@@ -1160,7 +1160,7 @@ const PLAYS = {
 
     // Confirm Go-Live & Commercial (3)
     {
-      stage_key: 'confirm_golive_commercial', sort_order: 1, is_gate: false,
+      stage_key: 'confirm_golive_commercial', sort_order: 1, is_gate: true,
       title: 'Confirm go-live date with customer',
       description: 'Establish and confirm a specific go-live date with the customer. A clear go-live date creates urgency, alignment, and a shared target for both teams.',
       suggested_action: 'Book a planning call with the customer to confirm the go-live date based on the implementation timeline. Share the internal delivery plan at high level. Confirm the customer understands what is required from their side (IT access, data provision, user availability).',
@@ -1481,6 +1481,7 @@ const PLAYBOOK_META = {
     type: 'handovers',
     description: 'A 5-stage Sales-to-CS handover playbook covering team assignment, stakeholder documentation, commitments recording, go-live planning, and formal sign-off. 15 plays.',
     is_default: true,
+    gate_enforcement: 'strict',
   },
 };
 
@@ -1650,10 +1651,10 @@ async function createPlaybook(client, orgId, module) {
   const meta = PLAYBOOK_META[module];
   const result = await client.query(
     `INSERT INTO playbooks
-       (org_id, name, type, description, is_default, content, enable_ai_actions, track_instances)
-     VALUES ($1, $2, $3, $4, $5, '{}', false, false)
+       (org_id, name, type, description, is_default, gate_enforcement, content, enable_ai_actions, track_instances)
+     VALUES ($1, $2, $3, $4, $5, $6, '{}', false, false)
      RETURNING id`,
-    [orgId, meta.name, meta.type, meta.description, meta.is_default]
+    [orgId, meta.name, meta.type, meta.description, meta.is_default, meta.gate_enforcement || 'advisory']
   );
   return result.rows[0].id;
 }

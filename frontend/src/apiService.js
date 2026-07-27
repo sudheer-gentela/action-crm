@@ -696,6 +696,7 @@ twilio: {
       return api.get(`/handovers/sales?${qs}`);
     },
     create:    (dealId)      => api.post('/handovers/sales', { dealId }),
+    portfolio: ()            => api.get('/handovers/portfolio'),
     getById:   (id)          => api.get(`/handovers/sales/${id}`),
     update:    (id, data)    => api.put(`/handovers/sales/${id}`, data),
     setStatus: (id, status, closureSummary) => api.patch(`/handovers/sales/${id}/status`, { status, closureSummary }),

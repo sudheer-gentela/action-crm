@@ -1192,27 +1192,35 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
   });
 
   return (
-    <div style={{ display: 'flex', height: '100%', overflow: 'hidden', background: '#f9fafb' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', background: '#f9fafb' }}>
+
+      {/* ── Top tabs (full width) ─────────────────────── */}
+      <div style={{ display: 'flex', borderBottom: '2px solid #e5e7eb', background: '#fff', flexShrink: 0 }}>
+        {[
+          { key: 'mine',      label: '📤 My Handovers' },
+          { key: 'assigned',  label: '📥 Assigned to Me' },
+          { key: 'dashboard', label: '📊 Dashboard' },
+        ].map(t => (
+          <button key={t.key} onClick={() => setTab(t.key)} style={{
+            padding: '12px 22px', background: 'none', border: 'none',
+            borderBottom: `3px solid ${tab === t.key ? '#0369a1' : 'transparent'}`,
+            color: tab === t.key ? '#0369a1' : '#6b7280',
+            fontWeight: tab === t.key ? 700 : 400,
+            fontSize: 13, cursor: 'pointer', transition: 'all 0.15s',
+          }}>{t.label}</button>
+        ))}
+      </div>
+
+      {tab === 'dashboard' ? (
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          <PortfolioDashboard />
+        </div>
+      ) : (
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
 
       {/* ── Left sidebar ─────────────────────────────── */}
       <div style={{ width: 300, flexShrink: 0, borderRight: '1px solid #e5e7eb',
         background: '#fff', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-
-        {/* Tabs */}
-        <div style={{ display: 'flex', borderBottom: '2px solid #e5e7eb' }}>
-          {[
-            { key: 'mine',     label: '📤 My Handovers' },
-            { key: 'assigned', label: '📥 Assigned to Me' },
-          ].map(t => (
-            <button key={t.key} onClick={() => setTab(t.key)} style={{
-              flex: 1, padding: '10px 6px', background: 'none', border: 'none',
-              borderBottom: `3px solid ${tab === t.key ? '#0369a1' : 'transparent'}`,
-              color: tab === t.key ? '#0369a1' : '#6b7280',
-              fontWeight: tab === t.key ? 700 : 400,
-              fontSize: 12, cursor: 'pointer', transition: 'all 0.15s',
-            }}>{t.label}</button>
-          ))}
-        </div>
 
         {/* Filters */}
         <div style={{ padding: '10px 12px', borderBottom: '1px solid #f3f4f6', display: 'flex', gap: 6 }}>
@@ -1277,6 +1285,163 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
             onRefresh={loadList}
           />
         )}
+      </div>
+      </div>
+      )}
+    </div>
+  );
+}
+
+// ── PortfolioDashboard: Handovers → Dashboard tab ─────────────────────────────
+
+const DASH = {
+  status: {
+    on_track:       { label: 'On track',      color: '#16a34a' },
+    in_progress:    { label: 'In progress',   color: '#d97706' },
+    ready_to_start: { label: 'Ready to start', color: '#0369a1' },
+    yet_to_start:   { label: 'Yet to start',  color: '#6b7280' },
+    completed:      { label: 'Completed',     color: '#0d9488' },
+  },
+  typeColors: ['#0369a1', '#16a34a', '#d97706', '#7c3aed', '#0d9488', '#db2777', '#6b7280'],
+};
+
+function DashCard({ title, children }) {
+  return (
+    <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '14px 16px' }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 12 }}>{title}</div>
+      {children}
+    </div>
+  );
+}
+
+function BarRow({ label, value, total, color }) {
+  const pct = total > 0 ? Math.round((value / total) * 100) : 0;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, marginBottom: 7 }}>
+      <span style={{ width: 92, color: '#6b7280' }}>{label}</span>
+      <div style={{ flex: 1, height: 8, background: '#f3f4f6', borderRadius: 4 }}>
+        <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 4 }} />
+      </div>
+      <span style={{ width: 20, textAlign: 'right', fontWeight: 600 }}>{value}</span>
+    </div>
+  );
+}
+
+function PortfolioDashboard() {
+  const [data, setData] = useState(null);
+  const [err, setErr]   = useState('');
+
+  useEffect(() => {
+    let live = true;
+    apiService.handovers.portfolio()
+      .then(res => { if (live) setData(res.data); })
+      .catch(() => { if (live) setErr('Could not load the dashboard.'); });
+    return () => { live = false; };
+  }, []);
+
+  if (err)   return <div style={{ padding: 32, color: '#991b1b', fontSize: 13 }}>{err}</div>;
+  if (!data) return <div style={{ padding: 32, color: '#9ca3af', fontSize: 13 }}>Loading dashboard…</div>;
+
+  const { kpis, statusDistribution, typeDistribution, rainImpact, riskMatrix, projects } = data;
+  const total = kpis.total || 0;
+
+  const kpiTiles = [
+    { k: 'total',          label: 'Total',          color: '#111827' },
+    { k: 'on_track',       label: 'On track',       color: '#16a34a' },
+    { k: 'in_progress',    label: 'In progress',    color: '#d97706' },
+    { k: 'ready_to_start', label: 'Ready to start', color: '#0369a1' },
+    { k: 'yet_to_start',   label: 'Yet to start',   color: '#6b7280' },
+    { k: 'completed',      label: 'Completed',      color: '#0d9488' },
+    { k: 'rain_affected',  label: 'Rain affected',  color: '#dc2626' },
+  ];
+
+  const typeEntries = Object.entries(typeDistribution);
+
+  return (
+    <div style={{ padding: 20, maxWidth: 1100, margin: '0 auto' }}>
+      {/* KPI tiles */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 10, marginBottom: 18 }}>
+        {kpiTiles.map(t => (
+          <div key={t.k} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '12px 14px' }}>
+            <div style={{ fontSize: 12, color: '#6b7280' }}>{t.label}</div>
+            <div style={{ fontSize: 24, fontWeight: 700, color: t.color }}>{kpis[t.k] || 0}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Distributions */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12, marginBottom: 18 }}>
+        <DashCard title="Status distribution">
+          {Object.keys(DASH.status).map(k => (
+            <BarRow key={k} label={DASH.status[k].label} value={statusDistribution[k] || 0} total={total} color={DASH.status[k].color} />
+          ))}
+        </DashCard>
+        <DashCard title="Project type">
+          {typeEntries.map(([t, n], i) => (
+            <BarRow key={t} label={t} value={n} total={total} color={DASH.typeColors[i % DASH.typeColors.length]} />
+          ))}
+        </DashCard>
+      </div>
+
+      {/* Projects table */}
+      <DashCard title="Projects overview">
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr style={{ color: '#6b7280', textAlign: 'left' }}>
+              <th style={{ padding: '6px 4px', fontWeight: 500 }}>Project</th>
+              <th style={{ padding: '6px 4px', fontWeight: 500 }}>Type</th>
+              <th style={{ padding: '6px 4px', fontWeight: 500 }}>Status</th>
+              <th style={{ padding: '6px 4px', fontWeight: 500, width: '22%' }}>Progress</th>
+              <th style={{ padding: '6px 4px', fontWeight: 500 }}>Next action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {projects.map(p => {
+              const s = DASH.status[p.status] || { label: p.status, color: '#6b7280' };
+              return (
+                <tr key={p.handoverId} style={{ borderTop: '1px solid #f3f4f6' }}>
+                  <td style={{ padding: '8px 4px' }}>
+                    {p.account}
+                    {p.rain !== 'none' && (
+                      <span style={{ color: p.rain === 'high' ? '#dc2626' : '#d97706', fontSize: 11, marginLeft: 5 }}>
+                        ● {p.rain} rain
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ padding: '8px 4px', color: '#6b7280' }}>{p.projectType}</td>
+                  <td style={{ padding: '8px 4px' }}>
+                    <span style={{ background: s.color + '1a', color: s.color, padding: '2px 7px', borderRadius: 6, fontSize: 11 }}>{s.label}</span>
+                  </td>
+                  <td style={{ padding: '8px 4px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <div style={{ flex: 1, height: 6, background: '#f3f4f6', borderRadius: 3 }}>
+                        <div style={{ width: `${p.progress}%`, height: '100%', background: s.color, borderRadius: 3 }} />
+                      </div>
+                      <span style={{ color: '#6b7280', width: 30, textAlign: 'right' }}>{p.progress}%</span>
+                    </div>
+                  </td>
+                  <td style={{ padding: '8px 4px', color: '#6b7280', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {p.nextAction || '—'}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </DashCard>
+
+      {/* Rain + risk */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 12, marginTop: 18 }}>
+        <DashCard title="Rain impact">
+          <BarRow label="High"   value={rainImpact.high}   total={total} color="#dc2626" />
+          <BarRow label="Medium" value={rainImpact.medium} total={total} color="#d97706" />
+          <BarRow label="None"   value={rainImpact.none}   total={total} color="#6b7280" />
+        </DashCard>
+        <DashCard title="Risk level">
+          <BarRow label="High"   value={riskMatrix.high}   total={total} color="#dc2626" />
+          <BarRow label="Medium" value={riskMatrix.medium} total={total} color="#d97706" />
+          <BarRow label="Low"    value={riskMatrix.low}    total={total} color="#16a34a" />
+        </DashCard>
       </div>
     </div>
   );

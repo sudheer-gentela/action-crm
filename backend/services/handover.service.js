@@ -180,7 +180,6 @@ function fmtPlay(row) {
     // ── deliverable tracking (2026_64) ──
     dueDate:         row.due_date   ?? null,
     dueAnchor:       row.due_anchor ?? 'created',
-    dueOffsetDays:   row.due_offset_days ?? null,
     isOverdue,
     daysOverdue:     isOverdue
       ? Math.floor((Date.now() - new Date(row.due_date)) / 86400000)
@@ -946,11 +945,9 @@ async function _getPlays(handoverId, orgId) {
        dpi.title, dpi.description, dpi.channel, dpi.is_gate,
        dpi.execution_type, dpi.sort_order, dpi.priority,
        dpi.status AS play_status, dpi.completed_by,
-       dpi.due_date, dpi.due_anchor,
-       pp.due_offset_days
+       dpi.due_date, dpi.due_anchor
      FROM sales_handover_plays shp
      JOIN deal_play_instances dpi ON dpi.id = shp.play_instance_id
-     LEFT JOIN playbook_plays pp   ON pp.id = dpi.play_id
      WHERE shp.handover_id = $1
        AND ($2::int IS NULL OR shp.org_id = $2)
      ORDER BY dpi.due_date ASC NULLS LAST, dpi.sort_order ASC`,
@@ -1312,9 +1309,94 @@ async function listAssignableUsers(orgId) {
   }));
 }
 
+/**
+ * Portfolio aggregation for the Handovers → Dashboard tab. Reads every
+ * (non-cancelled) handover for the org, joins the deliverable rollup, project
+ * type, rain (risk/red_flag commitments) and next action, then derives the
+ * dashboard KPIs, distributions, rain-impact and risk matrix in one pass.
+ * Everything is computed from the tables — nothing is stored.
+ */
+async function getPortfolio(orgId) {
+  const { rows } = await pool.query(
+    `SELECT h.id AS handover_id, h.status, h.go_live_date,
+            a.name AS account, d.name AS deal,
+            a.external_refs->>'project_type' AS project_type,
+            COALESCE(r.plays_done, 0)::int    AS plays_done,
+            COALESCE(r.plays_total, 0)::int   AS plays_total,
+            COALESCE(r.plays_overdue, 0)::int AS plays_overdue,
+            COALESCE(r.gates_open, 0)::int    AS gates_open,
+            (SELECT max(CASE c.commitment_type WHEN 'red_flag' THEN 2 WHEN 'risk' THEN 1 ELSE 0 END)
+               FROM sales_handover_commitments c
+              WHERE c.handover_id = h.id
+                AND c.commitment_type IN ('risk','red_flag')
+                AND c.status NOT IN ('met','waived')) AS rain_sev,
+            (SELECT c.description FROM sales_handover_commitments c
+              WHERE c.handover_id = h.id AND c.status IN ('open','in_progress')
+              ORDER BY c.due_date NULLS LAST, c.id LIMIT 1) AS next_action
+       FROM sales_handovers h
+       JOIN deals    d ON d.id = h.deal_id
+       JOIN accounts a ON a.id = h.account_id
+       LEFT JOIN handover_deliverable_rollup r ON r.handover_id = h.id
+      WHERE h.org_id = $1 AND h.status <> 'cancelled'
+      ORDER BY d.close_date NULLS LAST, h.id`,
+    [orgId]
+  );
+
+  const kpis = { total: rows.length, on_track: 0, in_progress: 0, ready_to_start: 0,
+                 yet_to_start: 0, completed: 0, rain_affected: 0 };
+  const statusDistribution = {}, typeDistribution = {};
+  const rainImpact = { high: 0, medium: 0, none: 0 };
+  const riskMatrix = { high: 0, medium: 0, low: 0 };
+
+  const projects = rows.map(r => {
+    const sev = Number(r.rain_sev) || 0;
+    const rain = sev === 2 ? 'high' : sev === 1 ? 'medium' : 'none';
+    const progress = r.plays_total > 0 ? Math.round((r.plays_done / r.plays_total) * 100) : 0;
+
+    let status;
+    switch (r.status) {
+      case 'draft':        status = 'yet_to_start';   break;
+      case 'submitted':
+      case 'acknowledged': status = 'ready_to_start'; break;
+      case 'completed':    status = 'completed';      break;
+      default:             status = sev > 0 ? 'in_progress' : 'on_track';
+    }
+
+    let risk;
+    if (r.status === 'completed')      risk = 'low';
+    else if (sev === 2)                risk = 'high';
+    else if (sev === 1)                risk = 'medium';
+    else if ((status === 'on_track' || status === 'in_progress') && r.plays_overdue > 0) risk = 'medium';
+    else                               risk = 'low';
+
+    kpis[status] += 1;
+    if (rain !== 'none') kpis.rain_affected += 1;
+    statusDistribution[status] = (statusDistribution[status] || 0) + 1;
+    const t = r.project_type || 'Other';
+    typeDistribution[t] = (typeDistribution[t] || 0) + 1;
+    rainImpact[rain] += 1;
+    riskMatrix[risk] += 1;
+
+    return {
+      handoverId: r.handover_id,
+      account: r.account,
+      deal: r.deal,
+      projectType: r.project_type || 'Other',
+      status,
+      progress,
+      rain,
+      nextAction: r.next_action || null,
+      goLiveDate: r.go_live_date,
+    };
+  });
+
+  return { kpis, statusDistribution, typeDistribution, rainImpact, riskMatrix, projects };
+}
+
 module.exports = {
   initiate,
   list,
+  getPortfolio,           // Dashboard tab — portfolio aggregation
   listAssignableUsers,    // org-scoped member list for owner pickers
   getById,
   update,

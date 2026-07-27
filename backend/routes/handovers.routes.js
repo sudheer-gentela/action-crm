@@ -63,6 +63,17 @@ router.get('/sales', async (req, res) => {
   }
 });
 
+// ── GET /portfolio — Dashboard tab aggregation ────────────────────────────────
+
+router.get('/portfolio', async (req, res) => {
+  try {
+    res.json(await handoverService.getPortfolio(req.orgId));
+  } catch (err) {
+    console.error('Handover portfolio error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
 // ── POST /sales — manual creation (edge case; normally auto-triggered) ────────
 
 router.post('/sales', async (req, res) => {
