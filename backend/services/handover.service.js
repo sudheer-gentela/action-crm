@@ -171,6 +171,7 @@ function fmtPlay(row) {
     title:           row.title,
     description:     row.description,
     channel:         row.channel,
+    stageKey:        row.stage_key ?? null,
     isGate:          row.is_gate,
     executionType:   row.execution_type,
     sortOrder:       row.sort_order,
@@ -411,12 +412,15 @@ async function getById(handoverId, orgId) {
        d.stage                                   AS deal_stage,
        a.name                                    AS account_name,
        u_so.first_name || ' ' || u_so.last_name  AS service_owner_name,
-       u_cb.first_name || ' ' || u_cb.last_name  AS created_by_name
+       u_cb.first_name || ' ' || u_cb.last_name  AS created_by_name,
+       pb.name                                   AS playbook_name,
+       pb.gate_enforcement                       AS playbook_gate_enforcement
      FROM sales_handovers h
      JOIN deals    d      ON d.id  = h.deal_id
      JOIN accounts a      ON a.id  = h.account_id
      LEFT JOIN users u_so ON u_so.id = h.assigned_service_owner_id
      LEFT JOIN users u_cb ON u_cb.id = h.created_by
+     LEFT JOIN playbooks pb ON pb.id = h.playbook_id
      WHERE h.id = $1 AND h.org_id = $2`,
     [handoverId, orgId]
   );
@@ -434,7 +438,40 @@ async function getById(handoverId, orgId) {
   // Load plays
   const plays = await _getPlays(handoverId, orgId);
 
-  return { ...handover, stakeholders, commitments, plays };
+  // Load the project team (deal_team_members → org_roles) so the Summary can
+  // show who is on the project and the role each person plays.
+  const dealTeam = await _getDealTeam(handover.dealId, orgId);
+
+  const playbook = rows[0].playbook_name
+    ? { id: handover.playbookId, name: rows[0].playbook_name, gateEnforcement: rows[0].playbook_gate_enforcement }
+    : null;
+
+  return { ...handover, stakeholders, commitments, plays, dealTeam, playbook };
+}
+
+/** Internal project team on the deal, with the org-role each member holds. */
+async function _getDealTeam(dealId, orgId) {
+  if (dealId == null) return [];
+  const { rows } = await pool.query(
+    `SELECT dtm.user_id,
+            u.first_name || ' ' || u.last_name AS name,
+            u.email,
+            r.name AS role_name, r.key AS role_key,
+            dtm.custom_role, r.sort_order
+       FROM deal_team_members dtm
+       JOIN users u ON u.id = dtm.user_id
+       LEFT JOIN org_roles r ON r.id = dtm.role_id
+      WHERE dtm.deal_id = $1 AND dtm.org_id = $2
+      ORDER BY r.sort_order NULLS LAST, dtm.id`,
+    [dealId, orgId]
+  );
+  return rows.map(row => ({
+    userId:  row.user_id,
+    name:    row.name,
+    email:   row.email,
+    role:    row.role_name || row.custom_role || 'Team member',
+    roleKey: row.role_key || null,
+  }));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -943,6 +980,7 @@ async function _getPlays(handoverId, orgId) {
     `SELECT
        shp.id, shp.play_instance_id, shp.handover_id, shp.completed_at,
        dpi.title, dpi.description, dpi.channel, dpi.is_gate,
+       dpi.stage_key,
        dpi.execution_type, dpi.sort_order, dpi.priority,
        dpi.status AS play_status, dpi.completed_by,
        dpi.due_date, dpi.due_anchor

@@ -603,6 +603,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users }) {
   const [success,   setSuccess]   = useState('');
   const [closureFor, setClosureFor] = useState(null); // 'completed' | 'cancelled' | null
   const [closureText, setClosureText] = useState('');
+  const [detailTab, setDetailTab] = useState('summary'); // 'summary' | 'details'
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -920,7 +921,27 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users }) {
         {success && <div style={{ marginTop: 10, padding: '6px 10px', background: '#dcfce7', borderRadius: 6, fontSize: 12, color: '#065f46' }}>{success}</div>}
       </div>
 
-      {/* ── Body ───────────────────────────────────────── */}
+      {/* ── Summary / Details sub-tabs ──────────────────── */}
+      <div style={{ display: 'flex', gap: 4, padding: '0 20px', borderBottom: '1px solid #e5e7eb', background: '#fff' }}>
+        {[{ key: 'summary', label: 'Summary' }, { key: 'details', label: 'Details' }].map(t => (
+          <button key={t.key} onClick={() => setDetailTab(t.key)} style={{
+            padding: '10px 16px', background: 'none', border: 'none',
+            borderBottom: `2px solid ${detailTab === t.key ? '#0369a1' : 'transparent'}`,
+            color: detailTab === t.key ? '#0369a1' : '#6b7280',
+            fontWeight: detailTab === t.key ? 700 : 400, fontSize: 13, cursor: 'pointer',
+          }}>{t.label}</button>
+        ))}
+      </div>
+
+      {/* ── Summary ─────────────────────────────────────── */}
+      {detailTab === 'summary' && (
+        <div style={{ padding: '16px 20px' }}>
+          <HandoverSummary detail={detail} users={users} canEdit={isServiceView || salesCanEdit} onRefresh={load} />
+        </div>
+      )}
+
+      {/* ── Details (body) ──────────────────────────────── */}
+      {detailTab === 'details' && (
       <div style={{ padding: '16px 20px' }}>
 
         {/* Handover Checklist (plays) */}
@@ -1003,6 +1024,130 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users }) {
           <WhatsAppPanel handoverId={detail.id} />
         </section>
       </div>
+      )}
+    </div>
+  );
+}
+
+// ── HandoverSummary: overview screen (team, playbook, ownership, open items) ──
+
+function initials(name) {
+  return (name || '?').trim().split(/\s+/).map(x => x[0]).slice(0, 2).join('').toUpperCase();
+}
+
+function HandoverSummary({ detail, users, canEdit, onRefresh }) {
+  const team      = detail.dealTeam || [];
+  const pb        = detail.playbook;
+  const openItems = (detail.commitments || []).filter(c => ['open', 'in_progress'].includes(c.status));
+  const gatePlays = (detail.plays || []).filter(p => p.isGate);
+  const gatesDone = gatePlays.filter(p => ['completed', 'skipped'].includes(p.status)).length;
+
+  const card = { background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: '14px 16px', marginBottom: 16 };
+  const h4   = { margin: '0 0 10px', fontSize: 14, color: '#374151' };
+
+  return (
+    <div>
+      {/* Project team */}
+      <div style={card}>
+        <h4 style={h4}>👥 Project team &amp; roles</h4>
+        {team.length === 0 ? (
+          <div style={{ fontSize: 12, color: '#9ca3af' }}>No project team assigned yet.</div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 10 }}>
+            {team.map(m => (
+              <div key={m.userId} style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 13 }}>
+                <div style={{ width: 30, height: 30, flexShrink: 0, borderRadius: '50%', background: '#e0f2fe',
+                  color: '#0369a1', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700 }}>
+                  {initials(m.name)}
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.name}</div>
+                  <div style={{ fontSize: 11, color: '#6b7280' }}>{m.role}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Playbook + ownership */}
+      <div style={card}>
+        <h4 style={h4}>📋 Playbook &amp; ownership</h4>
+        <div style={{ fontSize: 13, color: '#374151', marginBottom: 10 }}>
+          {pb ? (
+            <span>
+              Following <strong>{pb.name}</strong>
+              <span style={{ marginLeft: 8, fontSize: 11, padding: '1px 7px', borderRadius: 5,
+                background: pb.gateEnforcement === 'strict' ? '#fee2e2' : '#f3f4f6',
+                color: pb.gateEnforcement === 'strict' ? '#991b1b' : '#6b7280' }}>
+                {pb.gateEnforcement === 'strict' ? 'strict gating' : 'advisory gating'}
+              </span>
+              {gatePlays.length > 0 && (
+                <span style={{ marginLeft: 8, color: '#6b7280', fontSize: 12 }}>
+                  · {gatesDone}/{gatePlays.length} gates complete
+                </span>
+              )}
+            </span>
+          ) : 'No playbook linked.'}
+        </div>
+        <ServiceOwnerPicker detail={detail} users={users} canEdit={canEdit} onRefresh={onRefresh} />
+      </div>
+
+      {/* Open deliverables */}
+      <div style={card}>
+        <h4 style={h4}>🎯 Open deliverables ({openItems.length})</h4>
+        {openItems.length === 0 ? (
+          <div style={{ fontSize: 12, color: '#9ca3af' }}>Nothing outstanding.</div>
+        ) : openItems.map(c => (
+          <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '6px 0', borderTop: '1px solid #f3f4f6' }}>
+            <span style={{ flex: 1 }}>{c.description}</span>
+            {c.commitmentType && c.commitmentType !== 'promise' && (
+              <span style={{ fontSize: 10, fontWeight: 600, color: c.commitmentType === 'red_flag' ? '#dc2626' : '#d97706' }}>
+                {c.commitmentType === 'red_flag' ? 'red flag' : 'risk'}
+              </span>
+            )}
+            {c.ownerName && <span style={{ fontSize: 11, color: '#6b7280' }}>{c.ownerName}</span>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── ServiceOwnerPicker: reassign the assigned service owner in-app ────────────
+
+function ServiceOwnerPicker({ detail, users, canEdit, onRefresh }) {
+  const [val,    setVal]    = useState(detail.assignedServiceOwnerId != null ? String(detail.assignedServiceOwnerId) : '');
+  const [saving, setSaving] = useState(false);
+  const [msg,    setMsg]    = useState('');
+
+  const save = async (next) => {
+    setVal(next); setSaving(true); setMsg('');
+    try {
+      await apiService.handovers.update(detail.id, { assignedServiceOwnerId: next ? parseInt(next, 10) : null });
+      setMsg('Service owner updated.');
+      onRefresh?.();
+    } catch {
+      setMsg('Could not update.');
+    } finally {
+      setSaving(false);
+      setTimeout(() => setMsg(''), 3000);
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, flexWrap: 'wrap' }}>
+      <span style={{ color: '#6b7280' }}>Service owner:</span>
+      {canEdit ? (
+        <select value={val} onChange={e => save(e.target.value)} disabled={saving}
+          style={{ fontSize: 12, padding: '4px 8px', borderRadius: 4, border: '1px solid #d1d5db', maxWidth: 220 }}>
+          <option value="">Unassigned</option>
+          {(users || []).map(u => <option key={u.id} value={String(u.id)}>{u.name}</option>)}
+        </select>
+      ) : (
+        <strong>{detail.serviceOwnerName || 'Unassigned'}</strong>
+      )}
+      {msg && <span style={{ fontSize: 11, color: msg.startsWith('Could') ? '#991b1b' : '#059669' }}>{msg}</span>}
     </div>
   );
 }
@@ -1152,6 +1297,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
   const [searchTerm,  setSearchTerm]  = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [users,       setUsers]       = useState([]); // org members for owner pickers
+  const [pendingOpenId, setPendingOpenId] = useState(null); // dashboard → open a project
 
   const loadList = useCallback(async () => {
     setLoading(true);
@@ -1183,6 +1329,16 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
     }
   }, [openHandoverId, handovers, onHandoverOpened]);
 
+  // Dashboard drill-down: open the clicked project once the list is loaded.
+  useEffect(() => {
+    if (pendingOpenId && handovers.length > 0) {
+      const found = handovers.find(h => h.id === pendingOpenId);
+      if (found) { setSelected(found); setPendingOpenId(null); }
+    }
+  }, [pendingOpenId, handovers]);
+
+  const handleOpenProject = (id) => { setTab('mine'); setPendingOpenId(id); };
+
   const filtered = handovers.filter(h => {
     const matchSearch = !searchTerm ||
       (h.dealName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -1213,7 +1369,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
 
       {tab === 'dashboard' ? (
         <div style={{ flex: 1, overflowY: 'auto' }}>
-          <PortfolioDashboard />
+          <PortfolioDashboard onOpenProject={handleOpenProject} />
         </div>
       ) : (
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
@@ -1327,7 +1483,7 @@ function BarRow({ label, value, total, color }) {
   );
 }
 
-function PortfolioDashboard() {
+function PortfolioDashboard({ onOpenProject }) {
   const [data, setData] = useState(null);
   const [err, setErr]   = useState('');
 
@@ -1399,7 +1555,10 @@ function PortfolioDashboard() {
             {projects.map(p => {
               const s = DASH.status[p.status] || { label: p.status, color: '#6b7280' };
               return (
-                <tr key={p.handoverId} style={{ borderTop: '1px solid #f3f4f6' }}>
+                <tr key={p.handoverId} onClick={() => onOpenProject?.(p.handoverId)}
+                  style={{ borderTop: '1px solid #f3f4f6', cursor: 'pointer' }}
+                  onMouseEnter={e => { e.currentTarget.style.background = '#f9fafb'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
                   <td style={{ padding: '8px 4px' }}>
                     {p.account}
                     {p.rain !== 'none' && (
