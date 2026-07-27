@@ -1039,6 +1039,53 @@ async function removePlay(handoverId, orgId, playInstanceId) {
   return { removed: true };
 }
 
+/**
+ * Edit a checklist item on a handover. Updates only the per-instance fields
+ * (title, description, owner, due date, gate) on deal_play_instances — it never
+ * touches the playbook template, so an edit is scoped to THIS handover. Only the
+ * keys present in `data` are changed. Completion stays a separate path
+ * (completePlay), so status can't be silently flipped here.
+ */
+async function updatePlay(handoverId, orgId, playInstanceId, data = {}) {
+  const { rows: link } = await pool.query(
+    `SELECT dpi.id
+       FROM sales_handover_plays shp
+       JOIN deal_play_instances dpi ON dpi.id = shp.play_instance_id
+      WHERE shp.handover_id = $1 AND shp.play_instance_id = $2 AND shp.org_id = $3`,
+    [handoverId, playInstanceId, orgId]
+  );
+  if (link.length === 0) {
+    throw Object.assign(new Error('Play does not belong to this handover'), { status: 404 });
+  }
+
+  const has = k => Object.prototype.hasOwnProperty.call(data, k);
+  const sets = [];
+  const params = [];
+  const add = (col, val) => { params.push(val); sets.push(`${col} = $${params.length}`); };
+
+  if (has('title')) {
+    const t = (data.title || '').trim();
+    if (!t) throw Object.assign(new Error('A title is required.'), { status: 400 });
+    add('title', t);
+  }
+  if (has('description')) add('description', (data.description || '').trim() || null);
+  if (has('ownerUserId')) add('owner_user_id', data.ownerUserId ? parseInt(data.ownerUserId, 10) : null);
+  if (has('dueDate'))     add('due_date', data.dueDate || null);
+  if (has('isGate'))      add('is_gate', data.isGate === true);
+
+  if (sets.length > 0) {
+    params.push(playInstanceId, orgId);
+    await pool.query(
+      `UPDATE deal_play_instances SET ${sets.join(', ')}
+        WHERE id = $${params.length - 1} AND org_id = $${params.length}`,
+      params
+    );
+  }
+
+  const plays = await _getPlays(handoverId, orgId);
+  return { play: plays.find(p => p.playInstanceId === playInstanceId) || null };
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // PRIVATE HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1833,6 +1880,7 @@ module.exports = {
   completePlay,
   addPlay,                 // ad-hoc checklist item — add
   removePlay,              // ad-hoc checklist item — remove
+  updatePlay,              // checklist item — edit fields
   // Nightly sweep — Phase 2
   runNightlySweep,
   buildHandoverContext,   // exported for testing / ad-hoc event triggers

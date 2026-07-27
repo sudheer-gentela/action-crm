@@ -292,6 +292,20 @@ router.post('/sales/:id/plays', async (req, res) => {
   }
 });
 
+// ── PATCH /sales/:id/plays/:instanceId  — edit a checklist item ───────────────
+
+router.patch('/sales/:id/plays/:instanceId', async (req, res) => {
+  try {
+    const result = await handoverService.updatePlay(
+      parseInt(req.params.id), req.orgId, parseInt(req.params.instanceId), req.body || {}
+    );
+    res.json(result);
+  } catch (err) {
+    console.error('Update handover play error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
 // ── DELETE /sales/:id/plays/:instanceId  — remove an ad-hoc checklist item ─────
 
 router.delete('/sales/:id/plays/:instanceId', async (req, res) => {

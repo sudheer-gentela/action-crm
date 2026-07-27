@@ -714,6 +714,7 @@ twilio: {
 
     completePlay: (id, instanceId, data) => api.post(`/handovers/sales/${id}/plays/${instanceId}/complete`, data || {}),
     addPlay:    (id, data)       => api.post(`/handovers/sales/${id}/plays`, data),
+    updatePlay: (id, instanceId, data) => api.patch(`/handovers/sales/${id}/plays/${instanceId}`, data),
     removePlay: (id, instanceId) => api.delete(`/handovers/sales/${id}/plays/${instanceId}`),
     teamMemberProjects: (userId) => api.get(`/handovers/team-members/${userId}/projects`),
     personDashboard: (userId) => api.get(`/handovers/team-members/${userId}/dashboard`),

@@ -207,7 +207,7 @@ function RowChips({ h }) {
 
 // ── PlaySection ───────────────────────────────────────────────────────────────
 
-function PlaySection({ play, canEdit, onComplete, onRemove }) {
+function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, users }) {
   // Done-state mirrors the backend gate, which treats a play as satisfied when
   // its status is 'completed' OR 'skipped' — not merely when completedAt is set.
   // (A skipped play has no completedAt but still clears the gate.)
@@ -220,6 +220,39 @@ function PlaySection({ play, canEdit, onComplete, onRemove }) {
   const [evType, setEvType] = useState('whatsapp');
   const [snippet, setSnippet] = useState('');
   const [showEv, setShowEv] = useState(false);
+
+  // Inline edit — fields are seeded from the play when the editor opens (in
+  // openEdit), not via useState initialisers, so they stay fresh across reloads.
+  const [editing, setEditing] = useState(false);
+  const [eTitle, setETitle] = useState('');
+  const [eDesc,  setEDesc]  = useState('');
+  const [eOwner, setEOwner] = useState('');
+  const [eDue,   setEDue]   = useState('');
+  const [eGate,  setEGate]  = useState(false);
+  const [eSaving, setESaving] = useState(false);
+
+  const openEdit = () => {
+    setETitle(play.title || '');
+    setEDesc(play.description || '');
+    setEOwner(play.ownerUserId != null ? String(play.ownerUserId) : '');
+    setEDue(play.dueDate ? String(play.dueDate).slice(0, 10) : '');
+    setEGate(!!play.isGate);
+    setEditing(true);
+  };
+  const saveEdit = async () => {
+    if (!eTitle.trim()) return;
+    setESaving(true);
+    try {
+      await onEdit(play.playInstanceId, {
+        title: eTitle.trim(),
+        description: eDesc.trim() || null,
+        ownerUserId: eOwner || null,
+        dueDate: eDue || null,
+        isGate: eGate,
+      });
+      setEditing(false);
+    } finally { setESaving(false); }
+  };
 
   const ev = play.completionEvidence;
   const EV_LABEL = { whatsapp: 'WhatsApp', email: 'Email', note: 'Note', document: 'Document' };
@@ -308,6 +341,14 @@ function PlaySection({ play, canEdit, onComplete, onRemove }) {
               Mark done
             </button>
           )}
+          {canEdit && onEdit && !editing && !capturing && (
+            <button onClick={openEdit} title="Edit this item" style={{
+              fontSize: 11, padding: '3px 10px', borderRadius: 4,
+              background: '#fff', color: '#374151', border: '1px solid #d1d5db', cursor: 'pointer', fontWeight: 600,
+            }}>
+              Edit
+            </button>
+          )}
           {play.isCustom && canEdit && onRemove && (
             <button onClick={() => onRemove(play.playInstanceId)} title="Remove this item" style={{
               fontSize: 15, lineHeight: 1, padding: '2px 6px', borderRadius: 4,
@@ -351,6 +392,42 @@ function PlaySection({ play, canEdit, onComplete, onRemove }) {
               Confirm done
             </button>
             <button onClick={() => setCapturing(false)} style={{ fontSize: 12, padding: '5px 10px', borderRadius: 4, background: '#f1f5f9', color: '#374151', border: 'none', cursor: 'pointer' }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Inline edit — per-handover fields; never changes the playbook template */}
+      {editing && (
+        <div style={{ marginTop: 8, padding: 10, background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 6 }}>
+          <input value={eTitle} onChange={e => setETitle(e.target.value)} placeholder="Title"
+            style={{ width: '100%', fontSize: 13, padding: '6px 8px', borderRadius: 4, border: '1px solid #d1d5db', boxSizing: 'border-box', marginBottom: 6 }} />
+          <textarea value={eDesc} onChange={e => setEDesc(e.target.value)} rows={2} placeholder="Description (optional)"
+            style={{ width: '100%', fontSize: 12, padding: '6px 8px', borderRadius: 4, border: '1px solid #d1d5db', boxSizing: 'border-box', resize: 'vertical', marginBottom: 6 }} />
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
+            <label style={{ fontSize: 11, color: '#6b7280' }}>Owner
+              <select value={eOwner} onChange={e => setEOwner(e.target.value)}
+                style={{ marginLeft: 6, fontSize: 12, padding: '4px 6px', borderRadius: 4, border: '1px solid #d1d5db' }}>
+                <option value="">Unassigned</option>
+                {(users || []).map(u => <option key={u.id} value={String(u.id)}>{u.name}</option>)}
+              </select>
+            </label>
+            <label style={{ fontSize: 11, color: '#6b7280' }}>Due
+              <input type="date" value={eDue} onChange={e => setEDue(e.target.value)}
+                style={{ marginLeft: 6, fontSize: 12, padding: '4px 6px', borderRadius: 4, border: '1px solid #d1d5db' }} />
+            </label>
+            <label style={{ fontSize: 11, color: '#6b7280', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <input type="checkbox" checked={eGate} onChange={e => setEGate(e.target.checked)} /> Gate (blocks go-live)
+            </label>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={saveEdit} disabled={eSaving || !eTitle.trim()} style={{ fontSize: 12, padding: '5px 14px', borderRadius: 4,
+              background: (eSaving || !eTitle.trim()) ? '#9ca3af' : '#0369a1', color: '#fff', border: 'none', fontWeight: 600,
+              cursor: (eSaving || !eTitle.trim()) ? 'default' : 'pointer' }}>
+              {eSaving ? 'Saving…' : 'Save changes'}
+            </button>
+            <button onClick={() => setEditing(false)} style={{ fontSize: 12, padding: '5px 10px', borderRadius: 4, background: '#f1f5f9', color: '#374151', border: 'none', cursor: 'pointer' }}>
               Cancel
             </button>
           </div>
@@ -927,6 +1004,15 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     }
   };
 
+  const handleUpdatePlay = async (playInstanceId, data) => {
+    try {
+      await apiService.handovers.updatePlay(h.id, playInstanceId, data);
+      await load();
+    } catch (err) {
+      flash('error', err?.response?.data?.error?.message || 'Could not save your changes');
+    }
+  };
+
   const handleAddStakeholder = async (data) => {
     await apiService.handovers.addStakeholder(h.id, data);
     await load();
@@ -1222,6 +1308,8 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                     canEdit={salesCanEdit}
                     onComplete={handleCompletePlay}
                     onRemove={handleRemovePlay}
+                    onEdit={handleUpdatePlay}
+                    users={users}
                   />
                 ))}
               </div>
