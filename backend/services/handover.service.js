@@ -1565,6 +1565,8 @@ function _mapComm(m) {
     cc:          _splitAddrs(m.cc_addresses),
     groupSubject: m.group_subject || null,
     participants: m.participants || [],
+    contactId:   m.contact_id || null,
+    contactName: m.contact_name || null,
   };
 }
 
@@ -1590,9 +1592,11 @@ async function getPersonDashboard(userId, orgId) {
   const { rows: emails } = await pool.query(
     `SELECT e.id, 'email' AS channel, e.direction, e.subject, e.body,
             e.from_address, e.to_address, e.cc_addresses,
+            e.contact_id, ct.first_name || ' ' || ct.last_name AS contact_name,
             COALESCE(e.sent_at, e.created_at) AS at, a.name AS account
        FROM emails e
        JOIN accounts a ON a.id = (SELECT account_id FROM deals WHERE id = e.deal_id)
+       LEFT JOIN contacts ct ON ct.id = e.contact_id
       WHERE e.org_id = $2 AND e.deal_id IN (SELECT deal_id FROM deal_team_members WHERE user_id = $1 AND org_id = $2)`,
     [userId, orgId]
   );
@@ -1600,12 +1604,14 @@ async function getPersonDashboard(userId, orgId) {
     `SELECT m.id, 'whatsapp' AS channel, m.direction, NULL AS subject, m.body,
             m.from_name AS from_address, COALESCE(m.sent_at, m.created_at) AS at, a.name AS account,
             t.group_subject,
+            t.contact_id, ct.first_name || ' ' || ct.last_name AS contact_name,
             (SELECT jsonb_agg(jsonb_build_object('name', p.display_name, 'side', p.side)
                               ORDER BY p.side, p.display_name)
                FROM whatsapp_thread_participants p WHERE p.thread_id = t.id) AS participants
        FROM whatsapp_messages m
        JOIN whatsapp_threads t ON t.id = m.thread_id
        JOIN accounts a ON a.id = t.account_id
+       LEFT JOIN contacts ct ON ct.id = t.contact_id
       WHERE t.org_id = $2 AND t.deal_id IN (SELECT deal_id FROM deal_team_members WHERE user_id = $1 AND org_id = $2)`,
     [userId, orgId]
   );

@@ -1139,6 +1139,7 @@ function PersonPanel({ member, onClose, onOpenProject }) {
   const [panelTab, setPanelTab] = useState('projects'); // 'projects' | 'tasks' | 'comms'
   const [commFilter, setCommFilter] = useState('all');  // account name filter for the comms tab
   const [openComm, setOpenComm] = useState(null);       // clicked communication → detail overlay
+  const [openContact, setOpenContact] = useState(null); // "see all from this contact" → customer panel
   useEffect(() => {
     apiService.handovers.personDashboard(member.userId)
       .then(res => setData(res.data))
@@ -1272,7 +1273,9 @@ function PersonPanel({ member, onClose, onOpenProject }) {
           )}
         </div>
       </div>
-      {openComm && <CommMessageModal message={openComm} onClose={() => setOpenComm(null)} />}
+      {openComm && <CommMessageModal message={openComm} onClose={() => setOpenComm(null)}
+        onOpenContact={(c) => { setOpenComm(null); setOpenContact(c); }} />}
+      {openContact && <CustomerContactPanel stakeholder={openContact} onClose={() => setOpenContact(null)} />}
     </>
   );
 }
@@ -1281,7 +1284,7 @@ function PersonPanel({ member, onClose, onOpenProject }) {
 // Renders above the person side-panel (higher z-index). All fields come from the
 // person-dashboard payload, so no extra fetch is needed.
 
-function CommMessageModal({ message, onClose }) {
+function CommMessageModal({ message, onClose, onOpenContact }) {
   const CH = {
     email:    { label: 'Email',    color: '#7c3aed', bg: '#f5f3ff' },
     whatsapp: { label: 'WhatsApp', color: '#059669', bg: '#ecfdf5' },
@@ -1336,6 +1339,14 @@ function CommMessageModal({ message, onClose }) {
 
           {message.subject && <div style={{ fontSize: 15, fontWeight: 600, color: '#111827', marginBottom: 10 }}>{message.subject}</div>}
           <div style={{ fontSize: 13, lineHeight: 1.6, color: '#374151', whiteSpace: 'pre-wrap' }}>{message.body || '(No message body.)'}</div>
+
+          {onOpenContact && message.contactId && (
+            <button onClick={() => onOpenContact({ contactId: message.contactId, name: message.contactName })}
+              style={{ marginTop: 16, background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                color: '#0369a1', fontSize: 12, fontWeight: 600 }}>
+              See all messages from {message.contactName || 'this contact'} →
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -1358,7 +1369,7 @@ function CustomerContactPanel({ stakeholder, onClose }) {
   const CH = { email: { label: 'Email', color: '#7c3aed' }, whatsapp: { label: 'WhatsApp', color: '#059669' } };
   const comms = data?.communications || [];
   const first = (stakeholder.name || '').split(' ')[0];
-  const roleLabel = STAKE_ROLE[stakeholder.handoverRole] || stakeholder.handoverRole;
+  const roleLabel = STAKE_ROLE[stakeholder.handoverRole] || stakeholder.handoverRole || 'Customer contact';
 
   return (
     <>
