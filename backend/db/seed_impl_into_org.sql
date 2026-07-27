@@ -248,6 +248,15 @@ DECLARE
   v_email_impl text;
   v_email_proc text;
   v_cust_email text;
+  v_acct_name  text;
+  v_name_ae    text;
+  v_name_pm    text;
+  v_name_impl  text;
+  v_name_proc  text;
+  v_name_cust  text;
+  v_ev_type    text;
+  v_ev_snip    text;
+  v_cat        text;
 BEGIN
   -- ─── Target an EXISTING org (created via Super Admin) ────────────────────
   --  >>> SET THESE to your org + an admin user in it. Defaults: org 117 / user 27.
@@ -410,6 +419,14 @@ BEGIN
     v_email_impl := c_teams->(proj->>'key')->>'impl';
     v_cust_email := lower(proj#>>'{contact,first}') || '.' || lower(proj#>>'{contact,last}') || '@' || (proj->>'domain');
 
+    -- Display names used to build realistic, per-task completion evidence.
+    v_acct_name := proj->>'account';
+    v_name_ae   := 'Ravi Kumar';
+    v_name_proc := 'Meera Joshi';
+    v_name_impl := (SELECT first_name || ' ' || last_name FROM users WHERE id = v_u_impl);
+    v_name_pm   := (SELECT first_name || ' ' || last_name FROM users WHERE id = v_u_pm);
+    v_name_cust := (proj#>>'{contact,first}') || ' ' || (proj#>>'{contact,last}');
+
     -- Internal project team on the deal (drives play RACI via deal_team_members).
     INSERT INTO deal_team_members (deal_id, org_id, user_id, role_id, added_by) VALUES
       (v_deal, v_org_id, v_u_ae,   v_role_ae,   v_sales),
@@ -535,13 +552,47 @@ BEGIN
       INSERT INTO sales_handover_plays (handover_id, play_instance_id, org_id, completed_at)
       VALUES (v_handover, v_pi, v_org_id, v_comp_at);
       IF v_completed THEN
+        -- Classify the play by what it actually is, then write evidence that
+        -- reads like the real closing interaction for that step.
+        v_cat := CASE
+          WHEN play.title ILIKE '%notify%'                                      THEN 'notify'
+          WHEN play.title ILIKE '%sign off%' OR play.title ILIKE '%sign-off%'   THEN 'signoff'
+          WHEN play.title ILIKE '%accept%'                                      THEN 'accept'
+          WHEN play.title ILIKE '%stakeholder%'                                 THEN 'stakeholder'
+          WHEN play.title ILIKE '%commercial%' OR play.title ILIKE '%terms%'    THEN 'commercial'
+          WHEN play.title ILIKE '%risk%' OR play.title ILIKE '%sensitiv%'       THEN 'risk'
+          WHEN play.title ILIKE '%non-standard%' OR play.title ILIKE '%flag%'   THEN 'flag'
+          WHEN play.title ILIKE '%goal%' OR play.title ILIKE '%success%'        THEN 'goal'
+          WHEN play.title ILIKE '%document%' OR play.title ILIKE '%attach%'     THEN 'document'
+          WHEN play.title ILIKE '%summary%'                                     THEN 'summary'
+          WHEN play.title ILIKE '%commitment%'                                  THEN 'commitment'
+          WHEN play.title ILIKE '%assign%' AND play.title ILIKE '%owner%'       THEN 'owner'
+          WHEN play.title ILIKE '%team%'                                        THEN 'team'
+          WHEN play.title ILIKE '%owner%'                                       THEN 'owner'
+          ELSE 'other' END;
+        v_ev_type := CASE v_cat
+          WHEN 'owner' THEN 'whatsapp' WHEN 'team' THEN 'whatsapp' WHEN 'accept' THEN 'whatsapp'
+          WHEN 'signoff' THEN 'email'  WHEN 'notify' THEN 'email'  WHEN 'summary' THEN 'email'
+          WHEN 'document' THEN 'document'
+          ELSE 'note' END;
+        v_ev_snip := CASE v_cat
+          WHEN 'owner'       THEN v_name_impl || ' accepted ownership on WhatsApp: "Onboard — got ' || v_acct_name || ' covered."'
+          WHEN 'team'        THEN 'Delivery team confirmed: ' || v_name_impl || ' (implementation), ' || v_name_pm || ' (project manager) and ' || v_name_proc || ' (procurement) all acknowledged.'
+          WHEN 'accept'      THEN v_name_impl || ' confirmed acceptance: "Team has reviewed and accepted ' || v_acct_name || '."'
+          WHEN 'signoff'     THEN v_name_ae || ' signed off: "Handover complete, all information transferred to delivery."'
+          WHEN 'notify'      THEN 'Introduction email sent to the customer; ' || v_name_cust || ' replied: "Great, looking forward to working with ' || v_name_impl || '."'
+          WHEN 'summary'     THEN 'Handover summary emailed to the service team; ' || v_name_impl || ' acknowledged receipt.'
+          WHEN 'stakeholder' THEN 'Stakeholder map completed — go-live approver, technical lead and day-to-day contact all recorded.'
+          WHEN 'commitment'  THEN 'All commitments logged against the deal, each with an owner and a due date.'
+          WHEN 'document'    THEN 'Signed contract, scope document and site drawings attached to the handover.'
+          WHEN 'commercial'  THEN 'Commercial terms (40/40/20 milestone billing) verified against the signed contract in-system.'
+          WHEN 'risk'        THEN 'Known risks flagged for delivery: monsoon exposure on civil works and a tight go-live window.'
+          WHEN 'flag'        THEN 'Reviewed — no non-standard commitments; everything is within standard delivery terms.'
+          WHEN 'goal'        THEN 'Customer goals and success criteria captured from the sales notes and attached.'
+          ELSE 'Completed and confirmed by ' || v_name_ae || '.' END;
         UPDATE deal_play_instances
-           SET completion_note = 'Closed out and confirmed with the customer.',
-               completion_evidence = jsonb_build_object(
-                 'type', CASE WHEN v_ord % 2 = 0 THEN 'email' ELSE 'whatsapp' END,
-                 'snippet', CASE WHEN v_ord % 2 = 0
-                            THEN 'Customer confirmed sign-off on this item by email.'
-                            ELSE 'Customer acknowledged completion on WhatsApp.' END)
+           SET completion_note = NULL,
+               completion_evidence = jsonb_build_object('type', v_ev_type, 'snippet', v_ev_snip)
          WHERE id = v_pi;
       END IF;
     END LOOP;
@@ -585,13 +636,27 @@ BEGIN
       INSERT INTO sales_handover_plays (handover_id, play_instance_id, org_id, completed_at)
       VALUES (v_handover, v_pi, v_org_id, v_comp_at);
       IF v_completed THEN
+        v_ev_type := CASE
+          WHEN dp->>'s' = 'signoff' THEN 'email'
+          WHEN dp->>'s' = 'mobilize' AND (dp->>'t' ILIKE '%readiness%' OR dp->>'t' ILIKE '%sign-off%') THEN 'email'
+          ELSE 'whatsapp' END;
+        v_ev_snip := CASE
+          WHEN dp->>'s' = 'mobilize' AND (dp->>'t' ILIKE '%readiness%' OR dp->>'t' ILIKE '%sign-off%')
+            THEN v_name_impl || ' signed the site-readiness checklist: "Site is ready for groundwork to begin."'
+          WHEN dp->>'s' = 'mobilize'
+            THEN v_name_proc || ' confirmed on WhatsApp: "Material dispatched and crew mobilizing to the ' || v_acct_name || ' site."'
+          WHEN dp->>'s' = 'groundwork'
+            THEN v_name_impl || ' on WhatsApp: "Base and sub-base preparation complete; progress photos shared on the group."'
+          WHEN dp->>'s' = 'installation'
+            THEN v_name_impl || ' on WhatsApp: "Primary surface laid; curing underway."'
+          WHEN dp->>'s' = 'finishing'
+            THEN v_name_impl || ' on WhatsApp: "Line-marking complete and all snags cleared."'
+          WHEN dp->>'s' = 'signoff'
+            THEN v_name_cust || ' signed off at the walkthrough by email: "Everything looks great — accepted. Thank you, team."'
+          ELSE v_name_impl || ' confirmed completion on site.' END;
         UPDATE deal_play_instances
-           SET completion_note = 'Closed out and confirmed with the customer.',
-               completion_evidence = jsonb_build_object(
-                 'type', CASE WHEN v_ord % 2 = 0 THEN 'email' ELSE 'whatsapp' END,
-                 'snippet', CASE WHEN v_ord % 2 = 0
-                            THEN 'Customer confirmed sign-off on this item by email.'
-                            ELSE 'Customer acknowledged completion on WhatsApp.' END)
+           SET completion_note = NULL,
+               completion_evidence = jsonb_build_object('type', v_ev_type, 'snippet', v_ev_snip)
          WHERE id = v_pi;
       END IF;
     END LOOP;
