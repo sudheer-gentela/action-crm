@@ -1136,17 +1136,24 @@ function Modal({ title, onClose, children }) {
 
 function PersonPanel({ member, onClose, onOpenProject }) {
   const [data, setData] = useState(null);
+  const [panelTab, setPanelTab] = useState('projects'); // 'projects' | 'tasks' | 'comms'
   useEffect(() => {
     apiService.handovers.personDashboard(member.userId)
       .then(res => setData(res.data))
       .catch(() => setData({ person: { name: member.name }, projects: [], deliverables: [], communications: [] }));
   }, [member.userId, member.name]);
 
-  const pending = (data?.deliverables || []).filter(d => d.pending);
+  const projects = data?.projects || [];
+  const comms    = data?.communications || [];
+  const pending  = (data?.deliverables || []).filter(d => d.pending);
   const CH = { email: { label: 'Email', color: '#7c3aed' }, whatsapp: { label: 'WhatsApp', color: '#059669' } };
-  const sec = { marginBottom: 20 };
-  const hd  = { fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 };
   const first = (member.name || '').split(' ')[0];
+
+  const TABS = [
+    { key: 'projects', label: 'Projects',       count: data ? projects.length : null },
+    { key: 'tasks',    label: 'Open tasks',     count: data ? pending.length  : null },
+    { key: 'comms',    label: 'Communications', count: data ? comms.length    : null },
+  ];
 
   return (
     <>
@@ -1165,14 +1172,46 @@ function PersonPanel({ member, onClose, onOpenProject }) {
           <button onClick={onClose} style={{ border: 'none', background: 'none', fontSize: 22, color: '#9ca3af', cursor: 'pointer', lineHeight: 1 }}>×</button>
         </div>
 
+        {/* ── Projects / Open tasks / Communications tabs ── */}
+        <div style={{ display: 'flex', padding: '0 12px', borderBottom: '1px solid #e5e7eb', background: '#fff' }}>
+          {TABS.map(t => (
+            <button key={t.key} onClick={() => setPanelTab(t.key)} style={{
+              flex: 1, padding: '10px 6px', background: 'none', border: 'none', textAlign: 'center',
+              borderBottom: `2px solid ${panelTab === t.key ? '#0369a1' : 'transparent'}`,
+              color: panelTab === t.key ? '#0369a1' : '#6b7280',
+              fontWeight: panelTab === t.key ? 700 : 400, fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              {t.label}{t.count !== null ? ` (${t.count})` : ''}
+            </button>
+          ))}
+        </div>
+
         <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px' }}>
           {data === null ? <div style={{ color: '#9ca3af', fontSize: 13 }}>Loading…</div> : (
             <>
-              <div style={sec}>
-                <div style={hd}>Pending on {first} ({pending.length})</div>
-                {pending.length === 0 ? <div style={{ fontSize: 12, color: '#9ca3af' }}>Nothing pending.</div>
-                  : pending.map(d => (
-                    <div key={d.id} style={{ padding: '7px 0', borderTop: '1px solid #f3f4f6', fontSize: 13 }}>
+              {/* Projects */}
+              {panelTab === 'projects' && (
+                projects.length === 0
+                  ? <div style={{ fontSize: 12, color: '#9ca3af' }}>{first} is not on any projects.</div>
+                  : projects.map((p, i) => (
+                    <div key={i} onClick={() => { if (p.handoverId) { onOpenProject?.(p.handoverId); onClose(); } }}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0',
+                        borderTop: i === 0 ? 'none' : '1px solid #f3f4f6',
+                        cursor: p.handoverId ? 'pointer' : 'default' }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>{p.account}</div>
+                        <div style={{ fontSize: 11, color: '#6b7280' }}>{p.role}</div>
+                      </div>
+                      {p.status && <span style={{ fontSize: 11, color: '#6b7280' }}>{p.status.replace(/_/g, ' ')}</span>}
+                    </div>
+                  ))
+              )}
+
+              {/* Open tasks */}
+              {panelTab === 'tasks' && (
+                pending.length === 0
+                  ? <div style={{ fontSize: 12, color: '#9ca3af' }}>Nothing pending on {first}.</div>
+                  : pending.map((d, i) => (
+                    <div key={d.id} style={{ padding: '7px 0', borderTop: i === 0 ? 'none' : '1px solid #f3f4f6', fontSize: 13 }}>
                       <div style={{ display: 'flex', gap: 8 }}>
                         <span style={{ flex: 1 }}>{d.description}</span>
                         {d.commitmentType && d.commitmentType !== 'promise' && (
@@ -1183,31 +1222,17 @@ function PersonPanel({ member, onClose, onOpenProject }) {
                       </div>
                       <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{d.account}{d.dueDate ? ` · due ${fmtDate(d.dueDate)}` : ''}</div>
                     </div>
-                  ))}
-              </div>
+                  ))
+              )}
 
-              <div style={sec}>
-                <div style={hd}>Projects ({(data.projects || []).length})</div>
-                {(data.projects || []).map((p, i) => (
-                  <div key={i} onClick={() => { if (p.handoverId) { onOpenProject?.(p.handoverId); onClose(); } }}
-                    style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderTop: '1px solid #f3f4f6',
-                      cursor: p.handoverId ? 'pointer' : 'default' }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>{p.account}</div>
-                      <div style={{ fontSize: 11, color: '#6b7280' }}>{p.role}</div>
-                    </div>
-                    {p.status && <span style={{ fontSize: 11, color: '#6b7280' }}>{p.status.replace(/_/g, ' ')}</span>}
-                  </div>
-                ))}
-              </div>
-
-              <div style={sec}>
-                <div style={hd}>Recent communications</div>
-                {(data.communications || []).length === 0 ? <div style={{ fontSize: 12, color: '#9ca3af' }}>No recent communications.</div>
-                  : (data.communications || []).map(m => {
+              {/* Communications */}
+              {panelTab === 'comms' && (
+                comms.length === 0
+                  ? <div style={{ fontSize: 12, color: '#9ca3af' }}>No recent communications.</div>
+                  : comms.map((m, i) => {
                     const ch = CH[m.channel] || { label: m.channel, color: '#6b7280' };
                     return (
-                      <div key={m.id} style={{ padding: '7px 0', borderTop: '1px solid #f3f4f6', fontSize: 12 }}>
+                      <div key={m.id} style={{ padding: '7px 0', borderTop: i === 0 ? 'none' : '1px solid #f3f4f6', fontSize: 12 }}>
                         <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 2 }}>
                           <span style={{ fontSize: 10, fontWeight: 700, color: ch.color }}>{ch.label}</span>
                           <span style={{ color: '#9ca3af' }}>{m.account} · {m.direction === 'outbound' ? 'sent' : 'received'}</span>
@@ -1216,8 +1241,8 @@ function PersonPanel({ member, onClose, onOpenProject }) {
                         <div style={{ color: '#374151' }}>{m.subject ? <strong>{m.subject}: </strong> : null}{(m.body || '').slice(0, 120)}</div>
                       </div>
                     );
-                  })}
-              </div>
+                  })
+              )}
             </>
           )}
         </div>
