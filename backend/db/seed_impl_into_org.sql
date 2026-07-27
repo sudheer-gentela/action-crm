@@ -435,7 +435,14 @@ BEGIN
       (v_deal, v_org_id, v_u_proc, v_role_proc, v_sales);
 
     -- Handover
-    v_ho_owner := CASE WHEN (proj->>'gate_cleared')::boolean THEN v_u_pm ELSE NULL END;
+    -- Service owner. A subset is assigned to the acting user so the
+    -- "Assigned to Me" tab is populated for the person running the demo; the
+    -- rest stay with the project's PM so both personas have realistic content.
+    v_ho_owner := CASE
+      WHEN NOT (proj->>'gate_cleared')::boolean            THEN NULL
+      WHEN proj->>'key' IN ('hakimpet', 'donbosco', 'cpwd') THEN v_sales
+      ELSE v_u_pm
+    END;
     INSERT INTO sales_handovers (org_id, deal_id, account_id, assigned_service_owner_id, status,
                                  go_live_date, contract_value, commercial_terms_summary, playbook_id,
                                  created_by, submitted_at, acknowledged_at,
@@ -745,6 +752,53 @@ BEGIN
                 'deliv-' || (proj->>'key'), 'outlook');
       END IF;
     END LOOP;
+
+    -- ─── Customer-facing exchanges that back the checklist evidence ────────
+    -- The "Notify customer of service owner" step cites an intro email and the
+    -- customer's reply; seed those as real messages so the Communications tab
+    -- actually shows them (was previously only described in the evidence).
+    IF (proj->>'gate_cleared')::boolean THEN
+      INSERT INTO emails (org_id, user_id, deal_id, contact_id, direction, subject, body,
+                          from_address, to_address, cc_addresses, sent_at, opened_at, created_at, conversation_id, provider)
+      VALUES (v_org_id, v_impl, v_deal, v_contact, 'sent',
+              v_acct_name || ' — your delivery team',
+              'Hi ' || (proj#>>'{contact,first}') || ', introducing ' || v_name_impl
+                || ' as your implementation owner for ' || v_acct_name || '. '
+                || v_name_impl || ' and the delivery team will take you through to go-live and will be your main point of contact.',
+              v_email_impl, v_cust_email, v_email_ae,
+              v_close::timestamptz + interval '1 day',
+              v_close::timestamptz + interval '1 day' + interval '2 hours',
+              v_close::timestamptz + interval '1 day', 'intro-' || (proj->>'key'), 'outlook');
+      INSERT INTO emails (org_id, deal_id, contact_id, direction, subject, body,
+                          from_address, to_address, cc_addresses, sent_at, created_at, conversation_id, provider)
+      VALUES (v_org_id, v_deal, v_contact, 'received',
+              'Re: ' || v_acct_name || ' — your delivery team',
+              'Great, looking forward to working with ' || v_name_impl || '.',
+              v_cust_email, v_email_ae, v_email_impl,
+              v_close::timestamptz + interval '2 days',
+              v_close::timestamptz + interval '2 days', 'intro-' || (proj->>'key'), 'outlook');
+    END IF;
+
+    -- The "Customer walkthrough & sign-off" step cites the customer accepting at
+    -- the walkthrough; seed that exchange for completed projects.
+    IF proj->>'ho_status' = 'completed' THEN
+      INSERT INTO emails (org_id, user_id, deal_id, contact_id, direction, subject, body,
+                          from_address, to_address, cc_addresses, sent_at, opened_at, created_at, conversation_id, provider)
+      VALUES (v_org_id, v_impl, v_deal, v_contact, 'sent',
+              v_acct_name || ' — completion & walkthrough',
+              'Thank you for the walkthrough today. Completion summary is attached; we are happy to formally hand over ' || v_acct_name || '.',
+              v_email_impl, v_cust_email, v_email_pm,
+              v_golive::timestamptz - interval '1 day',
+              v_golive::timestamptz - interval '1 day' + interval '3 hours',
+              v_golive::timestamptz - interval '1 day', 'signoff-' || (proj->>'key'), 'outlook');
+      INSERT INTO emails (org_id, deal_id, contact_id, direction, subject, body,
+                          from_address, to_address, cc_addresses, sent_at, created_at, conversation_id, provider)
+      VALUES (v_org_id, v_deal, v_contact, 'received',
+              'Re: ' || v_acct_name || ' — completion & walkthrough',
+              'Everything looks great — accepted. Thank you, team.',
+              v_cust_email, v_email_impl, v_email_ae,
+              v_golive::timestamptz, v_golive::timestamptz, 'signoff-' || (proj->>'key'), 'outlook');
+    END IF;
 
   END LOOP;
 
