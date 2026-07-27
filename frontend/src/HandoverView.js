@@ -195,6 +195,23 @@ function PlaySection({ play, canEdit, onComplete }) {
   const isSkipped = play.status === 'skipped';
   const isGate   = play.isGate;
 
+  const [capturing, setCapturing] = useState(false);
+  const [note,   setNote]   = useState('');
+  const [evType, setEvType] = useState('whatsapp');
+  const [snippet, setSnippet] = useState('');
+  const [showEv, setShowEv] = useState(false);
+
+  const ev = play.completionEvidence;
+  const EV_LABEL = { whatsapp: 'WhatsApp', email: 'Email', note: 'Note', document: 'Document' };
+
+  const confirm = () => {
+    const data = {};
+    if (note.trim()) data.completionNote = note.trim();
+    if (snippet.trim()) data.completionEvidence = { type: evType, snippet: snippet.trim() };
+    onComplete(play.playInstanceId, data);
+    setCapturing(false);
+  };
+
   return (
     <div style={{
       border: `1px solid ${isDone ? '#d1fae5' : isGate ? '#fecaca' : '#e5e7eb'}`,
@@ -216,8 +233,15 @@ function PlaySection({ play, canEdit, onComplete }) {
           <span style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>{fmtDate(play.completedAt)}</span>
         )}
         {isSkipped && <span style={{ fontSize: 11, color: '#6b7280' }}>Skipped</span>}
-        {!isDone && canEdit && (
-          <button onClick={() => onComplete(play.playInstanceId)} style={{
+        {isDone && (ev || play.completionNote) && (
+          <button onClick={() => setShowEv(v => !v)} style={{
+            fontSize: 11, padding: '3px 8px', borderRadius: 4, background: '#ecfdf5',
+            color: '#065f46', border: '1px solid #a7f3d0', cursor: 'pointer' }}>
+            {showEv ? 'Hide evidence' : 'Evidence'}
+          </button>
+        )}
+        {!isDone && canEdit && !capturing && (
+          <button onClick={() => setCapturing(true)} style={{
             fontSize: 11, padding: '3px 10px', borderRadius: 4,
             background: '#0369a1', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600,
           }}>
@@ -225,6 +249,47 @@ function PlaySection({ play, canEdit, onComplete }) {
           </button>
         )}
       </div>
+
+      {/* Evidence of how this item was closed */}
+      {isDone && showEv && (ev || play.completionNote) && (
+        <div style={{ marginTop: 8, padding: '8px 10px', background: '#fff', border: '1px solid #d1fae5', borderRadius: 6, fontSize: 12 }}>
+          {ev && (
+            <div style={{ marginBottom: play.completionNote ? 4 : 0 }}>
+              <span style={{ fontWeight: 700, color: '#059669' }}>{EV_LABEL[ev.type] || ev.type}: </span>
+              <span style={{ color: '#374151' }}>{ev.snippet}</span>
+            </div>
+          )}
+          {play.completionNote && <div style={{ color: '#6b7280' }}>{play.completionNote}</div>}
+        </div>
+      )}
+
+      {/* Manual completion capture: note + how it was closed */}
+      {capturing && (
+        <div style={{ marginTop: 8, padding: 10, background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 6 }}>
+          <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 6 }}>How was this closed out?</div>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+            <select value={evType} onChange={e => setEvType(e.target.value)}
+              style={{ fontSize: 12, padding: '5px 6px', borderRadius: 4, border: '1px solid #d1d5db' }}>
+              <option value="whatsapp">WhatsApp</option>
+              <option value="email">Email</option>
+              <option value="note">Note</option>
+              <option value="document">Document</option>
+            </select>
+            <input value={snippet} onChange={e => setSnippet(e.target.value)} placeholder="Evidence (e.g. paste the message / reference)"
+              style={{ flex: 1, fontSize: 12, padding: '5px 8px', borderRadius: 4, border: '1px solid #d1d5db' }} />
+          </div>
+          <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} placeholder="Optional note"
+            style={{ width: '100%', fontSize: 12, padding: '5px 8px', borderRadius: 4, border: '1px solid #d1d5db', boxSizing: 'border-box', resize: 'vertical' }} />
+          <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+            <button onClick={confirm} style={{ fontSize: 12, padding: '5px 14px', borderRadius: 4, background: '#059669', color: '#fff', border: 'none', fontWeight: 600, cursor: 'pointer' }}>
+              Confirm done
+            </button>
+            <button onClick={() => setCapturing(false)} style={{ fontSize: 12, padding: '5px 10px', borderRadius: 4, background: '#f1f5f9', color: '#374151', border: 'none', cursor: 'pointer' }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -593,7 +658,7 @@ function DeliverableRollup({ rollup }) {
 
 // ── HandoverDetail ────────────────────────────────────────────────────────────
 
-function HandoverDetail({ handover: h, onRefresh, viewMode, users }) {
+function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject }) {
   const [detail,    setDetail]    = useState(null);
   const [canSubmit, setCanSubmit] = useState(false);
   const [closeInfo, setCloseInfo] = useState(null); // { canClose, blockers, rollup }
@@ -666,9 +731,9 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users }) {
     handleAction(target, closureText.trim() || null);
   };
 
-  const handleCompletePlay = async (playInstanceId) => {
+  const handleCompletePlay = async (playInstanceId, data) => {
     try {
-      await apiService.handovers.completePlay(h.id, playInstanceId);
+      await apiService.handovers.completePlay(h.id, playInstanceId, data);
       await load();
     } catch (err) {
       flash('error', err?.response?.data?.error?.message || 'Could not mark that play done');
@@ -936,7 +1001,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users }) {
       {/* ── Summary ─────────────────────────────────────── */}
       {detailTab === 'summary' && (
         <div style={{ padding: '16px 20px' }}>
-          <HandoverSummary detail={detail} users={users} canEdit={isServiceView || salesCanEdit} onRefresh={load} />
+          <HandoverSummary detail={detail} users={users} canEdit={isServiceView || salesCanEdit} onRefresh={load} onOpenProject={onOpenProject} />
         </div>
       )}
 
@@ -1053,7 +1118,97 @@ function lateDays(c) {
   return d > 0 ? d : 0;
 }
 
-function HandoverSummary({ detail, users, canEdit, onRefresh }) {
+function Modal({ title, onClose, children }) {
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 10,
+        width: 'min(560px, 92vw)', maxHeight: '80vh', overflow: 'auto', boxShadow: '0 10px 40px rgba(0,0,0,0.2)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 18px', borderBottom: '1px solid #e5e7eb' }}>
+          <h3 style={{ margin: 0, fontSize: 15, color: '#111827' }}>{title}</h3>
+          <button onClick={onClose} style={{ border: 'none', background: 'none', fontSize: 20, color: '#9ca3af', cursor: 'pointer', lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ padding: '16px 18px' }}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function TeamMemberModal({ member, onClose, onOpenProject }) {
+  const [projects, setProjects] = useState(null);
+  useEffect(() => {
+    apiService.handovers.teamMemberProjects(member.userId)
+      .then(res => setProjects(res.data.projects || []))
+      .catch(() => setProjects([]));
+  }, [member.userId]);
+  return (
+    <Modal title={`${member.name} — projects`} onClose={onClose}>
+      {projects === null ? <div style={{ color: '#9ca3af', fontSize: 13 }}>Loading…</div>
+        : projects.length === 0 ? <div style={{ color: '#9ca3af', fontSize: 13 }}>Not on any projects.</div>
+        : projects.map((p, i) => (
+          <div key={i} onClick={() => { if (p.handoverId) { onOpenProject?.(p.handoverId); onClose(); } }}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 0', borderTop: '1px solid #f3f4f6',
+              cursor: p.handoverId ? 'pointer' : 'default' }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>{p.account}</div>
+              <div style={{ fontSize: 11, color: '#6b7280' }}>{p.role}</div>
+            </div>
+            {p.status && <span style={{ fontSize: 11, color: '#6b7280' }}>{p.status.replace(/_/g, ' ')}</span>}
+          </div>
+        ))}
+    </Modal>
+  );
+}
+
+function DeliverableModal({ commitmentId, onClose }) {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    apiService.handovers.commitmentActivity(commitmentId)
+      .then(res => setData(res.data))
+      .catch(() => setData({ commitment: null, events: [] }));
+  }, [commitmentId]);
+
+  const EV = { created: 'Logged', status_change: 'Status changed', owner_change: 'Owner changed',
+    due_change: 'Due date changed', closed: 'Closed', note: 'Note' };
+  const c = data?.commitment || {};
+
+  return (
+    <Modal title="Deliverable" onClose={onClose}>
+      {data === null ? <div style={{ color: '#9ca3af', fontSize: 13 }}>Loading…</div> : (
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: '#111827', marginBottom: 6 }}>{c.description}</div>
+          <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 16 }}>
+            Status: <strong>{(c.status || '').replace(/_/g, ' ')}</strong>
+            {c.dueDate && <> · Due {fmtDate(c.dueDate)}</>}
+            {c.closedAt && <> · Completed {fmtDate(c.closedAt)}</>}
+            {c.ownerName && <> · Owner {c.ownerName}</>}
+          </div>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 10 }}>What happened</div>
+          {(data.events || []).length === 0 ? <div style={{ color: '#9ca3af', fontSize: 12 }}>No activity recorded.</div>
+            : (data.events || []).map((e, i) => (
+              <div key={i} style={{ display: 'flex', gap: 10, paddingBottom: 12 }}>
+                <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#0369a1', marginTop: 4, flexShrink: 0 }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#111827' }}>
+                    {EV[e.event_type] || e.event_type}
+                    {e.from_status && e.to_status && (
+                      <span style={{ fontWeight: 400, color: '#6b7280' }}> · {e.from_status.replace(/_/g, ' ')} → {e.to_status.replace(/_/g, ' ')}</span>
+                    )}
+                  </div>
+                  {e.detail && <div style={{ fontSize: 12, color: '#374151' }}>{e.detail}</div>}
+                  <div style={{ fontSize: 10, color: '#9ca3af' }}>
+                    {e.created_at ? new Date(e.created_at).toLocaleString() : ''}{e.actor ? ` · ${e.actor}` : ''}
+                  </div>
+                </div>
+              </div>
+            ))}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject }) {
   const team      = detail.dealTeam || [];
   const pb        = detail.playbook;
   const allCommits = detail.commitments || [];
@@ -1062,6 +1217,9 @@ function HandoverSummary({ detail, users, canEdit, onRefresh }) {
   const onTimeCount = doneItems.filter(c => c.closedAt && lateDays(c) === 0).length;
   const gatePlays = (detail.plays || []).filter(p => p.isGate);
   const gatesDone = gatePlays.filter(p => ['completed', 'skipped'].includes(p.status)).length;
+
+  const [openMember, setOpenMember] = useState(null);
+  const [openCommitment, setOpenCommitment] = useState(null);
 
   const card = { background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: '14px 16px', marginBottom: 16 };
   const h4   = { margin: '0 0 10px', fontSize: 14, color: '#374151' };
@@ -1076,7 +1234,8 @@ function HandoverSummary({ detail, users, canEdit, onRefresh }) {
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 10 }}>
             {team.map(m => (
-              <div key={m.userId} style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 13 }}>
+              <div key={m.userId} onClick={() => m.userId && setOpenMember(m)}
+                style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 13, cursor: m.userId ? 'pointer' : 'default' }}>
                 <div style={{ width: 30, height: 30, flexShrink: 0, borderRadius: '50%', background: '#e0f2fe',
                   color: '#0369a1', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700 }}>
                   {initials(m.name)}
@@ -1145,7 +1304,8 @@ function HandoverSummary({ detail, users, canEdit, onRefresh }) {
         {openItems.length === 0 ? (
           <div style={{ fontSize: 12, color: '#9ca3af' }}>Nothing outstanding.</div>
         ) : openItems.map(c => (
-          <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '6px 0', borderTop: '1px solid #f3f4f6' }}>
+          <div key={c.id} onClick={() => setOpenCommitment(c.id)}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '6px 0', borderTop: '1px solid #f3f4f6', cursor: 'pointer' }}>
             <span style={{ flex: 1 }}>{c.description}</span>
             {c.commitmentType && c.commitmentType !== 'promise' && (
               <span style={{ fontSize: 10, fontWeight: 600, color: c.commitmentType === 'red_flag' ? '#dc2626' : '#d97706' }}>
@@ -1179,7 +1339,8 @@ function HandoverSummary({ detail, users, canEdit, onRefresh }) {
           {doneItems.map(c => {
             const late = lateDays(c);
             return (
-              <div key={c.id} style={{ padding: '7px 0', borderTop: '1px solid #f3f4f6', fontSize: 13 }}>
+              <div key={c.id} onClick={() => setOpenCommitment(c.id)}
+                style={{ padding: '7px 0', borderTop: '1px solid #f3f4f6', fontSize: 13, cursor: 'pointer' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ flex: 1 }}>{c.description}</span>
                   {late > 0
@@ -1195,6 +1356,9 @@ function HandoverSummary({ detail, users, canEdit, onRefresh }) {
           })}
         </div>
       )}
+
+      {openMember && <TeamMemberModal member={openMember} onClose={() => setOpenMember(null)} onOpenProject={onOpenProject} />}
+      {openCommitment && <DeliverableModal commitmentId={openCommitment} onClose={() => setOpenCommitment(null)} />}
     </div>
   );
 }
@@ -1305,109 +1469,6 @@ function CommunicationsPanel({ handoverId }) {
         <button onClick={send} disabled={sending || !text.trim()} style={{
           padding: '8px 16px', borderRadius: 6, border: 'none',
           background: (sending || !text.trim()) ? '#9ca3af' : '#059669', color: '#fff',
-          fontSize: 13, fontWeight: 600, cursor: (sending || !text.trim()) ? 'default' : 'pointer' }}>
-          {sending ? 'Sending…' : 'Send'}
-        </button>
-      </div>
-      {err && <div style={{ marginTop: 6, fontSize: 12, color: '#991b1b' }}>{err}</div>}
-    </div>
-  );
-}
-
-// ── WhatsAppPanel: delivery conversation on the handover ──────────────────────
-
-function WhatsAppPanel({ handoverId }) {
-  const [data,    setData]    = useState(null);
-  const [text,    setText]    = useState('');
-  const [sending, setSending] = useState(false);
-  const [err,     setErr]     = useState('');
-  const [loading, setLoading] = useState(true);
-
-  const load = useCallback(async () => {
-    try {
-      const res = await apiService.whatsapp.handoverThread(handoverId);
-      setData(res.data);
-    } catch (e) {
-      setData({ thread: null, windowOpen: false, messages: [] });
-    } finally {
-      setLoading(false);
-    }
-  }, [handoverId]);
-
-  useEffect(() => { load(); }, [load]);
-
-  const send = async () => {
-    const body = text.trim();
-    if (!body) return;
-    setSending(true); setErr('');
-    try {
-      await apiService.whatsapp.sendToHandover(handoverId, { text: body });
-      setText('');
-      await load();
-    } catch (e) {
-      const er = e?.response?.data?.error || {};
-      if (er.code === 'NOT_CONNECTED') setErr('WhatsApp is not connected for this org yet.');
-      else if (er.code === 'WINDOW_CLOSED') setErr('The 24-hour window is closed — an approved template is required to re-open the conversation.');
-      else setErr(er.message || 'Could not send message.');
-    } finally {
-      setSending(false);
-    }
-  };
-
-  const windowOpen = data?.windowOpen;
-  const messages   = data?.messages || [];
-
-  return (
-    <div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-        <h4 style={{ margin: 0, fontSize: 14, color: '#374151' }}>💬 WhatsApp delivery thread</h4>
-        {!loading && (
-          <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999,
-            color: windowOpen ? '#065f46' : '#92400e',
-            background: windowOpen ? '#dcfce7' : '#fef3c7' }}>
-            {windowOpen ? '24h window open' : 'window closed — template required'}
-          </span>
-        )}
-      </div>
-
-      <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: '#f9fafb', padding: 12,
-        maxHeight: 260, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {loading ? (
-          <div style={{ color: '#9ca3af', fontSize: 13 }}>Loading…</div>
-        ) : messages.length === 0 ? (
-          <div style={{ color: '#9ca3af', fontSize: 13 }}>No messages yet.</div>
-        ) : messages.map(m => {
-          const out = m.direction === 'outbound';
-          return (
-            <div key={m.id} style={{ alignSelf: out ? 'flex-end' : 'flex-start', maxWidth: '78%' }}>
-              <div style={{ padding: '7px 10px', borderRadius: 10, fontSize: 13, lineHeight: 1.4,
-                background: out ? '#dcf8c6' : '#ffffff',
-                border: `1px solid ${out ? '#c5eeae' : '#e5e7eb'}`, color: '#111827' }}>
-                {m.is_automated && (
-                  <span style={{ fontSize: 10, fontWeight: 700, color: '#6b7280', display: 'block', marginBottom: 2 }}>AUTOMATED</span>
-                )}
-                {m.body}
-              </div>
-              <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2, textAlign: out ? 'right' : 'left' }}>
-                {out ? (m.from_name || 'Delivery team') : (m.from_name || 'Customer')}{m.status ? ` · ${m.status}` : ''}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <textarea
-          value={text}
-          onChange={e => setText(e.target.value)}
-          placeholder={windowOpen ? 'Type a message…' : 'Window closed — a template is required to message'}
-          rows={2}
-          style={{ flex: 1, resize: 'vertical', padding: '8px 10px', borderRadius: 6,
-            border: '1px solid #d1d5db', fontSize: 13, fontFamily: 'inherit' }}
-        />
-        <button onClick={send} disabled={sending || !text.trim()} style={{
-          alignSelf: 'flex-end', padding: '8px 16px', borderRadius: 6, border: 'none',
-          background: (sending || !text.trim()) ? '#9ca3af' : '#16a34a', color: '#fff',
           fontSize: 13, fontWeight: 600, cursor: (sending || !text.trim()) ? 'default' : 'pointer' }}>
           {sending ? 'Sending…' : 'Send'}
         </button>
@@ -1601,6 +1662,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
             viewMode={tab}
             users={users}
             onRefresh={loadList}
+            onOpenProject={handleOpenProject}
           />
         )}
       </div>

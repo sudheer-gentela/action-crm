@@ -172,6 +172,8 @@ function fmtPlay(row) {
     description:     row.description,
     channel:         row.channel,
     stageKey:        row.stage_key ?? null,
+    completionNote:  row.completion_note ?? null,
+    completionEvidence: row.completion_evidence ?? null,
     isGate:          row.is_gate,
     executionType:   row.execution_type,
     sortOrder:       row.sort_order,
@@ -842,6 +844,26 @@ async function updateCommitment(handoverId, orgId, userId, commitmentId, data) {
     params
   );
 
+  // Append to the activity log (what happened on this deliverable).
+  const _updated = rows[0];
+  const _evs = [];
+  if (data.status !== undefined && data.status !== existing.status) {
+    const isClose = COMMITMENT_TERMINAL.includes(data.status);
+    _evs.push([isClose ? 'closed' : 'status_change',
+               isClose ? (_updated.closure_note || null) : null, existing.status, data.status]);
+  }
+  if (data.ownerUserId !== undefined && (data.ownerUserId || null) !== existing.owner_user_id) {
+    _evs.push(['owner_change', null, null, null]);
+  }
+  for (const [etype, detail, from, to] of _evs) {
+    await pool.query(
+      `INSERT INTO sales_handover_commitment_events
+         (commitment_id, org_id, event_type, detail, from_status, to_status, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [commitmentId, orgId, etype, detail, from, to, userId]
+    );
+  }
+
   // Re-run diagnostics: closing the last overdue commitment should clear
   // handover_commitment_overdue immediately, not at 01:45 tomorrow.
   generateForHandoverEvent(handoverId, orgId, 'commitment_updated')
@@ -879,7 +901,7 @@ async function removeCommitment(handoverId, orgId, commitmentId) {
  * @param {number} userId
  * @param {number} orgId
  */
-async function completePlay(handoverId, playInstanceId, userId, orgId) {
+async function completePlay(handoverId, playInstanceId, userId, orgId, data = {}) {
   // Verify the play belongs to this handover
   const linkResult = await pool.query(
     'SELECT id FROM sales_handover_plays WHERE handover_id = $1 AND play_instance_id = $2',
@@ -917,6 +939,20 @@ async function completePlay(handoverId, playInstanceId, userId, orgId) {
       `[handover.service] next-play hook failed for handover ${handoverId} play ${instance.play_id}:`,
       err.message
     ));
+  }
+
+  // Manual completion evidence: a note + optional reference to the comm that
+  // closed it (mirrors the actions-engine completion_evidence pattern).
+  if (data.completionNote != null || data.completionEvidence != null) {
+    await pool.query(
+      `UPDATE deal_play_instances
+          SET completion_note = COALESCE($1, completion_note),
+              completion_evidence = COALESCE($2::jsonb, completion_evidence)
+        WHERE id = $3 AND org_id = $4`,
+      [data.completionNote ?? null,
+       data.completionEvidence != null ? JSON.stringify(data.completionEvidence) : null,
+       playInstanceId, orgId]
+    );
   }
 
   return { instance };
@@ -983,7 +1019,8 @@ async function _getPlays(handoverId, orgId) {
        dpi.stage_key,
        dpi.execution_type, dpi.sort_order, dpi.priority,
        dpi.status AS play_status, dpi.completed_by,
-       dpi.due_date, dpi.due_anchor
+       dpi.due_date, dpi.due_anchor,
+       dpi.completion_note, dpi.completion_evidence
      FROM sales_handover_plays shp
      JOIN deal_play_instances dpi ON dpi.id = shp.play_instance_id
      WHERE shp.handover_id = $1
@@ -1479,9 +1516,55 @@ async function getCommunications(handoverId, orgId) {
   return { items };
 }
 
+/** Every project a team member is on, with their role — the person drill-down. */
+async function getTeamMemberProjects(userId, orgId) {
+  const { rows } = await pool.query(
+    `SELECT h.id AS handover_id, a.name AS account, d.name AS deal, h.status,
+            r.name AS role_name, dtm.custom_role
+       FROM deal_team_members dtm
+       JOIN deals d ON d.id = dtm.deal_id
+       JOIN accounts a ON a.id = d.account_id
+       LEFT JOIN sales_handovers h ON h.deal_id = d.id AND h.org_id = dtm.org_id
+       LEFT JOIN org_roles r ON r.id = dtm.role_id
+      WHERE dtm.user_id = $1 AND dtm.org_id = $2
+      ORDER BY d.close_date NULLS LAST, d.id`,
+    [userId, orgId]
+  );
+  return rows.map(r => ({
+    handoverId: r.handover_id, account: r.account, deal: r.deal,
+    status: r.status, role: r.role_name || r.custom_role || 'Team member',
+  }));
+}
+
+/** A deliverable's target + activity timeline — the deliverable drill-down. */
+async function getCommitmentActivity(commitmentId, orgId) {
+  const { rows: [c] } = await pool.query(
+    `SELECT c.*, u.first_name || ' ' || u.last_name AS owner_name,
+            cb.first_name || ' ' || cb.last_name AS closed_by_name
+       FROM sales_handover_commitments c
+       LEFT JOIN users u  ON u.id  = c.owner_user_id
+       LEFT JOIN users cb ON cb.id = c.closed_by
+      WHERE c.id = $1 AND c.org_id = $2`,
+    [commitmentId, orgId]
+  );
+  if (!c) throw Object.assign(new Error('Commitment not found'), { status: 404 });
+  const { rows: events } = await pool.query(
+    `SELECT e.event_type, e.detail, e.from_status, e.to_status, e.created_at,
+            u.first_name || ' ' || u.last_name AS actor
+       FROM sales_handover_commitment_events e
+       LEFT JOIN users u ON u.id = e.created_by
+      WHERE e.commitment_id = $1 AND e.org_id = $2
+      ORDER BY e.created_at`,
+    [commitmentId, orgId]
+  );
+  return { commitment: fmtCommitment(c), events };
+}
+
 module.exports = {
   initiate,
   list,
+  getTeamMemberProjects,  // person drill-down
+  getCommitmentActivity,  // deliverable drill-down
   getPortfolio,           // Dashboard tab — portfolio aggregation
   getCommunications,      // Communications tab — email + WhatsApp timeline
   listAssignableUsers,    // org-scoped member list for owner pickers

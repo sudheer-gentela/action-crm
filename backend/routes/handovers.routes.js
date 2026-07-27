@@ -268,11 +268,35 @@ router.post('/sales/:id/plays/:instanceId/complete', async (req, res) => {
       parseInt(req.params.id),
       parseInt(req.params.instanceId),
       req.user.userId,
-      req.orgId
+      req.orgId,
+      req.body || {}
     );
     res.json(result);
   } catch (err) {
     console.error('Complete handover play error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── GET /team-members/:userId/projects — person drill-down ────────────────────
+
+router.get('/team-members/:userId/projects', async (req, res) => {
+  try {
+    const projects = await handoverService.getTeamMemberProjects(parseInt(req.params.userId), req.orgId);
+    res.json({ projects });
+  } catch (err) {
+    console.error('Team member projects error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── GET /commitments/:cid/activity — deliverable drill-down ───────────────────
+
+router.get('/commitments/:cid/activity', async (req, res) => {
+  try {
+    res.json(await handoverService.getCommitmentActivity(parseInt(req.params.cid), req.orgId));
+  } catch (err) {
+    console.error('Commitment activity error:', err);
     res.status(err.status || 500).json({ error: { message: err.message } });
   }
 });

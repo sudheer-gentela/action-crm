@@ -199,6 +199,7 @@ DECLARE
   v_account   integer;
   v_contact   integer;
   v_ct_contact integer;
+  v_com_id    integer;
   v_deal      integer;
   v_handover  integer;
   v_thread    integer;
@@ -436,7 +437,28 @@ BEGIN
              ELSE NULL END,
         CASE WHEN v_status IN ('met','waived','breached') THEN v_u_impl ELSE NULL END,
         CASE WHEN v_status = 'met' THEN 'Completed and verified on site.' ELSE NULL END
-      );
+      )
+      RETURNING id INTO v_com_id;
+
+      -- Activity log: what happened on this deliverable
+      INSERT INTO sales_handover_commitment_events
+        (commitment_id, org_id, event_type, detail, created_by, created_at)
+      VALUES (v_com_id, v_org_id, 'created', 'Deliverable logged during handover.', v_sales, v_close::timestamptz);
+      IF v_status IN ('met','waived','breached') THEN
+        INSERT INTO sales_handover_commitment_events
+          (commitment_id, org_id, event_type, detail, from_status, to_status, created_by, created_at)
+        VALUES (v_com_id, v_org_id, 'status_change', NULL, 'open', 'in_progress', v_u_impl, v_close::timestamptz + interval '3 days');
+        INSERT INTO sales_handover_commitment_events
+          (commitment_id, org_id, event_type, detail, from_status, to_status, created_by, created_at)
+        VALUES (v_com_id, v_org_id, 'closed',
+                CASE WHEN v_status='met' THEN 'Completed and verified on site.' ELSE 'Closed ('||v_status||').' END,
+                'in_progress', v_status, v_u_impl,
+                v_due::timestamptz + ((length(com->>'d') % 4) || ' days')::interval);
+      ELSIF v_status = 'in_progress' THEN
+        INSERT INTO sales_handover_commitment_events
+          (commitment_id, org_id, event_type, detail, from_status, to_status, created_by, created_at)
+        VALUES (v_com_id, v_org_id, 'status_change', 'Work started on site.', 'open', 'in_progress', v_u_impl, v_close::timestamptz + interval '2 days');
+      END IF;
     END LOOP;
 
     -- Handover play instances — instantiate the org's REAL handover playbook plays
@@ -474,6 +496,16 @@ BEGIN
 
       INSERT INTO sales_handover_plays (handover_id, play_instance_id, org_id, completed_at)
       VALUES (v_handover, v_pi, v_org_id, v_comp_at);
+      IF v_completed THEN
+        UPDATE deal_play_instances
+           SET completion_note = 'Closed out and confirmed with the customer.',
+               completion_evidence = jsonb_build_object(
+                 'type', CASE WHEN v_ord % 2 = 0 THEN 'email' ELSE 'whatsapp' END,
+                 'snippet', CASE WHEN v_ord % 2 = 0
+                            THEN 'Customer confirmed sign-off on this item by email.'
+                            ELSE 'Customer acknowledged completion on WhatsApp.' END)
+         WHERE id = v_pi;
+      END IF;
     END LOOP;
 
     -- DELIVERY play instances (from the delivery playbook)
@@ -507,6 +539,16 @@ BEGIN
 
       INSERT INTO sales_handover_plays (handover_id, play_instance_id, org_id, completed_at)
       VALUES (v_handover, v_pi, v_org_id, v_comp_at);
+      IF v_completed THEN
+        UPDATE deal_play_instances
+           SET completion_note = 'Closed out and confirmed with the customer.',
+               completion_evidence = jsonb_build_object(
+                 'type', CASE WHEN v_ord % 2 = 0 THEN 'email' ELSE 'whatsapp' END,
+                 'snippet', CASE WHEN v_ord % 2 = 0
+                            THEN 'Customer confirmed sign-off on this item by email.'
+                            ELSE 'Customer acknowledged completion on WhatsApp.' END)
+         WHERE id = v_pi;
+      END IF;
     END LOOP;
 
     -- Weather-escalation instance for rain-affected projects

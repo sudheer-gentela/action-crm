@@ -712,7 +712,9 @@ twilio: {
     updateCommitment: (id, cid, data) => api.patch(`/handovers/sales/${id}/commitments/${cid}`, data),
     removeCommitment: (id, cid)       => api.delete(`/handovers/sales/${id}/commitments/${cid}`),
 
-    completePlay: (id, instanceId) => api.post(`/handovers/sales/${id}/plays/${instanceId}/complete`),
+    completePlay: (id, instanceId, data) => api.post(`/handovers/sales/${id}/plays/${instanceId}/complete`, data || {}),
+    teamMemberProjects: (userId) => api.get(`/handovers/team-members/${userId}/projects`),
+    commitmentActivity: (cid) => api.get(`/handovers/commitments/${cid}/activity`),
     assignableUsers: () => api.get('/handovers/assignable-users'),
     toggleModule: (enabled) => api.patch('/handovers/admin/module', { enabled }),
   },
