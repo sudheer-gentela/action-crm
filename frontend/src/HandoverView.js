@@ -923,7 +923,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users }) {
 
       {/* ── Summary / Details sub-tabs ──────────────────── */}
       <div style={{ display: 'flex', gap: 4, padding: '0 20px', borderBottom: '1px solid #e5e7eb', background: '#fff' }}>
-        {[{ key: 'summary', label: 'Summary' }, { key: 'details', label: 'Details' }].map(t => (
+        {[{ key: 'summary', label: 'Summary' }, { key: 'details', label: 'Details' }, { key: 'communications', label: 'Communications' }].map(t => (
           <button key={t.key} onClick={() => setDetailTab(t.key)} style={{
             padding: '10px 16px', background: 'none', border: 'none',
             borderBottom: `2px solid ${detailTab === t.key ? '#0369a1' : 'transparent'}`,
@@ -1018,12 +1018,14 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users }) {
             )}
           </section>
         )}
-
-        {/* WhatsApp delivery thread */}
-        <section style={{ marginBottom: 24 }}>
-          <WhatsAppPanel handoverId={detail.id} />
-        </section>
       </div>
+      )}
+
+      {/* ── Communications (email + WhatsApp) ───────────── */}
+      {detailTab === 'communications' && (
+        <div style={{ padding: '16px 20px' }}>
+          <CommunicationsPanel handoverId={detail.id} />
+        </div>
       )}
     </div>
   );
@@ -1034,6 +1036,15 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users }) {
 function initials(name) {
   return (name || '?').trim().split(/\s+/).map(x => x[0]).slice(0, 2).join('').toUpperCase();
 }
+
+const STAKE_ROLE = {
+  go_live_approver:    'Go-live approver',
+  day_to_day_admin:    'Day-to-day contact',
+  implementation_lead: 'Implementation lead',
+  technical_lead:      'Technical lead',
+  exec_sponsor:        'Exec sponsor',
+  other:               'Other',
+};
 
 function HandoverSummary({ detail, users, canEdit, onRefresh }) {
   const team      = detail.dealTeam || [];
@@ -1063,6 +1074,31 @@ function HandoverSummary({ detail, users, canEdit, onRefresh }) {
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontWeight: 600, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.name}</div>
                   <div style={{ fontSize: 11, color: '#6b7280' }}>{m.role}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Customer team */}
+      <div style={card}>
+        <h4 style={h4}>🏛️ Customer team</h4>
+        {(detail.stakeholders || []).length === 0 ? (
+          <div style={{ fontSize: 12, color: '#9ca3af' }}>No customer stakeholders recorded.</div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 10 }}>
+            {(detail.stakeholders || []).map(s => (
+              <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 13 }}>
+                <div style={{ width: 30, height: 30, flexShrink: 0, borderRadius: '50%', background: '#fef3c7',
+                  color: '#92400e', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700 }}>
+                  {initials(s.name)}
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</div>
+                  <div style={{ fontSize: 11, color: '#6b7280' }}>
+                    {STAKE_ROLE[s.handoverRole] || s.handoverRole}{s.isPrimaryContact ? ' · primary' : ''}
+                  </div>
                 </div>
               </div>
             ))}
@@ -1148,6 +1184,83 @@ function ServiceOwnerPicker({ detail, users, canEdit, onRefresh }) {
         <strong>{detail.serviceOwnerName || 'Unassigned'}</strong>
       )}
       {msg && <span style={{ fontSize: 11, color: msg.startsWith('Could') ? '#991b1b' : '#059669' }}>{msg}</span>}
+    </div>
+  );
+}
+
+// ── CommunicationsPanel: unified customer comms (email + WhatsApp) ────────────
+
+function CommunicationsPanel({ handoverId }) {
+  const [items,   setItems]   = useState(null);
+  const [text,    setText]    = useState('');
+  const [sending, setSending] = useState(false);
+  const [err,     setErr]     = useState('');
+
+  const load = useCallback(async () => {
+    try { const res = await apiService.handovers.communications(handoverId); setItems(res.data.items || []); }
+    catch { setItems([]); }
+  }, [handoverId]);
+  useEffect(() => { load(); }, [load]);
+
+  const send = async () => {
+    const body = text.trim(); if (!body) return;
+    setSending(true); setErr('');
+    try { await apiService.whatsapp.sendToHandover(handoverId, { text: body }); setText(''); await load(); }
+    catch (e) {
+      const er = e?.response?.data?.error || {};
+      if (er.code === 'NOT_CONNECTED') setErr('WhatsApp is not connected for this org yet.');
+      else if (er.code === 'WINDOW_CLOSED') setErr('The 24-hour window is closed — an approved template is required.');
+      else setErr(er.message || 'Could not send.');
+    } finally { setSending(false); }
+  };
+
+  if (items === null) return <div style={{ color: '#9ca3af', fontSize: 13 }}>Loading communications…</div>;
+
+  const CH = {
+    email:    { label: 'Email',    color: '#7c3aed', bg: '#f5f3ff' },
+    whatsapp: { label: 'WhatsApp', color: '#059669', bg: '#ecfdf5' },
+  };
+
+  return (
+    <div>
+      <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: '#f9fafb', padding: 14,
+        display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 440, overflowY: 'auto' }}>
+        {items.length === 0 ? (
+          <div style={{ color: '#9ca3af', fontSize: 13 }}>No communications with the customer team yet.</div>
+        ) : items.map(m => {
+          const out = m.direction === 'outbound';
+          const ch  = CH[m.channel] || { label: m.channel, color: '#6b7280', bg: '#f3f4f6' };
+          return (
+            <div key={m.id} style={{ alignSelf: out ? 'flex-end' : 'flex-start', maxWidth: '80%' }}>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 2, justifyContent: out ? 'flex-end' : 'flex-start' }}>
+                <span style={{ fontSize: 10, fontWeight: 700, color: ch.color, background: ch.bg, padding: '1px 6px', borderRadius: 5 }}>{ch.label}</span>
+                {m.isAutomated && <span style={{ fontSize: 10, color: '#6b7280' }}>automated</span>}
+                <span style={{ fontSize: 11, color: '#9ca3af' }}>{m.from}</span>
+              </div>
+              <div style={{ padding: '8px 11px', borderRadius: 10, fontSize: 13, lineHeight: 1.45,
+                background: out ? '#dcf8c6' : '#fff', border: `1px solid ${out ? '#c5eeae' : '#e5e7eb'}`, color: '#111827' }}>
+                {m.subject && <div style={{ fontWeight: 600, marginBottom: 2 }}>{m.subject}</div>}
+                {m.body}
+              </div>
+              <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2, textAlign: out ? 'right' : 'left' }}>
+                {m.at ? new Date(m.at).toLocaleString() : ''}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+        <input value={text} onChange={e => setText(e.target.value)} placeholder="Send a WhatsApp message to the customer…"
+          onKeyDown={e => { if (e.key === 'Enter') send(); }}
+          style={{ flex: 1, padding: '8px 10px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 13 }} />
+        <button onClick={send} disabled={sending || !text.trim()} style={{
+          padding: '8px 16px', borderRadius: 6, border: 'none',
+          background: (sending || !text.trim()) ? '#9ca3af' : '#059669', color: '#fff',
+          fontSize: 13, fontWeight: 600, cursor: (sending || !text.trim()) ? 'default' : 'pointer' }}>
+          {sending ? 'Sending…' : 'Send'}
+        </button>
+      </div>
+      {err && <div style={{ marginTop: 6, fontSize: 12, color: '#991b1b' }}>{err}</div>}
     </div>
   );
 }

@@ -164,6 +164,17 @@ router.get('/sales/:id/can-close', async (req, res) => {
   }
 });
 
+// ── GET /sales/:id/communications — unified email + WhatsApp timeline ──────────
+
+router.get('/sales/:id/communications', async (req, res) => {
+  try {
+    res.json(await handoverService.getCommunications(parseInt(req.params.id), req.orgId));
+  } catch (err) {
+    console.error('Communications error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
 // ── POST /sales/:id/stakeholders ──────────────────────────────────────────────
 
 router.post('/sales/:id/stakeholders', async (req, res) => {

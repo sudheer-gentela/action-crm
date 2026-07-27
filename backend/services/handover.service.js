@@ -1431,10 +1431,59 @@ async function getPortfolio(orgId) {
   return { kpis, statusDistribution, typeDistribution, rainImpact, riskMatrix, projects };
 }
 
+/**
+ * Unified customer communications for a handover: emails on the deal + WhatsApp
+ * messages on the handover thread, merged and time-ordered. Powers the
+ * Communications tab.
+ */
+async function getCommunications(handoverId, orgId) {
+  const { rows: hrows } = await pool.query(
+    `SELECT deal_id FROM sales_handovers WHERE id = $1 AND org_id = $2`,
+    [handoverId, orgId]
+  );
+  if (hrows.length === 0) throw Object.assign(new Error('Handover not found'), { status: 404 });
+  const dealId = hrows[0].deal_id;
+
+  const emails = await pool.query(
+    `SELECT id, direction, subject, body, from_address, sent_at, created_at
+       FROM emails WHERE org_id = $1 AND deal_id = $2`,
+    [orgId, dealId]
+  );
+  const wa = await pool.query(
+    `SELECT m.id, m.direction, m.body, m.from_name, m.is_automated, m.status,
+            COALESCE(m.sent_at, m.created_at) AS at
+       FROM whatsapp_messages m
+       JOIN whatsapp_threads t ON t.id = m.thread_id
+      WHERE t.org_id = $1 AND t.handover_id = $2`,
+    [orgId, handoverId]
+  );
+
+  const outbound = d => d === 'sent' || d === 'outbound';
+  const items = [
+    ...emails.rows.map(e => ({
+      id: `email-${e.id}`, channel: 'email',
+      direction: outbound(e.direction) ? 'outbound' : 'inbound',
+      from: outbound(e.direction) ? 'Delivery team' : (e.from_address || 'Customer'),
+      subject: e.subject, body: e.body,
+      at: e.sent_at || e.created_at, isAutomated: false,
+    })),
+    ...wa.rows.map(m => ({
+      id: `wa-${m.id}`, channel: 'whatsapp',
+      direction: outbound(m.direction) ? 'outbound' : 'inbound',
+      from: outbound(m.direction) ? 'Delivery team' : (m.from_name || 'Customer'),
+      subject: null, body: m.body,
+      at: m.at, isAutomated: !!m.is_automated,
+    })),
+  ].sort((a, b) => new Date(a.at) - new Date(b.at));
+
+  return { items };
+}
+
 module.exports = {
   initiate,
   list,
   getPortfolio,           // Dashboard tab — portfolio aggregation
+  getCommunications,      // Communications tab — email + WhatsApp timeline
   listAssignableUsers,    // org-scoped member list for owner pickers
   getById,
   update,

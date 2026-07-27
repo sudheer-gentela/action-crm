@@ -198,7 +198,6 @@ DECLARE
 
   v_account   integer;
   v_contact   integer;
-  v_ct_contact integer;
   v_deal      integer;
   v_handover  integer;
   v_thread    integer;
@@ -396,28 +395,16 @@ BEGIN
     )
     RETURNING id INTO v_handover;
 
-    -- Customer stakeholders — CUSTOMER-SIDE ONLY. The internal delivery team
-    -- lives in deal_team_members; stakeholders are the customer's people.
+    -- Stakeholders. Required roles: implementation_lead, day_to_day_admin, go_live_approver.
     INSERT INTO sales_handover_stakeholders (handover_id, org_id, contact_id, name, handover_role, is_primary_contact)
     VALUES (v_handover, v_org_id, v_contact,
             (proj#>>'{contact,first}') || ' ' || (proj#>>'{contact,last}'), 'go_live_approver', TRUE);
-
     IF (proj->>'gate_cleared')::boolean THEN
-      -- Build the customer team: create the contacts on the account, add as stakeholders.
-      FOR com IN SELECT * FROM jsonb_array_elements('[
-        {"first":"Priya","last":"Menon","role":"day_to_day_admin","title":"Operations Lead"},
-        {"first":"Arjun","last":"Nair","role":"implementation_lead","title":"Project Lead"},
-        {"first":"Kavya","last":"Rao","role":"technical_lead","title":"Technical Lead"}
-      ]'::jsonb) LOOP
-        INSERT INTO contacts (account_id, first_name, last_name, title, role_type, org_id, external_refs, user_id)
-        VALUES (v_account, com->>'first', com->>'last', com->>'title', 'user', v_org_id,
-                '{"demo_seed":"impl_showcase_v1"}'::jsonb, v_sales)
-        RETURNING id INTO v_ct_contact;
-
-        INSERT INTO sales_handover_stakeholders (handover_id, org_id, contact_id, name, handover_role)
-        VALUES (v_handover, v_org_id, v_ct_contact,
-                (com->>'first') || ' ' || (com->>'last'), com->>'role');
-      END LOOP;
+      INSERT INTO sales_handover_stakeholders (handover_id, org_id, name, handover_role) VALUES
+        (v_handover, v_org_id, (SELECT first_name||' '||last_name FROM users WHERE id=v_u_impl), 'implementation_lead'),
+        (v_handover, v_org_id, (SELECT first_name||' '||last_name FROM users WHERE id=v_u_pm),   'day_to_day_admin'),
+        (v_handover, v_org_id, (SELECT first_name||' '||last_name FROM users WHERE id=v_u_ae),   'exec_sponsor'),
+        (v_handover, v_org_id, (SELECT first_name||' '||last_name FROM users WHERE id=v_u_proc), 'other');
     END IF;
 
     -- Commitments / deliverables
