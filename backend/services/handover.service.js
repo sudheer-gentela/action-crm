@@ -1541,6 +1541,33 @@ async function getTeamMemberProjects(userId, orgId) {
  * deliverables they own (what's pending on them), and recent communications
  * across their projects. Powers the person side-panel.
  */
+
+// Split a stored recipient list ("a@x, b@y" or "a@x; b@y") into clean addresses.
+function _splitAddrs(s) {
+  return s ? String(s).split(/[;,]/).map(x => x.trim()).filter(Boolean) : [];
+}
+
+// Shape a raw email / whatsapp row into the unified communication object used by
+// the comms drill-downs. Carries recipients so the detail view can show who a
+// message went to: email To/Cc, and the WhatsApp group's participants.
+function _mapComm(m) {
+  const isOut = m.direction === 'sent' || m.direction === 'outbound';
+  return {
+    id:          `${m.channel}-${m.id}`,
+    channel:     m.channel,
+    direction:   isOut ? 'outbound' : 'inbound',
+    account:     m.account,
+    subject:     m.subject,
+    body:        m.body,
+    at:          m.at,
+    from:        isOut ? 'Delivery team' : (m.from_address || 'Customer'),
+    to:          m.to_address || null,
+    cc:          _splitAddrs(m.cc_addresses),
+    groupSubject: m.group_subject || null,
+    participants: m.participants || [],
+  };
+}
+
 async function getPersonDashboard(userId, orgId) {
   const { rows: [person] } = await pool.query(
     `SELECT id, first_name || ' ' || last_name AS name, email FROM users WHERE id = $1`,
@@ -1562,7 +1589,8 @@ async function getPersonDashboard(userId, orgId) {
 
   const { rows: emails } = await pool.query(
     `SELECT e.id, 'email' AS channel, e.direction, e.subject, e.body,
-            e.from_address, COALESCE(e.sent_at, e.created_at) AS at, a.name AS account
+            e.from_address, e.to_address, e.cc_addresses,
+            COALESCE(e.sent_at, e.created_at) AS at, a.name AS account
        FROM emails e
        JOIN accounts a ON a.id = (SELECT account_id FROM deals WHERE id = e.deal_id)
       WHERE e.org_id = $2 AND e.deal_id IN (SELECT deal_id FROM deal_team_members WHERE user_id = $1 AND org_id = $2)`,
@@ -1570,22 +1598,19 @@ async function getPersonDashboard(userId, orgId) {
   );
   const { rows: wa } = await pool.query(
     `SELECT m.id, 'whatsapp' AS channel, m.direction, NULL AS subject, m.body,
-            m.from_name AS from_address, COALESCE(m.sent_at, m.created_at) AS at, a.name AS account
+            m.from_name AS from_address, COALESCE(m.sent_at, m.created_at) AS at, a.name AS account,
+            t.group_subject,
+            (SELECT jsonb_agg(jsonb_build_object('name', p.display_name, 'side', p.side)
+                              ORDER BY p.side, p.display_name)
+               FROM whatsapp_thread_participants p WHERE p.thread_id = t.id) AS participants
        FROM whatsapp_messages m
        JOIN whatsapp_threads t ON t.id = m.thread_id
        JOIN accounts a ON a.id = t.account_id
       WHERE t.org_id = $2 AND t.deal_id IN (SELECT deal_id FROM deal_team_members WHERE user_id = $1 AND org_id = $2)`,
     [userId, orgId]
   );
-  const outbound = d => d === 'sent' || d === 'outbound';
   const communications = [...emails, ...wa]
-    .map(m => ({
-      id: `${m.channel}-${m.id}`, channel: m.channel,
-      direction: outbound(m.direction) ? 'outbound' : 'inbound',
-      account: m.account, subject: m.subject,
-      body: m.body, at: m.at,
-      from: outbound(m.direction) ? 'Delivery team' : (m.from_address || 'Customer'),
-    }))
+    .map(_mapComm)
     .sort((a, b) => new Date(b.at) - new Date(a.at))
     .slice(0, 15);
 
@@ -1597,6 +1622,59 @@ async function getPersonDashboard(userId, orgId) {
       commitmentType: d.commitment_type, account: d.account, handoverId: d.handover_id,
       pending: ['open', 'in_progress'].includes(d.status),
     })),
+    communications,
+  };
+}
+
+/**
+ * All communications tied to a single CUSTOMER contact — the "click the customer"
+ * drill-down. Shows the conversation from that one contact to the delivery team,
+ * with recipients (email To/Cc, WhatsApp group participants) on each message.
+ */
+async function getContactCommunications(contactId, orgId) {
+  const { rows: [contact] } = await pool.query(
+    `SELECT c.id, c.first_name || ' ' || c.last_name AS name, c.email, c.title, c.phone,
+            a.name AS account
+       FROM contacts c
+       LEFT JOIN accounts a ON a.id = c.account_id
+      WHERE c.id = $1 AND c.org_id = $2`,
+    [contactId, orgId]
+  );
+  if (!contact) throw Object.assign(new Error('Contact not found'), { status: 404 });
+
+  const { rows: emails } = await pool.query(
+    `SELECT e.id, 'email' AS channel, e.direction, e.subject, e.body,
+            e.from_address, e.to_address, e.cc_addresses,
+            COALESCE(e.sent_at, e.created_at) AS at, a.name AS account
+       FROM emails e
+       JOIN accounts a ON a.id = (SELECT account_id FROM deals WHERE id = e.deal_id)
+      WHERE e.org_id = $2 AND e.contact_id = $1`,
+    [contactId, orgId]
+  );
+  const { rows: wa } = await pool.query(
+    `SELECT m.id, 'whatsapp' AS channel, m.direction, NULL AS subject, m.body,
+            m.from_name AS from_address, COALESCE(m.sent_at, m.created_at) AS at, a.name AS account,
+            t.group_subject,
+            (SELECT jsonb_agg(jsonb_build_object('name', p.display_name, 'side', p.side)
+                              ORDER BY p.side, p.display_name)
+               FROM whatsapp_thread_participants p WHERE p.thread_id = t.id) AS participants
+       FROM whatsapp_messages m
+       JOIN whatsapp_threads t ON t.id = m.thread_id
+       JOIN accounts a ON a.id = t.account_id
+      WHERE t.org_id = $2 AND t.contact_id = $1`,
+    [contactId, orgId]
+  );
+
+  const communications = [...emails, ...wa]
+    .map(_mapComm)
+    .sort((a, b) => new Date(b.at) - new Date(a.at))
+    .slice(0, 50);
+
+  return {
+    contact: {
+      id: contact.id, name: contact.name, email: contact.email,
+      title: contact.title, account: contact.account,
+    },
     communications,
   };
 }
@@ -1630,6 +1708,7 @@ module.exports = {
   list,
   getTeamMemberProjects,  // person drill-down
   getPersonDashboard,     // person side-panel (individual dashboard)
+  getContactCommunications, // customer-contact comms drill-down
   getCommitmentActivity,  // deliverable drill-down
   getPortfolio,           // Dashboard tab — portfolio aggregation
   getCommunications,      // Communications tab — email + WhatsApp timeline

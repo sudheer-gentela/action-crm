@@ -301,6 +301,17 @@ router.get('/team-members/:userId/dashboard', async (req, res) => {
   }
 });
 
+// ── GET /contacts/:contactId/communications — customer-contact comms drill-down
+
+router.get('/contacts/:contactId/communications', async (req, res) => {
+  try {
+    res.json(await handoverService.getContactCommunications(parseInt(req.params.contactId), req.orgId));
+  } catch (err) {
+    console.error('Contact communications error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
 // ── GET /commitments/:cid/activity — deliverable drill-down ───────────────────
 
 router.get('/commitments/:cid/activity', async (req, res) => {

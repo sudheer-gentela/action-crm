@@ -242,6 +242,11 @@ DECLARE
   v_ord       integer;
   v_ho_owner  integer;
   v_comp_at   timestamptz;
+  v_email_ae   text;
+  v_email_pm   text;
+  v_email_impl text;
+  v_email_proc text;
+  v_cust_email text;
 BEGIN
   -- ─── Target an EXISTING org (created via Super Admin) ────────────────────
   --  >>> SET THESE to your org + an admin user in it. Defaults: org 117 / user 27.
@@ -395,6 +400,14 @@ BEGIN
     -- This project's PM + implementer from the shared pool; AE + procurement are shared.
     v_u_pm   := (SELECT id FROM users WHERE org_id = v_org_id AND email = c_teams->(proj->>'key')->>'pm');
     v_u_impl := (SELECT id FROM users WHERE org_id = v_org_id AND email = c_teams->(proj->>'key')->>'impl');
+
+    -- Internal team email addresses (for the email To/Cc fan-out) and the
+    -- customer contact's email (derived the same way the email inserts do).
+    v_email_ae   := 'ravi.kumar@impl-demo.team';
+    v_email_proc := 'meera.joshi@impl-demo.team';
+    v_email_pm   := c_teams->(proj->>'key')->>'pm';
+    v_email_impl := c_teams->(proj->>'key')->>'impl';
+    v_cust_email := lower(proj#>>'{contact,first}') || '.' || lower(proj#>>'{contact,last}') || '@' || (proj->>'domain');
 
     -- Internal project team on the deal (drives play RACI via deal_team_members).
     INSERT INTO deal_team_members (deal_id, org_id, user_id, role_id, added_by) VALUES
@@ -596,11 +609,18 @@ BEGIN
             v_close::timestamptz, 'handover_kickoff', 'active', v_sales)
     RETURNING id INTO v_thread;
 
+    -- Customer side: the primary contact.
     INSERT INTO whatsapp_thread_participants (thread_id, org_id, wa_phone, display_name, contact_id, side, joined_at)
     VALUES (v_thread, v_org_id, proj#>>'{contact,phone}',
             (proj#>>'{contact,first}') || ' ' || (proj#>>'{contact,last}'), v_contact, 'customer', v_close::timestamptz);
+    -- Internal side: the actual delivery team on this project (AE, PM, Implementation,
+    -- Procurement) — so the group shows who is really on it. Synthetic phones keep
+    -- the (thread_id, wa_phone) uniqueness intact without needing real numbers.
     INSERT INTO whatsapp_thread_participants (thread_id, org_id, wa_phone, display_name, user_id, side, joined_at)
-    VALUES (v_thread, v_org_id, '919700000000', 'Delivery Team', v_impl, 'internal', v_close::timestamptz);
+    SELECT v_thread, v_org_id, '9199' || lpad(u.id::text, 8, '0'),
+           u.first_name || ' ' || u.last_name, u.id, 'internal', v_close::timestamptz
+      FROM users u
+     WHERE u.id IN (v_u_ae, v_u_pm, v_u_impl, v_u_proc);
 
     FOR msg IN SELECT * FROM jsonb_array_elements(proj->'messages') LOOP
       IF msg->>'dir' = 'inbound' THEN
@@ -625,22 +645,27 @@ BEGIN
     -- Email as the working comms proxy: the same conversation, as real emails on the deal.
     FOR msg IN SELECT * FROM jsonb_array_elements(proj->'messages') LOOP
       IF msg->>'dir' = 'inbound' THEN
+        -- From the customer contact, addressed to the AE and cc'ing the rest of
+        -- the delivery team — i.e. one customer contact → the entire team.
         INSERT INTO emails (org_id, deal_id, contact_id, direction, subject, body,
-                            from_address, to_address, sent_at, created_at, conversation_id, provider)
+                            from_address, to_address, cc_addresses, sent_at, created_at, conversation_id, provider)
         VALUES (v_org_id, v_deal, v_contact, 'received',
                 'Re: ' || (proj->>'account') || ' — delivery update', msg->>'body',
-                lower(proj#>>'{contact,first}') || '.' || lower(proj#>>'{contact,last}') || '@' || (proj->>'domain'),
-                'delivery@impl-test.local',
+                v_cust_email,
+                v_email_ae,
+                v_email_pm || ', ' || v_email_impl || ', ' || v_email_proc,
                 now() - ((msg->>'ago_d')::int || ' days')::interval,
                 now() - ((msg->>'ago_d')::int || ' days')::interval,
                 'deliv-' || (proj->>'key'), 'outlook');
       ELSE
+        -- From the delivery team to the customer contact, cc'ing the rest of the team.
         INSERT INTO emails (org_id, user_id, deal_id, contact_id, direction, subject, body,
-                            from_address, to_address, sent_at, opened_at, created_at, conversation_id, provider)
+                            from_address, to_address, cc_addresses, sent_at, opened_at, created_at, conversation_id, provider)
         VALUES (v_org_id, v_impl, v_deal, v_contact, 'sent',
                 (proj->>'account') || ' — delivery update', msg->>'body',
-                'delivery@impl-test.local',
-                lower(proj#>>'{contact,first}') || '.' || lower(proj#>>'{contact,last}') || '@' || (proj->>'domain'),
+                v_email_impl,
+                v_cust_email,
+                v_email_ae || ', ' || v_email_pm || ', ' || v_email_proc,
                 now() - ((msg->>'ago_d')::int || ' days')::interval,
                 now() - ((msg->>'ago_d')::int || ' days')::interval + interval '2 hours',
                 now() - ((msg->>'ago_d')::int || ' days')::interval,

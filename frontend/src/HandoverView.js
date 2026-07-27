@@ -1304,12 +1304,105 @@ function CommMessageModal({ message, onClose }) {
         </div>
         <div style={{ padding: '16px 18px' }}>
           {meta && <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 4 }}>{meta}</div>}
-          <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 14 }}>{message.at ? new Date(message.at).toLocaleString() : ''}</div>
+          <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 12 }}>{message.at ? new Date(message.at).toLocaleString() : ''}</div>
+
+          {/* Recipients — email To/Cc, or the WhatsApp group's members */}
+          {message.channel === 'email' && (message.to || (message.cc && message.cc.length > 0)) && (
+            <div style={{ fontSize: 12, color: '#374151', marginBottom: 14, padding: '8px 10px', background: '#f8fafc', borderRadius: 6, border: '1px solid #eef2f7' }}>
+              {message.to && <div><span style={{ color: '#9ca3af' }}>To </span>{message.to}</div>}
+              {message.cc && message.cc.length > 0 && (
+                <div style={{ marginTop: 2 }}><span style={{ color: '#9ca3af' }}>Cc </span>{message.cc.join(', ')}</div>
+              )}
+            </div>
+          )}
+          {message.channel === 'whatsapp' && (message.groupSubject || (message.participants && message.participants.length > 0)) && (
+            <div style={{ fontSize: 12, marginBottom: 14, padding: '8px 10px', background: '#f8fafc', borderRadius: 6, border: '1px solid #eef2f7' }}>
+              {message.groupSubject && (
+                <div style={{ color: '#374151', marginBottom: (message.participants && message.participants.length) ? 6 : 0 }}>
+                  <span style={{ color: '#9ca3af' }}>Group </span>{message.groupSubject}
+                </div>
+              )}
+              {message.participants && message.participants.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                  {message.participants.map((p, i) => (
+                    <span key={i} style={{ fontSize: 11, padding: '1px 7px', borderRadius: 10,
+                      background: p.side === 'internal' ? '#e0f2fe' : '#fef3c7',
+                      color: p.side === 'internal' ? '#0369a1' : '#92400e' }}>{p.name}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {message.subject && <div style={{ fontSize: 15, fontWeight: 600, color: '#111827', marginBottom: 10 }}>{message.subject}</div>}
           <div style={{ fontSize: 13, lineHeight: 1.6, color: '#374151', whiteSpace: 'pre-wrap' }}>{message.body || '(No message body.)'}</div>
         </div>
       </div>
     </div>
+  );
+}
+
+// ── CustomerContactPanel: one customer contact's conversation with the team ───
+// Opened by clicking a Customer-team member in the Summary. Lists that contact's
+// communications (each row opens the full detail with recipients).
+
+function CustomerContactPanel({ stakeholder, onClose }) {
+  const [data, setData] = useState(null);
+  const [openComm, setOpenComm] = useState(null);
+  useEffect(() => {
+    apiService.handovers.contactCommunications(stakeholder.contactId)
+      .then(res => setData(res.data))
+      .catch(() => setData({ contact: { name: stakeholder.name }, communications: [] }));
+  }, [stakeholder.contactId, stakeholder.name]);
+
+  const CH = { email: { label: 'Email', color: '#7c3aed' }, whatsapp: { label: 'WhatsApp', color: '#059669' } };
+  const comms = data?.communications || [];
+  const first = (stakeholder.name || '').split(' ')[0];
+  const roleLabel = STAKE_ROLE[stakeholder.handoverRole] || stakeholder.handoverRole;
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.3)', zIndex: 1000 }} />
+      <div style={{ position: 'fixed', top: 0, right: 0, height: '100%', width: 'min(460px, 94vw)', background: '#fff',
+        zIndex: 1001, boxShadow: '-6px 0 24px rgba(0,0,0,0.15)', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid #e5e7eb' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ width: 36, height: 36, borderRadius: '50%', background: '#fef3c7', color: '#92400e',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700 }}>{initials(stakeholder.name)}</div>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 600, color: '#111827' }}>{stakeholder.name}</div>
+              <div style={{ fontSize: 12, color: '#6b7280' }}>
+                {roleLabel}{stakeholder.isPrimaryContact ? ' · primary' : ''}{data?.contact?.account ? ` · ${data.contact.account}` : ''}
+              </div>
+            </div>
+          </div>
+          <button onClick={onClose} style={{ border: 'none', background: 'none', fontSize: 22, color: '#9ca3af', cursor: 'pointer', lineHeight: 1 }}>×</button>
+        </div>
+
+        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 }}>
+            Communications with the team{data ? ` (${comms.length})` : ''}
+          </div>
+          {data === null ? <div style={{ color: '#9ca3af', fontSize: 13 }}>Loading…</div>
+            : comms.length === 0 ? <div style={{ fontSize: 12, color: '#9ca3af' }}>No direct communications from {first} yet.</div>
+            : comms.map((m, i) => {
+              const ch = CH[m.channel] || { label: m.channel, color: '#6b7280' };
+              return (
+                <div key={m.id} onClick={() => setOpenComm(m)} title="Open message"
+                  style={{ padding: '7px 0', borderTop: i === 0 ? 'none' : '1px solid #f3f4f6', fontSize: 12, cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 2 }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: ch.color }}>{ch.label}</span>
+                    <span style={{ color: '#9ca3af' }}>{m.direction === 'outbound' ? `to ${first}` : `from ${first}`}</span>
+                    <span style={{ marginLeft: 'auto', color: '#9ca3af', fontSize: 10 }}>{m.at ? new Date(m.at).toLocaleDateString() : ''}</span>
+                  </div>
+                  <div style={{ color: '#374151' }}>{m.subject ? <strong>{m.subject}: </strong> : null}{(m.body || '').slice(0, 120)}{(m.body || '').length > 120 ? '…' : ''}</div>
+                </div>
+              );
+            })}
+        </div>
+      </div>
+      {openComm && <CommMessageModal message={openComm} onClose={() => setOpenComm(null)} />}
+    </>
   );
 }
 
@@ -1373,6 +1466,7 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject }) {
 
   const [openMember, setOpenMember] = useState(null);
   const [openCommitment, setOpenCommitment] = useState(null);
+  const [openContact, setOpenContact] = useState(null);
 
   const card = { background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: '14px 16px', marginBottom: 16 };
   const h4   = { margin: '0 0 10px', fontSize: 14, color: '#374151' };
@@ -1411,7 +1505,8 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject }) {
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 10 }}>
             {(detail.stakeholders || []).map(s => (
-              <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 13 }}>
+              <div key={s.id} onClick={() => s.contactId && setOpenContact(s)}
+                style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 13, cursor: s.contactId ? 'pointer' : 'default' }}>
                 <div style={{ width: 30, height: 30, flexShrink: 0, borderRadius: '50%', background: '#fef3c7',
                   color: '#92400e', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700 }}>
                   {initials(s.name)}
@@ -1512,6 +1607,7 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject }) {
 
       {openMember && <PersonPanel member={openMember} onClose={() => setOpenMember(null)} onOpenProject={onOpenProject} />}
       {openCommitment && <DeliverableModal commitmentId={openCommitment} onClose={() => setOpenCommitment(null)} />}
+      {openContact && <CustomerContactPanel stakeholder={openContact} onClose={() => setOpenContact(null)} />}
     </div>
   );
 }
