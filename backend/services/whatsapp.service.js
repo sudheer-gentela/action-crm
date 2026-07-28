@@ -132,10 +132,10 @@ async function getThreadForHandover(handoverId, orgId, { createIfMissing = false
   const { rows: [cust] } = await pool.query(
     `SELECT c.id AS contact_id, c.phone,
             c.first_name || ' ' || c.last_name AS full_name
-       FROM sales_handover_stakeholders s
+       FROM project_contacts s
        JOIN contacts c ON c.id = s.contact_id
-      WHERE s.handover_id = $1 AND s.org_id = $2 AND c.phone IS NOT NULL
-      ORDER BY s.is_primary_contact DESC, s.id
+      WHERE s.context_type = 'handover' AND s.context_id = $1 AND s.org_id = $2 AND c.phone IS NOT NULL
+      ORDER BY s.is_primary DESC, s.id
       LIMIT 1`,
     [handoverId, orgId]
   );
@@ -206,8 +206,8 @@ async function resolveDirectThreadByPhone(handoverId, orgId, phone, userId) {
     [handoverId, orgId]
   );
   const { rows: [ct] } = await pool.query(
-    `SELECT c.id FROM sales_handover_stakeholders s JOIN contacts c ON c.id = s.contact_id
-      WHERE s.handover_id = $1 AND s.org_id = $2
+    `SELECT c.id FROM project_contacts s JOIN contacts c ON c.id = s.contact_id
+      WHERE s.context_type = 'handover' AND s.context_id = $1 AND s.org_id = $2
         AND regexp_replace(c.phone, '[^0-9]', '', 'g') = $3
       LIMIT 1`,
     [handoverId, orgId, waPhone]
@@ -240,9 +240,9 @@ async function preferredDirectThreadForHandover(handoverId, orgId, userId) {
   if (direct) return direct;
 
   const { rows: [cust] } = await pool.query(
-    `SELECT c.phone FROM sales_handover_stakeholders s JOIN contacts c ON c.id = s.contact_id
-      WHERE s.handover_id = $1 AND s.org_id = $2 AND c.phone IS NOT NULL
-      ORDER BY s.is_primary_contact DESC, s.id LIMIT 1`,
+    `SELECT c.phone FROM project_contacts s JOIN contacts c ON c.id = s.contact_id
+      WHERE s.context_type = 'handover' AND s.context_id = $1 AND s.org_id = $2 AND c.phone IS NOT NULL
+      ORDER BY s.is_primary DESC, s.id LIMIT 1`,
     [handoverId, orgId]
   );
   if (!cust) throw Object.assign(new Error('No stakeholder with a phone number on this handover'), { status: 400 });
@@ -324,9 +324,9 @@ async function listSendTargets(handoverId, orgId) {
 
   const { rows: stake } = await pool.query(
     `SELECT c.phone, c.first_name || ' ' || c.last_name AS full_name, c.id AS contact_id
-       FROM sales_handover_stakeholders s JOIN contacts c ON c.id = s.contact_id
-      WHERE s.handover_id = $1 AND s.org_id = $2 AND c.phone IS NOT NULL
-      ORDER BY s.is_primary_contact DESC, s.id`,
+       FROM project_contacts s JOIN contacts c ON c.id = s.contact_id
+      WHERE s.context_type = 'handover' AND s.context_id = $1 AND s.org_id = $2 AND c.phone IS NOT NULL
+      ORDER BY s.is_primary DESC, s.id`,
     [handoverId, orgId]
   );
   for (const st of stake) addIndividual(st.phone, st.full_name, st.contact_id);

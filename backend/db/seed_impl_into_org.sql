@@ -292,9 +292,9 @@ BEGIN
     WHERE org_id = v_org_id
       AND handover_id IN (SELECT id FROM sales_handovers WHERE org_id = v_org_id
                           AND deal_id IN (SELECT id FROM deals WHERE org_id = v_org_id AND external_crm_type = 'demo_seed'));
-  DELETE FROM sales_handover_stakeholders
-    WHERE org_id = v_org_id
-      AND handover_id IN (SELECT id FROM sales_handovers WHERE org_id = v_org_id
+  DELETE FROM project_contacts
+    WHERE org_id = v_org_id AND context_type = 'handover'
+      AND context_id IN (SELECT id FROM sales_handovers WHERE org_id = v_org_id
                           AND deal_id IN (SELECT id FROM deals WHERE org_id = v_org_id AND external_crm_type = 'demo_seed'));
   DELETE FROM sales_handovers
     WHERE org_id = v_org_id AND deal_id IN (SELECT id FROM deals WHERE org_id = v_org_id AND external_crm_type = 'demo_seed');
@@ -465,9 +465,8 @@ BEGIN
 
     -- Customer stakeholders — CUSTOMER-SIDE ONLY. The internal delivery team
     -- lives in deal_team_members; stakeholders are the customer's people.
-    INSERT INTO sales_handover_stakeholders (handover_id, org_id, contact_id, name, handover_role, is_primary_contact)
-    VALUES (v_handover, v_org_id, v_contact,
-            (proj#>>'{contact,first}') || ' ' || (proj#>>'{contact,last}'), 'go_live_approver', TRUE);
+    INSERT INTO project_contacts (org_id, context_type, context_id, contact_id, role, is_primary)
+    VALUES (v_org_id, 'handover', v_handover, v_contact, 'go_live_approver', TRUE);
 
     IF TRUE THEN
       -- Build the customer team: create the contacts on the account, add as stakeholders.
@@ -478,9 +477,8 @@ BEGIN
                 '{"demo_seed":"impl_showcase_v1"}'::jsonb, v_sales)
         RETURNING id INTO v_ct_contact;
 
-        INSERT INTO sales_handover_stakeholders (handover_id, org_id, contact_id, name, handover_role)
-        VALUES (v_handover, v_org_id, v_ct_contact,
-                (com->>'first') || ' ' || (com->>'last'), com->>'role');
+        INSERT INTO project_contacts (org_id, context_type, context_id, contact_id, role)
+        VALUES (v_org_id, 'handover', v_handover, v_ct_contact, com->>'role');
       END LOOP;
     END IF;
 

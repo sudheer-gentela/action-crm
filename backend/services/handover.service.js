@@ -105,7 +105,7 @@ function fmtStakeholder(row) {
     id:                row.id,
     handoverId:        row.handover_id,
     contactId:         row.contact_id,
-    accountTeamId:     row.account_team_id,
+    accountTeamId:     null,
     name:              row.name,
     handoverRole:      row.handover_role,
     relationshipNotes: row.relationship_notes,
@@ -114,6 +114,7 @@ function fmtStakeholder(row) {
     // joined contact fields
     contactEmail:      row.contact_email  ?? null,
     contactTitle:      row.contact_title  ?? null,
+    contactPhone:      row.contact_phone  ?? null,
   };
 }
 
@@ -281,10 +282,11 @@ async function initiate(dealId, orgId, userId) {
       const handoverRole = _mapDealContactRole(contact.role);
 
       await client.query(
-        `INSERT INTO sales_handover_stakeholders
-           (handover_id, org_id, contact_id, name, handover_role)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [h.id, orgId, contact.contact_id, contact.full_name, handoverRole]
+        `INSERT INTO project_contacts
+           (org_id, context_type, context_id, contact_id, role, created_by)
+         VALUES ($1, 'handover', $2, $3, $4, $5)
+         ON CONFLICT (context_type, context_id, contact_id) DO NOTHING`,
+        [orgId, h.id, contact.contact_id, handoverRole, userId]
       );
     }
 
@@ -382,7 +384,7 @@ async function list(orgId, userId, { scope = 'mine', status } = {}) {
      LEFT JOIN users u_so ON u_so.id = h.assigned_service_owner_id
      LEFT JOIN users u_cb ON u_cb.id = h.created_by
      LEFT JOIN sales_handover_plays shp ON shp.handover_id = h.id
-     LEFT JOIN sales_handover_stakeholders s  ON s.handover_id = h.id
+     LEFT JOIN project_contacts s  ON s.context_type = 'handover' AND s.context_id = h.id
      LEFT JOIN handover_deliverable_rollup r  ON r.handover_id = h.id
      WHERE ${conditions.join(' AND ')}
      GROUP BY h.id, d.name, a.name, u_so.first_name, u_so.last_name, u_cb.first_name, u_cb.last_name,
@@ -412,7 +414,7 @@ async function list(orgId, userId, { scope = 'mine', status } = {}) {
 // GET BY ID — full detail
 // ═══════════════════════════════════════════════════════════════════════════
 
-async function getById(handoverId, orgId) {
+async function getById(handoverId, orgId, userId = null) {
   const { rows } = await pool.query(
     `SELECT
        h.*,
@@ -454,7 +456,12 @@ async function getById(handoverId, orgId) {
     ? { id: handover.playbookId, name: rows[0].playbook_name, gateEnforcement: rows[0].playbook_gate_enforcement }
     : null;
 
-  return { ...handover, stakeholders, commitments, plays, dealTeam, playbook };
+  return {
+    ...handover, stakeholders, commitments, plays, dealTeam, playbook,
+    contactAddPolicy:      rows[0].contact_add_policy || { deal_owner: true, service_owner: true, admins: true, named_users: [] },
+    canAddContacts:        userId ? await canAddContacts(handoverId, orgId, userId) : false,
+    canEditContactPolicy:  userId ? await canEditContactPolicy(handoverId, orgId, userId) : false,
+  };
 }
 
 /** Internal project team on the deal, with the org-role each member holds. */
@@ -707,28 +714,49 @@ async function canSubmit(handoverId, orgId) {
 // STAKEHOLDER CRUD
 // ═══════════════════════════════════════════════════════════════════════════
 
-async function addStakeholder(handoverId, orgId, data) {
-  const { contactId, accountTeamId, name, handoverRole = 'other', relationshipNotes, isPrimaryContact = false } = data;
+async function addStakeholder(handoverId, orgId, userId, data) {
+  if (!(await canAddContacts(handoverId, orgId, userId)))
+    throw Object.assign(new Error('You do not have permission to add contacts to this project'), { status: 403 });
 
-  if (!name) throw Object.assign(new Error('name is required'), { status: 400 });
+  let contactId = data.contactId ? parseInt(data.contactId, 10) : null;
 
-  const { rows } = await pool.query(
-    `INSERT INTO sales_handover_stakeholders
-       (handover_id, org_id, contact_id, account_team_id, name, handover_role, relationship_notes, is_primary_contact)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-     RETURNING *`,
-    [handoverId, orgId, contactId || null, accountTeamId || null, name.trim(), handoverRole, relationshipNotes || null, isPrimaryContact]
-  );
+  // Create a new contact when one wasn't picked (name + optional phone/email).
+  if (!contactId) {
+    const full = String(data.name || '').trim();
+    if (!full) throw Object.assign(new Error('Select an existing contact or provide a name'), { status: 400 });
+    const parts = full.split(/\s+/);
+    const first = parts.shift();
+    const last  = parts.join(' ') || first;   // contacts.last_name is NOT NULL
+    const { rows: [ho] } = await pool.query(
+      `SELECT account_id FROM sales_handovers WHERE id = $1 AND org_id = $2`, [handoverId, orgId]);
+    const { rows: [c] } = await pool.query(
+      `INSERT INTO contacts (org_id, account_id, first_name, last_name, phone, email)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      [orgId, ho?.account_id ?? null, first, last, data.phone || null, data.email || null]);
+    contactId = c.id;
+  }
 
-  return fmtStakeholder(rows[0]);
+  const role = data.handoverRole || data.role || 'other';
+  const { rows: [pc] } = await pool.query(
+    `INSERT INTO project_contacts
+       (org_id, context_type, context_id, contact_id, role, is_primary, notes, created_by)
+     VALUES ($1, 'handover', $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (context_type, context_id, contact_id)
+       DO UPDATE SET role = EXCLUDED.role, is_primary = EXCLUDED.is_primary, notes = EXCLUDED.notes
+     RETURNING id`,
+    [orgId, handoverId, contactId, role, !!data.isPrimaryContact, data.relationshipNotes || null, userId]);
+
+  const list = await _getStakeholders(handoverId, orgId);
+  return list.find(s => s.id === pc.id) || null;
 }
 
 async function removeStakeholder(handoverId, orgId, stakeholderId) {
   const { rowCount } = await pool.query(
-    'DELETE FROM sales_handover_stakeholders WHERE id = $1 AND handover_id = $2 AND org_id = $3',
+    `DELETE FROM project_contacts
+      WHERE id = $1 AND context_type = 'handover' AND context_id = $2 AND org_id = $3`,
     [stakeholderId, handoverId, orgId]
   );
-  if (rowCount === 0) throw Object.assign(new Error('Stakeholder not found'), { status: 404 });
+  if (rowCount === 0) throw Object.assign(new Error('Project contact not found'), { status: 404 });
   return { deleted: true, id: stakeholderId };
 }
 
@@ -1101,16 +1129,79 @@ async function _getHandover(handoverId, orgId) {
 
 async function _getStakeholders(handoverId, orgId) {
   const { rows } = await pool.query(
-    `SELECT s.*,
-            c.email AS contact_email,
-            c.title AS contact_title
-     FROM sales_handover_stakeholders s
-     LEFT JOIN contacts c ON c.id = s.contact_id
-     WHERE s.handover_id = $1 AND s.org_id = $2
-     ORDER BY s.is_primary_contact DESC, s.name ASC`,
+    `SELECT pc.id,
+            pc.context_id                        AS handover_id,
+            pc.contact_id,
+            pc.role                              AS handover_role,
+            pc.is_primary                        AS is_primary_contact,
+            pc.notes                             AS relationship_notes,
+            pc.created_at,
+            (c.first_name || ' ' || c.last_name) AS name,
+            c.email                              AS contact_email,
+            c.title                              AS contact_title,
+            c.phone                              AS contact_phone
+     FROM project_contacts pc
+     JOIN contacts c ON c.id = pc.contact_id
+     WHERE pc.context_type = 'handover' AND pc.context_id = $1 AND pc.org_id = $2
+     ORDER BY pc.is_primary DESC, name ASC`,
     [handoverId, orgId]
   );
   return rows.map(fmtStakeholder);
+}
+
+// ── Project-contact add policy ───────────────────────────────────────────────
+async function _policyContext(handoverId, orgId, userId) {
+  const { rows: [h] } = await pool.query(
+    `SELECT h.assigned_service_owner_id, h.contact_add_policy, d.owner_id AS deal_owner_id
+       FROM sales_handovers h LEFT JOIN deals d ON d.id = h.deal_id
+      WHERE h.id = $1 AND h.org_id = $2`, [handoverId, orgId]);
+  if (!h) return null;
+  const { rows: [ou] } = await pool.query(
+    `SELECT role FROM org_users WHERE user_id = $1 AND org_id = $2`, [userId, orgId]);
+  const policy = h.contact_add_policy || { deal_owner: true, service_owner: true, admins: true, named_users: [] };
+  return {
+    policy,
+    isAdmin: ou?.role === 'admin',
+    isDealOwner: userId === h.deal_owner_id,
+    isServiceOwner: userId === h.assigned_service_owner_id,
+  };
+}
+
+async function canAddContacts(handoverId, orgId, userId) {
+  const ctx = await _policyContext(handoverId, orgId, userId);
+  if (!ctx) return false;
+  const p = ctx.policy;
+  const named = Array.isArray(p.named_users) ? p.named_users.map(Number) : [];
+  return (!!p.admins && ctx.isAdmin)
+      || (!!p.deal_owner && ctx.isDealOwner)
+      || (!!p.service_owner && ctx.isServiceOwner)
+      || named.includes(Number(userId));
+}
+
+// The fixed editor set — deal owner, service owner, or admin — may configure the policy.
+async function canEditContactPolicy(handoverId, orgId, userId) {
+  const ctx = await _policyContext(handoverId, orgId, userId);
+  return !!ctx && (ctx.isAdmin || ctx.isDealOwner || ctx.isServiceOwner);
+}
+
+async function getContactPolicy(handoverId, orgId) {
+  const { rows: [h] } = await pool.query(
+    `SELECT contact_add_policy FROM sales_handovers WHERE id = $1 AND org_id = $2`, [handoverId, orgId]);
+  return h?.contact_add_policy || { deal_owner: true, service_owner: true, admins: true, named_users: [] };
+}
+
+async function setContactPolicy(handoverId, orgId, userId, policy) {
+  if (!(await canEditContactPolicy(handoverId, orgId, userId)))
+    throw Object.assign(new Error('You cannot configure who adds contacts on this project'), { status: 403 });
+  const clean = {
+    deal_owner:    !!policy.deal_owner,
+    service_owner: !!policy.service_owner,
+    admins:        !!policy.admins,
+    named_users:   Array.isArray(policy.named_users) ? policy.named_users.map(Number).filter(Boolean) : [],
+  };
+  await pool.query(`UPDATE sales_handovers SET contact_add_policy = $3 WHERE id = $1 AND org_id = $2`,
+    [handoverId, orgId, JSON.stringify(clean)]);
+  return { policy: clean };
 }
 
 async function _getCommitments(handoverId, orgId) {
@@ -1874,6 +1965,9 @@ module.exports = {
   canClose,               // 2026_64 — closure gate
   addStakeholder,
   removeStakeholder,
+  getContactPolicy,
+  setContactPolicy,
+  canAddContacts,
   addCommitment,
   updateCommitment,       // 2026_64 — commitment lifecycle
   removeCommitment,

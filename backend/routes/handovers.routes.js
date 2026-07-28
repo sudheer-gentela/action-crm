@@ -95,7 +95,7 @@ router.post('/sales', async (req, res) => {
 
 router.get('/sales/:id', async (req, res) => {
   try {
-    const handover = await handoverService.getById(parseInt(req.params.id), req.orgId);
+    const handover = await handoverService.getById(parseInt(req.params.id), req.orgId, req.userId);
     res.json({ handover });
   } catch (err) {
     console.error('Get handover error:', err);
@@ -182,11 +182,32 @@ router.post('/sales/:id/stakeholders', async (req, res) => {
     const stakeholder = await handoverService.addStakeholder(
       parseInt(req.params.id),
       req.orgId,
+      req.userId,
       req.body
     );
     res.status(201).json({ stakeholder });
   } catch (err) {
     console.error('Add stakeholder error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── Contact-add policy (who may add project contacts) ─────────────────────────
+router.get('/sales/:id/contact-policy', async (req, res) => {
+  try {
+    const policy = await handoverService.getContactPolicy(parseInt(req.params.id), req.orgId);
+    res.json({ policy });
+  } catch (err) {
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+router.put('/sales/:id/contact-policy', async (req, res) => {
+  try {
+    const out = await handoverService.setContactPolicy(
+      parseInt(req.params.id), req.orgId, req.userId, req.body?.policy || req.body || {});
+    res.json(out);
+  } catch (err) {
     res.status(err.status || 500).json({ error: { message: err.message } });
   }
 });

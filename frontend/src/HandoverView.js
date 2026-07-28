@@ -540,91 +540,175 @@ function AddPlayForm({ users, onAdd }) {
 
 // ── StakeholderSection ────────────────────────────────────────────────────────
 
-function StakeholderSection({ stakeholders, canEdit, onAdd, onRemove }) {
-  const [adding,  setAdding]  = useState(false);
-  const [name,    setName]    = useState('');
-  const [role,    setRole]    = useState('implementation_lead');
-  const [notes,   setNotes]   = useState('');
-  const [saving,  setSaving]  = useState(false);
+function StakeholderSection({ stakeholders, canEdit, onAdd, onRemove, accountId, handoverId, canEditPolicy }) {
+  const [adding,    setAdding]    = useState(false);
+  const [mode,      setMode]      = useState('existing');   // 'existing' | 'new'
+  const [contactId, setContactId] = useState('');
+  const [name,      setName]      = useState('');
+  const [cc,        setCc]        = useState('+91');
+  const [phone,     setPhone]     = useState('');
+  const [role,      setRole]      = useState('implementation_lead');
+  const [notes,     setNotes]     = useState('');
+  const [saving,    setSaving]    = useState(false);
+  const [err,       setErr]       = useState('');
+  const [accountContacts, setAccountContacts] = useState([]);
+
+  const [policyOpen, setPolicyOpen] = useState(false);
+  const [policy,     setPolicy]     = useState(null);
+  const [orgUsers,   setOrgUsers]   = useState([]);
+  const [policyMsg,  setPolicyMsg]  = useState('');
+
+  useEffect(() => {
+    if (!adding || mode !== 'existing' || !accountId) return;
+    apiService.contacts.getByAccount(accountId)
+      .then(r => setAccountContacts(r.data.contacts || r.data || []))
+      .catch(() => setAccountContacts([]));
+  }, [adding, mode, accountId]);
+
+  const openPolicy = async () => {
+    setPolicyOpen(true); setPolicyMsg('');
+    try {
+      const [p, u] = await Promise.all([
+        apiService.handovers.getContactPolicy(handoverId),
+        apiService.handovers.assignableUsers(),
+      ]);
+      setPolicy(p.data.policy); setOrgUsers(u.data.users || []);
+    } catch { setPolicyMsg('Could not load policy.'); }
+  };
+  const savePolicy = async () => {
+    try { await apiService.handovers.setContactPolicy(handoverId, policy); setPolicyMsg('Saved.'); }
+    catch (e) { setPolicyMsg(e?.response?.data?.error?.message || 'Could not save.'); }
+  };
+  const toggleNamed = (uid) => setPolicy(p => {
+    const set = new Set((p.named_users || []).map(Number));
+    if (set.has(uid)) set.delete(uid); else set.add(uid);
+    return { ...p, named_users: [...set] };
+  });
 
   const handleAdd = async () => {
-    if (!name.trim()) return;
+    setErr('');
+    if (mode === 'existing' && !contactId) { setErr('Pick a contact.'); return; }
+    if (mode === 'new' && !name.trim())    { setErr('Enter a name.'); return; }
+    if (mode === 'new' && !phone.trim())   { setErr('Enter a phone number.'); return; }
     setSaving(true);
     try {
-      await onAdd({ name: name.trim(), handoverRole: role, relationshipNotes: notes });
-      setName(''); setRole('implementation_lead'); setNotes('');
-      setAdding(false);
-    } finally { setSaving(false); }
+      const payload = mode === 'existing'
+        ? { contactId, handoverRole: role, relationshipNotes: notes }
+        : { name: name.trim(), phone: `${cc}${phone.replace(/[^0-9]/g, '')}`, handoverRole: role, relationshipNotes: notes };
+      await onAdd(payload);
+      setContactId(''); setName(''); setPhone(''); setNotes(''); setRole('implementation_lead'); setAdding(false);
+    } catch (e) { setErr(e?.response?.data?.error?.message || 'Could not add.'); }
+    finally { setSaving(false); }
   };
+
+  const inp = { width: '100%', fontSize: 12, padding: '4px 8px', borderRadius: 4, border: '1px solid #d1d5db', boxSizing: 'border-box' };
 
   return (
     <div>
       {stakeholders.length === 0 && !adding && (
-        <div style={{ fontSize: 12, color: '#9ca3af', fontStyle: 'italic', marginBottom: 8 }}>
-          No stakeholders added yet.
-        </div>
+        <div style={{ fontSize: 12, color: '#9ca3af', fontStyle: 'italic', marginBottom: 8 }}>No contacts added yet.</div>
       )}
       {stakeholders.map(s => (
-        <div key={s.id} style={{
-          display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0',
-          borderBottom: '1px solid #f3f4f6',
-        }}>
+        <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderBottom: '1px solid #f3f4f6' }}>
           <div style={{ flex: 1 }}>
             <span style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>{s.name}</span>
             {s.isPrimaryContact && <span style={{ marginLeft: 6, fontSize: 10, color: '#0369a1', fontWeight: 700 }}>★ Primary</span>}
-            <span style={{ marginLeft: 8, fontSize: 11, color: '#6b7280' }}>
-              {HANDOVER_ROLE_LABELS[s.handoverRole] || s.handoverRole}
-            </span>
-            {s.relationshipNotes && (
-              <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>{s.relationshipNotes}</div>
-            )}
+            <span style={{ marginLeft: 8, fontSize: 11, color: '#6b7280' }}>{HANDOVER_ROLE_LABELS[s.handoverRole] || s.handoverRole}</span>
+            {s.contactPhone
+              ? <span style={{ marginLeft: 8, fontSize: 11, color: '#9ca3af' }}>{s.contactPhone}</span>
+              : <span style={{ marginLeft: 8, fontSize: 11, color: '#b45309' }}>no phone</span>}
+            {s.relationshipNotes && <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>{s.relationshipNotes}</div>}
           </div>
-          {canEdit && (
-            <button onClick={() => onRemove(s.id)} title="Remove stakeholder" style={{
-              background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: '#ef4444',
-            }}>✕</button>
-          )}
+          {canEdit && <button onClick={() => onRemove(s.id)} title="Remove" style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: '#ef4444' }}>✕</button>}
         </div>
       ))}
-      {canEdit && !adding && (
-        <button onClick={() => setAdding(true)} style={{
-          marginTop: 8, fontSize: 12, padding: '4px 10px', borderRadius: 4,
-          background: '#f0f9ff', color: '#0369a1', border: '1px dashed #93c5fd', cursor: 'pointer',
-        }}>
-          + Add stakeholder
-        </button>
-      )}
+
+      <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+        {canEdit && !adding && (
+          <button onClick={() => setAdding(true)} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 4, background: '#f0f9ff', color: '#0369a1', border: '1px dashed #93c5fd', cursor: 'pointer' }}>+ Add contact</button>
+        )}
+        {canEditPolicy && !policyOpen && (
+          <button onClick={openPolicy} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 4, background: '#fff', color: '#6b7280', border: '1px solid #e5e7eb', cursor: 'pointer' }}>Who can add contacts…</button>
+        )}
+      </div>
+
       {canEdit && adding && (
         <div style={{ marginTop: 10, padding: 12, background: '#f8fafc', borderRadius: 8, border: '1px solid #e5e7eb' }}>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-            <div style={{ flex: 1, minWidth: 130 }}>
-              <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 3 }}>Name</div>
-              <input value={name} onChange={e => setName(e.target.value)} disabled={saving}
-                placeholder="Contact name" style={{ width: '100%', fontSize: 12, padding: '4px 8px', borderRadius: 4, border: '1px solid #d1d5db', boxSizing: 'border-box' }} />
-            </div>
-            <div>
-              <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 3 }}>Role</div>
-              <select value={role} onChange={e => setRole(e.target.value)} disabled={saving}
-                style={{ fontSize: 12, padding: '4px 8px', borderRadius: 4, border: '1px solid #d1d5db' }}>
-                {Object.entries(HANDOVER_ROLE_LABELS).map(([k, v]) => (
-                  <option key={k} value={k}>{v}</option>
+          <div style={{ display: 'inline-flex', border: '1px solid #d1d5db', borderRadius: 6, overflow: 'hidden', marginBottom: 8 }}>
+            {['existing', 'new'].map(m => (
+              <button key={m} onClick={() => { setMode(m); setErr(''); }} style={{ padding: '4px 12px', fontSize: 12, fontWeight: 600, border: 'none', cursor: 'pointer', background: mode === m ? '#0369a1' : '#fff', color: mode === m ? '#fff' : '#374151' }}>
+                {m === 'existing' ? 'Existing contact' : 'New contact'}
+              </button>
+            ))}
+          </div>
+          {mode === 'existing' ? (
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 3 }}>Contact</div>
+              <select value={contactId} onChange={e => setContactId(e.target.value)} style={inp}>
+                <option value="">Select a contact…</option>
+                {accountContacts.map(c => (
+                  <option key={c.id} value={c.id}>
+                    {(c.name || `${c.first_name || ''} ${c.last_name || ''}`).trim()}{c.phone ? ` · ${c.phone}` : ' · no phone'}
+                  </option>
                 ))}
               </select>
+              <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 3 }}>Contacts on this account. Not listed? Switch to “New contact”.</div>
             </div>
+          ) : (
+            <>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 3 }}>Name</div>
+                <input value={name} onChange={e => setName(e.target.value)} placeholder="Full name" style={inp} />
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 3 }}>WhatsApp phone (with country code)</div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input value={cc} onChange={e => setCc(e.target.value)} style={{ ...inp, width: 64 }} />
+                  <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="national number" style={{ ...inp, flex: 1 }} />
+                </div>
+                <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 3 }}>e.g. +91 and 7207583441 — the country code is required for WhatsApp.</div>
+              </div>
+            </>
+          )}
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 3 }}>Role</div>
+            <select value={role} onChange={e => setRole(e.target.value)} style={{ fontSize: 12, padding: '4px 8px', borderRadius: 4, border: '1px solid #d1d5db' }}>
+              {Object.entries(HANDOVER_ROLE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
           </div>
           <div style={{ marginBottom: 8 }}>
             <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 3 }}>Notes (optional)</div>
-            <input value={notes} onChange={e => setNotes(e.target.value)} disabled={saving}
-              placeholder="Relationship context, preferred contact method, etc."
-              style={{ width: '100%', fontSize: 12, padding: '4px 8px', borderRadius: 4, border: '1px solid #d1d5db', boxSizing: 'border-box' }} />
+            <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Relationship context…" style={inp} />
           </div>
+          {err && <div style={{ fontSize: 11, color: '#991b1b', marginBottom: 6 }}>{err}</div>}
           <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={handleAdd} disabled={saving || !name.trim()} style={{
-              fontSize: 12, padding: '4px 12px', borderRadius: 4, background: '#0369a1', color: '#fff', border: 'none', cursor: 'pointer',
-            }}>{saving ? 'Adding…' : 'Add'}</button>
-            <button onClick={() => setAdding(false)} disabled={saving} style={{
-              fontSize: 12, padding: '4px 10px', borderRadius: 4, background: '#f1f5f9', color: '#374151', border: 'none', cursor: 'pointer',
-            }}>Cancel</button>
+            <button onClick={handleAdd} disabled={saving} style={{ fontSize: 12, padding: '4px 12px', borderRadius: 4, background: '#0369a1', color: '#fff', border: 'none', cursor: 'pointer' }}>{saving ? 'Adding…' : 'Add'}</button>
+            <button onClick={() => { setAdding(false); setErr(''); }} disabled={saving} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 4, background: '#f1f5f9', color: '#374151', border: 'none', cursor: 'pointer' }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {canEditPolicy && policyOpen && policy && (
+        <div style={{ marginTop: 10, padding: 12, background: '#fffdf5', borderRadius: 8, border: '1px solid #fde68a' }}>
+          <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 8 }}>Who can add contacts to this project</div>
+          {[['deal_owner', 'Deal owner'], ['service_owner', 'Project/service owner'], ['admins', 'Org admins']].map(([k, label]) => (
+            <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, marginBottom: 4 }}>
+              <input type="checkbox" checked={!!policy[k]} onChange={e => setPolicy({ ...policy, [k]: e.target.checked })} />{label}
+            </label>
+          ))}
+          <div style={{ fontSize: 11, color: '#6b7280', margin: '8px 0 4px' }}>Named users (explicit access)</div>
+          <div style={{ maxHeight: 120, overflow: 'auto', border: '1px solid #f3f4f6', borderRadius: 6, padding: 6 }}>
+            {orgUsers.length === 0 ? <div style={{ fontSize: 11, color: '#9ca3af' }}>No users.</div> : orgUsers.map(u => (
+              <label key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, padding: '2px 0' }}>
+                <input type="checkbox" checked={(policy.named_users || []).map(Number).includes(u.id)} onChange={() => toggleNamed(u.id)} />
+                {(u.name || `${u.first_name || ''} ${u.last_name || ''}`).trim() || u.email}
+              </label>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'center' }}>
+            <button onClick={savePolicy} style={{ fontSize: 12, padding: '4px 12px', borderRadius: 4, background: '#059669', color: '#fff', border: 'none', cursor: 'pointer' }}>Save policy</button>
+            <button onClick={() => setPolicyOpen(false)} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 4, background: '#f1f5f9', color: '#374151', border: 'none', cursor: 'pointer' }}>Close</button>
+            {policyMsg && <span style={{ fontSize: 11, color: '#059669' }}>{policyMsg}</span>}
           </div>
         </div>
       )}
@@ -1346,7 +1430,10 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
           </h4>
           <StakeholderSection
             stakeholders={stakeholders}
-            canEdit={salesCanEdit}
+            canEdit={detail.canAddContacts}
+            canEditPolicy={detail.canEditContactPolicy}
+            accountId={detail.accountId}
+            handoverId={detail.id}
             onAdd={handleAddStakeholder}
             onRemove={handleRemoveStakeholder}
           />

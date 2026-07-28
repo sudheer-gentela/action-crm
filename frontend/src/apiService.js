@@ -704,9 +704,10 @@ twilio: {
     canSubmit: (id)          => api.get(`/handovers/sales/${id}/can-submit`),
     canClose:  (id)          => api.get(`/handovers/sales/${id}/can-close`),
 
-    addStakeholder:    (id, data) => api.post(`/handovers/sales/${id}/stakeholders`, data),
-    updateStakeholder: (id, sid, data) => api.put(`/handovers/sales/${id}/stakeholders/${sid}`, data),
+    addStakeholder:    (id, data) => api.post(`/handovers/sales/${id}/stakeholders`, data),    updateStakeholder: (id, sid, data) => api.put(`/handovers/sales/${id}/stakeholders/${sid}`, data),
     removeStakeholder: (id, sid)  => api.delete(`/handovers/sales/${id}/stakeholders/${sid}`),
+    getContactPolicy:  (id)       => api.get(`/handovers/sales/${id}/contact-policy`),
+    setContactPolicy:  (id, policy) => api.put(`/handovers/sales/${id}/contact-policy`, { policy }),
 
     addCommitment:    (id, data)      => api.post(`/handovers/sales/${id}/commitments`, data),
     updateCommitment: (id, cid, data) => api.patch(`/handovers/sales/${id}/commitments/${cid}`, data),
