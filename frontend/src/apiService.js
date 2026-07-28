@@ -735,6 +735,19 @@ twilio: {
     handoverThread: (id)       => api.get(`/whatsapp/handovers/${id}/thread`),
     sendTargets:    (id)       => api.get(`/whatsapp/handovers/${id}/targets`),
     templates:      ()         => api.get(`/whatsapp/templates`),
+    // Org-authored template governance (Stage 2)
+    tplMine:    ()          => api.get('/whatsapp-templates/mine'),
+    tplAll:     ()          => api.get('/whatsapp-templates/all'),
+    tplUsable:  ()          => api.get('/whatsapp-templates/usable'),
+    tplPropose: (data)      => api.post('/whatsapp-templates', data),
+    tplReview:  (id, body)  => api.post(`/whatsapp-templates/${id}/review`, body),
+    tplSubmit:  (id)        => api.post(`/whatsapp-templates/${id}/submit`),
+    // Usage & billing (Stage 2)
+    usage:        (q = '')  => api.get(`/whatsapp-billing/usage${q}`),
+    billingConfig:()        => api.get('/whatsapp-billing/config'),
+    setBilling:   (data)    => api.put('/whatsapp-billing/config', data),
+    adminUsage:   (q = '')  => api.get(`/whatsapp-billing/admin/usage${q}`),
+    adminSetBilling: (orgId, data) => api.put(`/whatsapp-billing/admin/config/${orgId}`, data),
     sendToHandover: (id, body) => api.post(`/whatsapp/handovers/${id}/messages`, body),
   },
 

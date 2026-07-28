@@ -244,6 +244,8 @@ app.use('/api/salesforce',    require('./routes/salesforce.routes'));
 app.use('/api/hubspot',       require('./routes/hubspot.routes'));
 app.use('/api/slack',         require('./routes/slack.routes'));   // ← add this line
 app.use('/api/whatsapp',      require('./routes/whatsapp.routes'));
+app.use('/api/whatsapp-templates', require('./routes/whatsappTemplates.routes'));
+app.use('/api/whatsapp-billing', require('./routes/whatsappBilling.routes'));
 app.use('/api/crm-connections', require('./routes/crm-connections.routes'));
 app.use('/api/baseline',        require('./routes/baseline.routes'));
 

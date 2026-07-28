@@ -226,11 +226,43 @@ async function listTemplates(account) {
   return data.data || [];
 }
 
+/**
+ * Submit a new message template to Meta for approval.
+ * `variables` is the count of {{n}} placeholders in body (for the example block).
+ * Returns { ok, metaId, status } or { ok:false, code, error }.
+ */
+async function submitTemplate(account, { name, language, category, bodyText, headerText, footerText, example }) {
+  if (!account) return { ok: false, code: 'NOT_CONNECTED', error: 'WhatsApp is not connected' };
+  const components = [];
+  if (headerText) components.push({ type: 'HEADER', format: 'TEXT', text: headerText });
+  const body = { type: 'BODY', text: bodyText };
+  if (example && example.length) body.example = { body_text: [example] };
+  components.push(body);
+  if (footerText) components.push({ type: 'FOOTER', text: footerText });
+
+  try {
+    const res = await fetch(
+      `${GRAPH_BASE}/${GRAPH_VERSION}/${account.waba_id}/message_templates`,
+      {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${account.accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, language, category, components }),
+      }
+    );
+    const data = await res.json();
+    if (!res.ok) return { ok: false, code: String(data?.error?.code ?? res.status), error: data?.error?.message };
+    return { ok: true, metaId: data?.id ?? null, status: data?.status ?? 'PENDING' };
+  } catch (e) {
+    return { ok: false, code: 'NETWORK', error: e.message };
+  }
+}
+
 module.exports = {
   getAccount,
   isWindowOpen,
   sendToThread,
   listTemplates,
+  submitTemplate,
   createGroup,
   MAX_GROUP_PARTICIPANTS,
 };

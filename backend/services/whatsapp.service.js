@@ -21,6 +21,7 @@ const crypto = require('crypto');
 const { pool } = require('../config/database');
 const enc      = require('./credentials/encryption');
 const waChannel = require('./channels/whatsappChannel');
+const waTemplates = require('./whatsappTemplates.service');
 
 // ── Connect / status ─────────────────────────────────────────────────────────
 
@@ -346,6 +347,12 @@ async function listApprovedTemplates(orgId) {
   if (!account) return { templates: [] };
 
   const raw = await waChannel.listTemplates(account);
+
+  // Friendly variable labels the org authored in GoWarm, keyed by name+language.
+  const { rows: authored } = await pool.query(
+    `SELECT name, language, variable_map FROM whatsapp_templates WHERE org_id = $1`, [orgId]);
+  const labelMap = new Map(authored.map(a => [`${a.name}|${a.language}`, a.variable_map || []]));
+
   const templates = (raw || [])
     .filter(t => t.status === 'APPROVED')
     .map(t => {
@@ -354,13 +361,11 @@ async function listApprovedTemplates(orgId) {
       const idxs = [...new Set((text.match(/\{\{\s*(\d+)\s*\}\}/g) || [])
         .map(m => m.replace(/[^\d]/g, '')))];
       const n = idxs.length;
-      return {
-        name: t.name,
-        language: t.language,
-        category: t.category,
-        bodyText: text,
-        variables: Array.from({ length: n }, (_, i) => ({ label: `Variable ${i + 1}`, placeholder: '' })),
-      };
+      const authoredVars = labelMap.get(`${t.name}|${t.language}`);
+      const variables = (authoredVars && authoredVars.length === n)
+        ? authoredVars.map(v => ({ label: v.label || `Variable ${v.index}`, placeholder: v.example || '' }))
+        : Array.from({ length: n }, (_, i) => ({ label: `Variable ${i + 1}`, placeholder: '' }));
+      return { name: t.name, language: t.language, category: t.category, bodyText: text, variables };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -511,6 +516,24 @@ async function ingestWebhook(payload) {
   for (const entry of entries) {
     for (const change of entry.changes || []) {
       const value = change.value || {};
+
+      // Template approval/rejection updates (no phone_number_id; keyed by WABA).
+      if (change.field === 'message_template_status_update') {
+        const org = await orgForWaba(entry.id);
+        if (org) {
+          try {
+            await waTemplates.applyMetaStatusUpdate(org, {
+              metaTemplateId: value.message_template_id,
+              name: value.message_template_name,
+              language: value.message_template_language,
+              event: value.event,
+              reason: value.reason,
+            });
+          } catch (e) { console.error('[whatsapp] template status sync error:', e.message); }
+        }
+        continue;
+      }
+
       const phoneNumberId = value?.metadata?.phone_number_id;
       const org = await orgForPhoneNumberId(phoneNumberId);
       if (!org) continue;
@@ -541,6 +564,11 @@ async function ingestWebhook(payload) {
               : [s.status, org, s.id]
         );
         if (res.rowCount > 0) statuses++;
+        // Capture cost from Meta's pricing object when present.
+        if (s.pricing) {
+          try { await recordMessageCost(org, s.id, s.pricing); }
+          catch (e) { console.error('[whatsapp] cost capture error:', e.message); }
+        }
       }
     }
   }
@@ -589,6 +617,69 @@ async function orgForPhoneNumberId(phoneNumberId) {
     [phoneNumberId]
   );
   return row ? row.org_id : null;
+}
+
+async function orgForWaba(wabaId) {
+  if (!wabaId) return null;
+  const { rows: [row] } = await pool.query(
+    `SELECT org_id FROM org_whatsapp_accounts WHERE waba_id = $1 AND status = 'active'`,
+    [String(wabaId)]
+  );
+  return row ? row.org_id : null;
+}
+
+// Rough recipient-country from an E.164 number. Extend as more markets are used.
+function countryFromPhone(waPhone) {
+  const p = String(waPhone || '');
+  if (p.startsWith('91')) return 'IN';
+  return 'DEFAULT';
+}
+
+/**
+ * Record/settle the cost of an outbound message from a Meta status webhook's
+ * `pricing` object. Idempotent per (org, wa_message_id) — later statuses
+ * (sent → delivered) update the same row. Only called when pricing is present.
+ */
+async function recordMessageCost(orgId, waMessageId, pricing) {
+  if (!pricing || !waMessageId) return;
+  const category = String(pricing.category || '').toLowerCase() || 'utility';
+  const billable = pricing.billable !== false; // default true unless Meta says false
+
+  const { rows: [msg] } = await pool.query(
+    `SELECT m.id, m.thread_id, t.wa_phone, t.kind
+       FROM whatsapp_messages m LEFT JOIN whatsapp_threads t ON t.id = m.thread_id
+      WHERE m.org_id = $1 AND m.wa_message_id = $2`,
+    [orgId, waMessageId]);
+  const country = countryFromPhone(msg?.wa_phone);
+
+  const { rows: [rate] } = await pool.query(
+    `SELECT amount, currency FROM whatsapp_rates
+      WHERE category = $1 AND country IN ($2, 'DEFAULT')
+      ORDER BY (country = $2) DESC, effective_from DESC LIMIT 1`,
+    [category, country]);
+  const metaCost = billable ? Number(rate?.amount ?? 0) : 0;
+  const currency = rate?.currency ?? 'INR';
+
+  const { rows: [cfg] } = await pool.query(
+    `SELECT billing_mode, markup_pct, currency FROM whatsapp_billing_config WHERE org_id = $1`, [orgId]);
+  const billed = (cfg?.billing_mode === 'provider_rebill')
+    ? metaCost * (1 + Number(cfg.markup_pct || 0) / 100) : 0;
+
+  await pool.query(
+    `INSERT INTO whatsapp_message_costs
+       (org_id, message_id, wa_message_id, thread_id, group_thread_id, category, audience,
+        pricing_model, billable, recipient_country, meta_cost_amount, meta_cost_currency,
+        billed_amount, billed_currency)
+     VALUES ($1,$2,$3,$4,$5,$6,'any',$7,$8,$9,$10,$11,$12,$13)
+     ON CONFLICT (org_id, wa_message_id) DO UPDATE SET
+       category = EXCLUDED.category, pricing_model = EXCLUDED.pricing_model,
+       billable = EXCLUDED.billable, recipient_country = EXCLUDED.recipient_country,
+       meta_cost_amount = EXCLUDED.meta_cost_amount, meta_cost_currency = EXCLUDED.meta_cost_currency,
+       billed_amount = EXCLUDED.billed_amount, billed_currency = EXCLUDED.billed_currency`,
+    [orgId, msg?.id ?? null, waMessageId, msg?.thread_id ?? null,
+     msg?.kind === 'group' ? msg?.thread_id ?? null : null,
+     category, pricing.pricing_model || null, billable, country,
+     metaCost, currency, billed, cfg?.currency || currency]);
 }
 
 function contactNameFromValue(value, fromPhone) {
