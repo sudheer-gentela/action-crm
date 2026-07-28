@@ -207,10 +207,30 @@ async function createGroup({ account, subject }) {
   }
 }
 
+// ── Templates ────────────────────────────────────────────────────────────────
+
+/**
+ * Fetch this WABA's message templates from Meta. Returns the raw `data` array
+ * (each with name, status, category, language, components). Caller filters.
+ */
+async function listTemplates(account) {
+  const url = `${GRAPH_BASE}/${GRAPH_VERSION}/${account.waba_id}/message_templates`
+            + `?fields=name,status,category,language,components&limit=250`;
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${account.accessToken}` } });
+  const data = await res.json();
+  if (!res.ok) {
+    const err = data?.error || {};
+    throw Object.assign(new Error(err.message || 'Failed to fetch templates from Meta'),
+      { status: res.status, code: err.code });
+  }
+  return data.data || [];
+}
+
 module.exports = {
   getAccount,
   isWindowOpen,
   sendToThread,
+  listTemplates,
   createGroup,
   MAX_GROUP_PARTICIPANTS,
 };

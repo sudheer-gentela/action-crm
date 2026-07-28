@@ -75,6 +75,16 @@ router.get('/handovers/:handoverId/targets', async (req, res) => {
   }
 });
 
+// Approved WhatsApp templates for this org (live from Meta), for the composer.
+router.get('/templates', async (req, res) => {
+  try {
+    const out = await whatsapp.listApprovedTemplates(req.orgId);
+    res.json(out);
+  } catch (e) {
+    res.status(e.status || 500).json({ error: { message: e.message, code: e.code } });
+  }
+});
+
 router.post('/handovers/:handoverId/messages', async (req, res) => {
   try {
     const result = await whatsapp.sendToHandover(

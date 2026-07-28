@@ -2004,12 +2004,32 @@ function CommunicationsPanel({ handoverId }) {
   const selected = targets.find(t => t.key === selKey) || targets[0] || null;
   const windowOpen      = selected ? selected.windowOpen : null;
   const windowExpiresAt = selected ? selected.windowExpiresAt : null;
+  const recipientBlocked = !selected || (selected.type === 'individual' && selected.phoneValid === false);
 
-  // Composer mode + template selection.
+  // Composer mode + template selection. Templates come live from the org's
+  // approved WhatsApp templates (Meta), so the picker can only offer sendable
+  // ones. WA_TEMPLATES is kept only as a friendly-label lookup + offline fallback.
+  const [apiTemplates, setApiTemplates] = useState(null);   // null = not loaded yet
+  const templateList = (apiTemplates && apiTemplates.length)
+    ? apiTemplates.map(t => {
+        const friendly = WA_TEMPLATES.find(w => w.name === t.name);
+        return {
+          name: t.name,
+          language: t.language,
+          label: (friendly && friendly.label) || t.name,
+          description: (friendly && friendly.description) || (t.category ? `${t.category} template` : ''),
+          // Prefer friendly labels when the variable counts line up; else generic.
+          variables: (friendly && friendly.variables && friendly.variables.length === t.variables.length)
+            ? friendly.variables
+            : t.variables,
+        };
+      })
+    : WA_TEMPLATES;
+
   const [mode,    setMode]    = useState('text');               // 'text' | 'template'
-  const [tplName, setTplName] = useState(WA_TEMPLATES[0].name);
+  const [tplName, setTplName] = useState(templateList[0] ? templateList[0].name : '');
   const [tplArgs, setTplArgs] = useState({});                    // { [varIndex]: value }
-  const tpl = WA_TEMPLATES.find(t => t.name === tplName) || WA_TEMPLATES[0];
+  const tpl = templateList.find(t => t.name === tplName) || templateList[0] || WA_TEMPLATES[0];
 
   const load = useCallback(async () => {
     try { const res = await apiService.handovers.communications(handoverId); setItems(res.data.items || []); }
@@ -2022,10 +2042,22 @@ function CommunicationsPanel({ handoverId }) {
       // Default to the first deliverable individual, else the first target.
       setSelKey(prev => (prev && ts.some(t => t.key === prev))
         ? prev
-        : (ts.find(t => t.type === 'individual')?.key || ts[0]?.key || ''));
+        : (ts.find(t => t.type === 'individual' && t.phoneValid !== false)?.key
+           || ts.find(t => t.type === 'individual')?.key || ts[0]?.key || ''));
     } catch { setTargets([]); }
+    // Approved templates for the org, live from Meta.
+    try {
+      const res3 = await apiService.whatsapp.templates();
+      setApiTemplates(res3.data.templates || []);
+    } catch { setApiTemplates([]); }
   }, [handoverId]);
   useEffect(() => { load(); }, [load]);
+
+  // Keep the selected template valid once the live list loads.
+  useEffect(() => {
+    if (!templateList.some(t => t.name === tplName) && templateList[0]) setTplName(templateList[0].name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiTemplates]);
 
   // Default the composer to the only mode that can send for THIS recipient:
   // free-form text when their window is open, templates when it is closed.
@@ -2041,13 +2073,20 @@ function CommunicationsPanel({ handoverId }) {
 
   const mapErr = (e) => {
     const er = e?.response?.data?.error || {};
-    if (er.code === 'NOT_CONNECTED')   return 'WhatsApp is not connected for this org yet.';
-    if (er.code === 'THREAD_NOT_FOUND') return 'That conversation is no longer available on this handover.';
-    if (er.code === 'WINDOW_CLOSED')   return 'The 24-hour window is closed for this recipient — send an approved template to re-open it.';
-    if (er.code === 'OPTED_OUT')       return 'This recipient has opted out of WhatsApp messages.';
-    if (String(er.code) === '132001' || String(er.code) === '132000')
-      return 'That template is not approved for this account (or the name/language does not match). Check WhatsApp Manager.';
-    if (String(er.code) === '131047')  return 'Re-engagement required — the window is closed. Send a template instead.';
+    const c = String(er.code);
+    if (er.code === 'NOT_CONNECTED')       return 'WhatsApp is not connected for this org yet.';
+    if (er.code === 'THREAD_NOT_FOUND')    return 'That conversation is no longer available on this handover.';
+    if (er.code === 'WINDOW_CLOSED')       return 'The 24-hour window is closed for this recipient — send an approved template to re-open it.';
+    if (er.code === 'OPTED_OUT')           return 'This recipient has opted out of WhatsApp messages.';
+    if (er.code === 'MISSING_COUNTRY_CODE') return er.message || 'Add a country code (e.g. +91) to this contact — it looks like a local number.';
+    if (er.code === 'INVALID_PHONE')       return er.message || 'This contact’s phone number is not a valid international number.';
+    if (er.code === 'MISSING_PHONE')       return 'This contact has no phone number. Add one in Contacts.';
+    if (c === '132001' || c === '132000')  return 'That template is not approved for this account (or the name/language does not match). Check WhatsApp Manager.';
+    if (c === '131047')                    return 'Re-engagement required — the window is closed. Send a template instead.';
+    if (c === '131026')                    return 'Message undeliverable — the number may not be on WhatsApp, or it isn’t in a valid international format.';
+    if (c === '131030')                    return 'This recipient isn’t in the allowed list (test numbers can only message pre-approved recipients).';
+    if (c === '131005' || c === '131009')  return 'Access denied by Meta — the connected token is missing WhatsApp permissions, or the number isn’t under this WABA.';
+    if (c === '100')                       return 'Meta rejected the request (invalid parameter) — usually a bad recipient number or malformed template.';
     return er.message || 'Could not send.';
   };
 
@@ -2126,7 +2165,7 @@ function CommunicationsPanel({ handoverId }) {
               {targets.some(t => t.type === 'individual') && (
                 <optgroup label="People">
                   {targets.filter(t => t.type === 'individual').map(t => (
-                    <option key={t.key} value={t.key}>{t.name}{t.phone ? ` · +${t.phone}` : ''}{t.optedOut ? ' · opted out' : ''}</option>
+                    <option key={t.key} value={t.key}>{t.name}{t.phone ? ` · +${t.phone}` : ''}{t.phoneValid === false ? ' · ⚠ needs country code' : ''}{t.optedOut ? ' · opted out' : ''}</option>
                   ))}
                 </optgroup>
               )}
@@ -2140,6 +2179,11 @@ function CommunicationsPanel({ handoverId }) {
             </select>
           )}
         </div>
+        {selected && selected.type === 'individual' && selected.phoneValid === false && (
+          <div style={{ fontSize: 11, color: '#b45309', marginBottom: 8 }}>
+            ⚠︎ {selected.phoneIssue || 'This number is missing a country code.'} Fix it on the contact in Contacts before sending.
+          </div>
+        )}
         {selected && selected.type === 'group' && (
           <div style={{ fontSize: 11, color: '#b45309', marginBottom: 8 }}>
             ⚠︎ {selected.note || 'Group send is not supported by the WhatsApp Cloud API yet.'} To reach one person now, pick them under “People”.
@@ -2173,10 +2217,10 @@ function CommunicationsPanel({ handoverId }) {
             <input value={text} onChange={e => setText(e.target.value)} placeholder="Send a WhatsApp message to the customer…"
               onKeyDown={e => { if (e.key === 'Enter') send(); }}
               style={{ flex: 1, padding: '8px 10px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 13 }} />
-            <button onClick={send} disabled={sending || !text.trim()} style={{
+            <button onClick={send} disabled={sending || !text.trim() || recipientBlocked} style={{
               padding: '8px 16px', borderRadius: 6, border: 'none',
-              background: (sending || !text.trim()) ? '#9ca3af' : '#059669', color: '#fff',
-              fontSize: 13, fontWeight: 600, cursor: (sending || !text.trim()) ? 'default' : 'pointer' }}>
+              background: (sending || !text.trim() || recipientBlocked) ? '#9ca3af' : '#059669', color: '#fff',
+              fontSize: 13, fontWeight: 600, cursor: (sending || !text.trim() || recipientBlocked) ? 'default' : 'pointer' }}>
               {sending ? 'Sending…' : 'Send'}
             </button>
           </div>
@@ -2185,7 +2229,7 @@ function CommunicationsPanel({ handoverId }) {
             <label style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.3, display: 'block', marginBottom: 4 }}>Template</label>
             <select value={tplName} onChange={e => { setTplName(e.target.value); setTplArgs({}); setErr(''); setOk(''); }}
               style={{ width: '100%', padding: '8px 10px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 13, marginBottom: 6, boxSizing: 'border-box' }}>
-              {WA_TEMPLATES.map(t => <option key={t.name} value={t.name}>{t.label} — {t.language}</option>)}
+              {templateList.map(t => <option key={t.name} value={t.name}>{t.label} — {t.language}</option>)}
             </select>
             {tpl.description && <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 10 }}>{tpl.description}</div>}
 
@@ -2198,10 +2242,10 @@ function CommunicationsPanel({ handoverId }) {
               </div>
             ))}
 
-            <button onClick={sendTemplate} disabled={sending} style={{
+            <button onClick={sendTemplate} disabled={sending || recipientBlocked} style={{
               marginTop: 4, padding: '8px 16px', borderRadius: 6, border: 'none',
-              background: sending ? '#9ca3af' : '#059669', color: '#fff',
-              fontSize: 13, fontWeight: 600, cursor: sending ? 'default' : 'pointer' }}>
+              background: (sending || recipientBlocked) ? '#9ca3af' : '#059669', color: '#fff',
+              fontSize: 13, fontWeight: 600, cursor: (sending || recipientBlocked) ? 'default' : 'pointer' }}>
               {sending ? 'Sending…' : 'Send template'}
             </button>
           </div>

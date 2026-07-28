@@ -183,8 +183,9 @@ async function getThreadById(threadId, orgId, handoverId) {
  * who currently only exists as a participant inside a group thread.
  */
 async function resolveDirectThreadByPhone(handoverId, orgId, phone, userId) {
-  const waPhone = normalizePhone(phone);
-  if (!waPhone) throw Object.assign(new Error('A valid recipient phone number is required'), { status: 400 });
+  const v = toWaPhone(phone);
+  if (!v.ok) throw Object.assign(new Error(v.message), { status: 400, code: v.code });
+  const waPhone = v.phone;
 
   const { rows: [existing] } = await pool.query(
     `SELECT * FROM whatsapp_threads WHERE org_id = $1 AND wa_phone = $2 AND kind = 'direct'`,
@@ -291,16 +292,19 @@ async function listSendTargets(handoverId, orgId) {
     if (!p || seen.has(p)) return;
     seen.add(p);
     const dt = directByPhone.get(p);
+    const v = toWaPhone(phone);
     targets.push({
       key: `phone:${p}`,
       type: 'individual',
       threadId: dt ? dt.id : null,
       name: name || p,
-      phone: p,
+      phone: v.ok ? v.phone : p,
       contactId: contactId ?? null,
       windowOpen: dt ? waChannel.isWindowOpen(dt) : false,
       windowExpiresAt: dt ? dt.window_expires_at : null,
-      deliverable: true,
+      deliverable: v.ok,
+      phoneValid: v.ok,
+      phoneIssue: v.ok ? null : v.message,
       optedOut: dt ? !!dt.opt_out_at : false,
     });
   };
@@ -329,6 +333,38 @@ async function listSendTargets(handoverId, orgId) {
   for (const dt of directThreads) addIndividual(dt.wa_phone, null, dt.contact_id);
 
   return { targets };
+}
+
+/**
+ * Approved WhatsApp templates for this org, pulled live from Meta so the picker
+ * can only ever offer templates that will actually send. Variable count is
+ * derived from the distinct {{n}} placeholders in the BODY. (Stage 2 will layer
+ * org-authored friendly labels from the whatsapp_templates table on top.)
+ */
+async function listApprovedTemplates(orgId) {
+  const account = await waChannel.getAccount(orgId);
+  if (!account) return { templates: [] };
+
+  const raw = await waChannel.listTemplates(account);
+  const templates = (raw || [])
+    .filter(t => t.status === 'APPROVED')
+    .map(t => {
+      const body = (t.components || []).find(c => c.type === 'BODY');
+      const text = body?.text || '';
+      const idxs = [...new Set((text.match(/\{\{\s*(\d+)\s*\}\}/g) || [])
+        .map(m => m.replace(/[^\d]/g, '')))];
+      const n = idxs.length;
+      return {
+        name: t.name,
+        language: t.language,
+        category: t.category,
+        bodyText: text,
+        variables: Array.from({ length: n }, (_, i) => ({ label: `Variable ${i + 1}`, placeholder: '' })),
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  return { templates };
 }
 
 /**
@@ -513,6 +549,29 @@ async function ingestWebhook(payload) {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * Validate and normalise a phone number for WhatsApp (E.164 digits, no '+').
+ * Requires an EXPLICIT country code: a bare national number (e.g. a 10-digit
+ * Indian mobile) is rejected with MISSING_COUNTRY_CODE so it gets fixed at the
+ * contact rather than silently misrouted by Meta. Returns
+ *   { ok:true, phone:'9172...' }  or  { ok:false, code, message }.
+ */
+function toWaPhone(raw) {
+  const trimmed = String(raw || '').trim();
+  const explicit = trimmed.startsWith('+') || trimmed.startsWith('00');
+  const digits = trimmed.replace(/[^0-9]/g, '').replace(/^0+/, m => (explicit ? '' : m));
+  const d = explicit ? digits.replace(/^0+/, '') : digits;
+  if (!d)            return { ok: false, code: 'MISSING_PHONE',        message: 'This contact has no phone number.' };
+  if (d.length < 8)  return { ok: false, code: 'INVALID_PHONE',        message: 'This phone number is too short to be a valid international number.' };
+  if (d.length > 15) return { ok: false, code: 'INVALID_PHONE',        message: 'This phone number is too long to be a valid international number.' };
+  // Explicit country code required. Accept if entered with + / 00, or if it is
+  // already long enough to include one (>10 digits). Reject a bare ≤10-digit
+  // national number.
+  if (!explicit && d.length <= 10)
+    return { ok: false, code: 'MISSING_COUNTRY_CODE', message: 'Add a country code (e.g. +91) to this contact — it looks like a local number.' };
+  return { ok: true, phone: d };
+}
+
 function normalizePhone(phone) {
   return String(phone || '').replace(/[^0-9]/g, '');
 }
@@ -564,6 +623,7 @@ module.exports = {
   getStatus,
   getThreadForHandover,
   listSendTargets,
+  listApprovedTemplates,
   sendToHandover,
   listMessages,
   verifyChallenge,
