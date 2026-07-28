@@ -41,8 +41,8 @@ BEGIN
     WHERE org_id = v_org_id AND handover_id IN
       (SELECT id FROM sales_handovers WHERE org_id = v_org_id AND deal_id IN
         (SELECT id FROM deals WHERE org_id = v_org_id AND external_crm_type = 'demo_seed'));
-  DELETE FROM sales_handover_stakeholders
-    WHERE org_id = v_org_id AND handover_id IN
+  DELETE FROM project_contacts
+    WHERE org_id = v_org_id AND context_type = 'handover' AND context_id IN
       (SELECT id FROM sales_handovers WHERE org_id = v_org_id AND deal_id IN
         (SELECT id FROM deals WHERE org_id = v_org_id AND external_crm_type = 'demo_seed'));
   DELETE FROM sales_handovers

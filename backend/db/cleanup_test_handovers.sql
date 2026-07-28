@@ -19,7 +19,7 @@
 -- ── Ordering ────────────────────────────────────────────────────────────────
 --
 -- Deleting sales_handovers CASCADEs to sales_handover_commitments,
--- sales_handover_plays and sales_handover_stakeholders, and SET NULLs
+-- sales_handover_plays and project_contacts, and SET NULLs
 -- meetings.handover_id and whatsapp_threads.handover_id.
 --
 -- It does NOT reach deal_play_instances — those are only linked via
@@ -75,7 +75,7 @@ SELECT DISTINCT dpi.id, dpi.action_id
 --            WHERE instance_id IN (SELECT id FROM _doomed_instances)
 -- UNION ALL SELECT 'commitments',     count(*) FROM sales_handover_commitments
 --            WHERE handover_id IN (SELECT id FROM _doomed_handovers)
--- UNION ALL SELECT 'stakeholders',    count(*) FROM sales_handover_stakeholders
+-- UNION ALL SELECT 'project_contacts', count(*) FROM project_contacts
 --            WHERE handover_id IN (SELECT id FROM _doomed_handovers)
 -- UNION ALL SELECT 'meetings (unlinked, kept)', count(*) FROM meetings
 --            WHERE handover_id IN (SELECT id FROM _doomed_handovers)

@@ -1864,6 +1864,15 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject }) {
   const [openCommitment, setOpenCommitment] = useState(null);
   const [openContact, setOpenContact] = useState(null);
 
+  const handleSummaryAdd = async (data) => {
+    await apiService.handovers.addStakeholder(detail.id, data);
+    if (onRefresh) await onRefresh();
+  };
+  const handleSummaryRemove = async (sid) => {
+    await apiService.handovers.removeStakeholder(detail.id, sid);
+    if (onRefresh) await onRefresh();
+  };
+
   const card = { background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: '14px 16px', marginBottom: 16 };
   const h4   = { margin: '0 0 10px', fontSize: 14, color: '#374151' };
 
@@ -1896,27 +1905,15 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject }) {
       {/* Customer team */}
       <div style={card}>
         <h4 style={h4}>🏛️ Customer team</h4>
-        {(detail.stakeholders || []).length === 0 ? (
-          <div style={{ fontSize: 12, color: '#9ca3af' }}>No customer stakeholders recorded.</div>
-        ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 10 }}>
-            {(detail.stakeholders || []).map(s => (
-              <div key={s.id} onClick={() => s.contactId && setOpenContact(s)}
-                style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 13, cursor: s.contactId ? 'pointer' : 'default' }}>
-                <div style={{ width: 30, height: 30, flexShrink: 0, borderRadius: '50%', background: '#fef3c7',
-                  color: '#92400e', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700 }}>
-                  {initials(s.name)}
-                </div>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</div>
-                  <div style={{ fontSize: 11, color: '#6b7280' }}>
-                    {STAKE_ROLE[s.handoverRole] || s.handoverRole}{s.isPrimaryContact ? ' · primary' : ''}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+        <StakeholderSection
+          stakeholders={detail.stakeholders || []}
+          canEdit={detail.canAddContacts}
+          canEditPolicy={detail.canEditContactPolicy}
+          accountId={detail.accountId}
+          handoverId={detail.id}
+          onAdd={handleSummaryAdd}
+          onRemove={handleSummaryRemove}
+        />
       </div>
 
       {/* Playbook + ownership */}

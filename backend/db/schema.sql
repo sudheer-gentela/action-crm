@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict DRcwXTPAsBnkhTFP89rCG7IUMSR6UIf3PCRCAAxT3FbM6eMmWPMnzGeOsH6Rizf
+\restrict faXevW4gXxa70U7t0dgqbgJipgVpnG7p5Ve2WM0lfDBl0XQhGzr0hv0rcBfErmg
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -2888,8 +2888,16 @@ CREATE TABLE public.deal_play_instances (
     due_anchor character varying(20) DEFAULT 'created'::character varying NOT NULL,
     completion_note text,
     completion_evidence jsonb,
+    owner_user_id integer,
     CONSTRAINT deal_play_instances_status_check CHECK ((status = ANY (ARRAY['not_started'::text, 'in_progress'::text, 'blocked'::text, 'snoozed'::text, 'completed'::text, 'skipped'::text, 'cancelled'::text])))
 );
+
+
+--
+-- Name: COLUMN deal_play_instances.owner_user_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.deal_play_instances.owner_user_id IS 'Person accountable for this checklist item on the handover. NULL = unassigned; role/queue routing (playbook_plays.role_id ΓåÆ PlayRouteResolver) still applies.';
 
 
 --
@@ -3492,6 +3500,8 @@ CREATE TABLE public.emails (
     provider character varying(20) DEFAULT 'outlook'::character varying,
     sender_account_id integer,
     body_quotable text,
+    body_format text,
+    CONSTRAINT emails_body_format_check CHECK (((body_format IS NULL) OR (body_format = ANY (ARRAY['html'::text, 'plain'::text])))),
     CONSTRAINT emails_tag_source_check CHECK ((tag_source = ANY (ARRAY['auto'::text, 'manual'::text, 'team'::text])))
 );
 
@@ -3515,6 +3525,13 @@ COMMENT ON COLUMN public.emails.external_data IS 'Additional Outlook metadata (c
 --
 
 COMMENT ON COLUMN public.emails.body_quotable IS 'The outbound HTML body as it stood immediately before EmailTrackingService decoration ΓÇö signature included, tracking pixel and rewritten links absent. Source for the quoted-history block on threaded replies. Never send this directly; it is quote material only. NULL for rows written before 2026_75 and for inbound mail.';
+
+
+--
+-- Name: COLUMN emails.body_format; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.emails.body_format IS 'Format of body and body_quotable on this row. NULL = pre-2026_76, treat as html. Read by the threaded-reply quote builder: when the parent''s format differs from the current send format the quote block is skipped rather than emitted as broken markup.';
 
 
 --
@@ -6891,9 +6908,11 @@ CREATE TABLE public.sequences (
     pin_sender boolean DEFAULT false NOT NULL,
     thread_subject_mode text DEFAULT 'keep'::text NOT NULL,
     thread_failover_mode text DEFAULT 'defer'::text NOT NULL,
+    body_format text DEFAULT 'html'::text NOT NULL,
     CONSTRAINT chk_seq_ab_max_varied CHECK (((ab_max_varied_steps IS NULL) OR ((ab_max_varied_steps >= 1) AND (ab_max_varied_steps <= 10)))),
     CONSTRAINT chk_seq_thread_failover_mode CHECK ((thread_failover_mode = ANY (ARRAY['defer'::text, 'break'::text]))),
     CONSTRAINT chk_seq_thread_subject_mode CHECK ((thread_subject_mode = ANY (ARRAY['keep'::text, 're'::text]))),
+    CONSTRAINT sequences_body_format_check CHECK ((body_format = ANY (ARRAY['html'::text, 'plain'::text]))),
     CONSTRAINT sequences_visibility_chk CHECK ((visibility = ANY (ARRAY['shared'::text, 'private'::text])))
 );
 
@@ -6952,6 +6971,13 @@ COMMENT ON COLUMN public.sequences.thread_subject_mode IS 'keep = reply uses the
 --
 
 COMMENT ON COLUMN public.sequences.thread_failover_mode IS 'defer = on pinned-sender failure, pause the enrollment + notify + daily digest until resolved. break = fail over to another sender and let the server-side thread reset. Only consulted when thread_replies (or pin_sender) is true.';
+
+
+--
+-- Name: COLUMN sequences.body_format; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sequences.body_format IS 'Wire format for this sequence''s outbound email: html (default) or plain. plain sends text/plain, which disables open and click tracking because the pixel and rewritten hrefs cannot survive it. Cannot be changed while the sequence has active enrollments ΓÇö see PUT /api/sequences/:id. As of 2026_76.';
 
 
 --
@@ -7870,6 +7896,66 @@ ALTER SEQUENCE public.users_id_seq OWNED BY public.users.id;
 
 
 --
+-- Name: whatsapp_billing_config; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.whatsapp_billing_config (
+    org_id integer NOT NULL,
+    billing_mode text DEFAULT 'customer_direct'::text NOT NULL,
+    markup_pct numeric(6,3) DEFAULT 0 NOT NULL,
+    currency text DEFAULT 'INR'::text NOT NULL,
+    platform_fee numeric(12,2) DEFAULT 0 NOT NULL,
+    updated_by integer,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT whatsapp_billing_mode_chk CHECK ((billing_mode = ANY (ARRAY['customer_direct'::text, 'provider_rebill'::text])))
+);
+
+
+--
+-- Name: whatsapp_message_costs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.whatsapp_message_costs (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    message_id integer,
+    wa_message_id text,
+    thread_id integer,
+    group_thread_id integer,
+    category text,
+    audience text DEFAULT 'any'::text NOT NULL,
+    pricing_model text,
+    billable boolean,
+    recipient_country text,
+    meta_cost_amount numeric(12,5),
+    meta_cost_currency text,
+    billed_amount numeric(12,5) DEFAULT 0 NOT NULL,
+    billed_currency text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: whatsapp_message_costs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.whatsapp_message_costs_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: whatsapp_message_costs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.whatsapp_message_costs_id_seq OWNED BY public.whatsapp_message_costs.id;
+
+
+--
 -- Name: whatsapp_messages; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -7925,6 +8011,75 @@ ALTER SEQUENCE public.whatsapp_messages_id_seq OWNED BY public.whatsapp_messages
 
 
 --
+-- Name: whatsapp_rates; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.whatsapp_rates (
+    id integer NOT NULL,
+    category text NOT NULL,
+    country text NOT NULL,
+    amount numeric(12,5) NOT NULL,
+    currency text DEFAULT 'INR'::text NOT NULL,
+    effective_from date DEFAULT CURRENT_DATE NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: whatsapp_rates_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.whatsapp_rates_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: whatsapp_rates_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.whatsapp_rates_id_seq OWNED BY public.whatsapp_rates.id;
+
+
+--
+-- Name: whatsapp_template_grants; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.whatsapp_template_grants (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    template_id integer NOT NULL,
+    user_id integer NOT NULL,
+    granted_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: whatsapp_template_grants_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.whatsapp_template_grants_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: whatsapp_template_grants_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.whatsapp_template_grants_id_seq OWNED BY public.whatsapp_template_grants.id;
+
+
+--
 -- Name: whatsapp_templates; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -7947,8 +8102,17 @@ CREATE TABLE public.whatsapp_templates (
     created_by integer,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    review_status text DEFAULT 'admin_approved'::text NOT NULL,
+    review_reason text,
+    reviewed_by integer,
+    reviewed_at timestamp with time zone,
+    audience text DEFAULT 'any'::text NOT NULL,
+    visibility text DEFAULT 'org'::text NOT NULL,
+    CONSTRAINT whatsapp_templates_audience_chk CHECK ((audience = ANY (ARRAY['internal'::text, 'customer'::text, 'any'::text]))),
     CONSTRAINT whatsapp_templates_category_chk CHECK ((category = ANY (ARRAY['UTILITY'::text, 'MARKETING'::text, 'AUTHENTICATION'::text]))),
-    CONSTRAINT whatsapp_templates_status_chk CHECK ((status = ANY (ARRAY['draft'::text, 'pending'::text, 'approved'::text, 'rejected'::text, 'paused'::text, 'disabled'::text])))
+    CONSTRAINT whatsapp_templates_review_status_chk CHECK ((review_status = ANY (ARRAY['proposed'::text, 'admin_approved'::text, 'admin_rejected'::text]))),
+    CONSTRAINT whatsapp_templates_status_chk CHECK ((status = ANY (ARRAY['draft'::text, 'pending'::text, 'approved'::text, 'rejected'::text, 'paused'::text, 'disabled'::text]))),
+    CONSTRAINT whatsapp_templates_visibility_chk CHECK ((visibility = ANY (ARRAY['org'::text, 'grant'::text])))
 );
 
 
@@ -9257,10 +9421,31 @@ ALTER TABLE ONLY public.users ALTER COLUMN id SET DEFAULT nextval('public.users_
 
 
 --
+-- Name: whatsapp_message_costs id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_message_costs ALTER COLUMN id SET DEFAULT nextval('public.whatsapp_message_costs_id_seq'::regclass);
+
+
+--
 -- Name: whatsapp_messages id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.whatsapp_messages ALTER COLUMN id SET DEFAULT nextval('public.whatsapp_messages_id_seq'::regclass);
+
+
+--
+-- Name: whatsapp_rates id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_rates ALTER COLUMN id SET DEFAULT nextval('public.whatsapp_rates_id_seq'::regclass);
+
+
+--
+-- Name: whatsapp_template_grants id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_template_grants ALTER COLUMN id SET DEFAULT nextval('public.whatsapp_template_grants_id_seq'::regclass);
 
 
 --
@@ -10928,11 +11113,67 @@ ALTER TABLE ONLY public.users
 
 
 --
+-- Name: whatsapp_billing_config whatsapp_billing_config_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_billing_config
+    ADD CONSTRAINT whatsapp_billing_config_pkey PRIMARY KEY (org_id);
+
+
+--
+-- Name: whatsapp_message_costs whatsapp_message_costs_org_id_wa_message_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_message_costs
+    ADD CONSTRAINT whatsapp_message_costs_org_id_wa_message_id_key UNIQUE (org_id, wa_message_id);
+
+
+--
+-- Name: whatsapp_message_costs whatsapp_message_costs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_message_costs
+    ADD CONSTRAINT whatsapp_message_costs_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: whatsapp_messages whatsapp_messages_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.whatsapp_messages
     ADD CONSTRAINT whatsapp_messages_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: whatsapp_rates whatsapp_rates_category_country_effective_from_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_rates
+    ADD CONSTRAINT whatsapp_rates_category_country_effective_from_key UNIQUE (category, country, effective_from);
+
+
+--
+-- Name: whatsapp_rates whatsapp_rates_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_rates
+    ADD CONSTRAINT whatsapp_rates_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: whatsapp_template_grants whatsapp_template_grants_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_template_grants
+    ADD CONSTRAINT whatsapp_template_grants_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: whatsapp_template_grants whatsapp_template_grants_template_id_user_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_template_grants
+    ADD CONSTRAINT whatsapp_template_grants_template_id_user_id_key UNIQUE (template_id, user_id);
 
 
 --
@@ -12460,6 +12701,13 @@ CREATE INDEX idx_deals_user_id ON public.deals USING btree (user_id);
 --
 
 CREATE INDEX idx_dpi_go_live_anchored ON public.deal_play_instances USING btree (deal_id) WHERE (((due_anchor)::text = 'go_live'::text) AND (status <> ALL (ARRAY['completed'::text, 'skipped'::text])));
+
+
+--
+-- Name: idx_dpi_owner_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dpi_owner_user ON public.deal_play_instances USING btree (owner_user_id) WHERE (owner_user_id IS NOT NULL);
 
 
 --
@@ -14325,6 +14573,20 @@ CREATE INDEX idx_value_history_deal ON public.deal_value_history USING btree (de
 
 
 --
+-- Name: idx_wa_costs_org_category; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_wa_costs_org_category ON public.whatsapp_message_costs USING btree (org_id, category);
+
+
+--
+-- Name: idx_wa_costs_org_time; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_wa_costs_org_time ON public.whatsapp_message_costs USING btree (org_id, created_at);
+
+
+--
 -- Name: idx_wa_messages_org_time; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -14336,6 +14598,27 @@ CREATE INDEX idx_wa_messages_org_time ON public.whatsapp_messages USING btree (o
 --
 
 CREATE INDEX idx_wa_messages_thread_time ON public.whatsapp_messages USING btree (thread_id, created_at DESC);
+
+
+--
+-- Name: idx_wa_template_grants_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_wa_template_grants_user ON public.whatsapp_template_grants USING btree (org_id, user_id);
+
+
+--
+-- Name: idx_wa_templates_org_review; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_wa_templates_org_review ON public.whatsapp_templates USING btree (org_id, review_status);
+
+
+--
+-- Name: idx_wa_templates_org_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_wa_templates_org_status ON public.whatsapp_templates USING btree (org_id, status);
 
 
 --
@@ -16290,6 +16573,14 @@ ALTER TABLE ONLY public.deal_play_instances
 
 
 --
+-- Name: deal_play_instances deal_play_instances_owner_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.deal_play_instances
+    ADD CONSTRAINT deal_play_instances_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id);
+
+
+--
 -- Name: deal_play_instances deal_play_instances_play_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -18241,6 +18532,14 @@ ALTER TABLE ONLY public.whatsapp_messages
 
 
 --
+-- Name: whatsapp_template_grants whatsapp_template_grants_template_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_template_grants
+    ADD CONSTRAINT whatsapp_template_grants_template_id_fkey FOREIGN KEY (template_id) REFERENCES public.whatsapp_templates(id) ON DELETE CASCADE;
+
+
+--
 -- Name: whatsapp_templates whatsapp_templates_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -18908,5 +19207,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict DRcwXTPAsBnkhTFP89rCG7IUMSR6UIf3PCRCAAxT3FbM6eMmWPMnzGeOsH6Rizf
+\unrestrict faXevW4gXxa70U7t0dgqbgJipgVpnG7p5Ve2WM0lfDBl0XQhGzr0hv0rcBfErmg
 
