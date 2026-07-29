@@ -53,8 +53,26 @@ async function sendPortalInviteEmail({ to, clientName, magicLink, invitedBy }) {
   // ─────────────────────────────────────────────────────────────────────────────
 
   // Until a transport is wired, log the link so it is never silently lost.
-  console.log(`[PORTAL INVITE] To: ${to} | Client: ${clientName} | Invited by: ${invitedBy}`);
-  console.log(`[PORTAL INVITE] Magic link: ${magicLink}`);
+  // Wired to the working system mailer (env SMTP). Portal users are transient/
+  // external, so this is a MAGIC-LINK email — no password is set.
+  try {
+    const { sendSystemEmail } = require('./systemMailer');
+    const result = await sendSystemEmail({
+      to,
+      subject: `You've been invited to the ${clientName} client portal`,
+      html: `<p>${invitedBy || 'Your team'} has invited you to the <b>${clientName}</b> client portal.</p>
+             <p><a href="${magicLink}">Open your portal</a></p>
+             <p>This is a one-time link and expires in 7 days.</p>`,
+      text: `You've been invited to the ${clientName} client portal. Open: ${magicLink}`,
+    });
+    if (!result.sent) {
+      console.log(`[PORTAL INVITE] not sent (${result.reason}) — To: ${to} | link: ${magicLink}`);
+    }
+    return result;
+  } catch (e) {
+    console.log(`[PORTAL INVITE] send error: ${e.message} — To: ${to} | link: ${magicLink}`);
+    return { sent: false, reason: e.message };
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

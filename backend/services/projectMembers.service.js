@@ -82,6 +82,28 @@ async function listForHandover(handoverId, orgId) {
 
 // ── Writes ───────────────────────────────────────────────────────────────────
 async function requestMember(handoverId, orgId, requesterId, data) {
+  // New-user path: an email that isn't an existing member → create a pending,
+  // admin-approved invitation scoped to this project's module (handovers).
+  if (data.email && !data.userId) {
+    const email = String(data.email).trim().toLowerCase();
+    const { rows: existing } = await pool.query(
+      `SELECT ou.user_id FROM org_users ou JOIN users u ON u.id = ou.user_id
+        WHERE ou.org_id = $1 AND lower(u.email) = $2 AND ou.is_active = TRUE`, [orgId, email]);
+    if (existing.length) {
+      // They already exist — fall through to the existing-user path.
+      data.userId = existing[0].user_id;
+    } else {
+      const invites = require('./inviteProvisioning.service');
+      const out = await invites.createInvite(orgId, requesterId, {
+        email, role: 'member', roleId: data.roleId || null,
+        modules: ['handovers'], contextType: 'handover', contextId: handoverId,
+        reportsTo: data.reportsTo || null, requestedBy: requesterId,
+        autoApprove: false,   // admin must approve before the invite email is sent
+      });
+      return { invited: true, status: out.status };   // 'pending_approval'
+    }
+  }
+
   const userId = parseInt(data.userId, 10);
   if (!userId) throw Object.assign(new Error('Pick a user to add'), { status: 400 });
 

@@ -234,6 +234,51 @@ router.get('/invitations', adminOnly, async (req, res) => {
 
 router.post('/invitations', adminOnly, async (req, res) => {
   try {
+    const { email, role = 'member', message = '', modules = [], roleId = null } = req.body;
+    if (!email?.trim()) {
+      return res.status(400).json({ error: { message: 'Email is required' } });
+    }
+    const invites = require('../services/inviteProvisioning.service');
+    // Admin-initiated invites are auto-approved (email sent now).
+    const out = await invites.createInvite(req.orgId, req.userId, {
+      email, role, message, modules, roleId, autoApprove: true,
+    });
+    res.status(201).json(out);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: { message: err.message, code: err.code } });
+  }
+});
+
+// Approve / reject a pending (project-context) invitation.
+router.post('/invitations/:id/approve', adminOnly, async (req, res) => {
+  try {
+    const invites = require('../services/inviteProvisioning.service');
+    res.json(await invites.approveInvite(req.orgId, req.userId, parseInt(req.params.id, 10)));
+  } catch (err) { res.status(err.status || 500).json({ error: { message: err.message } }); }
+});
+router.post('/invitations/:id/reject', adminOnly, async (req, res) => {
+  try {
+    const invites = require('../services/inviteProvisioning.service');
+    res.json(await invites.rejectInvite(req.orgId, req.userId, parseInt(req.params.id, 10), req.body?.reason));
+  } catch (err) { res.status(err.status || 500).json({ error: { message: err.message } }); }
+});
+
+// Diagnostic: send a test email to verify SMTP end-to-end.
+router.post('/test-email', adminOnly, async (req, res) => {
+  try {
+    const { sendSystemEmail } = require('../services/systemMailer');
+    const to = req.body?.to || 'demo@gowarmcrm.com';
+    const result = await sendSystemEmail({
+      to, subject: 'GoWarmCRM test email',
+      html: '<p>This is a test email from GoWarmCRM to verify SMTP is working.</p>',
+      text: 'This is a test email from GoWarmCRM to verify SMTP is working.',
+    });
+    res.json({ to, ...result });   // { sent: true } or { sent:false, reason }
+  } catch (err) { res.status(500).json({ error: { message: err.message } }); }
+});
+
+router.post('/invitations-legacy-unused', adminOnly, async (req, res) => {
+  try {
     const { email, role = 'member', message = '' } = req.body;
 
     if (!email?.trim()) {

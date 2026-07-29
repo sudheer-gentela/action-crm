@@ -247,6 +247,7 @@ app.use('/api/whatsapp',      require('./routes/whatsapp.routes'));
 app.use('/api/whatsapp-templates', require('./routes/whatsappTemplates.routes'));
 app.use('/api/whatsapp-billing', require('./routes/whatsappBilling.routes'));
 app.use('/api/project-members', require('./routes/projectMembers.routes'));
+app.use('/api/invitations', require('./routes/invitations.routes'));  // PUBLIC (token-based)
 app.use('/api/crm-connections', require('./routes/crm-connections.routes'));
 app.use('/api/baseline',        require('./routes/baseline.routes'));
 
