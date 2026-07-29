@@ -2202,6 +2202,15 @@ function CommunicationsPanel({ handoverId }) {
   const windowExpiresAt = selected ? selected.windowExpiresAt : null;
   const recipientBlocked = !selected || (selected.type === 'individual' && selected.phoneValid === false);
 
+  // Group creation (Groups API). Creating a project group returns an invite
+  // link the members must tap to join — there is no silent add, and the group
+  // is capped at 8 participants.
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [groupName,       setGroupName]       = useState('');
+  const [creatingGroup,   setCreatingGroup]   = useState(false);
+  const [inviteLink,      setInviteLink]      = useState('');
+  const [linkCopied,      setLinkCopied]      = useState(false);
+
   // Composer mode + template selection. Templates come live from the org's
   // approved WhatsApp templates (Meta), so the picker can only offer sendable
   // ones. WA_TEMPLATES is kept only as a friendly-label lookup + offline fallback.
@@ -2271,6 +2280,8 @@ function CommunicationsPanel({ handoverId }) {
     const er = e?.response?.data?.error || {};
     const c = String(er.code);
     if (er.code === 'NOT_CONNECTED')       return 'WhatsApp is not connected for this org yet.';
+    if (er.code === 'OBA_REQUIRED')        return 'Groups need an Official Business Account (OBA) on this WABA. Once Meta approves the OBA, group creation will work.';
+    if (er.code === 'GROUP_UNSUPPORTED')   return er.message || 'That message type is not supported in groups. Interactive templates only work in 1:1 threads.';
     if (er.code === 'THREAD_NOT_FOUND')    return 'That conversation is no longer available on this handover.';
     if (er.code === 'WINDOW_CLOSED')       return 'The 24-hour window is closed for this recipient — send an approved template to re-open it.';
     if (er.code === 'OPTED_OUT')           return 'This recipient has opted out of WhatsApp messages.';
@@ -2294,6 +2305,30 @@ function CommunicationsPanel({ handoverId }) {
       setText(''); setOk(`Message sent to ${selected ? selected.name : 'customer'}.`); await load();
     } catch (e) { setErr(mapErr(e)); }
     finally { setSending(false); }
+  };
+
+  // Create an API-managed WhatsApp group for THIS handover, then refresh the
+  // recipient list so it appears under "Groups" and select it. The returned
+  // invite link is what you send to the members — joining is opt-in only.
+  const createGroup = async () => {
+    const subject = groupName.trim();
+    if (!subject) { setErr('Give the group a name first.'); return; }
+    setCreatingGroup(true); setErr(''); setOk(''); setInviteLink(''); setLinkCopied(false);
+    try {
+      const res = await apiService.whatsapp.createGroup({ subject, handoverId });
+      const cap = res.data.maxParticipants || 8;
+      setInviteLink(res.data.inviteLink || '');
+      setOk(`Group “${subject}” created. Share the invite link below with the members (up to ${cap}).`);
+      setGroupName('');
+      await load();                                   // group now shows under "Groups"
+      if (res.data.threadId) setSelKey(`thread:${res.data.threadId}`);
+    } catch (e) { setErr(mapErr(e)); }
+    finally { setCreatingGroup(false); }
+  };
+
+  const copyInvite = async () => {
+    try { await navigator.clipboard.writeText(inviteLink); setLinkCopied(true); setTimeout(() => setLinkCopied(false), 2000); }
+    catch { /* clipboard unavailable — the link is still selectable in the field */ }
   };
 
   const sendTemplate = async () => {
@@ -2350,11 +2385,11 @@ function CommunicationsPanel({ handoverId }) {
       </div>
       {/* Composer: pick a recipient, then Message vs Template gated by the window */}
       <div style={{ marginTop: 10 }}>
-        {/* Recipient picker — a specific person, or the group (see note) */}
+        {/* Recipient picker — a specific person, or a group */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 12, color: '#6b7280' }}>To:</span>
           {targets.length === 0 ? (
-            <span style={{ fontSize: 12, color: '#9ca3af' }}>No reachable recipients on this handover.</span>
+            <span style={{ fontSize: 12, color: '#9ca3af' }}>No reachable recipients yet.</span>
           ) : (
             <select value={selKey} onChange={e => { setSelKey(e.target.value); setErr(''); setOk(''); }}
               style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 13, maxWidth: 320 }}>
@@ -2374,15 +2409,54 @@ function CommunicationsPanel({ handoverId }) {
               )}
             </select>
           )}
+          <button onClick={() => { setShowCreateGroup(v => !v); setErr(''); setOk(''); setInviteLink(''); }}
+            style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #d1d5db', background: '#fff',
+              color: '#059669', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+            {showCreateGroup ? 'Cancel' : '+ New group'}
+          </button>
         </div>
+
+        {/* Create-group form: name it, create it, then share the invite link. */}
+        {showCreateGroup && (
+          <div style={{ border: '1px solid #d1fae5', background: '#f0fdf4', borderRadius: 8, padding: 10, marginBottom: 8 }}>
+            <div style={{ fontSize: 11, color: '#065f46', marginBottom: 6 }}>
+              Creates a WhatsApp group owned by this org's business number. Members join by tapping the invite link (opt-in only — up to 8 participants). Messages then flow into this timeline.
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <input value={groupName} onChange={e => setGroupName(e.target.value)} placeholder="Group name (e.g. Acme rollout — project room)"
+                onKeyDown={e => { if (e.key === 'Enter') createGroup(); }}
+                style={{ flex: 1, minWidth: 220, padding: '7px 10px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 13 }} />
+              <button onClick={createGroup} disabled={creatingGroup || !groupName.trim()}
+                style={{ padding: '7px 14px', borderRadius: 6, border: 'none',
+                  background: (creatingGroup || !groupName.trim()) ? '#9ca3af' : '#059669', color: '#fff',
+                  fontSize: 13, fontWeight: 600, cursor: (creatingGroup || !groupName.trim()) ? 'default' : 'pointer' }}>
+                {creatingGroup ? 'Creating…' : 'Create group'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Invite link to distribute to members. */}
+        {inviteLink && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 11, color: '#6b7280' }}>Invite link:</span>
+            <input readOnly value={inviteLink} onFocus={e => e.target.select()}
+              style={{ flex: 1, minWidth: 220, padding: '6px 9px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 12, color: '#374151' }} />
+            <button onClick={copyInvite}
+              style={{ padding: '6px 12px', borderRadius: 6, border: '1px solid #d1d5db', background: '#fff', color: '#374151', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+              {linkCopied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+        )}
+
         {selected && selected.type === 'individual' && selected.phoneValid === false && (
           <div style={{ fontSize: 11, color: '#b45309', marginBottom: 8 }}>
             ⚠︎ {selected.phoneIssue || 'This number is missing a country code.'} Fix it on the contact in Contacts before sending.
           </div>
         )}
         {selected && selected.type === 'group' && (
-          <div style={{ fontSize: 11, color: '#b45309', marginBottom: 8 }}>
-            ⚠︎ {selected.note || 'Group send is not supported by the WhatsApp Cloud API yet.'} To reach one person now, pick them under “People”.
+          <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 8 }}>
+            {selected.note || 'Posts to everyone in the group.'} Each delivered copy is billed per recipient; free-form needs an open window, otherwise send an approved template.
           </div>
         )}
 

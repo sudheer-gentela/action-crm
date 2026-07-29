@@ -764,6 +764,9 @@ twilio: {
     adminUsage:   (q = '')  => api.get(`/whatsapp-billing/admin/usage${q}`),
     adminSetBilling: (orgId, data) => api.put(`/whatsapp-billing/admin/config/${orgId}`, data),
     sendToHandover: (id, body) => api.post(`/whatsapp/handovers/${id}/messages`, body),
+    // Groups API: create an API-managed group (mirrored as a group thread) and
+    // return its invite link. Pass { subject, handoverId } to link it to a handover.
+    createGroup:    (body)     => api.post('/whatsapp/groups', body),
   },
 
   // ══════════════════════════════════════════════════════════
