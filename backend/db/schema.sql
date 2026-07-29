@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict faXevW4gXxa70U7t0dgqbgJipgVpnG7p5Ve2WM0lfDBl0XQhGzr0hv0rcBfErmg
+\restrict kG8DLxrL8eWSve7hm2LQUbhrS6ZfHvBcwcafy6vKUvBIybWxGbXTGnYC7woz8cM
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -3803,6 +3803,7 @@ CREATE TABLE public.sales_handovers (
     cancelled_at timestamp with time zone,
     cancelled_by integer,
     closure_summary text,
+    contact_add_policy jsonb DEFAULT '{"admins": true, "deal_owner": true, "named_users": [], "service_owner": true}'::jsonb NOT NULL,
     CONSTRAINT sales_handovers_status_check CHECK (((status)::text = ANY ((ARRAY['draft'::character varying, 'submitted'::character varying, 'acknowledged'::character varying, 'in_progress'::character varying, 'completed'::character varying, 'cancelled'::character varying])::text[])))
 );
 
@@ -4481,6 +4482,39 @@ ALTER SEQUENCE public.org_action_config_id_seq OWNED BY public.org_action_config
 
 
 --
+-- Name: org_email_domains; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.org_email_domains (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    domain text NOT NULL,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: org_email_domains_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.org_email_domains_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: org_email_domains_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.org_email_domains_id_seq OWNED BY public.org_email_domains.id;
+
+
+--
 -- Name: org_functions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4635,7 +4669,16 @@ CREATE TABLE public.org_invitations (
     accepted_at timestamp without time zone,
     expires_at timestamp without time zone DEFAULT (CURRENT_TIMESTAMP + '7 days'::interval) NOT NULL,
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    message text
+    message text,
+    modules jsonb DEFAULT '[]'::jsonb NOT NULL,
+    role_id integer,
+    context_type text,
+    context_id integer,
+    reports_to integer,
+    status text DEFAULT 'approved'::text NOT NULL,
+    approved_by integer,
+    requested_by integer,
+    CONSTRAINT org_invitations_status_chk CHECK ((status = ANY (ARRAY['pending_approval'::text, 'approved'::text, 'accepted'::text, 'rejected'::text])))
 );
 
 
@@ -5526,6 +5569,87 @@ CREATE SEQUENCE public.product_groups_id_seq
 --
 
 ALTER SEQUENCE public.product_groups_id_seq OWNED BY public.product_groups.id;
+
+
+--
+-- Name: project_contacts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.project_contacts (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    context_type text DEFAULT 'handover'::text NOT NULL,
+    context_id integer NOT NULL,
+    contact_id integer NOT NULL,
+    role text DEFAULT 'other'::text NOT NULL,
+    is_primary boolean DEFAULT false NOT NULL,
+    notes text,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT project_contacts_role_chk CHECK ((role = ANY (ARRAY['implementation_lead'::text, 'day_to_day_admin'::text, 'go_live_approver'::text, 'exec_sponsor'::text, 'technical_lead'::text, 'other'::text])))
+);
+
+
+--
+-- Name: project_contacts_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.project_contacts_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: project_contacts_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.project_contacts_id_seq OWNED BY public.project_contacts.id;
+
+
+--
+-- Name: project_members; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.project_members (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    context_type text DEFAULT 'handover'::text NOT NULL,
+    context_id integer NOT NULL,
+    user_id integer NOT NULL,
+    role_id integer,
+    custom_role text,
+    status text DEFAULT 'pending'::text NOT NULL,
+    requested_by integer,
+    reviewed_by integer,
+    review_reason text,
+    reviewed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT project_members_status_chk CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text])))
+);
+
+
+--
+-- Name: project_members_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.project_members_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: project_members_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.project_members_id_seq OWNED BY public.project_members.id;
 
 
 --
@@ -6440,52 +6564,6 @@ CREATE SEQUENCE public.sales_handover_plays_id_seq
 --
 
 ALTER SEQUENCE public.sales_handover_plays_id_seq OWNED BY public.sales_handover_plays.id;
-
-
---
--- Name: sales_handover_stakeholders; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.sales_handover_stakeholders (
-    id integer NOT NULL,
-    handover_id integer NOT NULL,
-    org_id integer NOT NULL,
-    contact_id integer,
-    account_team_id integer,
-    name character varying(150) NOT NULL,
-    handover_role character varying(50) DEFAULT 'other'::character varying NOT NULL,
-    relationship_notes text,
-    is_primary_contact boolean DEFAULT false NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT sales_handover_stakeholders_handover_role_check CHECK (((handover_role)::text = ANY ((ARRAY['implementation_lead'::character varying, 'day_to_day_admin'::character varying, 'go_live_approver'::character varying, 'exec_sponsor'::character varying, 'technical_lead'::character varying, 'other'::character varying])::text[])))
-);
-
-
---
--- Name: TABLE sales_handover_stakeholders; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON TABLE public.sales_handover_stakeholders IS 'Customer-side people relevant to this handover. Pre-populated from deal_contacts on draft creation; sales rep can edit before submitting.';
-
-
---
--- Name: sales_handover_stakeholders_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.sales_handover_stakeholders_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: sales_handover_stakeholders_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.sales_handover_stakeholders_id_seq OWNED BY public.sales_handover_stakeholders.id;
 
 
 --
@@ -7760,6 +7838,40 @@ ALTER SEQUENCE public.user_linkedin_seats_id_seq OWNED BY public.user_linkedin_s
 
 
 --
+-- Name: user_module_access; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_module_access (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    user_id integer NOT NULL,
+    module_key text NOT NULL,
+    granted_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: user_module_access_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.user_module_access_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: user_module_access_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.user_module_access_id_seq OWNED BY public.user_module_access.id;
+
+
+--
 -- Name: user_preferences; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -8162,7 +8274,6 @@ CREATE TABLE public.whatsapp_thread_participants (
     display_name text,
     user_id integer,
     contact_id integer,
-    stakeholder_id integer,
     side text DEFAULT 'customer'::text NOT NULL,
     joined_at timestamp with time zone,
     left_at timestamp with time zone,
@@ -8987,6 +9098,13 @@ ALTER TABLE ONLY public.org_credentials ALTER COLUMN id SET DEFAULT nextval('pub
 
 
 --
+-- Name: org_email_domains id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_email_domains ALTER COLUMN id SET DEFAULT nextval('public.org_email_domains_id_seq'::regclass);
+
+
+--
 -- Name: org_functions id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -9127,6 +9245,20 @@ ALTER TABLE ONLY public.product_groups ALTER COLUMN id SET DEFAULT nextval('publ
 
 
 --
+-- Name: project_contacts id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_contacts ALTER COLUMN id SET DEFAULT nextval('public.project_contacts_id_seq'::regclass);
+
+
+--
+-- Name: project_members id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_members ALTER COLUMN id SET DEFAULT nextval('public.project_members_id_seq'::regclass);
+
+
+--
 -- Name: prompts id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -9236,13 +9368,6 @@ ALTER TABLE ONLY public.sales_handover_commitments ALTER COLUMN id SET DEFAULT n
 --
 
 ALTER TABLE ONLY public.sales_handover_plays ALTER COLUMN id SET DEFAULT nextval('public.sales_handover_plays_id_seq'::regclass);
-
-
---
--- Name: sales_handover_stakeholders id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.sales_handover_stakeholders ALTER COLUMN id SET DEFAULT nextval('public.sales_handover_stakeholders_id_seq'::regclass);
 
 
 --
@@ -9404,6 +9529,13 @@ ALTER TABLE ONLY public.tracking_domains ALTER COLUMN id SET DEFAULT nextval('pu
 --
 
 ALTER TABLE ONLY public.user_linkedin_seats ALTER COLUMN id SET DEFAULT nextval('public.user_linkedin_seats_id_seq'::regclass);
+
+
+--
+-- Name: user_module_access id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_module_access ALTER COLUMN id SET DEFAULT nextval('public.user_module_access_id_seq'::regclass);
 
 
 --
@@ -10297,6 +10429,14 @@ ALTER TABLE ONLY public.org_action_config
 
 
 --
+-- Name: org_email_domains org_email_domains_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_email_domains
+    ADD CONSTRAINT org_email_domains_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: org_functions org_functions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -10633,6 +10773,38 @@ ALTER TABLE ONLY public.product_groups
 
 
 --
+-- Name: project_contacts project_contacts_context_type_context_id_contact_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_contacts
+    ADD CONSTRAINT project_contacts_context_type_context_id_contact_id_key UNIQUE (context_type, context_id, contact_id);
+
+
+--
+-- Name: project_contacts project_contacts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_contacts
+    ADD CONSTRAINT project_contacts_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: project_members project_members_context_type_context_id_user_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_members
+    ADD CONSTRAINT project_members_context_type_context_id_user_id_key UNIQUE (context_type, context_id, user_id);
+
+
+--
+-- Name: project_members project_members_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_members
+    ADD CONSTRAINT project_members_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: prompts prompts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -10774,14 +10946,6 @@ ALTER TABLE ONLY public.sales_handover_plays
 
 ALTER TABLE ONLY public.sales_handover_plays
     ADD CONSTRAINT sales_handover_plays_unique UNIQUE (handover_id, play_instance_id);
-
-
---
--- Name: sales_handover_stakeholders sales_handover_stakeholders_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.sales_handover_stakeholders
-    ADD CONSTRAINT sales_handover_stakeholders_pkey PRIMARY KEY (id);
 
 
 --
@@ -11078,6 +11242,22 @@ ALTER TABLE ONLY public.teams
 
 ALTER TABLE ONLY public.user_linkedin_seats
     ADD CONSTRAINT user_linkedin_seats_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: user_module_access user_module_access_org_id_user_id_module_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_module_access
+    ADD CONSTRAINT user_module_access_org_id_user_id_module_key_key UNIQUE (org_id, user_id, module_key);
+
+
+--
+-- Name: user_module_access user_module_access_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_module_access
+    ADD CONSTRAINT user_module_access_pkey PRIMARY KEY (id);
 
 
 --
@@ -12998,20 +13178,6 @@ CREATE INDEX idx_handover_plays_instance ON public.sales_handover_plays USING bt
 
 
 --
--- Name: idx_handover_stakeholders_contact; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_handover_stakeholders_contact ON public.sales_handover_stakeholders USING btree (contact_id) WHERE (contact_id IS NOT NULL);
-
-
---
--- Name: idx_handover_stakeholders_handover; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_handover_stakeholders_handover ON public.sales_handover_stakeholders USING btree (handover_id);
-
-
---
 -- Name: idx_li_msg_events_inbound; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -13352,6 +13518,13 @@ CREATE INDEX idx_org_invitations_email ON public.org_invitations USING btree (em
 --
 
 CREATE INDEX idx_org_invitations_org ON public.org_invitations USING btree (org_id);
+
+
+--
+-- Name: idx_org_invitations_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_org_invitations_status ON public.org_invitations USING btree (org_id, status);
 
 
 --
@@ -13702,6 +13875,34 @@ CREATE INDEX idx_product_groups_org ON public.product_groups USING btree (org_id
 --
 
 CREATE INDEX idx_product_groups_parent ON public.product_groups USING btree (parent_id);
+
+
+--
+-- Name: idx_project_contacts_contact; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_project_contacts_contact ON public.project_contacts USING btree (org_id, contact_id);
+
+
+--
+-- Name: idx_project_contacts_ctx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_project_contacts_ctx ON public.project_contacts USING btree (context_type, context_id);
+
+
+--
+-- Name: idx_project_members_ctx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_project_members_ctx ON public.project_members USING btree (context_type, context_id, status);
+
+
+--
+-- Name: idx_project_members_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_project_members_user ON public.project_members USING btree (org_id, user_id);
 
 
 --
@@ -14510,6 +14711,13 @@ CREATE INDEX idx_user_linkedin_seats_user ON public.user_linkedin_seats USING bt
 
 
 --
+-- Name: idx_user_module_access; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_user_module_access ON public.user_module_access USING btree (org_id, user_id);
+
+
+--
 -- Name: idx_user_preferences_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -14913,6 +15121,13 @@ CREATE UNIQUE INDEX uq_linkedin_connections_identity ON public.linkedin_connecti
 --
 
 CREATE UNIQUE INDEX uq_list_signal_mappings_org_name ON public.list_signal_mappings USING btree (org_id, lower((name)::text)) WHERE active;
+
+
+--
+-- Name: uq_org_email_domain; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_org_email_domain ON public.org_email_domains USING btree (org_id, lower(domain));
 
 
 --
@@ -17237,6 +17452,14 @@ ALTER TABLE ONLY public.org_action_config
 
 
 --
+-- Name: org_email_domains org_email_domains_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_email_domains
+    ADD CONSTRAINT org_email_domains_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
 -- Name: org_functions org_functions_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -17306,6 +17529,14 @@ ALTER TABLE ONLY public.org_invitations
 
 ALTER TABLE ONLY public.org_invitations
     ADD CONSTRAINT org_invitations_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: org_invitations org_invitations_role_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_invitations
+    ADD CONSTRAINT org_invitations_role_id_fkey FOREIGN KEY (role_id) REFERENCES public.org_roles(id) ON DELETE SET NULL;
 
 
 --
@@ -17693,6 +17924,46 @@ ALTER TABLE ONLY public.product_groups
 
 
 --
+-- Name: project_contacts project_contacts_contact_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_contacts
+    ADD CONSTRAINT project_contacts_contact_id_fkey FOREIGN KEY (contact_id) REFERENCES public.contacts(id) ON DELETE CASCADE;
+
+
+--
+-- Name: project_contacts project_contacts_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_contacts
+    ADD CONSTRAINT project_contacts_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: project_members project_members_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_members
+    ADD CONSTRAINT project_members_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: project_members project_members_role_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_members
+    ADD CONSTRAINT project_members_role_id_fkey FOREIGN KEY (role_id) REFERENCES public.org_roles(id) ON DELETE SET NULL;
+
+
+--
+-- Name: project_members project_members_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_members
+    ADD CONSTRAINT project_members_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
 -- Name: prompts prompts_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -18065,38 +18336,6 @@ ALTER TABLE ONLY public.sales_handover_plays
 
 ALTER TABLE ONLY public.sales_handover_plays
     ADD CONSTRAINT sales_handover_plays_play_instance_id_fkey FOREIGN KEY (play_instance_id) REFERENCES public.deal_play_instances(id) ON DELETE CASCADE;
-
-
---
--- Name: sales_handover_stakeholders sales_handover_stakeholders_account_team_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.sales_handover_stakeholders
-    ADD CONSTRAINT sales_handover_stakeholders_account_team_id_fkey FOREIGN KEY (account_team_id) REFERENCES public.account_teams(id) ON DELETE SET NULL;
-
-
---
--- Name: sales_handover_stakeholders sales_handover_stakeholders_contact_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.sales_handover_stakeholders
-    ADD CONSTRAINT sales_handover_stakeholders_contact_id_fkey FOREIGN KEY (contact_id) REFERENCES public.contacts(id) ON DELETE SET NULL;
-
-
---
--- Name: sales_handover_stakeholders sales_handover_stakeholders_handover_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.sales_handover_stakeholders
-    ADD CONSTRAINT sales_handover_stakeholders_handover_id_fkey FOREIGN KEY (handover_id) REFERENCES public.sales_handovers(id) ON DELETE CASCADE;
-
-
---
--- Name: sales_handover_stakeholders sales_handover_stakeholders_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.sales_handover_stakeholders
-    ADD CONSTRAINT sales_handover_stakeholders_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
 
 
 --
@@ -18484,6 +18723,22 @@ ALTER TABLE ONLY public.teams
 
 
 --
+-- Name: user_module_access user_module_access_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_module_access
+    ADD CONSTRAINT user_module_access_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: user_module_access user_module_access_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_module_access
+    ADD CONSTRAINT user_module_access_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
 -- Name: user_preferences user_preferences_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -18553,14 +18808,6 @@ ALTER TABLE ONLY public.whatsapp_templates
 
 ALTER TABLE ONLY public.whatsapp_templates
     ADD CONSTRAINT whatsapp_templates_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
-
-
---
--- Name: whatsapp_thread_participants whatsapp_thread_participants_stakeholder_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.whatsapp_thread_participants
-    ADD CONSTRAINT whatsapp_thread_participants_stakeholder_id_fkey FOREIGN KEY (stakeholder_id) REFERENCES public.sales_handover_stakeholders(id) ON DELETE SET NULL;
 
 
 --
@@ -19207,5 +19454,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict faXevW4gXxa70U7t0dgqbgJipgVpnG7p5Ve2WM0lfDBl0XQhGzr0hv0rcBfErmg
+\unrestrict kG8DLxrL8eWSve7hm2LQUbhrS6ZfHvBcwcafy6vKUvBIybWxGbXTGnYC7woz8cM
 

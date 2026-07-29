@@ -85,6 +85,27 @@ router.get('/templates', async (req, res) => {
   }
 });
 
+// ── Groups (Groups API) ──────────────────────────────────────────────────────
+
+// Create an API-managed WhatsApp group and mirror it as a group thread.
+// Body: { subject, handoverId? }. Returns { threadId, groupId, inviteLink,
+// maxParticipants }. Distribute inviteLink to members — join is opt-in only,
+// there is no silent add, and the group is capped at 8 participants.
+router.post('/groups', async (req, res) => {
+  try {
+    const result = await whatsapp.createGroup(req.orgId, req.user.userId, req.body || {});
+    if (!result.ok) {
+      const code = result.code === 'NOT_CONNECTED' ? 409
+                 : result.code === 'OBA_REQUIRED'  ? 409
+                 : 502;
+      return res.status(code).json({ error: { code: result.code, message: result.error } });
+    }
+    res.json(result);
+  } catch (e) {
+    res.status(e.status || 500).json({ error: { message: e.message } });
+  }
+});
+
 router.post('/handovers/:handoverId/messages', async (req, res) => {
   try {
     const result = await whatsapp.sendToHandover(

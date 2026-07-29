@@ -282,8 +282,8 @@ async function listSendTargets(handoverId, orgId) {
       phone: null,
       windowOpen: waChannel.isWindowOpen(g),
       windowExpiresAt: g.window_expires_at,
-      deliverable: false,
-      note: 'Group send is not supported by the WhatsApp Cloud API yet.',
+      deliverable: true,
+      note: 'Sends to the whole group. Free-form needs an open window; otherwise an approved template. Interactive templates are not supported in groups.',
     });
   }
 
@@ -539,7 +539,15 @@ async function ingestWebhook(payload) {
       if (!org) continue;
 
       for (const m of value.messages || []) {
-        const thread = await threadForInbound(org, m.from, value);
+        // Meta stamps GROUP messages with `group_id`; 1:1 messages have none.
+        // Route each to the correct thread so group chatter consolidates into
+        // one auditable group thread instead of scattering into per-participant
+        // direct threads — and so the AFTER-INSERT window trigger refreshes the
+        // GROUP thread's window (this is what keeps a busy group's service
+        // window open from member activity).
+        const thread = m.group_id
+          ? await threadForInboundGroup(org, m.group_id, m.from, value)
+          : await threadForInbound(org, m.from, value);
         if (!thread) continue;
         const bodyText = m.text?.body ?? `[${m.type}]`;
         const res = await pool.query(
@@ -708,6 +716,100 @@ async function threadForInbound(orgId, fromPhone, value) {
   return thread;
 }
 
+/**
+ * Find (or open) the GROUP thread an inbound group message belongs to, and
+ * record the sender as a participant.
+ *
+ * Keyed on (org_id, wa_group_id) — the same partial-unique index the create
+ * side writes to — so a group we created and a group message arriving here
+ * converge on one row. A group first *seen* here (rather than created by us)
+ * is still mirrored so nothing is dropped; group_subject/invite_link fill in
+ * from our own create call or a later subject webhook.
+ *
+ * The message insert that follows fires the existing window trigger against
+ * THIS thread id, which is why member activity keeps the group's 24h window
+ * open — no trigger change was needed.
+ */
+async function threadForInboundGroup(orgId, groupId, fromPhone, value) {
+  const { rows: [thread] } = await pool.query(
+    `INSERT INTO whatsapp_threads (org_id, kind, wa_group_id, status, opt_in_source)
+     VALUES ($1, 'group', $2, 'active', 'inbound')
+     ON CONFLICT (org_id, wa_group_id) WHERE kind = 'group'
+       DO UPDATE SET updated_at = now()
+     RETURNING *`,
+    [orgId, String(groupId)]
+  );
+
+  // Mirror the sender into the participant roster. Best-effort: a roster hiccup
+  // must never cost us the message itself.
+  try {
+    await upsertGroupParticipant(
+      orgId, thread.id, fromPhone, contactNameFromValue(value, fromPhone)
+    );
+  } catch (e) {
+    console.warn(`[whatsapp] participant upsert failed for group ${groupId}: ${e.message}`);
+  }
+  return thread;
+}
+
+/**
+ * Upsert a participant of a group thread. Idempotent on (thread_id, wa_phone).
+ * Defaults side='customer'; we never downgrade a hand-set 'internal' side here.
+ */
+async function upsertGroupParticipant(orgId, threadId, fromPhone, displayName) {
+  const waPhone = normalizePhone(fromPhone);
+  if (!waPhone) return;
+  await pool.query(
+    `INSERT INTO whatsapp_thread_participants
+       (thread_id, org_id, wa_phone, display_name, side, joined_at)
+     VALUES ($1, $2, $3, $4, 'customer', now())
+     ON CONFLICT (thread_id, wa_phone) DO UPDATE SET
+       display_name = COALESCE(EXCLUDED.display_name, whatsapp_thread_participants.display_name),
+       joined_at    = COALESCE(whatsapp_thread_participants.joined_at, EXCLUDED.joined_at)`,
+    [threadId, orgId, waPhone, displayName || null]
+  );
+}
+
+/**
+ * Create an API-managed WhatsApp group for an org and mirror it locally as a
+ * kind='group' thread. Returns { ok, threadId, groupId, inviteLink,
+ * maxParticipants } or a typed error ({ ok:false, code, error }).
+ *
+ * OBA is enforced one layer down in the channel (OBA_REQUIRED). Members join
+ * ONLY by tapping the returned invite link — there is no silent add — so the
+ * caller's next step is to distribute inviteLink to the ≤8 members.
+ */
+async function createGroup(orgId, userId, { subject, handoverId = null } = {}) {
+  const account = await waChannel.getAccount(orgId);
+  if (!account) return { ok: false, code: 'NOT_CONNECTED', error: 'WhatsApp is not connected' };
+
+  const created = await waChannel.createGroup({ account, subject });
+  if (!created.ok) return created;   // e.g. OBA_REQUIRED, NETWORK, Meta error code
+
+  const { rows: [thread] } = await pool.query(
+    `INSERT INTO whatsapp_threads
+       (org_id, kind, wa_group_id, group_subject, group_invite_link,
+        handover_id, status, opt_in_source, created_by)
+     VALUES ($1, 'group', $2, $3, $4, $5, 'active', 'api_created', $6)
+     ON CONFLICT (org_id, wa_group_id) WHERE kind = 'group'
+       DO UPDATE SET group_subject     = EXCLUDED.group_subject,
+                     group_invite_link = EXCLUDED.group_invite_link,
+                     handover_id       = COALESCE(EXCLUDED.handover_id, whatsapp_threads.handover_id),
+                     updated_at        = now()
+     RETURNING *`,
+    [orgId, String(created.groupId), subject || null, created.inviteLink || null,
+     handoverId, userId || null]
+  );
+
+  return {
+    ok: true,
+    threadId: thread.id,
+    groupId: created.groupId,
+    inviteLink: created.inviteLink,
+    maxParticipants: waChannel.MAX_GROUP_PARTICIPANTS,
+  };
+}
+
 module.exports = {
   connect,
   disconnect,
@@ -720,4 +822,5 @@ module.exports = {
   verifyChallenge,
   verifySignature,
   ingestWebhook,
+  createGroup,
 };
