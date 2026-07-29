@@ -42,7 +42,6 @@ import OAMembers from './orgadmin/panels/OAMembers';
 import OAHierarchy from './orgadmin/panels/OAHierarchy';
 import OATeams from './orgadmin/panels/OATeams';
 import OAInvitations from './orgadmin/panels/OAInvitations';
-import OAModuleRequests from './orgadmin/panels/OAModuleRequests';
 import OAApprovals from './orgadmin/panels/OAApprovals';
 
 
