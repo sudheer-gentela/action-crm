@@ -35,6 +35,41 @@ async function grantableFor(orgId, requesterId, targetUserId) {
   return { modules };
 }
 
+// Modules the requester themselves have (org-enabled) — offered when inviting a
+// brand-new person, since the requester vouches for a module they use.
+async function myGrantableModules(orgId, requesterId) {
+  const [enabled, mine] = await Promise.all([
+    moduleAccess.orgEnabledModules(orgId),
+    moduleAccess.userModules(orgId, requesterId),
+  ]);
+  return { modules: enabled.filter(k => mine.has(k)) };
+}
+
+// Request access for a person who ISN'T in the system yet: creates a pending
+// (admin-approved) invitation scoped to the requested module. On approval the
+// invite email goes out; on acceptance the new user is provisioned with that module.
+async function requestNewUser(orgId, requesterId, data) {
+  const email = String(data.email || '').trim().toLowerCase();
+  const moduleKey = data.moduleKey;
+  if (!email) throw Object.assign(new Error('Enter an email'), { status: 400 });
+  if (!moduleAccess.MODULE_KEYS.includes(moduleKey))
+    throw Object.assign(new Error('Unknown module'), { status: 400 });
+
+  const enabled = await moduleAccess.orgEnabledModules(orgId);
+  if (!enabled.includes(moduleKey))
+    throw Object.assign(new Error('That module is not enabled for this org'), { status: 400 });
+  const mine = await moduleAccess.userModules(orgId, requesterId);
+  if (!mine.has(moduleKey))
+    throw Object.assign(new Error('You can only request modules you have access to yourself'), { status: 403 });
+
+  const invites = require('./inviteProvisioning.service');
+  const out = await invites.createInvite(orgId, requesterId, {
+    email, role: 'member', modules: [moduleKey],
+    requestedBy: requesterId, autoApprove: false,   // admin approves before the email is sent
+  });
+  return { invited: true, status: out.status };      // 'pending_approval'
+}
+
 async function request(orgId, requesterId, data) {
   const targetUserId = parseInt(data.targetUserId, 10);
   const moduleKey = data.moduleKey;
@@ -113,4 +148,4 @@ async function review(orgId, adminId, requestId, action, reason) {
   throw Object.assign(new Error("action must be 'approve' or 'reject'"), { status: 400 });
 }
 
-module.exports = { colleagues, grantableFor, request, listMine, listPending, review };
+module.exports = { colleagues, grantableFor, myGrantableModules, request, requestNewUser, listMine, listPending, review };

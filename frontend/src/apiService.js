@@ -731,6 +731,8 @@ twilio: {
     // Module access requests (a member requests a module for a colleague)
     moduleColleagues:   () => api.get('/module-requests/colleagues'),
     grantableModules:   (target) => api.get(`/module-requests/grantable?target=${target}`),
+    myGrantableModules: () => api.get('/module-requests/my-grantable'),
+    requestNewUserModule: (email, moduleKey) => api.post('/module-requests/invite-new', { email, moduleKey }),
     myModuleRequests:   () => api.get('/module-requests/mine'),
     requestModuleFor:   (targetUserId, moduleKey, reason) => api.post('/module-requests', { targetUserId, moduleKey, reason }),
     pendingModuleRequests: () => api.get('/module-requests/pending'),

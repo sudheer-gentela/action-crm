@@ -36,8 +36,10 @@ const send = (res, p) => p.then(o => res.json(o)).catch(e => res.status(e.status
 
 router.get('/colleagues',  (req, res) => send(res, svc.colleagues(req.orgId, req.userId)));
 router.get('/grantable',   (req, res) => send(res, svc.grantableFor(req.orgId, req.userId, parseInt(req.query.target, 10))));
+router.get('/my-grantable',(req, res) => send(res, svc.myGrantableModules(req.orgId, req.userId)));
 router.get('/mine',        (req, res) => send(res, svc.listMine(req.orgId, req.userId)));
 router.post('/',           (req, res) => send(res, svc.request(req.orgId, req.userId, req.body || {})));
+router.post('/invite-new', (req, res) => send(res, svc.requestNewUser(req.orgId, req.userId, req.body || {})));
 router.get('/pending',     adminOnly, (req, res) => send(res, svc.listPending(req.orgId)));
 router.post('/:id/review', adminOnly, (req, res) =>
   send(res, svc.review(req.orgId, req.userId, parseInt(req.params.id, 10), req.body?.action, req.body?.reason)));
