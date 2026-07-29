@@ -4,6 +4,7 @@
 import React, { useState, useEffect } from 'react';
 import { apiService } from '../../apiService';
 import OAPlaybookTypes from './OAPlaybookTypes';
+import OAEmailDomains from './OAEmailDomains';
 
 export default function OASettings() {
   const [org, setOrg]       = useState(null);
@@ -90,6 +91,9 @@ export default function OASettings() {
               </div>
             </div>
           )}
+
+          {/* Email Domains */}
+          <OAEmailDomains />
 
           {/* Playbook Types */}
           <OAPlaybookTypes />

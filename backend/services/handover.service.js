@@ -25,6 +25,13 @@ const { pool, withOrgTransaction } = require('../config/database');
 const PlaybookPlayService          = require('./PlaybookPlayService');
 const ActionPersister              = require('./ActionPersister');
 const HandoverRulesEngine          = require('./HandoverRulesEngine');
+const projectMembers               = require('./projectMembers.service');
+
+async function _isOrgAdmin(orgId, userId) {
+  const { rows } = await pool.query(
+    `SELECT role FROM org_users WHERE org_id = $1 AND user_id = $2`, [orgId, userId]);
+  return ['admin', 'owner'].includes(rows[0]?.role);
+}
 const { getDiagnosticRulesConfig }  = require('../routes/orgAdmin.routes');
 const PlayCompletionService        = require('./PlayCompletionService');  // Phase 6
 
@@ -461,6 +468,9 @@ async function getById(handoverId, orgId, userId = null) {
     contactAddPolicy:      rows[0].contact_add_policy || { deal_owner: true, service_owner: true, admins: true, named_users: [] },
     canAddContacts:        userId ? await canAddContacts(handoverId, orgId, userId) : false,
     canEditContactPolicy:  userId ? await canEditContactPolicy(handoverId, orgId, userId) : false,
+    projectMembers:        (await projectMembers.listForHandover(handoverId, orgId)).members,
+    canRequestMember:      !!userId,
+    isProjectAdmin:        userId ? await _isOrgAdmin(orgId, userId) : false,
   };
 }
 

@@ -540,6 +540,93 @@ function AddPlayForm({ users, onAdd }) {
 
 // ── StakeholderSection ────────────────────────────────────────────────────────
 
+function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRefresh }) {
+  const [adding, setAdding]   = useState(false);
+  const [users, setUsers]     = useState([]);
+  const [roles, setRoles]     = useState([]);
+  const [userId, setUserId]   = useState('');
+  const [roleId, setRoleId]   = useState('');
+  const [err, setErr]         = useState('');
+  const [msg, setMsg]         = useState('');
+  const [rejecting, setRejecting] = useState({});
+
+  useEffect(() => {
+    if (!adding) return;
+    apiService.handovers.assignableUsers().then(r => setUsers(r.data.users || [])).catch(() => setUsers([]));
+    apiService.handovers.orgRoles().then(r => setRoles(r.data.roles || r.data || [])).catch(() => setRoles([]));
+  }, [adding]);
+
+  const refresh = async () => { if (onRefresh) await onRefresh(); };
+
+  const request = async () => {
+    setErr(''); setMsg('');
+    if (!userId) { setErr('Pick a user.'); return; }
+    try {
+      const r = await apiService.handovers.requestMember(handoverId, { userId, roleId: roleId || null });
+      setMsg(r.data.autoApproved ? 'Added — same-domain user with a seat available, auto-approved.' : 'Request sent to an admin for approval.');
+      setUserId(''); setRoleId(''); setAdding(false); await refresh();
+    } catch (e) { setErr(e?.response?.data?.error?.message || 'Could not request.'); }
+  };
+  const review = async (mid, action) => {
+    setErr('');
+    const reason = (rejecting[mid] || '').trim();
+    if (action === 'reject' && !reason) { setErr('Enter a rejection reason.'); return; }
+    try { await apiService.handovers.reviewMember(handoverId, mid, { action, reason }); setRejecting(x => ({ ...x, [mid]: undefined })); await refresh(); }
+    catch (e) { setErr(e?.response?.data?.error?.message || 'Could not update.'); }
+  };
+  const remove = async (mid) => { try { await apiService.handovers.removeMember(handoverId, mid); await refresh(); } catch (e) { setErr(e?.response?.data?.error?.message || 'Could not remove.'); } };
+
+  const inp = { fontSize: 12, padding: '5px 8px', borderRadius: 6, border: '1px solid #d1d5db' };
+  const badge = (t, bg, fg) => <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 999, background: bg, color: fg, textTransform: 'uppercase', letterSpacing: 0.3 }}>{t}</span>;
+
+  return (
+    <div style={{ marginTop: 12, borderTop: '1px solid #f3f4f6', paddingTop: 10 }}>
+      {members.map(m => (
+        <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '5px 0',
+          opacity: m.status === 'approved' ? 1 : 0.7 }}>
+          <div style={{ flex: 1, fontSize: 13 }}>
+            <span style={{ fontWeight: 600 }}>{m.name}</span>
+            <span style={{ marginLeft: 8, fontSize: 11, color: '#6b7280' }}>{m.roleName || m.customRole || '—'}</span>
+            {m.status === 'pending'  && <span style={{ marginLeft: 8 }}>{badge('pending', '#fef3c7', '#92400e')}</span>}
+            {m.status === 'rejected' && <span style={{ marginLeft: 8 }}>{badge('rejected', '#fee2e2', '#991b1b')}</span>}
+            {m.status === 'rejected' && m.reviewReason && <div style={{ fontSize: 11, color: '#991b1b' }}>Reason: {m.reviewReason}</div>}
+          </div>
+          {isAdmin && m.status === 'pending' && (
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <button onClick={() => review(m.id, 'approve')} style={{ fontSize: 11, padding: '3px 10px', borderRadius: 5, border: 'none', background: '#059669', color: '#fff', cursor: 'pointer' }}>Approve</button>
+              <input value={rejecting[m.id] || ''} onChange={e => setRejecting(x => ({ ...x, [m.id]: e.target.value }))} placeholder="reason" style={{ ...inp, width: 120 }} />
+              <button onClick={() => review(m.id, 'reject')} style={{ fontSize: 11, padding: '3px 10px', borderRadius: 5, border: '1px solid #fca5a5', background: '#fff', color: '#991b1b', cursor: 'pointer' }}>Reject</button>
+            </div>
+          )}
+          {isAdmin && m.status !== 'pending' && (
+            <button onClick={() => remove(m.id)} title="Remove" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', fontSize: 12 }}>✕</button>
+          )}
+        </div>
+      ))}
+
+      {canRequest && !adding && (
+        <button onClick={() => { setAdding(true); setMsg(''); setErr(''); }} style={{ marginTop: 6, fontSize: 12, padding: '4px 10px', borderRadius: 4, background: '#eff6ff', color: '#1d4ed8', border: '1px dashed #93c5fd', cursor: 'pointer' }}>+ Request team member</button>
+      )}
+      {adding && (
+        <div style={{ marginTop: 8, padding: 10, background: '#f8fafc', borderRadius: 8, border: '1px solid #e5e7eb', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <select value={userId} onChange={e => setUserId(e.target.value)} style={inp}>
+            <option value="">Select user…</option>
+            {users.map(u => <option key={u.id} value={u.id}>{u.name || `${u.first_name} ${u.last_name}`}{u.email ? ` · ${u.email}` : ''}</option>)}
+          </select>
+          <select value={roleId} onChange={e => setRoleId(e.target.value)} style={inp}>
+            <option value="">Role (optional)…</option>
+            {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+          <button onClick={request} style={{ fontSize: 12, padding: '5px 12px', borderRadius: 6, border: 'none', background: '#1d4ed8', color: '#fff', cursor: 'pointer' }}>Request</button>
+          <button onClick={() => { setAdding(false); setErr(''); }} style={{ fontSize: 12, padding: '5px 10px', borderRadius: 6, border: 'none', background: '#f1f5f9', color: '#374151', cursor: 'pointer' }}>Cancel</button>
+        </div>
+      )}
+      {msg && <div style={{ fontSize: 11, color: '#059669', marginTop: 6 }}>{msg}</div>}
+      {err && <div style={{ fontSize: 11, color: '#991b1b', marginTop: 6 }}>{err}</div>}
+    </div>
+  );
+}
+
 function StakeholderSection({ stakeholders, canEdit, onAdd, onRemove, accountId, handoverId, canEditPolicy }) {
   const [adding,    setAdding]    = useState(false);
   const [mode,      setMode]      = useState('existing');   // 'existing' | 'new'
@@ -1900,6 +1987,13 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject }) {
             ))}
           </div>
         )}
+        <ProjectMembersSection
+          handoverId={detail.id}
+          members={detail.projectMembers || []}
+          isAdmin={detail.isProjectAdmin}
+          canRequest={detail.canRequestMember}
+          onRefresh={onRefresh}
+        />
       </div>
 
       {/* Customer team */}

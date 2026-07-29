@@ -722,6 +722,15 @@ twilio: {
     contactCommunications: (contactId) => api.get(`/handovers/contacts/${contactId}/communications`),
     commitmentActivity: (cid) => api.get(`/handovers/commitments/${cid}/activity`),
     assignableUsers: () => api.get('/handovers/assignable-users'),
+    orgRoles:         () => api.get('/org-roles'),
+    // Project members (internal team, request/approve) + org email domains
+    members:        (id)          => api.get(`/project-members/handovers/${id}/members`),
+    requestMember:  (id, data)    => api.post(`/project-members/handovers/${id}/members`, data),
+    reviewMember:   (id, mid, b)  => api.post(`/project-members/handovers/${id}/members/${mid}/review`, b),
+    removeMember:   (id, mid)     => api.delete(`/project-members/handovers/${id}/members/${mid}`),
+    orgDomains:     ()            => api.get('/project-members/domains'),
+    addOrgDomain:   (domain)      => api.post('/project-members/domains', { domain }),
+    removeOrgDomain:(did)         => api.delete(`/project-members/domains/${did}`),
     toggleModule: (enabled) => api.patch('/handovers/admin/module', { enabled }),
   },
 
