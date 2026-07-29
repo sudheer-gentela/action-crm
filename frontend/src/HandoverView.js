@@ -613,7 +613,7 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
       ))}
 
       {canRequest && !adding && (
-        <button onClick={() => { setAdding(true); setMsg(''); setErr(''); }} style={{ marginTop: 6, fontSize: 12, padding: '4px 10px', borderRadius: 4, background: '#eff6ff', color: '#1d4ed8', border: '1px dashed #93c5fd', cursor: 'pointer' }}>+ Request team member</button>
+        <button onClick={() => { setAdding(true); setMsg(''); setErr(''); }} style={{ marginTop: 6, fontSize: 12, padding: '4px 10px', borderRadius: 4, background: '#eff6ff', color: '#1d4ed8', border: '1px dashed #93c5fd', cursor: 'pointer' }}>+ Add team member</button>
       )}
       {adding && (
         <div style={{ marginTop: 8, padding: 10, background: '#f8fafc', borderRadius: 8, border: '1px solid #e5e7eb', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
