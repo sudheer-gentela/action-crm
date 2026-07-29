@@ -217,6 +217,8 @@ router.get('/invitations', adminOnly, async (req, res) => {
         oi.*,
         u.email AS invited_by_email,
         CASE
+          WHEN oi.status = 'rejected'              THEN 'rejected'
+          WHEN oi.status = 'pending_approval'      THEN 'pending_approval'
           WHEN oi.accepted_at IS NOT NULL          THEN 'accepted'
           WHEN oi.expires_at  < NOW()              THEN 'expired'
           ELSE                                          'pending'

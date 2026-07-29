@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { hashIdSegment, writeHash } from './hashNav';
+import AcceptInvite from './AcceptInvite';
 import './App.css';
 import AccountsView from './AccountsView';
 import DealsView from './DealsView';
@@ -1118,15 +1119,23 @@ function App() {
 
   return (
     <div className="App">
-      {!user ? (
-        <AuthScreen
-          onLogin={login}
-          onRegister={register}
-          initialMode={new URLSearchParams(window.location.search).get('token') ? 'reset' : 'login'}
-        />
-      ) : (
-        <Dashboard user={user} onLogout={logout} />
-      )}
+      {(() => {
+        // Public accept-invite page — reachable without auth at #/accept-invite?token=…
+        const h = window.location.hash || '';
+        if (h.startsWith('#/accept-invite')) {
+          const m = h.match(/token=([^&]+)/);
+          if (m) return <AcceptInvite token={decodeURIComponent(m[1])} />;
+        }
+        return !user ? (
+          <AuthScreen
+            onLogin={login}
+            onRegister={register}
+            initialMode={new URLSearchParams(window.location.search).get('token') ? 'reset' : 'login'}
+          />
+        ) : (
+          <Dashboard user={user} onLogout={logout} />
+        );
+      })()}
     </div>
   );
 }

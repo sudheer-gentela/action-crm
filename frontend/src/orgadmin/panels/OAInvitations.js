@@ -8,7 +8,8 @@ import { RoleBadge } from '../shared';
 export default function OAInvitations() {
   const [invitations, setInvitations] = useState([]);
   const [loading, setLoading]         = useState(true);
-  const [form, setForm]               = useState({ email: '', role: 'member', message: '' });
+  const [form, setForm]               = useState({ email: '', role: 'member', message: '', modules: [] });
+  const [orgModules, setOrgModules]   = useState([]);
   const [sending, setSending]         = useState(false);
   const [error, setError]             = useState('');
   const [success, setSuccess]         = useState('');
@@ -25,19 +26,35 @@ export default function OAInvitations() {
 
   useEffect(() => { load(); }, [load]);
 
+  useEffect(() => {
+    apiService.orgAdmin.getProfile()
+      .then(r => setOrgModules(Object.entries(r.data.modules || {}).filter(([, v]) => v.enabled).map(([k]) => k)))
+      .catch(() => setOrgModules([]));
+  }, []);
+
+  const MODULE_LABELS = { prospecting: 'Prospecting', contracts: 'Contracts', handovers: 'Handovers', service: 'Service', agency: 'Agency' };
+  const toggleModule = (k) => setForm(f => ({ ...f, modules: f.modules.includes(k) ? f.modules.filter(x => x !== k) : [...f.modules, k] }));
+
   const handleSend = async () => {
     if (!form.email.trim()) { setError('Email is required'); return; }
     try {
       setSending(true); setError('');
       await apiService.orgAdmin.sendInvitation(form);
       setSuccess(`Invitation sent to ${form.email}`);
-      setForm({ email: '', role: 'member', message: '' });
+      setForm({ email: '', role: 'member', message: '', modules: [] });
       setShowForm(false);
       setTimeout(() => setSuccess(''), 4000);
       load();
     } catch (e) {
       setError(e.response?.data?.error?.message || 'Failed to send invitation');
     } finally { setSending(false); }
+  };
+
+  const approve = async (id) => { try { await apiService.orgAdmin.approveInvitation(id); load(); } catch (e) { setError(e.response?.data?.error?.message || 'Could not approve'); } };
+  const reject = async (id) => {
+    const reason = window.prompt('Reason for rejecting this request?');
+    if (reason === null) return;
+    try { await apiService.orgAdmin.rejectInvitation(id, reason); load(); } catch (e) { setError(e.response?.data?.error?.message || 'Could not reject'); }
   };
 
   const handleCancel = async (id, email) => {
@@ -92,6 +109,20 @@ export default function OAInvitations() {
                 </select>
               </div>
               <div className="sa-form-field sa-form-field--full">
+                <label>Module access</label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                  {orgModules.length === 0
+                    ? <span className="sv-hint">No modules enabled for this org yet.</span>
+                    : orgModules.map(k => (
+                      <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+                        <input type="checkbox" checked={form.modules.includes(k)} onChange={() => toggleModule(k)} />
+                        {MODULE_LABELS[k] || k}
+                      </label>
+                    ))}
+                </div>
+                <p className="sv-hint" style={{ marginTop: 4 }}>The new user will get access to only the modules you check.</p>
+              </div>
+              <div className="sa-form-field sa-form-field--full">
                 <label>Personal Message (optional)</label>
                 <textarea
                   placeholder="Hey, I'd like to invite you to our CRM…"
@@ -131,8 +162,14 @@ export default function OAInvitations() {
                 </div>
                 <div className="oa-invite-status">
                   <span className={`sa-badge-status sa-badge-status--${STATUS_COLORS[inv.status] || 'grey'}`}>
-                    {inv.status}
+                    {inv.status === 'pending_approval' ? 'awaiting approval' : inv.status}
                   </span>
+                  {inv.status === 'pending_approval' && (
+                    <>
+                      <button className="sv-btn-primary" style={{ padding: '4px 12px', fontSize: 12 }} onClick={() => approve(inv.id)}>Approve</button>
+                      <button className="oa-btn-remove" onClick={() => reject(inv.id)}>Reject</button>
+                    </>
+                  )}
                   {inv.status === 'pending' && (
                     <button className="oa-btn-remove" onClick={() => handleCancel(inv.id, inv.email)}>
                       Cancel

@@ -545,6 +545,8 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
   const [users, setUsers]     = useState([]);
   const [roles, setRoles]     = useState([]);
   const [userId, setUserId]   = useState('');
+  const [byEmail, setByEmail] = useState(false);
+  const [email, setEmail]     = useState('');
   const [roleId, setRoleId]   = useState('');
   const [err, setErr]         = useState('');
   const [msg, setMsg]         = useState('');
@@ -560,11 +562,17 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
 
   const request = async () => {
     setErr(''); setMsg('');
-    if (!userId) { setErr('Pick a user.'); return; }
     try {
-      const r = await apiService.handovers.requestMember(handoverId, { userId, roleId: roleId || null });
-      setMsg(r.data.autoApproved ? 'Added — same-domain user with a seat available, auto-approved.' : 'Request sent to an admin for approval.');
-      setUserId(''); setRoleId(''); setAdding(false); await refresh();
+      if (byEmail) {
+        if (!email.trim()) { setErr('Enter an email.'); return; }
+        await apiService.handovers.requestMember(handoverId, { email: email.trim(), roleId: roleId || null });
+        setMsg('Invitation requested — an admin will approve, then an email goes out to set up their account.');
+      } else {
+        if (!userId) { setErr('Pick a user.'); return; }
+        const r = await apiService.handovers.requestMember(handoverId, { userId, roleId: roleId || null });
+        setMsg(r.data.autoApproved ? 'Added — same-domain user with a seat available, auto-approved.' : 'Request sent to an admin for approval.');
+      }
+      setUserId(''); setEmail(''); setRoleId(''); setByEmail(false); setAdding(false); await refresh();
     } catch (e) { setErr(e?.response?.data?.error?.message || 'Could not request.'); }
   };
   const review = async (mid, action) => {
@@ -609,16 +617,26 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
       )}
       {adding && (
         <div style={{ marginTop: 8, padding: 10, background: '#f8fafc', borderRadius: 8, border: '1px solid #e5e7eb', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <select value={userId} onChange={e => setUserId(e.target.value)} style={inp}>
-            <option value="">Select user…</option>
-            {users.map(u => <option key={u.id} value={u.id}>{u.name || `${u.first_name} ${u.last_name}`}{u.email ? ` · ${u.email}` : ''}</option>)}
-          </select>
+          <div style={{ display: 'inline-flex', border: '1px solid #d1d5db', borderRadius: 6, overflow: 'hidden' }}>
+            {[['existing', 'Existing user'], ['new', 'New by email']].map(([k, label]) => (
+              <button key={k} onClick={() => { setByEmail(k === 'new'); setErr(''); }} style={{ padding: '4px 10px', fontSize: 12, fontWeight: 600, border: 'none', cursor: 'pointer', background: (byEmail === (k === 'new')) ? '#1d4ed8' : '#fff', color: (byEmail === (k === 'new')) ? '#fff' : '#374151' }}>{label}</button>
+            ))}
+          </div>
+          {byEmail ? (
+            <input value={email} onChange={e => setEmail(e.target.value)} placeholder="colleague@company.com" style={{ ...inp, minWidth: 200 }} />
+          ) : (
+            <select value={userId} onChange={e => setUserId(e.target.value)} style={inp}>
+              <option value="">Select user…</option>
+              {users.map(u => <option key={u.id} value={u.id}>{u.name || `${u.first_name} ${u.last_name}`}{u.email ? ` · ${u.email}` : ''}</option>)}
+            </select>
+          )}
           <select value={roleId} onChange={e => setRoleId(e.target.value)} style={inp}>
             <option value="">Role (optional)…</option>
             {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
           </select>
           <button onClick={request} style={{ fontSize: 12, padding: '5px 12px', borderRadius: 6, border: 'none', background: '#1d4ed8', color: '#fff', cursor: 'pointer' }}>Request</button>
           <button onClick={() => { setAdding(false); setErr(''); }} style={{ fontSize: 12, padding: '5px 10px', borderRadius: 6, border: 'none', background: '#f1f5f9', color: '#374151', cursor: 'pointer' }}>Cancel</button>
+          {byEmail && <div style={{ fontSize: 11, color: '#6b7280', width: '100%' }}>New users are invited by email after an admin approves; they'll get access to this project's module.</div>}
         </div>
       )}
       {msg && <div style={{ fontSize: 11, color: '#059669', marginTop: 6 }}>{msg}</div>}
