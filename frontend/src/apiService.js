@@ -737,6 +737,9 @@ twilio: {
     requestModuleFor:   (targetUserId, moduleKey, reason) => api.post('/module-requests', { targetUserId, moduleKey, reason }),
     pendingModuleRequests: () => api.get('/module-requests/pending'),
     reviewModuleRequest: (id, body) => api.post(`/module-requests/${id}/review`, body),
+    // Unified admin approvals queue
+    getApprovals:    () => api.get('/approvals'),
+    reviewApproval:  (body) => api.post('/approvals/review', body),
     // Project members (internal team, request/approve) + org email domains
     members:        (id)          => api.get(`/project-members/handovers/${id}/members`),
     requestMember:  (id, data)    => api.post(`/project-members/handovers/${id}/members`, data),
