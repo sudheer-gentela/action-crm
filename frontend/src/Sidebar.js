@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import NotificationBell from './NotificationBell';
+import ModuleAccessRequest from './ModuleAccessRequest';
 import { hashParts, writeHash } from './hashNav';
 import './Sidebar.css';
 
@@ -347,6 +348,8 @@ function UserCard({ user, activeRole, availableRoles, onRoleSwitch, onLogout, co
               })}
             </>
           )}
+
+          <ModuleAccessRequest />
 
           <div className="sb-popover-divider" />
           <button className="sb-popover-item sb-popover-danger" onClick={onLogout}>

@@ -42,6 +42,7 @@ import OAMembers from './orgadmin/panels/OAMembers';
 import OAHierarchy from './orgadmin/panels/OAHierarchy';
 import OATeams from './orgadmin/panels/OATeams';
 import OAInvitations from './orgadmin/panels/OAInvitations';
+import OAModuleRequests from './orgadmin/panels/OAModuleRequests';
 
 
 // ═══════════════════════════════════════════════════════════════════
@@ -265,6 +266,7 @@ export default function OrgAdminView() {
             {tab === 'hierarchy'        && <OAHierarchy />}
             {tab === 'teams'            && <OATeams />}
             {tab === 'invitations'      && <OAInvitations />}
+            {tab === 'module-requests'  && <OAModuleRequests />}
             {tab === 'playbooks'        && <OAPlaybooks />}
             {tab === 'health'           && <DealHealthSettings />}
             {tab === 'icp-scoring'      && <OAIcpScoring />}

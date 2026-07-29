@@ -728,6 +728,13 @@ twilio: {
     commitmentActivity: (cid) => api.get(`/handovers/commitments/${cid}/activity`),
     assignableUsers: () => api.get('/handovers/assignable-users'),
     orgRoles:         () => api.get('/org-roles'),
+    // Module access requests (a member requests a module for a colleague)
+    moduleColleagues:   () => api.get('/module-requests/colleagues'),
+    grantableModules:   (target) => api.get(`/module-requests/grantable?target=${target}`),
+    myModuleRequests:   () => api.get('/module-requests/mine'),
+    requestModuleFor:   (targetUserId, moduleKey, reason) => api.post('/module-requests', { targetUserId, moduleKey, reason }),
+    pendingModuleRequests: () => api.get('/module-requests/pending'),
+    reviewModuleRequest: (id, body) => api.post(`/module-requests/${id}/review`, body),
     // Project members (internal team, request/approve) + org email domains
     members:        (id)          => api.get(`/project-members/handovers/${id}/members`),
     requestMember:  (id, data)    => api.post(`/project-members/handovers/${id}/members`, data),

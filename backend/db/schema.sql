@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict kG8DLxrL8eWSve7hm2LQUbhrS6ZfHvBcwcafy6vKUvBIybWxGbXTGnYC7woz8cM
+\restrict LnaoSUvcyuQFKXG2J1qfLwBjktKgH4pNmxBFDRITnoiTI4nlmpOQCh7GDdyrbQc
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -15138,6 +15138,34 @@ CREATE UNIQUE INDEX uq_org_functions_org_key ON public.org_functions USING btree
 
 
 --
+-- Name: uq_org_whatsapp_accounts_phone_number_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_org_whatsapp_accounts_phone_number_id ON public.org_whatsapp_accounts USING btree (phone_number_id);
+
+
+--
+-- Name: INDEX uq_org_whatsapp_accounts_phone_number_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON INDEX public.uq_org_whatsapp_accounts_phone_number_id IS 'Guarantees webhook attribution by phone_number_id is unambiguous ΓÇö a Meta number belongs to at most one org.';
+
+
+--
+-- Name: uq_org_whatsapp_accounts_waba_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_org_whatsapp_accounts_waba_id ON public.org_whatsapp_accounts USING btree (waba_id);
+
+
+--
+-- Name: INDEX uq_org_whatsapp_accounts_waba_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON INDEX public.uq_org_whatsapp_accounts_waba_id IS 'Guarantees template-status webhook attribution by waba_id is unambiguous ΓÇö a WABA belongs to at most one org.';
+
+
+--
 -- Name: uq_pactions_prospect_play; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -19454,5 +19482,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict kG8DLxrL8eWSve7hm2LQUbhrS6ZfHvBcwcafy6vKUvBIybWxGbXTGnYC7woz8cM
+\unrestrict LnaoSUvcyuQFKXG2J1qfLwBjktKgH4pNmxBFDRITnoiTI4nlmpOQCh7GDdyrbQc
 
