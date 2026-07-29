@@ -101,6 +101,32 @@ router.get('/members', adminOnly, async (req, res) => {
   }
 });
 
+// ── GET /members/:userId/modules ── a user's module grants + org-enabled set
+router.get('/members/:userId/modules', adminOnly, async (req, res) => {
+  try {
+    const moduleAccess = require('../services/moduleAccess.service');
+    const [orgEnabled, granted] = await Promise.all([
+      moduleAccess.orgEnabledModules(req.orgId),
+      moduleAccess.userModules(req.orgId, parseInt(req.params.userId, 10)),
+    ]);
+    res.json({ orgEnabled, granted: [...granted], allKeys: moduleAccess.MODULE_KEYS });
+  } catch (err) {
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+// ── PUT /members/:userId/modules ── replace a user's module grant set
+router.put('/members/:userId/modules', adminOnly, async (req, res) => {
+  try {
+    const moduleAccess = require('../services/moduleAccess.service');
+    const out = await moduleAccess.setUserModules(
+      req.orgId, parseInt(req.params.userId, 10), req.body?.modules || [], req.userId);
+    res.json(out);
+  } catch (err) {
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
 router.patch('/members/:userId', adminOnly, async (req, res) => {
   try {
     const { userId } = req.params;
@@ -793,6 +819,14 @@ router.patch('/module/:moduleName', adminOnly, async (req, res) => {
     );
 
     requireModule.invalidate(req.orgId, moduleName);
+    // Keep admins/owners on all org-enabled modules, and grant this module to the
+    // acting admin so an enable is immediately usable. Clears user-module cache.
+    if (enabled) {
+      try {
+        const moduleAccess = require('../services/moduleAccess.service');
+        await moduleAccess.grantAllEnabledToAdmins(req.orgId);
+      } catch (e) { console.error('module grant sync:', e.message); }
+    }
     console.log(`🧩 ${label} module ${enabled ? 'enabled' : 'disabled'} for org ${req.orgId}`);
 
     res.json({ enabled, allowed });

@@ -22,6 +22,7 @@
 // continues to work without any changes at call sites.
 
 const { pool } = require('../config/database');
+const moduleAccess = require('../services/moduleAccess.service');
 
 const _cache = new Map(); // `${orgId}:${module}` → { enabled, ts }
 const TTL = 60_000;
@@ -78,7 +79,7 @@ function parseModuleValue(raw) {
 
 const requireModule = (moduleName) => async (req, res, next) => {
   const orgId = req.orgId;
-  const key   = `${orgId}:${moduleName}`;
+  const key   = `${orgId}:${req.userId}:${moduleName}`;
   const hit   = _cache.get(key);
   if (hit && Date.now() - hit.ts < TTL) {
     if (!hit.enabled) return res.status(404).json({ error: { message: 'Module not enabled' } });
@@ -94,9 +95,11 @@ const requireModule = (moduleName) => async (req, res, next) => {
     const raw    = r.rows[0]?.module_val ?? null;
     const { allowed, enabled } = parseModuleValue(raw);
 
-    // A module is accessible only when the platform has provisioned it (allowed)
-    // AND the org admin has turned it on (enabled).
-    const accessible = allowed && enabled;
+    // A module is accessible only when the platform has provisioned it (allowed),
+    // the org admin has turned it on (enabled), AND this user has been granted it.
+    const orgAccessible = allowed && enabled;
+    const userGranted   = orgAccessible ? await moduleAccess.hasModule(orgId, req.userId, moduleName) : false;
+    const accessible    = orgAccessible && userGranted;
 
     _cache.set(key, { enabled: accessible, ts: Date.now() });
     if (!accessible) return res.status(404).json({ error: { message: 'Module not enabled' } });
@@ -108,8 +111,13 @@ const requireModule = (moduleName) => async (req, res, next) => {
 };
 
 requireModule.invalidate = (orgId, moduleName) => {
-  if (orgId && moduleName) _cache.delete(`${orgId}:${moduleName}`);
-  else _cache.clear();
+  if (orgId) {
+    // Keys are now `${orgId}:${userId}:${module}` — clear the whole org on any toggle.
+    const prefix = `${orgId}:`;
+    for (const k of _cache.keys()) if (k.startsWith(prefix)) _cache.delete(k);
+  } else {
+    _cache.clear();
+  }
 };
 
 /**

@@ -5,6 +5,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from '../../apiService';
 import { DEPARTMENT_META, DEPARTMENT_OPTIONS, ROLE_META } from '../constants';
 import { RoleBadge } from '../shared';
+import OAMemberModules from './OAMemberModules';
 
 export default function OAMembers({ currentUserId }) {
   const [members, setMembers]         = useState([]);
@@ -14,6 +15,7 @@ export default function OAMembers({ currentUserId }) {
   const [success, setSuccess]         = useState('');
   const [callerRole, setCallerRole]   = useState('member');
   const [editingDept, setEditingDept] = useState(null); // userId currently editing dept
+  const [modulesFor, setModulesFor]   = useState(null); // userId whose modules are expanded
 
   const load = useCallback(async () => {
     try {
@@ -133,7 +135,8 @@ export default function OAMembers({ currentUserId }) {
               const isEditingThisDept = editingDept === m.user_id;
 
               return (
-                <div key={m.user_id} className={`oa-member-row ${!m.is_active ? 'oa-member-row--inactive' : ''}`}>
+                <React.Fragment key={m.user_id}>
+                <div className={`oa-member-row ${!m.is_active ? 'oa-member-row--inactive' : ''}`}>
                   <div className="oa-member-avatar">
                     {(m.name || m.email).charAt(0).toUpperCase()}
                   </div>
@@ -200,6 +203,16 @@ export default function OAMembers({ currentUserId }) {
                     )}
                   </div>
                   <div className="oa-member-actions">
+                    {canEditMembers && (
+                      <button
+                        className="oa-btn-remove"
+                        style={{ background: '#eff6ff', color: '#1d4ed8', borderColor: '#bfdbfe' }}
+                        onClick={() => setModulesFor(modulesFor === m.user_id ? null : m.user_id)}
+                        title="Module access"
+                      >
+                        Modules
+                      </button>
+                    )}
                     {canEdit && (
                       <button
                         className="oa-btn-remove"
@@ -211,6 +224,10 @@ export default function OAMembers({ currentUserId }) {
                     )}
                   </div>
                 </div>
+                {modulesFor === m.user_id && (
+                  <OAMemberModules userId={m.user_id} canEdit={canEditMembers} />
+                )}
+                </React.Fragment>
               );
             })}
           </div>

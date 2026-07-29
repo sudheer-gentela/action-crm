@@ -126,6 +126,13 @@ router.post('/register', async (req, res) => {
       [user.id]
     );
 
+    // Grant the new member all modules org 1 currently has enabled (avoids an
+    // empty nav under per-user module access).
+    try {
+      const moduleAccess = require('../services/moduleAccess.service');
+      await moduleAccess.grantAllEnabledToUser(1, user.id);
+    } catch (e) { console.error('module grant (register):', e.message); }
+
     // Build JWT payload with org context
     const orgPayload = await getOrgPayload(user.id);
     const superAdmin = await isSuperAdmin(user.id);

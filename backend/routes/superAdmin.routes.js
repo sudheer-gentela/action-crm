@@ -628,6 +628,11 @@ router.patch('/orgs/:orgId/modules', async (req, res) => {
     for (const moduleName of Object.keys(incoming)) {
       requireModule.invalidate(orgId, moduleName);
     }
+    // Keep admins/owners on all now-enabled modules for this org.
+    try {
+      const moduleAccess = require('../services/moduleAccess.service');
+      await moduleAccess.grantAllEnabledToAdmins(parseInt(orgId, 10));
+    } catch (e) { console.error('module grant sync (superadmin):', e.message); }
 
     await auditLog(req, 'update_org_modules', 'org', parseInt(orgId), {
       changes: Object.entries(incoming).map(([k, v]) => `${k}=${v}`).join(', '),
@@ -793,6 +798,12 @@ router.post('/orgs/:orgId/users', async (req, res) => {
         SET role = $3, is_active = TRUE
     `, [orgId, user.id, role]);
 
+    // Grant the new member all modules the org currently has enabled.
+    try {
+      const moduleAccess = require('../services/moduleAccess.service');
+      await moduleAccess.grantAllEnabledToUser(parseInt(orgId, 10), user.id);
+    } catch (e) { console.error('module grant (superadmin add user):', e.message); }
+
     await auditLog(req, 'add_user_to_org', 'user', user.id, { orgId, role });
     res.status(201).json({ message: 'User added', user: { ...user, role } });
   } catch (err) {
@@ -900,6 +911,12 @@ router.post('/orgs/:orgId/users/create', async (req, res) => {
       INSERT INTO org_users (org_id, user_id, role, is_active, joined_at)
       VALUES ($1, $2, $3, TRUE, now())
     `, [orgId, user.id, role]);
+
+    // Grant the new user all modules the org currently has enabled.
+    try {
+      const moduleAccess = require('../services/moduleAccess.service');
+      await moduleAccess.grantAllEnabledToUser(parseInt(orgId, 10), user.id);
+    } catch (e) { console.error('module grant (superadmin create user):', e.message); }
 
     await auditLog(req, 'create_user_for_org', 'user', user.id, { orgId, role, email });
     res.status(201).json({ message: 'User created and added to org', user: { ...user, role } });

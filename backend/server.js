@@ -387,11 +387,16 @@ app.get('/api/org/context', authenticateToken, orgContext, async (req, res) => {
       [req.orgId]
     );
     const raw = r.rows[0]?.modules || {};
-    // Normalize legacy scalar AND new {allowed, enabled} shapes onto a bool.
+    // Per-user visibility: a module shows only when the org has it enabled AND
+    // this user has been granted it.
+    const moduleAccess = require('./services/moduleAccess.service');
+    const granted = await moduleAccess.userModules(req.orgId, req.userId);
     const modules = Object.fromEntries(
       Object.entries(raw).map(([k, v]) => {
-        if (v !== null && typeof v === 'object') return [k, !!v.enabled];
-        return [k, v === true || v === 'true' || v === 1 || v === '1'];
+        const orgOn = (v !== null && typeof v === 'object')
+          ? !!v.enabled
+          : (v === true || v === 'true' || v === 1 || v === '1');
+        return [k, orgOn && granted.has(k)];
       })
     );
     res.json({ modules });

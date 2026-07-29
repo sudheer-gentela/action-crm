@@ -439,6 +439,8 @@ twilio: {
     updateProfile: (data) => api.patch('/org/admin/profile', data),
     getStats: () => api.get('/org/admin/stats'),
     getMembers: () => api.get('/org/admin/members'),
+    getMemberModules: (userId) => api.get(`/org/admin/members/${userId}/modules`),
+    setMemberModules: (userId, modules) => api.put(`/org/admin/members/${userId}/modules`, { modules }),
     updateMember: (userId, data) => api.patch(`/org/admin/members/${userId}`, data),
     removeMember: (userId) => api.delete(`/org/admin/members/${userId}`),
     getInvitations: () => api.get('/org/admin/invitations'),
