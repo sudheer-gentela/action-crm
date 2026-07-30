@@ -141,7 +141,7 @@ function WinLoss() {
 
 export default function DealsReporting({ reportKey }) {
   if (reportKey === 'pipeline_health')
-    return <PortfolioHealthReport title="Pipeline health — deals" fetcher={apiService.handovers.dealsHealth} lenses={DEAL_LENSES} />;
+    return <PortfolioHealthReport title="Pipeline health — deals" fetcher={apiService.handovers.dealsHealth} lenses={DEAL_LENSES} noun="deals" />;
   if (reportKey === 'funnel')   return <Funnel />;
   if (reportKey === 'forecast') return <Forecast />;
   if (reportKey === 'winloss')  return <WinLoss />;

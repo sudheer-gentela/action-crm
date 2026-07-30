@@ -25,7 +25,7 @@ function Dot({ health, size = 12 }) {
   return <span style={{ display: 'inline-block', width: size, height: size, borderRadius: '50%', background: RYG[health] || RYG.neutral }} />;
 }
 
-export default function PortfolioHealthReport({ onOpenProject, title = 'Portfolio health', fetcher, lenses = DEFAULT_LENSES }) {
+export default function PortfolioHealthReport({ onOpenProject, title = 'Portfolio health', fetcher, lenses = DEFAULT_LENSES, noun = 'projects' }) {
   const load = fetcher || apiService.handovers.healthRollup;
   const [groupBy, setGroupBy]   = useState(lenses[0]?.k || 'none');
   const [data, setData]         = useState(null);
@@ -72,7 +72,7 @@ export default function PortfolioHealthReport({ onOpenProject, title = 'Portfoli
       </div>
 
       {loading ? <div style={{ color: '#9ca3af', fontSize: 13 }}>Loading…</div>
-        : !data || !data.groups.length ? <div style={{ color: '#9ca3af', fontSize: 13 }}>No active projects.</div>
+        : !data || !data.groups.length ? <div style={{ color: '#9ca3af', fontSize: 13 }}>No active {noun}.</div>
         : data.groups.map(g => (
           <div key={g.key} style={{ borderTop: '1px solid #f3f4f6' }}>
             <div onClick={() => setExpanded(x => ({ ...x, [g.key]: !x[g.key] }))}
