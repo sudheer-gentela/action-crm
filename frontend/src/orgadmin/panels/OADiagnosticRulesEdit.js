@@ -26,10 +26,10 @@ const DIAGNOSTIC_MODULE_DEFS = [
   },
   {
     key: 'handovers',
-    label: 'Handovers',
+    label: 'Projects',
     icon: '🤝',
     fields: [
-      { key: 'no_kickoff_days', label: 'No kickoff days',    unit: 'days',  hint: 'Days after handover creation before no-kickoff alert fires' },
+      { key: 'no_kickoff_days', label: 'No kickoff days',    unit: 'days',  hint: 'Days after project creation before no-kickoff alert fires' },
       { key: 'stalled_days',    label: 'Stalled days',       unit: 'days',  hint: 'Days without any update before stalled alert fires' },
     ],
   },

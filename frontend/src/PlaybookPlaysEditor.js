@@ -1059,7 +1059,7 @@ export default function PlaybookPlaysEditor({ playbookId, readOnly = false }) {
   const stageNoun = playbookType === 'prospecting' ? 'prospect stage'
     : playbookType === 'clm' ? 'contract stage'
     : playbookType === 'service' ? 'case status'
-    : playbookType === 'handover_s2i' ? 'handover stage'
+    : playbookType === 'handover_s2i' ? 'project stage'
     : 'stage';
 
   return (

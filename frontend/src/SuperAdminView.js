@@ -1105,8 +1105,8 @@ const MODULE_DEFS_SA = [
   {
     key:   'handovers',
     icon:  '🤝',
-    label: 'Sales → Implementation Handover',
-    desc:  'Structured handover workflow on deal close — checklist, stakeholders, commitments.',
+    label: 'Sales → Implementation Project',
+    desc:  'Structured project workflow on deal close — checklist, stakeholders, commitments.',
   },
   {
     key:   'service',

@@ -46,7 +46,7 @@ export default function OAHandoverModule() {
       <div className="sv-panel-header">
         <div>
           <h2>🤝 Sales → Implementation Handover</h2>
-          <p className="sv-panel-desc">Structured handover workflow when a deal closes — ensures sales captures everything the implementation team needs.</p>
+          <p className="sv-panel-desc">Structured project workflow when a deal closes — ensures sales captures everything the implementation team needs.</p>
         </div>
       </div>
       <ModuleSubTabs
@@ -59,7 +59,7 @@ export default function OAHandoverModule() {
           moduleKey="handovers"
           icon="🤝"
           label="Sales → Implementation Handover"
-          desc="Automatically creates a handover checklist when a deal closes. Ensures the implementation team receives everything they need before the handoff."
+          desc="Automatically creates a project checklist when a deal closes. Ensures the implementation team receives everything they need before the handoff."
           toggleFn={(enabled) => apiService.handovers.toggleModule(enabled)}
         />
       )}

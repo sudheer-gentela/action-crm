@@ -79,7 +79,7 @@ const ALL_MODULE_ITEMS = [
     rememberKey:   'gw:prospecting:lastMode',
   },
   { id: 'contracts',   label: 'Contracts',   icon: '📄' },
-  { id: 'handovers',   label: 'Handovers',   icon: '🤝' },
+  { id: 'handovers',   label: 'Projects',    icon: '🤝' },
   { id: 'service',     label: 'Service',     icon: '🎧' },
   { id: 'agency',      label: 'Agency',      icon: '🏢' },
 ];
@@ -1003,7 +1003,7 @@ function Dashboard({ user, onLogout }) {
                 />
               : <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:12, color:'#94a3b8' }}>
                   <div style={{ fontSize:48 }}>🤝</div>
-                  <div style={{ fontSize:16, fontWeight:600, color:'#475569' }}>Handovers module is disabled</div>
+                  <div style={{ fontSize:16, fontWeight:600, color:'#475569' }}>Projects module is disabled</div>
                   <div style={{ fontSize:13 }}>An org admin can enable it under Org Admin → Modules.</div>
                 </div>
           )}

@@ -159,8 +159,8 @@ export default function OAModules() {
     {
       key: 'handovers',
       icon: '🤝',
-      label: 'Sales → Implementation Handover',
-      desc: 'Structured handover workflow when a deal closes — ensures sales captures everything the implementation team needs before handing off.',
+      label: 'Sales → Implementation Project',
+      desc: 'Structured project workflow when a deal closes — ensures sales captures everything the implementation team needs before handing off.',
       features: [
         'Handover automatically created when a deal is marked Closed Won',
         'Play-driven checklist with gate enforcement before submission',

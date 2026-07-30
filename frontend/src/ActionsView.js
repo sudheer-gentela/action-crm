@@ -642,7 +642,7 @@ const MODULE_META = {
   deals:       { icon: '💼', label: 'Deals',       color: '#4f46e5', bg: '#eef2ff' },
   prospecting: { icon: '🎯', label: 'Prospecting', color: '#0F9D8E', bg: '#f0fdfa' },
   contracts:   { icon: '📄', label: 'Contracts',   color: '#7c3aed', bg: '#f5f3ff' },
-  handovers:   { icon: '🤝', label: 'Handover',    color: '#0369a1', bg: '#f0f9ff' },
+  handovers:   { icon: '🤝', label: 'Projects',    color: '#0369a1', bg: '#f0f9ff' },
   service:     { icon: '🎧', label: 'Service',     color: '#065f46', bg: '#d1fae5' },
   agency:      { icon: '🏢', label: 'Agency',      color: '#92400e', bg: '#fef3c7' },
   general:     { icon: '⚡', label: 'General',     color: '#6b7280', bg: '#f3f4f6' },

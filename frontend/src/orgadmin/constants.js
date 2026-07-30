@@ -67,7 +67,7 @@ export const STATIC_NAV_GROUPS = [
 export const MODULE_NAV_DEFS = [
   { moduleKey: 'prospecting', navId: 'mod-prospecting', icon: '🎯', label: 'Prospecting' },
   { moduleKey: 'contracts',   navId: 'mod-contracts',   icon: '📄', label: 'CLM' },
-  { moduleKey: 'handovers',   navId: 'mod-handovers',   icon: '🤝', label: 'Handover S→I' },
+  { moduleKey: 'handovers',   navId: 'mod-handovers',   icon: '🤝', label: 'Projects' },
   { moduleKey: 'service',     navId: 'mod-service',     icon: '🎧', label: 'Service' },
   { moduleKey: 'agency',      navId: 'mod-agency',      icon: '🏢', label: 'Agency' },
 ];
@@ -102,7 +102,7 @@ export const TAB_META = {
   modules:             { title: 'Modules',                           desc: 'Enable or disable product modules for your organisation' },
   'mod-prospecting':   { title: 'Prospecting',                       desc: 'Prospecting module settings' },
   'mod-contracts':     { title: 'Contract Lifecycle Management',      desc: 'CLM module settings — eSign configuration and contract templates' },
-  'mod-handovers':     { title: 'Sales → Implementation Handover',   desc: 'Handover module settings' },
+  'mod-handovers':     { title: 'Sales → Implementation Project',    desc: 'Project module settings' },
   'mod-service':       { title: 'Customer Support & Service',         desc: 'Service module settings — SLA tiers and general configuration' },
   'mod-agency':        { title: 'Agency Client Management',           desc: 'Agency module settings — client portal and team configuration' },
   integrations:  { title: 'Integrations',  desc: 'Manage org-wide email, calendar, and cloud connections' },

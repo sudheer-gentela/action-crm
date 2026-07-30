@@ -441,7 +441,7 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, users }) {
 // ── Stage grouping for the handover checklist ─────────────────────────────────
 const STAGE_LABELS = {
   mobilize: 'Mobilization', groundwork: 'Groundwork', installation: 'Installation',
-  finishing: 'Finishing', signoff: 'Sign-off', custom: 'Added on this handover',
+  finishing: 'Finishing', signoff: 'Sign-off', custom: 'Added on this project',
 };
 function stageLabel(key) {
   if (!key) return 'Other';
@@ -1126,7 +1126,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
       setCanSubmit(submitRes.data?.canSubmit || false);
       setCloseInfo(closeRes.data || null);
     } catch {
-      setError('Could not load this handover. Try selecting it again.');
+      setError('Could not load this project. Try selecting it again.');
     } finally { setLoading(false); }
   }, [h.id]);
 
@@ -1139,19 +1139,19 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   };
 
   const SUCCESS_MSG = {
-    submitted:    'Handover submitted',
-    draft:        'Handover recalled to draft',
-    acknowledged: 'Handover acknowledged',
-    in_progress:  'Handover marked in progress',
-    completed:    'Handover completed',
-    cancelled:    'Handover cancelled',
+    submitted:    'Project submitted',
+    draft:        'Project recalled to draft',
+    acknowledged: 'Project acknowledged',
+    in_progress:  'Project marked in progress',
+    completed:    'Project completed',
+    cancelled:    'Project cancelled',
   };
 
   const handleAction = async (newStatus, closureSummary = null) => {
     setActioning(true);
     try {
       await apiService.handovers.setStatus(h.id, newStatus, closureSummary);
-      flash('success', `${SUCCESS_MSG[newStatus] || 'Handover updated'} ✓`);
+      flash('success', `${SUCCESS_MSG[newStatus] || 'Project updated'} ✓`);
       setClosureFor(null);
       setClosureText('');
       await load();
@@ -1237,7 +1237,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     </div>
   );
 
-  if (!detail) return <div style={{ padding: 24, color: '#9ca3af', fontSize: 13 }}>Could not load handover.</div>;
+  if (!detail) return <div style={{ padding: 24, color: '#9ca3af', fontSize: 13 }}>Could not load project.</div>;
 
   // Derived
   const isSalesView    = viewMode === 'mine';
@@ -1350,7 +1350,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                 color: canSubmit ? '#fff' : '#9ca3af',
                 cursor: actioning || !canSubmit ? 'not-allowed' : 'pointer',
               }}>
-              {actioning ? '⏳ Submitting…' : '📤 Submit handover'}
+              {actioning ? '⏳ Submitting…' : '📤 Submit project'}
             </button>
           )}
           {isSalesView && isSubmitted && (
@@ -1387,7 +1387,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                 color: canComplete ? '#fff' : '#9ca3af',
                 cursor: actioning || !canComplete ? 'not-allowed' : 'pointer',
               }}>
-              ✅ Complete handover
+              ✅ Complete project
             </button>
           )}
           {/* Cancel is available to either side from any non-terminal state */}
@@ -1396,7 +1396,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
               fontSize: 12, padding: '6px 14px', borderRadius: 6, fontWeight: 600, border: '1px solid #fecaca',
               background: '#fff', color: '#b91c1c', cursor: actioning ? 'not-allowed' : 'pointer',
             }}>
-              ✕ Cancel handover
+              ✕ Cancel project
             </button>
           )}
         </div>
@@ -1404,7 +1404,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
         {/* Blockers explaining a disabled Complete button */}
         {completeBlocked && closeInfo?.blockers?.length > 0 && (
           <div style={{ marginTop: 10, padding: '8px 12px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, fontSize: 12, color: '#92400e' }}>
-            <div style={{ fontWeight: 700, marginBottom: 4 }}>Before this handover can be completed:</div>
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>Before this project can be completed:</div>
             <ul style={{ margin: 0, paddingLeft: 18 }}>
               {closeInfo.blockers.map((b, i) => <li key={i}>{b}</li>)}
             </ul>
@@ -1415,7 +1415,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
         {closureFor && (
           <div style={{ marginTop: 12, padding: 12, background: '#f8fafc', borderRadius: 8, border: '1px solid #e5e7eb' }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: '#374151', marginBottom: 6 }}>
-              {closureFor === 'cancelled' ? 'Cancel this handover' : 'Complete this handover'}
+              {closureFor === 'cancelled' ? 'Cancel this project' : 'Complete this project'}
             </div>
             <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 6 }}>
               {closureFor === 'cancelled'
@@ -1423,7 +1423,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                 : 'Add an optional closing note for the record.'}
             </div>
             <textarea value={closureText} onChange={e => setClosureText(e.target.value)} rows={2}
-              placeholder={closureFor === 'cancelled' ? 'Why is this handover being cancelled?' : 'Closing note (optional)'}
+              placeholder={closureFor === 'cancelled' ? 'Why is this project being cancelled?' : 'Closing note (optional)'}
               style={{ width: '100%', fontSize: 12, padding: '6px 8px', borderRadius: 4, border: '1px solid #d1d5db', resize: 'vertical', boxSizing: 'border-box' }} />
             <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
               <button onClick={submitClosure}
@@ -1474,7 +1474,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
 
         {/* Handover Checklist (plays) — grouped by stage */}
         <section style={{ marginBottom: 24 }}>
-          <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#374151' }}>📋 Handover checklist</h4>
+          <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#374151' }}>📋 Project checklist</h4>
           {plays.length === 0 && (
             <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 12 }}>No checklist items yet.</div>
           )}
@@ -2175,7 +2175,7 @@ const WA_TEMPLATES = [
   {
     name: 'handover_intro',
     language: 'en_US',
-    label: 'Handover intro',
+    label: 'Project intro',
     description: 'Introduce the implementation owner and open the conversation. Requires Meta approval.',
     variables: [
       { label: 'Customer first name', placeholder: 'e.g. Priya' },
@@ -2283,7 +2283,7 @@ function CommunicationsPanel({ handoverId }) {
     if (er.code === 'NOT_CONNECTED')       return 'WhatsApp is not connected for this org yet.';
     if (er.code === 'OBA_REQUIRED')        return 'Groups need an Official Business Account (OBA) on this WABA. Once Meta approves the OBA, group creation will work.';
     if (er.code === 'GROUP_UNSUPPORTED')   return er.message || 'That message type is not supported in groups. Interactive templates only work in 1:1 threads.';
-    if (er.code === 'THREAD_NOT_FOUND')    return 'That conversation is no longer available on this handover.';
+    if (er.code === 'THREAD_NOT_FOUND')    return 'That conversation is no longer available on this project.';
     if (er.code === 'WINDOW_CLOSED')       return 'The 24-hour window is closed for this recipient — send an approved template to re-open it.';
     if (er.code === 'OPTED_OUT')           return 'This recipient has opted out of WhatsApp messages.';
     if (er.code === 'MISSING_COUNTRY_CODE') return er.message || 'Add a country code (e.g. +91) to this contact — it looks like a local number.';
@@ -2660,7 +2660,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
       {/* ── Top tabs (full width) ─────────────────────── */}
       <div style={{ display: 'flex', borderBottom: '2px solid #e5e7eb', background: '#fff', flexShrink: 0 }}>
         {[
-          { key: 'mine',      label: '📤 My Handovers' },
+          { key: 'mine',      label: '📤 My Projects' },
           { key: 'assigned',  label: '📥 Assigned to Me' },
           { key: 'dashboard', label: '📊 Dashboard' },
         ].map(t => (
@@ -2713,8 +2713,8 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
               </div>
               <div style={{ fontSize: 12 }}>
                 {tab === 'mine'
-                  ? 'Handovers are created automatically when a deal is marked Closed Won.'
-                  : 'Handovers assigned to you as service owner will appear here.'}
+                  ? 'Projects are created automatically when a deal is marked Closed Won.'
+                  : 'Projects assigned to you as service owner will appear here.'}
               </div>
             </div>
           ) : (
@@ -2736,8 +2736,8 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center',
             justifyContent: 'center', height: '100%', color: '#9ca3af', gap: 10 }}>
             <div style={{ fontSize: 48 }}>🤝</div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: '#475569' }}>Select a handover to view details</div>
-            <div style={{ fontSize: 12 }}>Handovers track everything service needs to know after a deal closes.</div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: '#475569' }}>Select a project to view details</div>
+            <div style={{ fontSize: 12 }}>Projects track everything service needs to know after a deal closes.</div>
           </div>
         ) : (
           <HandoverDetail

@@ -75,7 +75,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
   const [playbookTypes, setPlaybookTypes] = useState([
     { key: 'sales',        label: 'Sales',       icon: '📘', color: '#3b82f6', is_system: true },
     { key: 'prospecting',  label: 'Prospecting', icon: '🎯', color: '#0F9D8E', is_system: true },
-    { key: 'handover_s2i', label: 'Handover',    icon: '🤝', color: '#0369a1', is_system: true },
+    { key: 'handover_s2i', label: 'Project',    icon: '🤝', color: '#0369a1', is_system: true },
   ]);
 
   // ── Type filter (unchanged) ──────────────────────────────
@@ -323,7 +323,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
         {isCLM
           ? 'No active CLM stages found. Run the CLM pipeline stages migration to seed CLM stages.'
           : isHandover
-            ? 'No active handover stages found. Run the handover migration to seed stages.'
+            ? 'No active project stages found. Run the project migration to seed stages.'
             : 'No active prospect stages found. Add stages in the Prospect Stages tab.'}
       </div>
     );
@@ -439,14 +439,14 @@ export default function PlaybooksView({ initialTypeFilter }) {
                 ? isCLM
                   ? 'Manage CLM playbooks — define contract workflow guidance, actions, and review criteria.'
                   : isHandover
-                    ? 'Manage handover playbooks — define the plays and checks required when a deal is closed won and handed to the service team.'
+                    ? 'Manage project playbooks — define the plays and checks required when a deal is closed won and handed to the service team.'
                     : isProspecting
                       ? 'Manage outreach playbooks — define stage guidance, key actions, and cadences for each prospecting stage.'
                       : 'Manage playbooks per market or product. Each deal can use a specific playbook; the default is used when none is selected.'
                 : isCLM
                   ? 'View your org\'s CLM playbooks — contract workflow guidance and review criteria.'
                   : isHandover
-                    ? 'View your org\'s handover playbook — the plays and gate checks required before a won deal is handed to the service team.'
+                    ? 'View your org\'s project playbook — the plays and gate checks required before a won deal is handed to the service team.'
                     : isProspecting
                       ? 'View your org\'s prospecting playbooks — outreach strategy, actions, and success criteria per stage.'
                       : 'View your org\'s sales playbooks — stage guidance, key actions, and success criteria for every deal stage.'}
@@ -613,7 +613,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
                 {/* Sub-tabs */}
                 <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb', marginBottom: 16 }}>
                   {[
-                    { key: false, label: isCLM ? '📋 Contract Stages' : isHandover ? '🤝 Handover Stages' : isProspecting ? '🎯 Stage Guidance' : '📋 Stage Guidance' },
+                    { key: false, label: isCLM ? '📋 Contract Stages' : isHandover ? '🤝 Project Stages' : isProspecting ? '🎯 Stage Guidance' : '📋 Stage Guidance' },
                     { key: true,  label: '🎭 Plays by Role' },
                   ].map(t => {
                     const color = isCLM ? '#7c3aed' : isHandover ? '#0369a1' : isProspecting ? TEAL : '#3b82f6';
