@@ -24,7 +24,7 @@ import ContractsView from './ContractsView';
 import HandoverView from './HandoverView';
 import SupportView from './SupportView';
 import AgencyView from './AgencyView';
-import TeamReportingView from './TeamReportingView';
+import ReportingHub from './ReportingHub';
 import Sidebar from './Sidebar';
 
 // ─────────────────────────────────────────────────────────────
@@ -1060,7 +1060,8 @@ function Dashboard({ user, onLogout }) {
           )}
           {currentTab === 'settings'    && <SettingsView />}
           {currentTab === 'reporting'   && (
-            <TeamReportingView
+            <ReportingHub
+              orgModules={orgModules}
               drilldownCampaignId={pendingReportingCampaignId}
               onDrilldownConsumed={() => setPendingReportingCampaignId(null)}
             />

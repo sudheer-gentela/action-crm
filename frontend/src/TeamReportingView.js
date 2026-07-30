@@ -36,7 +36,6 @@ import WbrGrid from './prospecting/WbrGrid';                  // Insights/WBR Ph
 import InsightsPanel from './prospecting/InsightsPanel';      // Insights/WBR Phase 5
 import LinkedInRiskPanel from './prospecting/LinkedInRiskPanel';
 import ActivityTab from './prospecting/ActivityTab';
-import PortfolioHealthReport from './PortfolioHealthReport';
 import './TeamReportingView.css';
 import LinkedInFunnelPanel from './prospecting/LinkedInFunnelPanel';
 
@@ -377,9 +376,9 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
         clients={clients}
         clientFilter={clientFilter}
         onClientFilterChange={setClientFilter}
-        showClientFilter={clients.length > 0 && tab !== 'client' && tab !== 'insights' && tab !== 'linkedin' && tab !== 'activity' && tab !== 'lifunnel' && tab !== 'wbr' && tab !== 'health'}
-        showCampaignFilter={tab !== 'campaign' && tab !== 'insights' && tab !== 'linkedin' && tab !== 'activity' && tab !== 'lifunnel' && tab !== 'health'}   // tab 'campaign' IS the campaign list; insights org-level; LinkedIn risk has no campaign filter; activity spans modules beyond campaigns
-        showWindowPicker={tab !== 'wbr' && tab !== 'insights' && tab !== 'linkedin' && tab !== 'lifunnel' && tab !== 'health'}           // WBR/insight windows fixed; LinkedIn risk has its own window picker
+        showClientFilter={clients.length > 0 && tab !== 'client' && tab !== 'insights' && tab !== 'linkedin' && tab !== 'activity' && tab !== 'lifunnel' && tab !== 'wbr'}
+        showCampaignFilter={tab !== 'campaign' && tab !== 'insights' && tab !== 'linkedin' && tab !== 'activity' && tab !== 'lifunnel'}   // tab 'campaign' IS the campaign list; insights org-level; LinkedIn risk has no campaign filter; activity spans modules beyond campaigns
+        showWindowPicker={tab !== 'wbr' && tab !== 'insights' && tab !== 'linkedin' && tab !== 'lifunnel'}           // WBR/insight windows fixed; LinkedIn risk has its own window picker
       />
 
       {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
@@ -476,10 +475,6 @@ export default function TeamReportingView({ drilldownCampaignId = null, onDrilld
         <ActivityTab depth={depth} windowState={windowState} scope={scope} />
       )}
 
-      {tab === 'health' && (
-        <PortfolioHealthReport title="Delivery health — projects" />
-      )}
-
       {prospectPanel && (
         <ProspectListPanel
           context={prospectPanel}
@@ -532,7 +527,6 @@ function TabBar({ tab, onTabChange, showClientTab = false }) {
     { key: 'linkedin', label: 'LinkedIn risk' },
     { key: 'lifunnel', label: 'LinkedIn funnel' },
     { key: 'activity', label: 'Activity' },
-    { key: 'health',   label: 'Delivery health' },
   ];
   return (
     <div className="trv-tabbar">
