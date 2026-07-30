@@ -26,6 +26,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
+import PortfolioHealthReport from './PortfolioHealthReport';
 import { hashParts, hashSegment, writeHash } from './hashNav';
 
 // ── Deep-link parsing ─────────────────────────────────────────────────────────
@@ -2824,6 +2825,11 @@ function PortfolioDashboard({ onOpenProject }) {
 
   return (
     <div style={{ padding: 20, maxWidth: 1100, margin: '0 auto' }}>
+      {/* Portfolio health (R/Y/G by lens) */}
+      <div style={{ marginBottom: 18 }}>
+        <PortfolioHealthReport onOpenProject={onOpenProject} />
+      </div>
+
       {/* KPI tiles */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 10, marginBottom: 18 }}>
         {kpiTiles.map(t => (

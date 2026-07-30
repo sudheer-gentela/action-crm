@@ -2753,4 +2753,12 @@ router.get('/metric-drill', async (req, res) => {
   }
 });
 
+// ── GET /reporting/health — portfolio R/Y/G rollup grouped by a lens ──────────
+const { orgContext: _orgCtxHealth } = require('../middleware/orgContext.middleware');
+const _portfolioReporting = require('../services/reporting.service');
+router.get('/health', _orgCtxHealth, (req, res) =>
+  _portfolioReporting.healthRollup(req.orgId, req.query.groupBy || 'account')
+    .then(out => res.json(out))
+    .catch(e => res.status(e.status || 500).json({ error: { message: e.message } })));
+
 module.exports = router;

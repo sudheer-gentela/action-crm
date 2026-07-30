@@ -702,6 +702,7 @@ twilio: {
     },
     create:    (dealId)      => api.post('/handovers/sales', { dealId }),
     portfolio: ()            => api.get('/handovers/portfolio'),
+    healthRollup: (groupBy = 'account') => api.get(`/reporting/health?groupBy=${groupBy}`),
     communications: (id)     => api.get(`/handovers/sales/${id}/communications`),
     getById:   (id)          => api.get(`/handovers/sales/${id}`),
     update:    (id, data)    => api.put(`/handovers/sales/${id}`, data),
