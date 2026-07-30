@@ -2761,4 +2761,12 @@ router.get('/health', _orgCtxHealth, (req, res) =>
     .then(out => res.json(out))
     .catch(e => res.status(e.status || 500).json({ error: { message: e.message } })));
 
+// ── Deals reporting (Tier 1) ──────────────────────────────────────────────────
+const _dealsReporting = require('../services/dealsReporting.service');
+const _dsend = (res, p) => p.then(o => res.json(o)).catch(e => res.status(e.status || 500).json({ error: { message: e.message } }));
+router.get('/deals/health',   _orgCtxHealth, (req, res) => _dsend(res, _dealsReporting.pipelineHealth(req.orgId, req.query.groupBy || 'owner')));
+router.get('/deals/funnel',   _orgCtxHealth, (req, res) => _dsend(res, _dealsReporting.funnel(req.orgId)));
+router.get('/deals/forecast', _orgCtxHealth, (req, res) => _dsend(res, _dealsReporting.forecast(req.orgId, req.query.bucket || 'month')));
+router.get('/deals/winloss',  _orgCtxHealth, (req, res) => _dsend(res, _dealsReporting.winLoss(req.orgId, parseInt(req.query.window, 10) || 90, req.query.groupBy || 'owner')));
+
 module.exports = router;

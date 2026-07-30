@@ -11,11 +11,12 @@
 import React, { useState, useMemo } from 'react';
 import TeamReportingView from './TeamReportingView';
 import PortfolioHealthReport from './PortfolioHealthReport';
+import DealsReporting from './DealsReporting';
 
 // gate === undefined → always visible (core module). Otherwise gated on orgModules[gate].
 const MODULES = [
   { key: 'deals',       label: 'Deals',        icon: 'ti-briefcase',
-    reports: [{ k: 'pipeline_health', label: 'Pipeline health' }, { k: 'winloss', label: 'Win / loss' }, { k: 'forecast', label: 'Forecast' }] },
+    reports: [{ k: 'pipeline_health', label: 'Pipeline health', live: true }, { k: 'funnel', label: 'Funnel', live: true }, { k: 'forecast', label: 'Forecast', live: true }, { k: 'winloss', label: 'Win / loss', live: true }] },
   { key: 'prospecting', label: 'Prospecting',  icon: 'ti-target', gate: 'prospecting', prospecting: true },
   { key: 'projects',    label: 'Projects',     icon: 'ti-checklist', gate: 'handovers',
     reports: [{ k: 'delivery_health', label: 'Delivery health', live: true }, { k: 'ontime', label: 'On-time delivery' }, { k: 'throughput', label: 'Throughput' }] },
@@ -100,6 +101,9 @@ export default function ReportingHub({ orgModules = {}, drilldownCampaignId = nu
             const report = activeModule?.reports?.find(r => r.k === reportKey);
             if (report?.live && report.k === 'delivery_health') {
               return <PortfolioHealthReport title="Delivery health — projects" />;
+            }
+            if (activeModule?.key === 'deals' && report?.live) {
+              return <DealsReporting reportKey={report.k} />;
             }
             return (
               <div style={{ background: '#f8fafc', borderRadius: 12, padding: 32, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, textAlign: 'center' }}>

@@ -14,7 +14,7 @@ import { apiService } from './apiService';
 
 const RYG = { red: '#dc2626', yellow: '#d97706', green: '#16a34a', neutral: '#9ca3af' };
 const RYG_LABEL = { red: 'Red', yellow: 'Yellow', green: 'Green', neutral: '—' };
-const LENSES = [
+const DEFAULT_LENSES = [
   { k: 'account',       label: 'Account' },
   { k: 'service_owner', label: 'Service owner' },
   { k: 'status',        label: 'Status' },
@@ -25,8 +25,9 @@ function Dot({ health, size = 12 }) {
   return <span style={{ display: 'inline-block', width: size, height: size, borderRadius: '50%', background: RYG[health] || RYG.neutral }} />;
 }
 
-export default function PortfolioHealthReport({ onOpenProject, title = 'Portfolio health' }) {
-  const [groupBy, setGroupBy]   = useState('account');
+export default function PortfolioHealthReport({ onOpenProject, title = 'Portfolio health', fetcher, lenses = DEFAULT_LENSES }) {
+  const load = fetcher || apiService.handovers.healthRollup;
+  const [groupBy, setGroupBy]   = useState(lenses[0]?.k || 'none');
   const [data, setData]         = useState(null);
   const [expanded, setExpanded] = useState({});
   const [loading, setLoading]   = useState(true);
@@ -34,12 +35,12 @@ export default function PortfolioHealthReport({ onOpenProject, title = 'Portfoli
   useEffect(() => {
     let live = true;
     setLoading(true);
-    apiService.handovers.healthRollup(groupBy)
+    load(groupBy)
       .then(r => { if (live) setData(r.data); })
       .catch(() => { if (live) setData(null); })
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
-  }, [groupBy]);
+  }, [groupBy, load]);
 
   const openProject = (id) => {
     if (onOpenProject) onOpenProject(id);
@@ -65,7 +66,7 @@ export default function PortfolioHealthReport({ onOpenProject, title = 'Portfoli
           <span style={{ fontSize: 12, color: '#6b7280' }}>Group by</span>
           <select value={groupBy} onChange={e => { setGroupBy(e.target.value); setExpanded({}); }}
             style={{ fontSize: 12, padding: '4px 8px', borderRadius: 6, border: '1px solid #d1d5db' }}>
-            {LENSES.map(l => <option key={l.k} value={l.k}>{l.label}</option>)}
+            {lenses.map(l => <option key={l.k} value={l.k}>{l.label}</option>)}
           </select>
         </div>
       </div>
