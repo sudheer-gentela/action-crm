@@ -141,66 +141,103 @@ function DueChip({ dueDate, isOverdue, daysOverdue }) {
 
 // ── HandoverRow ───────────────────────────────────────────────────────────────
 
-function HandoverRow({ handover: h, selected, onClick }) {
-  return (
-    <div onClick={onClick} style={{
-      padding: '12px 16px', cursor: 'pointer', borderBottom: '1px solid #f3f4f6',
-      background: selected ? '#f0f9ff' : '#fff',
-      borderLeft: selected ? '3px solid #0369a1' : '3px solid transparent',
-      transition: 'background 0.1s',
-    }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#111827', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {h.dealName || `Deal #${h.dealId}`}
-          </div>
-          <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
-            {h.accountName || '—'}
-          </div>
-        </div>
-        <div style={{ flexShrink: 0, textAlign: 'right' }}>
-          <StatusBadge status={h.status} />
-          {h.goLiveDate && (
-            <div style={{ fontSize: 10, color: '#6b7280', marginTop: 3 }}>
-              Go-live {fmtDate(h.goLiveDate)}
-            </div>
-          )}
-        </div>
-      </div>
-      {h.contractValue && (
-        <div style={{ fontSize: 11, color: '#374151', marginTop: 4 }}>
-          {fmtCurrency(h.contractValue)}
-        </div>
-      )}
-      <RowChips h={h} />
+function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setStatusFilter, statusMeta, onOpen }) {
+  const [sortBy, setSortBy] = useState('value');
+  const [overdueOnly, setOverdueOnly] = useState(false);
+
+  const overdueOf = (h) => (h.playsOverdue || 0) + (h.commitmentsOverdue || 0);
+  const isTerminal = (h) => h.status === 'completed' || h.status === 'cancelled';
+
+  let rows = overdueOnly ? projects.filter(h => overdueOf(h) > 0) : projects;
+  rows = [...rows].sort((a, b) => {
+    if (sortBy === 'value')  return (b.contractValue || 0) - (a.contractValue || 0);
+    if (sortBy === 'golive') return new Date(a.goLiveDate || '2999-01-01') - new Date(b.goLiveDate || '2999-01-01');
+    if (sortBy === 'overdue') return overdueOf(b) - overdueOf(a);
+    return (a.dealName || '').localeCompare(b.dealName || '');
+  });
+
+  const totalValue   = projects.reduce((s, h) => s + (h.contractValue || 0), 0);
+  const active       = projects.filter(h => !isTerminal(h)).length;
+  const overdueCount = projects.filter(h => overdueOf(h) > 0).length;
+  const completed    = projects.filter(h => h.status === 'completed').length;
+
+  const metric = (label, value, color) => (
+    <div style={{ flex: 1, minWidth: 130, background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '12px 14px' }}>
+      <div style={{ fontSize: 22, fontWeight: 700, color: color || '#111827' }}>{value}</div>
+      <div style={{ fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.3 }}>{label}</div>
     </div>
   );
-}
-
-// Compact deliverable signal for a list row — overdue count and commitment
-// progress. Silent on quiet rows (nothing overdue, no commitments) and on
-// terminal handovers, so the sidebar stays scannable.
-function RowChips({ h }) {
-  const isTerminal = h.status === 'completed' || h.status === 'cancelled';
-  const overdue = (h.playsOverdue || 0) + (h.commitmentsOverdue || 0);
-  const cTotal  = h.commitmentsTotal || 0;
-  const cClosed = h.commitmentsClosed || 0;
-
-  if (isTerminal || (overdue === 0 && cTotal === 0)) return null;
+  const inp = { fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid #d1d5db' };
+  const th = { textAlign: 'left', fontSize: 11, color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.3, padding: '0 12px 8px' };
+  const td = { fontSize: 13, padding: '10px 12px', borderTop: '1px solid #f3f4f6' };
 
   return (
-    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 5 }}>
-      {overdue > 0 && (
-        <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
-          background: '#fee2e2', color: '#991b1b' }}>
-          ⚠ {overdue} overdue
-        </span>
-      )}
-      {cTotal > 0 && (
-        <span style={{ fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 4,
-          background: '#eef2ff', color: '#3730a3' }}>
-          {cClosed}/{cTotal} commitments
-        </span>
+    <div style={{ padding: 20, maxWidth: 1400, margin: '0 auto' }}>
+      {/* Metrics */}
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+        {metric('Projects', projects.length)}
+        {metric('Total value', fmtCurrency(totalValue))}
+        {metric('Active', active, '#0369a1')}
+        {metric('With overdue', overdueCount, overdueCount ? '#dc2626' : '#111827')}
+        {metric('Completed', completed, '#16a34a')}
+      </div>
+
+      {/* Filters */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+        <input value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="Search deals or accounts…" style={{ ...inp, minWidth: 240 }} />
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} style={inp}>
+          <option value="">All statuses</option>
+          {Object.entries(statusMeta).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+        </select>
+        <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={inp}>
+          <option value="value">Sort: Value</option>
+          <option value="golive">Sort: Go-live</option>
+          <option value="overdue">Sort: Overdue</option>
+          <option value="name">Sort: Name</option>
+        </select>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151' }}>
+          <input type="checkbox" checked={overdueOnly} onChange={e => setOverdueOnly(e.target.checked)} /> Overdue only
+        </label>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: '#9ca3af' }}>{rows.length} of {projects.length}</span>
+      </div>
+
+      {/* Table */}
+      {rows.length === 0 ? (
+        <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af', background: '#fff', borderRadius: 12, border: '1px solid #e5e7eb' }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>🤝</div>No projects match.
+        </div>
+      ) : (
+        <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr>
+              <th style={th}>Project</th><th style={th}>Status</th><th style={{ ...th, textAlign: 'right' }}>Value</th>
+              <th style={th}>Go-live</th><th style={{ ...th, textAlign: 'center' }}>Overdue</th><th style={th}>Commitments</th>
+            </tr></thead>
+            <tbody>
+              {rows.map(h => {
+                const od = overdueOf(h);
+                const cTotal = h.commitmentsTotal || 0, cClosed = h.commitmentsClosed || 0;
+                return (
+                  <tr key={h.id} onClick={() => onOpen(h)} style={{ cursor: 'pointer' }}
+                    onMouseEnter={e => { e.currentTarget.style.background = '#f9fafb'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
+                    <td style={td}>
+                      <div style={{ fontWeight: 600, color: '#111827' }}>{h.dealName || `Deal #${h.dealId}`}</div>
+                      <div style={{ fontSize: 12, color: '#6b7280' }}>{h.accountName || '—'}</div>
+                    </td>
+                    <td style={td}><StatusBadge status={h.status} /></td>
+                    <td style={{ ...td, textAlign: 'right', fontWeight: 500 }}>{h.contractValue ? fmtCurrency(h.contractValue) : '—'}</td>
+                    <td style={{ ...td, color: '#6b7280' }}>{h.goLiveDate ? fmtDate(h.goLiveDate) : '—'}</td>
+                    <td style={{ ...td, textAlign: 'center' }}>
+                      {od > 0 ? <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#fee2e2', color: '#991b1b' }}>{od}</span> : <span style={{ color: '#d1d5db' }}>—</span>}
+                    </td>
+                    <td style={{ ...td, color: '#6b7280' }}>{cTotal ? `${cClosed}/${cTotal}` : '—'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -2678,68 +2715,15 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
         <div style={{ flex: 1, overflowY: 'auto' }}>
           <PortfolioDashboard onOpenProject={handleOpenProject} />
         </div>
-      ) : (
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-
-      {/* ── Left sidebar ─────────────────────────────── */}
-      <div style={{ width: 300, flexShrink: 0, borderRight: '1px solid #e5e7eb',
-        background: '#fff', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-
-        {/* Filters */}
-        <div style={{ padding: '10px 12px', borderBottom: '1px solid #f3f4f6', display: 'flex', gap: 6 }}>
-          <input value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
-            placeholder="Search deals or accounts…"
-            style={{ flex: 1, fontSize: 12, padding: '5px 8px', borderRadius: 4, border: '1px solid #d1d5db' }} />
-          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
-            style={{ fontSize: 12, padding: '5px 6px', borderRadius: 4, border: '1px solid #d1d5db' }}>
-            <option value="">All</option>
-            {Object.entries(STATUS_META).map(([k, v]) => (
-              <option key={k} value={k}>{v.label}</option>
-            ))}
-          </select>
-        </div>
-
-        {/* List */}
+      ) : selected ? (
+        /* ── Full-width detail ─────────────────────────── */
         <div style={{ flex: 1, overflowY: 'auto' }}>
-          {loading ? (
-            <div style={{ padding: 20, color: '#9ca3af', fontSize: 13, textAlign: 'center' }}>
-              Loading…
-            </div>
-          ) : filtered.length === 0 ? (
-            <div style={{ padding: 24, textAlign: 'center', color: '#9ca3af' }}>
-              <div style={{ fontSize: 32, marginBottom: 8 }}>🤝</div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#475569', marginBottom: 4 }}>
-                {tab === 'mine' ? 'No handovers yet' : 'None assigned to you'}
-              </div>
-              <div style={{ fontSize: 12 }}>
-                {tab === 'mine'
-                  ? 'Projects are created automatically when a deal is marked Closed Won.'
-                  : 'Projects assigned to you as service owner will appear here.'}
-              </div>
-            </div>
-          ) : (
-            filtered.map(h => (
-              <HandoverRow
-                key={h.id}
-                handover={h}
-                selected={selected?.id === h.id}
-                onClick={() => { setSelected(h); setDetailSubTab('summary'); }}
-              />
-            ))
-          )}
-        </div>
-      </div>
-
-      {/* ── Detail panel ─────────────────────────────── */}
-      <div style={{ flex: 1, overflowY: 'auto' }}>
-        {!selected ? (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center',
-            justifyContent: 'center', height: '100%', color: '#9ca3af', gap: 10 }}>
-            <div style={{ fontSize: 48 }}>🤝</div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: '#475569' }}>Select a project to view details</div>
-            <div style={{ fontSize: 12 }}>Projects track everything service needs to know after a deal closes.</div>
+          <div style={{ padding: '10px 16px 0' }}>
+            <button onClick={() => { setSelected(null); setDetailSubTab('summary'); }}
+              style={{ fontSize: 13, padding: '5px 12px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', cursor: 'pointer' }}>
+              ← All projects
+            </button>
           </div>
-        ) : (
           <HandoverDetail
             key={selected.id}
             handover={selected}
@@ -2750,9 +2734,34 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
             initialTab={detailSubTab}
             onTabChange={setDetailSubTab}
           />
-        )}
-      </div>
-      </div>
+        </div>
+      ) : (
+        /* ── Full-width projects board ──────────────────── */
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          {loading ? (
+            <div style={{ padding: 40, color: '#9ca3af', fontSize: 13, textAlign: 'center' }}>Loading…</div>
+          ) : handovers.length === 0 ? (
+            <div style={{ padding: 60, textAlign: 'center', color: '#9ca3af' }}>
+              <div style={{ fontSize: 40, marginBottom: 10 }}>🤝</div>
+              <div style={{ fontSize: 15, fontWeight: 600, color: '#475569', marginBottom: 4 }}>
+                {tab === 'mine' ? 'No projects yet' : 'None assigned to you'}
+              </div>
+              <div style={{ fontSize: 13 }}>
+                {tab === 'mine'
+                  ? 'Projects are created automatically when a deal is marked Closed Won.'
+                  : 'Projects assigned to you as service owner will appear here.'}
+              </div>
+            </div>
+          ) : (
+            <ProjectsBoard
+              projects={filtered}
+              searchTerm={searchTerm} setSearchTerm={setSearchTerm}
+              statusFilter={statusFilter} setStatusFilter={setStatusFilter}
+              statusMeta={STATUS_META}
+              onOpen={(h) => { setSelected(h); setDetailSubTab('summary'); }}
+            />
+          )}
+        </div>
       )}
     </div>
   );
