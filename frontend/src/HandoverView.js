@@ -1650,6 +1650,90 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   );
 }
 
+// ── NextStepsSection: project-level actions (next steps) with an owner ────────
+function NextStepsSection({ handoverId, users, card, h4 }) {
+  const [actions, setActions] = useState(null);
+  const [adding, setAdding]   = useState(false);
+  const [title, setTitle]     = useState('');
+  const [owner, setOwner]     = useState('');
+  const [due, setDue]         = useState('');
+  const [busy, setBusy]       = useState(false);
+  const [err, setErr]         = useState('');
+
+  const load = useCallback(() => apiService.handovers.projectActions(handoverId)
+    .then(r => setActions(r.data.actions || []))
+    .catch(() => setActions([])), [handoverId]);
+  useEffect(() => { load(); }, [load]);
+
+  const submit = async () => {
+    if (!title.trim()) { setErr('Add a title.'); return; }
+    setBusy(true); setErr('');
+    try {
+      await apiService.handovers.addProjectAction(handoverId, { title: title.trim(), ownerUserId: owner || null, dueDate: due || null });
+      setTitle(''); setOwner(''); setDue(''); setAdding(false);
+      await load();
+    } catch (e) { setErr(e?.response?.data?.error?.message || 'Could not add.'); }
+    finally { setBusy(false); }
+  };
+  const complete = async (id) => { await apiService.handovers.completeProjectAction(handoverId, id).catch(() => {}); await load(); };
+
+  const open = (actions || []).filter(a => a.status !== 'completed');
+  const done = (actions || []).filter(a => a.status === 'completed');
+  const inp = { fontSize: 12, padding: '6px 8px', borderRadius: 6, border: '1px solid #d1d5db', boxSizing: 'border-box' };
+
+  return (
+    <div style={card}>
+      <h4 style={h4}>🎯 Next steps ({open.length})</h4>
+      {actions === null ? <div style={{ fontSize: 12, color: '#9ca3af' }}>Loading…</div> : (
+        <>
+          {open.length === 0 && !adding && <div style={{ fontSize: 12, color: '#9ca3af' }}>No open next steps.</div>}
+          {open.map(a => (
+            <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderTop: '1px solid #f3f4f6', fontSize: 13 }}>
+              <button onClick={() => complete(a.id)} title="Mark done"
+                style={{ width: 16, height: 16, flexShrink: 0, borderRadius: 4, border: '1.5px solid #cbd5e1', background: '#fff', cursor: 'pointer' }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ color: '#111827' }}>{a.title}</div>
+                <div style={{ fontSize: 11, color: '#6b7280' }}>{a.ownerName}{a.dueDate ? ` · due ${fmtDate(a.dueDate)}` : ''}</div>
+              </div>
+            </div>
+          ))}
+          {done.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              {done.slice(0, 5).map(a => (
+                <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', fontSize: 12, color: '#9ca3af' }}>
+                  <span style={{ color: '#16a34a' }}>✓</span>
+                  <span style={{ flex: 1, textDecoration: 'line-through' }}>{a.title}</span>
+                  <span>{a.ownerName}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {adding ? (
+            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <input value={title} onChange={e => setTitle(e.target.value)} placeholder="What needs doing?" style={inp} />
+              <div style={{ display: 'flex', gap: 6 }}>
+                <select value={owner} onChange={e => setOwner(e.target.value)} style={{ ...inp, flex: 1 }}>
+                  <option value="">Owner…</option>
+                  {(users || []).map(u => <option key={u.id} value={u.id}>{u.name || u.email}</option>)}
+                </select>
+                <input type="date" value={due} onChange={e => setDue(e.target.value)} style={inp} />
+              </div>
+              {err && <div style={{ fontSize: 11, color: '#991b1b' }}>{err}</div>}
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button onClick={submit} disabled={busy} style={{ fontSize: 12, padding: '5px 12px', borderRadius: 5, border: 'none', background: busy ? '#9ca3af' : '#059669', color: '#fff', cursor: 'pointer' }}>Add</button>
+                <button onClick={() => { setAdding(false); setErr(''); }} style={{ fontSize: 12, padding: '5px 10px', borderRadius: 5, border: 'none', background: '#f1f5f9', color: '#374151', cursor: 'pointer' }}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <button onClick={() => { setAdding(true); setErr(''); }} style={{ marginTop: 8, fontSize: 12, padding: '4px 10px', borderRadius: 5, background: '#eff6ff', color: '#1d4ed8', border: '1px dashed #93c5fd', cursor: 'pointer' }}>+ Add next step</button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── HandoverSummary: overview screen (team, playbook, ownership, open items) ──
 
 function initials(name) {
@@ -2138,6 +2222,9 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject }) {
           onRefresh={onRefresh}
         />
       </div>
+
+      {/* Next steps (project-level actions) */}
+      <NextStepsSection handoverId={detail.id} users={users} card={card} h4={h4} />
 
       {/* Customer team */}
       <div style={card}>

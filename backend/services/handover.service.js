@@ -1961,7 +1961,59 @@ async function getCommitmentActivity(commitmentId, orgId) {
   return { commitment: fmtCommitment(c), events };
 }
 
+// ── Project-level actions (next steps) — tied to the project's deal ───────────
+async function _projectDealId(handoverId, orgId) {
+  const { rows } = await pool.query(
+    `SELECT deal_id FROM sales_handovers WHERE id = $1 AND org_id = $2`, [handoverId, orgId]);
+  if (!rows[0]) throw Object.assign(new Error('Project not found'), { status: 404 });
+  return rows[0].deal_id;
+}
+
+async function listActions(handoverId, orgId) {
+  const dealId = await _projectDealId(handoverId, orgId);
+  const { rows } = await pool.query(
+    `SELECT a.id, a.title, a.description, a.due_date, a.status, a.priority, a.user_id,
+            (u.first_name || ' ' || u.last_name) AS owner_name
+       FROM actions a
+       LEFT JOIN users u ON u.id = a.user_id
+      WHERE a.org_id = $1 AND a.deal_id = $2
+      ORDER BY CASE WHEN a.status = 'completed' THEN 1 ELSE 0 END,
+               a.due_date ASC NULLS LAST, a.id DESC`, [orgId, dealId]);
+  return {
+    actions: rows.map(r => ({
+      id: r.id, title: r.title, description: r.description, dueDate: r.due_date,
+      status: r.status || 'not_started', priority: r.priority,
+      ownerUserId: r.user_id, ownerName: r.owner_name || 'Unassigned',
+    })),
+  };
+}
+
+async function createAction(handoverId, orgId, creatorId, data) {
+  const dealId = await _projectDealId(handoverId, orgId);
+  const title = String(data.title || '').trim();
+  if (!title) throw Object.assign(new Error('Title is required'), { status: 400 });
+  const ownerUserId = data.ownerUserId ? parseInt(data.ownerUserId, 10) : creatorId;
+  const dueDate = data.dueDate || null;
+  const { rows } = await pool.query(
+    `INSERT INTO actions (org_id, user_id, deal_id, type, action_type, priority, title, due_date, status, source, source_module)
+     VALUES ($1, $2, $3, 'follow_up', 'follow_up', 'medium', $4, $5, 'not_started', 'manual', 'handovers')
+     RETURNING id`, [orgId, ownerUserId, dealId, title, dueDate]);
+  return { id: rows[0].id };
+}
+
+async function completeAction(handoverId, orgId, actionId) {
+  const dealId = await _projectDealId(handoverId, orgId);
+  const { rowCount } = await pool.query(
+    `UPDATE actions SET status = 'completed'
+      WHERE id = $1 AND org_id = $2 AND deal_id = $3`, [actionId, orgId, dealId]);
+  if (!rowCount) throw Object.assign(new Error('Action not found for this project'), { status: 404 });
+  return { ok: true };
+}
+
 module.exports = {
+  listActions,
+  createAction,
+  completeAction,
   initiate,
   list,
   getTeamMemberProjects,  // person drill-down

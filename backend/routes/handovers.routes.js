@@ -103,6 +103,20 @@ router.get('/sales/:id', async (req, res) => {
   }
 });
 
+// ── Project actions (next steps) ──────────────────────────────────────────────
+router.get('/sales/:id/actions', async (req, res) => {
+  try { res.json(await handoverService.listActions(parseInt(req.params.id), req.orgId)); }
+  catch (err) { res.status(err.status || 500).json({ error: { message: err.message } }); }
+});
+router.post('/sales/:id/actions', async (req, res) => {
+  try { res.status(201).json(await handoverService.createAction(parseInt(req.params.id), req.orgId, req.userId, req.body || {})); }
+  catch (err) { res.status(err.status || 500).json({ error: { message: err.message } }); }
+});
+router.post('/sales/:id/actions/:actionId/complete', async (req, res) => {
+  try { res.json(await handoverService.completeAction(parseInt(req.params.id), req.orgId, parseInt(req.params.actionId))); }
+  catch (err) { res.status(err.status || 500).json({ error: { message: err.message } }); }
+});
+
 // ── PUT /sales/:id ────────────────────────────────────────────────────────────
 
 router.put('/sales/:id', async (req, res) => {
