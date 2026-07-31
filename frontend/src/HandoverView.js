@@ -1146,7 +1146,6 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   const [success,   setSuccess]   = useState('');
   const [closureFor, setClosureFor] = useState(null); // 'completed' | 'cancelled' | null
   const [menuOpen, setMenuOpen] = useState(false);    // header "⋯" overflow menu
-  const [contactPanel, setContactPanel] = useState(null); // customer contact drawer (Details tab)
   const [checklistLayout, setChecklistLayout] = useState(() => {
     try { return localStorage.getItem('gw_project_checklist_layout') || 'grid'; } catch { return 'grid'; }
   });
@@ -1255,16 +1254,6 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     }
   };
 
-  const handleAddStakeholder = async (data) => {
-    await apiService.handovers.addStakeholder(h.id, data);
-    await load();
-  };
-
-  const handleRemoveStakeholder = async (stakeholderId) => {
-    await apiService.handovers.removeStakeholder(h.id, stakeholderId);
-    await load();
-  };
-
   const handleAddCommitment = async (data) => {
     await apiService.handovers.addCommitment(h.id, data);
     await load();
@@ -1307,7 +1296,6 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   const canManageCommitments = !isTerminal;
 
   const plays        = detail.plays        || [];
-  const stakeholders = detail.stakeholders || [];
   const commitments  = detail.commitments  || [];
 
   const gatePlays  = plays.filter(p => p.isGate);
@@ -1530,7 +1518,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
       {/* ── Summary ─────────────────────────────────────── */}
       {detailTab === 'summary' && (
         <div style={{ padding: '16px 20px' }}>
-          <HandoverSummary detail={detail} users={users} canEdit={isServiceView || salesCanEdit} onRefresh={load} onOpenProject={onOpenProject} />
+          <HandoverSummary detail={detail} users={users} canEdit={isServiceView || salesCanEdit} onRefresh={load} onOpenProject={onOpenProject} onGoToDetails={() => setDetailTab('details')} />
         </div>
       )}
 
@@ -1647,23 +1635,6 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
           </section>
         )}
 
-        {/* Stakeholders */}
-        <section style={{ marginBottom: 24 }}>
-          <h4 style={{ margin: '0 0 8px', fontSize: 14, color: '#374151' }}>
-            👤 Customer stakeholders ({stakeholders.length})
-          </h4>
-          <StakeholderSection
-            stakeholders={stakeholders}
-            canEdit={detail.canAddContacts}
-            canEditPolicy={detail.canEditContactPolicy}
-            accountId={detail.accountId}
-            handoverId={detail.id}
-            onAdd={handleAddStakeholder}
-            onRemove={handleRemoveStakeholder}
-            onOpenContact={setContactPanel}
-          />
-        </section>
-
         {/* Commitments / Risks */}
         <section style={{ marginBottom: 24 }}>
           <h4 style={{ margin: '0 0 8px', fontSize: 14, color: '#374151' }}>
@@ -1702,8 +1673,6 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
           <CommunicationsPanel handoverId={detail.id} />
         </div>
       )}
-
-      {contactPanel && <CustomerContactPanel stakeholder={contactPanel} onClose={() => setContactPanel(null)} />}
     </div>
   );
 }
@@ -2221,7 +2190,7 @@ function DeliverableModal({ commitmentId, onClose }) {
   );
 }
 
-function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject }) {
+function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onGoToDetails }) {
   const team      = detail.dealTeam || [];
   const pb        = detail.playbook;
   const allCommits = detail.commitments || [];
@@ -2283,6 +2252,34 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject }) {
 
       {/* Next steps (project-level actions) */}
       <NextStepsSection handoverId={detail.id} users={users} card={card} h4={h4} />
+
+      {/* Commitments & risks (manage in Details) */}
+      <div style={card}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+          <h4 style={{ ...h4, margin: 0 }}>📌 Commitments &amp; risks ({allCommits.length})</h4>
+          {onGoToDetails && (
+            <button onClick={onGoToDetails} style={{ marginLeft: 'auto', fontSize: 11, color: '#0369a1', background: 'none', border: 'none', cursor: 'pointer' }}>Manage in Details →</button>
+          )}
+        </div>
+        {allCommits.length === 0 ? (
+          <div style={{ fontSize: 12, color: '#9ca3af' }}>None logged.</div>
+        ) : allCommits.slice(0, 10).map(c => {
+          const DOT = { open: '#d97706', in_progress: '#d97706', met: '#16a34a', waived: '#9ca3af', breached: '#dc2626' };
+          return (
+            <div key={c.id} onClick={onGoToDetails} title="Manage in Details"
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderTop: '1px solid #f3f4f6', fontSize: 13, cursor: onGoToDetails ? 'pointer' : 'default' }}>
+              <span style={{ width: 9, height: 9, flexShrink: 0, borderRadius: '50%', background: DOT[c.status] || '#9ca3af' }} />
+              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.description}</span>
+              {c.commitmentType && c.commitmentType !== 'promise' && (
+                <span style={{ fontSize: 10, fontWeight: 700, color: c.commitmentType === 'red_flag' ? '#dc2626' : '#d97706' }}>
+                  {c.commitmentType === 'red_flag' ? 'RED FLAG' : 'RISK'}
+                </span>
+              )}
+              {c.ownerName && <span style={{ fontSize: 11, color: '#6b7280' }}>{c.ownerName}</span>}
+            </div>
+          );
+        })}
+      </div>
 
       {/* Customer team */}
       <div style={card}>
@@ -2459,6 +2456,7 @@ const WA_TEMPLATES = [
 
 function CommunicationsPanel({ handoverId }) {
   const [items,   setItems]   = useState(null);
+  const [channelFilter, setChannelFilter] = useState('all'); // all | email | whatsapp
   const [text,    setText]    = useState('');
   const [sending, setSending] = useState(false);
   const [err,     setErr]     = useState('');
@@ -2629,11 +2627,24 @@ function CommunicationsPanel({ handoverId }) {
 
   return (
     <div>
+      {/* Channel filter — All / Email / WhatsApp (Phone later) */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+        {[['all', 'All'], ['email', 'Email'], ['whatsapp', 'WhatsApp']].map(([k, label]) => {
+          const on = channelFilter === k;
+          const count = k === 'all' ? (items || []).length : (items || []).filter(m => m.channel === k).length;
+          return (
+            <button key={k} onClick={() => setChannelFilter(k)} style={{ padding: '5px 12px', fontSize: 12, fontWeight: on ? 600 : 400, borderRadius: 6,
+              border: `1px solid ${on ? '#0369a1' : '#e5e7eb'}`, background: on ? '#eff6ff' : '#fff', color: on ? '#0369a1' : '#374151', cursor: 'pointer' }}>
+              {label} <span style={{ color: '#9ca3af' }}>{count}</span>
+            </button>
+          );
+        })}
+      </div>
       <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: '#f9fafb', padding: 14,
         display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 440, overflowY: 'auto' }}>
-        {items.length === 0 ? (
+        {(items || []).filter(m => channelFilter === 'all' || m.channel === channelFilter).length === 0 ? (
           <div style={{ color: '#9ca3af', fontSize: 13 }}>No communications with the customer team yet.</div>
-        ) : items.map(m => {
+        ) : (items || []).filter(m => channelFilter === 'all' || m.channel === channelFilter).map(m => {
           const out = m.direction === 'outbound';
           const ch  = CH[m.channel] || { label: m.channel, color: '#6b7280', bg: '#f3f4f6' };
           return (
