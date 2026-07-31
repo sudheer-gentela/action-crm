@@ -1318,6 +1318,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
             <div style={{ fontSize: 13, color: '#6b7280' }}>{detail.accountName}</div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, position: 'relative' }}>
+            <span style={{ fontSize: 10, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: 0.4, fontWeight: 700 }}>Status</span>
             <StatusBadge status={detail.status} />
             {!isTerminal && (
               <>
@@ -1531,7 +1532,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
         {/* Handover Checklist (plays) — grouped by stage */}
         <section style={{ marginBottom: 24 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 12px' }}>
-            <h4 style={{ margin: 0, fontSize: 14, color: '#374151' }}>📋 Project checklist</h4>
+            <h4 style={{ margin: 0, fontSize: 14, color: '#374151' }}>📋 Project checklist <span style={{ fontSize: 11, fontWeight: 400, color: '#9ca3af' }}>· steps grouped by stage</span></h4>
             <div style={{ marginLeft: 'auto', display: 'inline-flex', border: '1px solid #d1d5db', borderRadius: 6, overflow: 'hidden' }}>
               {[['grid', 'Grid'], ['detailed', 'Detailed']].map(([k, label]) => (
                 <button key={k} onClick={() => setLayout(k)} style={{ padding: '4px 12px', fontSize: 11, fontWeight: 600, border: 'none', cursor: 'pointer',
@@ -1551,6 +1552,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                 return (
                   <div key={group.key} style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 14, background: '#fff' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                      <span style={{ fontSize: 9, fontWeight: 700, color: '#94a3b8', background: '#f1f5f9', padding: '1px 5px', borderRadius: 4, letterSpacing: 0.3 }}>STAGE</span>
                       <span style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4 }}>{group.label}</span>
                       <span style={{ fontSize: 11, color: '#6b7280' }}>{group.done}/{group.items.length}</span>
                       <div style={{ flex: 1, height: 4, background: '#f1f5f9', borderRadius: 2, overflow: 'hidden' }}>
@@ -1590,6 +1592,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
               return (
                 <div key={group.key} style={{ marginBottom: 18 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                    <span style={{ fontSize: 9, fontWeight: 700, color: '#94a3b8', background: '#f1f5f9', padding: '1px 5px', borderRadius: 4, letterSpacing: 0.3 }}>STAGE</span>
                     <span style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4, whiteSpace: 'nowrap' }}>
                       {group.label}
                     </span>

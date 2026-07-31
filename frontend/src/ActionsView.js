@@ -4,6 +4,7 @@ import { csvExport, EXPORT_COLUMNS } from './csvUtils';
 import './ActionsView.css';
 import EmailComposer from './EmailComposer';
 import SnoozeModal from './SnoozeModal';
+import useIsMobile from './useIsMobile';
 
 const API = process.env.REACT_APP_API_URL || '';
 
@@ -1912,11 +1913,24 @@ export default function ActionsView({ openActionId, onActionOpened }) {
   // ── Scope toggle state ────────────────────────────────────────
   const [scope, setScope] = useState('mine');   // 'mine' | 'team' | 'org'
   const actionSource = 'all'; // simplified — column filters handle source filtering
-  const [viewLayout, setViewLayout] = useState('table'); // 'table' | 'cards'
+  const isMobile = useIsMobile();
+  // Table layout needs ~820px of fixed columns plus a flexible title column;
+  // below the breakpoint the card layout is the only readable one, so it is
+  // the default there and the layout toggle is hidden (see .av-layout-toggle).
+  const [viewLayout, setViewLayout] = useState(
+    () => (typeof window !== 'undefined' && window.innerWidth < 768 ? 'cards' : 'table')
+  ); // 'table' | 'cards'
   const [visibleCols, setVisibleCols] = useState(() =>
     ALL_COLUMNS.filter(c => c.defaultVisible).map(c => c.key)
   );
   const [hasTeam, setHasTeam] = useState(false);
+
+  // Handles the case where the viewport narrows after mount (rotation, split
+  // view, a resized desktop window). Without this the toggle disappears but the
+  // layout stays on 'table', leaving unlabelled wrapped cells with no way back.
+  useEffect(() => {
+    if (isMobile) setViewLayout('cards');
+  }, [isMobile]);
 
   // ── STRAP state ────────────────────────────────────────────────
   const [straps, setStraps]               = useState([]);
@@ -2503,7 +2517,7 @@ export default function ActionsView({ openActionId, onActionOpened }) {
               )}
             </div>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div className="av-header-right" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             {/* Scope toggle — only visible if user has subordinates */}
             {hasTeam && (
               <div style={{
@@ -2556,7 +2570,7 @@ export default function ActionsView({ openActionId, onActionOpened }) {
                        background: '#fff', fontSize: 13, cursor: 'pointer' }}>
               📤 Export
             </button>
-            <div style={{
+            <div className="av-layout-toggle" style={{
               display: 'inline-flex', borderRadius: 8, overflow: 'hidden',
               border: '1px solid #e2e4ea', fontSize: 13,
             }}>

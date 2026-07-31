@@ -303,6 +303,38 @@
   .av-filter-group--status { width: 100%; }
   .av-filter-select { width: 100%; }
   .av-filter-dates { width: 100%; }
+
+  /* The header is a space-between row that does not wrap. Its right-hand side
+     alone carries the scope toggle, Generate, Add Action, Export and the layout
+     toggle — roughly 685px of controls in a 390px viewport. Let both levels
+     wrap and left-align the second row so the controls stack tidily. */
+  .av-header {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .av-header-right {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  /* Card layout is forced below this width (see ActionsView.js), so the
+     table/card switch has nothing useful to do and only invites a broken view. */
+  .av-layout-toggle { display: none; }
+
+  /* Both are space-between rows; without wrapping, a long action title
+     compresses the badge cluster and the footer's controls overlap. */
+  .av-card-header,
+  .av-card-footer {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  /* Titles and context lines hold deal names, account names and email
+     subjects — none of which should force the card wider than the screen. */
+  .av-card-title {
+    overflow-wrap: anywhere;
+  }
 }
 
 /* ── Action Context Banner (EmailComposer) ─────────────────────────────────── */

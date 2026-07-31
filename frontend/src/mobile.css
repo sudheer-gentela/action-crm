@@ -1,0 +1,140 @@
+/* ============================================================================
+   mobile.css — global responsive baseline (Pass 0)
+   ============================================================================
+
+   Loaded LAST in index.js, after App and its component stylesheets, so that
+   ties on specificity resolve in this file's favour.
+
+   Two of the rules below use !important. That is deliberate and narrow: the
+   app styles ~6,300 elements with inline style={{ }} props, and an inline
+   style beats every stylesheet selector except an !important one. Rather than
+   editing ~2,850 inline fontSize declarations, one !important rule fixes the
+   whole class of problem. Nothing else here uses it.
+
+   Breakpoint is 768px throughout, matching App.js (isMobile), Sidebar.css,
+   ActionsView.css and the rest of the existing media queries.
+   ============================================================================ */
+
+
+/* ── 1. iOS input auto-zoom ─────────────────────────────────────────────────
+   Mobile Safari zooms the viewport whenever a focused form control computes to
+   a font-size below 16px, and it does not zoom back out afterwards — the user
+   is left on a magnified page and has to pinch out manually. The app's type
+   scale runs 10-14px, so this fires on essentially every input in the product.
+
+   Applied below the tablet breakpoint only; the dense desktop scale is intact
+   above it. Non-text controls are excluded because their box size is derived
+   from font-size in some engines and bumping it visibly enlarges them.
+   ------------------------------------------------------------------------- */
+@media (max-width: 768px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+
+/* ── 2. Overflow guards ─────────────────────────────────────────────────────
+   index.css already sets overflow-x: hidden on body, which stops the page from
+   scrolling sideways but silently clips whatever overflowed. These rules make
+   the common offenders fit instead of being cut off.
+   ------------------------------------------------------------------------- */
+img,
+svg,
+video,
+canvas,
+iframe {
+  max-width: 100%;
+}
+
+pre {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+/* Long unbroken strings — email addresses, URLs, API keys, LinkedIn URNs —
+   are the other common cause of a blown-out row. */
+@media (max-width: 768px) {
+  .gw-break-word {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+}
+
+
+/* ── 3. Text-size adjustment and tap feedback ──────────────────────────────
+   Android Chrome inflates text in blocks it decides are too narrow to read,
+   which desynchronises the rendered size from the CSS and breaks layouts that
+   assume a fixed scale. Opt out and keep the declared sizes.
+   ------------------------------------------------------------------------- */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+button,
+[role="button"],
+a {
+  -webkit-tap-highlight-color: rgba(19, 78, 122, 0.10);
+}
+
+
+/* ── 4. Shared utilities for Passes 1-3 ────────────────────────────────────
+   These exist so the per-module work in later passes is a className change
+   rather than a new block of bespoke CSS each time.
+   ------------------------------------------------------------------------- */
+
+/* Horizontally scrollable strip. The intended use is tab bars and pill rows
+   that exceed the viewport: the row scrolls rather than squashing or clipping.
+   Mirrors the pattern already proven in ContractDetailPanel.css (.cdp-tabs).
+   Children are pinned at their natural width so flex cannot compress them. */
+.gw-scroll-x {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.gw-scroll-x::-webkit-scrollbar {
+  display: none;
+}
+.gw-scroll-x > * {
+  flex-shrink: 0;
+}
+
+/* Below the breakpoint only. Applied to existing flex rows during the sweep. */
+@media (max-width: 768px) {
+
+  /* A toolbar or header row that should wrap onto multiple lines instead of
+     compressing its children. This is the single most common repair in the
+     codebase — there are ~231 flex rows using justify-content: space-between
+     with no flex-wrap. */
+  .gw-wrap-mobile {
+    flex-wrap: wrap;
+  }
+
+  /* A row that should become a column: filter bars, form rows, button groups
+     whose members each want the full width. */
+  .gw-stack-mobile {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  /* Desktop-only affordances — dense toggles, secondary controls, column
+     pickers — that have no useful mobile equivalent. */
+  .gw-hide-mobile {
+    display: none;
+  }
+
+  /* Inverse: an element that should only appear on small screens. Uses
+     display: block, so do not apply it to something that needs flex or grid. */
+  .gw-show-mobile {
+    display: block;
+  }
+}
+
+@media (min-width: 769px) {
+  .gw-show-mobile {
+    display: none;
+  }
+}
