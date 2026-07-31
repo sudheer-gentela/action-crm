@@ -352,7 +352,7 @@ export default function CSVImportModal({ entity, onImport, onClose, accounts = [
             <p style={{ color: '#6b7280', marginBottom: 16, fontSize: 13 }}>
               <strong>{fileName}</strong> — {csvRows.length} rows detected. Map CSV columns to {entityLabel} fields:
             </p>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 20px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '10px 20px' }}>
               {fields.map(f => (
                 <div key={f.key}>
                   <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>

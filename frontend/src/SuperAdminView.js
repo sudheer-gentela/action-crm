@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import DesktopOnlyNotice from './DesktopOnlyNotice';
 import { apiService } from './apiService';
 import './SuperAdminView.css';
 import WorkflowCanvas from './WorkflowCanvas';
@@ -20,7 +21,18 @@ const SA_TABS = [
   { id: 'platform-settings', label: 'Platform Settings', icon: '🛠️'  },
 ];
 
-export default function SuperAdminView() {
+export default function SuperAdminView(props) {
+  return (
+    <DesktopOnlyNotice
+      title="Super admin needs a wider screen"
+      detail="Platform administration works across wide tables of organisations, users and usage. These are dense by design and do not compress well."
+    >
+      <SuperAdminViewInner {...props} />
+    </DesktopOnlyNotice>
+  );
+}
+
+function SuperAdminViewInner() {
   const [tab, setTab]         = useState('overview');
   const [tabOpts, setTabOpts] = useState({}); // initial filters when navigating from a tile
 

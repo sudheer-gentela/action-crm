@@ -11,6 +11,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
+import DesktopOnlyNotice from './DesktopOnlyNotice';
 
 const API  = process.env.REACT_APP_API_URL || '';
 const TEAL = '#0F9D8E';
@@ -421,7 +422,18 @@ function ClientCard({ client, onClick }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // CLIENT DETAIL
 // ─────────────────────────────────────────────────────────────────────────────
-function ClientDetail({ clientId, onBack, initialTab }) {
+function ClientDetail(props) {
+  return (
+    <DesktopOnlyNotice
+      title="Client reporting needs a wider screen"
+      detail="The client dashboard puts pipeline, outreach, sequences and team side by side across nine tabs. The client list you just came from works fine on a phone."
+    >
+      <ClientDetailInner {...props} />
+    </DesktopOnlyNotice>
+  );
+}
+
+function ClientDetailInner({ clientId, onBack, initialTab }) {
   const [tab,         setTab]         = useState(initialTab || 'overview');
   const [data,        setData]        = useState(null);
   const [loading,     setLoading]     = useState(true);
@@ -502,7 +514,7 @@ function ClientDetail({ clientId, onBack, initialTab }) {
 
         {tab === 'overview' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 12 }}>
               {[
                 { label: 'Total Prospects', value: prospects?.length || 0,       color: TEAL },
                 { label: 'Emails Sent',     value: outreach?.totalSent || 0,     color: '#3b82f6' },
@@ -568,7 +580,7 @@ function ClientDetail({ clientId, onBack, initialTab }) {
 
         {tab === 'outreach' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
               {[
                 { label: 'Total Sent',    value: outreach?.totalSent    || 0,       color: '#3b82f6' },
                 { label: 'Total Replies', value: outreach?.totalReplies || 0,       color: '#059669' },

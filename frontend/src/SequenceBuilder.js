@@ -17,6 +17,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
+import DesktopOnlyNotice from './DesktopOnlyNotice';
 import PersonalizeConfigBlock from './PersonalizeConfigBlock';
 import SequenceABPanel from './SequenceABPanel';   // A/B variants (2026_46)
 
@@ -92,7 +93,18 @@ function blankStep(order) {
 // MAIN COMPONENT
 // ─────────────────────────────────────────────────────────────────────────────
 
-export default function SequenceBuilder({ sequence: initialSequence, onSave, onClose }) {
+export default function SequenceBuilder(props) {
+  return (
+    <DesktopOnlyNotice
+      title="The sequence builder needs a wider screen"
+      detail="Steps, delays, A/B variants and the message editor sit side by side. Below about 900px the columns collapse into each other and it becomes easy to edit the wrong step."
+    >
+      <SequenceBuilderInner {...props} />
+    </DesktopOnlyNotice>
+  );
+}
+
+function SequenceBuilderInner({ sequence: initialSequence, onSave, onClose }) {
   const isEdit = !!initialSequence?.id;
 
   const [name,            setName]            = useState(initialSequence?.name        || '');

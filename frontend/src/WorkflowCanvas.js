@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import DesktopOnlyNotice from './DesktopOnlyNotice';
 import { apiService } from './apiService';
 import RuleBuilder from './RuleBuilder';
 
@@ -565,7 +566,18 @@ function WorkflowDetail({ wf, scope, onRefreshList }) {
 
 // ─── Main export ───────────────────────────────────────────────────────────────
 
-export default function WorkflowCanvas({ scope = 'org', entity: defaultEntity }) {
+export default function WorkflowCanvas(props) {
+  return (
+    <DesktopOnlyNotice
+      title="Workflow rules need a wider screen"
+      detail="Each rule shows its trigger, conditions and actions in one row. On a narrow screen those wrap into a single column and the relationship between them stops being readable."
+    >
+      <WorkflowCanvasInner {...props} />
+    </DesktopOnlyNotice>
+  );
+}
+
+function WorkflowCanvasInner({ scope = 'org', entity: defaultEntity }) {
   const [workflows,    setWorkflows]    = useState([]);
   const [loading,      setLoading]      = useState(true);
   const [selected,     setSelected]     = useState(null);  // selected workflow

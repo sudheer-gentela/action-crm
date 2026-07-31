@@ -25,6 +25,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useCallback } from 'react';
+import DesktopOnlyNotice from './DesktopOnlyNotice';
 import { apiService } from './apiService';
 import PortfolioHealthReport from './PortfolioHealthReport';
 import { hashParts, hashSegment, writeHash } from './hashNav';
@@ -1786,38 +1787,43 @@ function CommercialTab({ detail, users, onRefresh }) {
       </div>
 
       {detail.canManageTabAccess && (
-        <div style={card}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-            <h4 style={{ margin: 0, fontSize: 14, color: '#374151' }}>🔒 Who can see this tab</h4>
-            {!managing && <button onClick={() => { setManaging(true); setMsg(''); }} style={{ marginLeft: 'auto', fontSize: 12, color: '#0369a1', background: 'none', border: 'none', cursor: 'pointer' }}>Edit</button>}
-          </div>
-          <p style={{ fontSize: 12, color: '#6b7280', margin: '0 0 10px' }}>
-            The project owner, deal owner, and org admins can always see the Commercial tab. Add specific people below to grant them access too.
-          </p>
-          {!managing ? (
-            viewers.length === 0
-              ? <div style={{ fontSize: 12, color: '#9ca3af' }}>No named people added — only owners and admins can see it.</div>
-              : <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>{viewers.map(v => (
-                  <span key={v.userId} style={{ fontSize: 12, padding: '3px 10px', borderRadius: 999, background: '#eff6ff', color: '#1d4ed8' }}>{v.name}</span>
-                ))}</div>
-          ) : (
-            <div>
-              <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: 8, padding: 8 }}>
-                {(users || []).map(u => (
-                  <label key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '3px 0', cursor: 'pointer' }}>
-                    <input type="checkbox" checked={sel.includes(u.id)} onChange={() => toggle(u.id)} />
-                    {u.name || u.email}
-                  </label>
-                ))}
-              </div>
-              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                <button onClick={save} disabled={saving} style={{ fontSize: 12, padding: '5px 14px', borderRadius: 6, border: 'none', background: saving ? '#9ca3af' : '#059669', color: '#fff', cursor: 'pointer' }}>{saving ? 'Saving…' : 'Save'}</button>
-                <button onClick={() => { setManaging(false); setSel(viewers.map(v => v.userId)); }} style={{ fontSize: 12, padding: '5px 12px', borderRadius: 6, border: 'none', background: '#f1f5f9', color: '#374151', cursor: 'pointer' }}>Cancel</button>
-              </div>
+        <DesktopOnlyNotice
+          title="Tab access is easier to manage on a wider screen"
+          detail="Granting access means picking people from your org roster. The list is long and the checkboxes are small on a phone — the commercial terms above stay readable either way."
+        >
+          <div style={card}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <h4 style={{ margin: 0, fontSize: 14, color: '#374151' }}>🔒 Who can see this tab</h4>
+              {!managing && <button onClick={() => { setManaging(true); setMsg(''); }} style={{ marginLeft: 'auto', fontSize: 12, color: '#0369a1', background: 'none', border: 'none', cursor: 'pointer' }}>Edit</button>}
             </div>
-          )}
-          {msg && <div style={{ fontSize: 11, color: msg === 'Saved.' ? '#059669' : '#991b1b', marginTop: 8 }}>{msg}</div>}
-        </div>
+            <p style={{ fontSize: 12, color: '#6b7280', margin: '0 0 10px' }}>
+              The project owner, deal owner, and org admins can always see the Commercial tab. Add specific people below to grant them access too.
+            </p>
+            {!managing ? (
+              viewers.length === 0
+                ? <div style={{ fontSize: 12, color: '#9ca3af' }}>No named people added — only owners and admins can see it.</div>
+                : <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>{viewers.map(v => (
+                    <span key={v.userId} style={{ fontSize: 12, padding: '3px 10px', borderRadius: 999, background: '#eff6ff', color: '#1d4ed8' }}>{v.name}</span>
+                  ))}</div>
+            ) : (
+              <div>
+                <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: 8, padding: 8 }}>
+                  {(users || []).map(u => (
+                    <label key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '3px 0', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={sel.includes(u.id)} onChange={() => toggle(u.id)} />
+                      {u.name || u.email}
+                    </label>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <button onClick={save} disabled={saving} style={{ fontSize: 12, padding: '5px 14px', borderRadius: 6, border: 'none', background: saving ? '#9ca3af' : '#059669', color: '#fff', cursor: 'pointer' }}>{saving ? 'Saving…' : 'Save'}</button>
+                  <button onClick={() => { setManaging(false); setSel(viewers.map(v => v.userId)); }} style={{ fontSize: 12, padding: '5px 12px', borderRadius: 6, border: 'none', background: '#f1f5f9', color: '#374151', cursor: 'pointer' }}>Cancel</button>
+                </div>
+              </div>
+            )}
+            {msg && <div style={{ fontSize: 11, color: msg === 'Saved.' ? '#059669' : '#991b1b', marginTop: 8 }}>{msg}</div>}
+          </div>
+        </DesktopOnlyNotice>
       )}
     </div>
   );

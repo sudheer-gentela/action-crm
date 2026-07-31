@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import DesktopOnlyNotice from './DesktopOnlyNotice';
 import './PlaybookPlaysEditor.css';
 
 const API = process.env.REACT_APP_API_URL || '';
@@ -884,7 +885,18 @@ function RolesConfigPanel({ allOrgRoles, currentRoleIds, rolesSource, onSave, on
 
 // ── Main: PlaybookPlaysEditor ───────────────────────────────────────────────
 
-export default function PlaybookPlaysEditor({ playbookId, readOnly = false }) {
+export default function PlaybookPlaysEditor(props) {
+  return (
+    <DesktopOnlyNotice
+      title="The plays editor needs a wider screen"
+      detail="Plays are edited against the stage list and role matrix beside them. Without that context the form loses the thing it is meant to be edited against."
+    >
+      <PlaybookPlaysEditorInner {...props} />
+    </DesktopOnlyNotice>
+  );
+}
+
+function PlaybookPlaysEditorInner({ playbookId, readOnly = false }) {
   const [stages, setStages]         = useState([]);
   const [playsByStage, setPlaysByStage] = useState({});
   const [roles, setRoles]           = useState([]);         // roles available for this playbook
