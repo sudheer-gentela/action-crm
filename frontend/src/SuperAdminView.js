@@ -1729,7 +1729,7 @@ function SAWorkflows() {
       </div>
 
       {/* Sub-tab bar */}
-      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e5e7eb', marginBottom: 20 }}>
+      <div className="gw-scroll-x" style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e5e7eb', marginBottom: 20 }}>
         {SUB_TABS.map(t => (
           <button
             key={t.id}
@@ -1841,7 +1841,7 @@ function SAPlatformSettings() {
       </div>
 
       {/* Sub-tab bar */}
-      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e5e7eb', marginBottom: 24 }}>
+      <div className="gw-scroll-x" style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e5e7eb', marginBottom: 24 }}>
         {[
           { id: 'email-filter', label: '📧 Email Filter Defaults' },
           { id: 'integrations', label: '🔌 CRM Integrations' },

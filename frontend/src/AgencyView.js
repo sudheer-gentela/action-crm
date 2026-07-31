@@ -255,7 +255,7 @@ function AllProspectsTab({ clients }) {
           {prospects.length === 0 ? 'No prospects assigned to any client yet.' : 'No results match your filters.'}
         </div>
       ) : (
-        <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden' }}>
+        <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden', overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ background: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
@@ -340,7 +340,7 @@ function AllSequencesTab({ clients }) {
           {sequences.length === 0 ? 'No sequences with client enrollments yet.' : 'No results match your filters.'}
         </div>
       ) : (
-        <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden' }}>
+        <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden', overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ background: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>

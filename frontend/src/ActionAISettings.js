@@ -310,7 +310,7 @@ export default function ActionAISettings() {
         <Flash flash={flash} />
 
         {/* ── Tab row ── */}
-        <div style={{ display: 'flex', borderBottom: '1px solid #e5e7eb', marginBottom: 16 }}>
+        <div className="gw-scroll-x" style={{ display: 'flex', borderBottom: '1px solid #e5e7eb', marginBottom: 16 }}>
           <button style={tabStyle('modules')} onClick={() => setActiveTab('modules')}>Action system</button>
           <button style={tabStyle('provider')} onClick={() => setActiveTab('provider')}>Provider &amp; model</button>
         </div>

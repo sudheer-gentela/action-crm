@@ -587,7 +587,7 @@ function AccountsView({ openAccountId = null, onAccountOpened = null }) {
             </div>
 
             {/* ── Detail tab bar ──────────────────────────────────── */}
-            <div style={{
+            <div className="gw-scroll-x" style={{
               display: 'flex', borderBottom: '1px solid #e5e7eb',
               padding: '0 24px', background: '#fafafa', flexShrink: 0,
             }}>

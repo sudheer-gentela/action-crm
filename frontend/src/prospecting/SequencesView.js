@@ -654,7 +654,7 @@ function SequencesView({ prospects, search }) {
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '10px 16px', borderBottom: '1px solid #e5e7eb', background: '#fff', flexShrink: 0,
       }}>
-        <div style={{ display: 'flex', gap: 0 }}>
+        <div className="gw-scroll-x" style={{ display: 'flex', gap: 0 }}>
           {[
             { key: 'library',     label: `📚 Library (${sequences.length})` },
             { key: 'drafts',      label: `📋 Drafts${drafts.length > 0 ? ` (${drafts.length})` : ''}` },

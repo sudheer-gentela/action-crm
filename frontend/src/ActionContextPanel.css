@@ -434,6 +434,8 @@
   font-weight: 600;
   color: #2d3748;
   flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .acp-email-body { margin-bottom: 12px; }

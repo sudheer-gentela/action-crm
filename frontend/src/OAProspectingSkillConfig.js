@@ -120,7 +120,7 @@ export default function OAProspectingSkillConfig() {
       )}
 
       {/* Sub-tabs */}
-      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e5e7eb', marginBottom: 18 }}>
+      <div className="gw-scroll-x" style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e5e7eb', marginBottom: 18 }}>
         {[
           ['products',   'Products & Pitch'],
           ['icp',        'ICP & Fit'],

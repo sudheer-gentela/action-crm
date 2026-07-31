@@ -472,7 +472,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
         </div>
 
         {/* ── Type tabs ─────────────────────────────────── */}
-        <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb', marginBottom: 20 }}>
+        <div className="gw-scroll-x" style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb', marginBottom: 20 }}>
           {playbookTypes.map(t => {
             const count = t.key === 'sales'
               ? playbooks.filter(p => SALES_LEGACY_TYPES.includes(p.type)).length
@@ -611,7 +611,7 @@ export default function PlaybooksView({ initialTypeFilter }) {
                 )}
 
                 {/* Sub-tabs */}
-                <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb', marginBottom: 16 }}>
+                <div className="gw-scroll-x" style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb', marginBottom: 16 }}>
                   {[
                     { key: false, label: isCLM ? '📋 Contract Stages' : isHandover ? '🤝 Project Stages' : isProspecting ? '🎯 Stage Guidance' : '📋 Stage Guidance' },
                     { key: true,  label: '🎭 Plays by Role' },

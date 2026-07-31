@@ -80,7 +80,44 @@ a {
 }
 
 
-/* ── 4. Shared utilities for Passes 1-3 ────────────────────────────────────
+/* ── 5. Touch devices ───────────────────────────────────────────────────────
+   Keyed on (hover: none) rather than a width breakpoint. The distinction is
+   real: a touch laptop at 1280px has no hover and needs these rules, while a
+   narrow resized desktop window has a mouse and does not.
+   ------------------------------------------------------------------------- */
+@media (hover: none) {
+
+  /* Hover-reveal controls are invisible on a touch device, permanently. These
+     eight are the edit / delete / remove / navigate affordances on deal,
+     contact, account and meeting cards, in the deal contacts and deal team
+     panels, and in the org chart. Without this rule a phone user simply cannot
+     see them, let alone press them. */
+  .deal-actions,
+  .contact-actions,
+  .account-actions,
+  .meeting-actions,
+  .dcp-btn--remove,
+  .dcp-contact__arrow,
+  .dtp-btn--remove,
+  .och-nav-arrow {
+    opacity: 1;
+  }
+
+  /* .icon-btn is declared once in DealsView.css and, because CRA bundles all
+     CSS globally, is reused by Contacts, Accounts and Calendar. At 3px padding
+     around a 12px glyph the tap area is roughly 18px square, well under the
+     44px both Apple and Google recommend. */
+  .icon-btn {
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
+
+/* ── 6. Shared utilities for Passes 1-3 ────────────────────────────────────
    These exist so the per-module work in later passes is a className change
    rather than a new block of bespoke CSS each time.
    ------------------------------------------------------------------------- */

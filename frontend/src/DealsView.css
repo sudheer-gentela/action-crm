@@ -219,6 +219,12 @@
   margin-bottom: 6px;
   gap: 6px;
 }
+/* Without min-width the h4 refuses to shrink below its content, so a long deal
+   name pushes .deal-actions past the card edge instead of wrapping. */
+.deal-card-header h4 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 
 .deal-card-header h4 {
   flex: 1;
@@ -231,6 +237,7 @@
 
 .deal-actions {
   display: flex;
+  flex-shrink: 0;
   gap: 2px;
   opacity: 0;
   transition: opacity 0.15s;
@@ -695,6 +702,10 @@
   .pipeline-board { grid-template-columns: 1fr; padding: 12px 16px; }
   .pipeline-stats { padding: 10px 16px; }
   .detail-grid { grid-template-columns: 1fr; }
+  /* 24px of side padding costs 48px of a 390px viewport. */
+  .panel-fullscreen .panel-content { padding: 16px; }
+  .panel-fullscreen .panel-header  { padding: 14px 16px; }
+  .panel-header { flex-wrap: wrap; row-gap: 8px; }
 }
 
 /* Scrollbar */

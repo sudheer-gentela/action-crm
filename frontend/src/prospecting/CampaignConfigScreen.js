@@ -407,7 +407,7 @@ export default function CampaignConfigScreen({ campaignId, onBack }) {
 
       {/* ── Tab bar ── two clearly separate surfaces: the outreach config
           editor and the sending-schedule editor. */}
-      <div style={{
+      <div className="gw-scroll-x" style={{
         display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb', marginBottom: 16,
       }}>
         {TABS.map(tb => {

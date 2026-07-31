@@ -94,7 +94,7 @@ export function EffectiveRoutingTable({ fetcher, endpoint, callTypes = [], refre
   return (
     <div>
       {rows.map((r, idx) => (
-        <div key={r.call_type} style={{
+        <div key={r.call_type} className="gw-wrap-mobile" style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: '10px 18px', gap: 12,
           borderBottom: idx === rows.length - 1 ? 'none' : '1px solid #f1f1ec',

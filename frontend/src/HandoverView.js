@@ -1505,7 +1505,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
       </div>
 
       {/* ── Summary / Details sub-tabs ──────────────────── */}
-      <div style={{ display: 'flex', gap: 4, padding: '0 20px', borderBottom: '1px solid #e5e7eb', background: '#fff' }}>
+      <div className="gw-scroll-x" style={{ display: 'flex', gap: 4, padding: '0 20px', borderBottom: '1px solid #e5e7eb', background: '#fff' }}>
         {[{ key: 'summary', label: 'Summary' }, { key: 'details', label: 'Details' },
           ...(detail.canSeeCommercial ? [{ key: 'commercial', label: '💰 Commercial' }] : []),
           { key: 'communications', label: 'Communications' }].map(t => (
@@ -3096,7 +3096,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden', background: '#f9fafb' }}>
 
       {/* ── Top tabs (full width) ─────────────────────── */}
-      <div style={{ display: 'flex', borderBottom: '2px solid #e5e7eb', background: '#fff', flexShrink: 0 }}>
+      <div className="gw-scroll-x" style={{ display: 'flex', borderBottom: '2px solid #e5e7eb', background: '#fff', flexShrink: 0 }}>
         {[
           { key: 'mine',      label: '📤 My Projects' },
           { key: 'assigned',  label: '📥 Assigned to Me' },

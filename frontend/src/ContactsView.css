@@ -206,6 +206,7 @@
 
 .contact-actions {
   display: flex;
+  flex-shrink: 0;
   gap: 2px;
   opacity: 0;
   transition: opacity 0.15s;
@@ -570,6 +571,9 @@
   .contacts-list { grid-template-columns: 1fr; padding: 12px 16px; }
   .search-bar { padding: 10px 16px; }
   .detail-grid { grid-template-columns: 1fr; }
+  .contact-detail-panel.panel-fullscreen .panel-content { padding: 16px; }
+  .contact-detail-panel.panel-fullscreen .panel-header  { padding: 14px 16px; }
+  .panel-header { flex-wrap: wrap; row-gap: 8px; }
 }
 
 /* Scrollbar */

@@ -211,7 +211,7 @@ export default function OATeams() {
       {success && <div className="oa-success">{success}</div>}
 
       {/* Sub-tab switcher */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid #e5e7eb', paddingBottom: 0 }}>
+      <div className="gw-scroll-x" style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid #e5e7eb', paddingBottom: 0 }}>
         {[
           { id: 'setup', label: 'Setup', icon: '⚙️' },
           { id: 'roster', label: 'Team Roster', icon: '👥' },

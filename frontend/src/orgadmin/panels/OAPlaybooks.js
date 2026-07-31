@@ -496,7 +496,7 @@ export default function OAPlaybooks() {
               </div>
 
               {/* ── Sub-tabs: Stage Guidance | Plays by Role ──────── */}
-              <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb', marginBottom: 16 }}>
+              <div className="gw-scroll-x" style={{ display: 'flex', gap: 0, borderBottom: '2px solid #e5e7eb', marginBottom: 16 }}>
                 {[
                   { key: false, label: `${activeType?.icon || '📋'} Stage Guidance` },
                   { key: true,  label: '🎭 Plays by Role' },

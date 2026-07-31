@@ -480,12 +480,17 @@
   margin-bottom: 8px;
 }
 
-.meeting-title { font-size: 16px; font-weight: 600; color: #2d3748; margin: 0; }
+.meeting-title {
+  font-size: 16px; font-weight: 600; color: #2d3748; margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 
 .meeting-actions {
   opacity: 0;
   transition: opacity 0.2s;
   display: flex;
+  flex-shrink: 0;
   gap: 4px;
 }
 
@@ -723,8 +728,11 @@
 }
 
 /* ─── Action Popover ─────────────────────────────────────────── */
+/* Fixed-width floating surfaces need a viewport guard or they overhang the
+   screen edge on a 390px device. */
 .action-popover {
   width: 300px;
+  max-width: calc(100vw - 32px);
   background: white;
   border: 1px solid #e2e8f0;
   border-radius: 12px;
@@ -861,6 +869,7 @@
 
 .snooze-picker {
   width: 320px;
+  max-width: calc(100vw - 32px);
   background: white;
   border-radius: 14px;
   box-shadow: 0 20px 60px rgba(0,0,0,0.2);
@@ -928,4 +937,6 @@
   .filter-group + .filter-group { padding-left: 0; border-left: none; padding-top: 8px; border-top: 1px solid #e2e8f0; }
   .meeting-card { flex-direction: column; }
   .meeting-card-time { flex-direction: row; justify-content: space-between; width: 100%; min-width: auto; }
+  .panel-header { flex-wrap: wrap; row-gap: 8px; }
+  .date-header { flex-wrap: wrap; row-gap: 6px; }
 }

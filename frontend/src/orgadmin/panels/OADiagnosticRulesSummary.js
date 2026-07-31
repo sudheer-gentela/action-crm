@@ -163,7 +163,7 @@ export default function OADiagnosticRulesSummary() {
                             </div>
                           </div>
                           <div style={{
-                            fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap',
+                            fontSize: 11, color: '#6b7280',
                             textAlign: 'right', minWidth: 80,
                           }}>
                             <span style={{ fontWeight: 600 }}>Next step</span><br />

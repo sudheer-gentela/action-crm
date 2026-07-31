@@ -130,7 +130,7 @@ export default function OAIntegrations({ orgId }) {
   return (
     <div>
       {/* Sub-tab bar */}
-      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e5e7eb', marginBottom: 20 }}>
+      <div className="gw-scroll-x" style={{ display: 'flex', gap: 4, borderBottom: '1px solid #e5e7eb', marginBottom: 20 }}>
         {SUB_TABS.map(t => (
           <button key={t.id} onClick={() => setSubTab(t.id)} style={subTabStyle(t.id)}>
             {t.label}
