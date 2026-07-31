@@ -188,6 +188,7 @@ function fmtPlay(row) {
     priority:        row.priority,
     status:          row.play_status,
     completedBy:     row.completed_by,
+    completedByName: row.completed_by_name ?? null,
     // ── ownership + provenance ──
     ownerUserId:     row.owner_user_id ?? null,
     ownerName:       row.owner_name    ?? null,
@@ -1252,10 +1253,12 @@ async function _getPlays(handoverId, orgId) {
        dpi.completion_note, dpi.completion_evidence,
        dpi.play_id, dpi.playbook_id, dpi.owner_user_id,
        ou.first_name || ' ' || ou.last_name AS owner_name,
+       cu.first_name || ' ' || cu.last_name AS completed_by_name,
        pb.name AS playbook_name
      FROM sales_handover_plays shp
      JOIN deal_play_instances dpi ON dpi.id = shp.play_instance_id
      LEFT JOIN users ou     ON ou.id = dpi.owner_user_id
+     LEFT JOIN users cu     ON cu.id = dpi.completed_by
      LEFT JOIN playbooks pb ON pb.id = dpi.playbook_id
      WHERE shp.handover_id = $1
        AND ($2::int IS NULL OR shp.org_id = $2)

@@ -340,6 +340,11 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, users }) {
           {play.description && (
             <div style={{ fontSize: 12, color: '#6b7280', marginTop: 3, lineHeight: 1.4 }}>{play.description}</div>
           )}
+          {isDone && play.completedAt && (
+            <div style={{ fontSize: 11, color: '#059669', marginTop: 4 }}>
+              ✓ {isSkipped ? 'Skipped' : 'Completed'} {fmtDate(play.completedAt)}{play.completedByName ? ` · ${play.completedByName}` : ''}
+            </div>
+          )}
           {/* Meta row: status · owner · channel */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 10, fontWeight: 600, color: st.color, background: st.bg, border: `1px solid ${st.bd}`, borderRadius: 10, padding: '1px 8px' }}>
@@ -1138,6 +1143,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   const [error,     setError]     = useState('');
   const [success,   setSuccess]   = useState('');
   const [closureFor, setClosureFor] = useState(null); // 'completed' | 'cancelled' | null
+  const [menuOpen, setMenuOpen] = useState(false);    // header "⋯" overflow menu
   const [closureText, setClosureText] = useState('');
   const [detailTab, setDetailTab] = useState(initialTab || 'summary'); // 'summary' | 'details' | 'communications'
   // Keep the parent (and thus the URL hash) in step with the open sub-tab.
@@ -1314,32 +1320,54 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
             </h3>
             <div style={{ fontSize: 13, color: '#6b7280' }}>{detail.accountName}</div>
           </div>
-          <StatusBadge status={detail.status} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, position: 'relative' }}>
+            <StatusBadge status={detail.status} />
+            {!isTerminal && (
+              <>
+                <button onClick={() => setMenuOpen(o => !o)} title="More"
+                  style={{ fontSize: 18, lineHeight: 1, padding: '2px 8px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', color: '#6b7280', cursor: 'pointer' }}>⋯</button>
+                {menuOpen && (
+                  <div style={{ position: 'absolute', top: '110%', right: 0, background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, boxShadow: '0 6px 20px rgba(0,0,0,0.12)', zIndex: 20, minWidth: 160, overflow: 'hidden' }}>
+                    <button onClick={() => { setMenuOpen(false); setClosureFor('cancelled'); setClosureText(''); }}
+                      style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 14px', fontSize: 13, border: 'none', background: '#fff', color: '#b91c1c', cursor: 'pointer' }}
+                      onMouseEnter={e => { e.currentTarget.style.background = '#fef2f2'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}>
+                      ✕ Cancel project
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         </div>
 
-        {/* Meta row */}
-        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 12, fontSize: 12 }}>
-          {detail.goLiveDate && (
-            <div><span style={{ color: '#6b7280' }}>Go-live: </span><strong>{fmtDate(detail.goLiveDate)}</strong></div>
-          )}
-          {detail.contractValue && (
-            <div><span style={{ color: '#6b7280' }}>Value: </span><strong>{fmtCurrency(detail.contractValue)}</strong></div>
-          )}
-          {detail.serviceOwnerName && (
-            <div><span style={{ color: '#6b7280' }}>Service owner: </span><strong>{detail.serviceOwnerName}</strong></div>
-          )}
-          {detail.submittedAt && (
-            <div><span style={{ color: '#6b7280' }}>Submitted: </span><strong>{fmtDate(detail.submittedAt)}</strong></div>
-          )}
-          {detail.acknowledgedAt && (
-            <div><span style={{ color: '#6b7280' }}>Acknowledged: </span><strong>{fmtDate(detail.acknowledgedAt)}</strong></div>
-          )}
-          {detail.completedAt && (
-            <div><span style={{ color: '#6b7280' }}>Completed: </span><strong>{fmtDate(detail.completedAt)}</strong></div>
-          )}
-          {detail.cancelledAt && (
-            <div><span style={{ color: '#6b7280' }}>Cancelled: </span><strong>{fmtDate(detail.cancelledAt)}</strong></div>
-          )}
+        {/* Stat strip */}
+        {(() => {
+          const dtg = detail.goLiveDate ? Math.ceil((new Date(detail.goLiveDate) - new Date()) / 86400000) : null;
+          const goLiveText = dtg == null ? '—' : dtg < 0 ? `${Math.abs(dtg)}d overdue` : dtg === 0 ? 'Today' : `${dtg} days`;
+          const goLiveColor = dtg == null ? '#111827' : dtg < 0 ? '#dc2626' : dtg <= 14 ? '#d97706' : '#111827';
+          const statCard = (value, label, color) => (
+            <div style={{ flex: 1, minWidth: 120, background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '10px 12px' }}>
+              <div style={{ fontSize: 16, fontWeight: 700, color: color || '#111827' }}>{value}</div>
+              <div style={{ fontSize: 10, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.3 }}>{label}</div>
+            </div>
+          );
+          return (
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
+              {statCard(goLiveText, detail.goLiveDate ? `Go-live · ${fmtDate(detail.goLiveDate)}` : 'Go-live', goLiveColor)}
+              {detail.contractValue ? statCard(fmtCurrency(detail.contractValue), 'Contract value') : null}
+              {detail.serviceOwnerName ? statCard(detail.serviceOwnerName, 'Project owner') : null}
+              {gatesTotal > 0 ? statCard(`${gatesDone} / ${gatesTotal}`, 'Gate plays') : null}
+            </div>
+          );
+        })()}
+
+        {/* Status dates (secondary) */}
+        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 10, fontSize: 11, color: '#6b7280' }}>
+          {detail.submittedAt    && <span>Submitted {fmtDate(detail.submittedAt)}</span>}
+          {detail.acknowledgedAt && <span>Acknowledged {fmtDate(detail.acknowledgedAt)}</span>}
+          {detail.completedAt    && <span>Completed {fmtDate(detail.completedAt)}</span>}
+          {detail.cancelledAt    && <span>Cancelled {fmtDate(detail.cancelledAt)}</span>}
         </div>
 
         {/* Closure summary (esp. cancellation reason, which is required) */}
@@ -1427,15 +1455,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
               ✅ Complete project
             </button>
           )}
-          {/* Cancel is available to either side from any non-terminal state */}
-          {!isTerminal && (
-            <button onClick={() => { setClosureFor('cancelled'); setClosureText(''); }} disabled={actioning} style={{
-              fontSize: 12, padding: '6px 14px', borderRadius: 6, fontWeight: 600, border: '1px solid #fecaca',
-              background: '#fff', color: '#b91c1c', cursor: actioning ? 'not-allowed' : 'pointer',
-            }}>
-              ✕ Cancel project
-            </button>
-          )}
+          {/* Cancel moved to the "⋯" overflow menu in the header */}
         </div>
 
         {/* Blockers explaining a disabled Complete button */}
@@ -2016,11 +2036,12 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject }) {
     if (onRefresh) await onRefresh();
   };
 
-  const card = { background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: '14px 16px', marginBottom: 16 };
+  const card = { background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: '14px 16px', marginBottom: 0 };
   const h4   = { margin: '0 0 10px', fontSize: 14, color: '#374151' };
 
   return (
-    <div>
+    <>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 14, alignItems: 'start' }}>
       {/* Project team */}
       <div style={card}>
         <h4 style={h4}>👥 Project team &amp; roles</h4>
@@ -2148,10 +2169,12 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject }) {
         </div>
       )}
 
+      </div>
+
       {openMember && <PersonPanel member={openMember} onClose={() => setOpenMember(null)} onOpenProject={onOpenProject} />}
       {openCommitment && <DeliverableModal commitmentId={openCommitment} onClose={() => setOpenCommitment(null)} />}
       {openContact && <CustomerContactPanel stakeholder={openContact} onClose={() => setOpenContact(null)} />}
-    </div>
+    </>
   );
 }
 
@@ -2166,7 +2189,7 @@ function ServiceOwnerPicker({ detail, users, canEdit, onRefresh }) {
     setVal(next); setSaving(true); setMsg('');
     try {
       await apiService.handovers.update(detail.id, { assignedServiceOwnerId: next ? parseInt(next, 10) : null });
-      setMsg('Service owner updated.');
+      setMsg('Project owner updated.');
       onRefresh?.();
     } catch {
       setMsg('Could not update.');
@@ -2178,7 +2201,7 @@ function ServiceOwnerPicker({ detail, users, canEdit, onRefresh }) {
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, flexWrap: 'wrap' }}>
-      <span style={{ color: '#6b7280' }}>Service owner:</span>
+      <span style={{ color: '#6b7280' }}>Project owner:</span>
       {canEdit ? (
         <select value={val} onChange={e => save(e.target.value)} disabled={saving}
           style={{ fontSize: 12, padding: '4px 8px', borderRadius: 4, border: '1px solid #d1d5db', maxWidth: 220 }}>
