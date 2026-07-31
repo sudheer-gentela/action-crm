@@ -2456,6 +2456,9 @@ const WA_TEMPLATES = [
 
 function CommunicationsPanel({ handoverId }) {
   const [items,   setItems]   = useState(null);
+  const [people,  setPeople]  = useState([]);
+  const [personFilter, setPersonFilter] = useState('');
+  const [addMsg,  setAddMsg]  = useState('');
   const [channelFilter, setChannelFilter] = useState('all'); // all | email | whatsapp
   const [text,    setText]    = useState('');
   const [sending, setSending] = useState(false);
@@ -2508,8 +2511,8 @@ function CommunicationsPanel({ handoverId }) {
   const tpl = templateList.find(t => t.name === tplName) || templateList[0] || WA_TEMPLATES[0];
 
   const load = useCallback(async () => {
-    try { const res = await apiService.handovers.communications(handoverId); setItems(res.data.items || []); }
-    catch { setItems([]); }
+    try { const res = await apiService.handovers.communications(handoverId); setItems(res.data.items || []); setPeople(res.data.people || []); }
+    catch { setItems([]); setPeople([]); }
     // Selectable recipients (group + individuals), each with its own window.
     try {
       const res2 = await apiService.whatsapp.sendTargets(handoverId);
@@ -2625,6 +2628,26 @@ function CommunicationsPanel({ handoverId }) {
     whatsapp: { label: 'WhatsApp', color: '#059669', bg: '#ecfdf5' },
   };
 
+  const addParticipant = async (p, as) => {
+    setAddMsg('');
+    try {
+      if (as === 'team' && p.matchedUserId) {
+        await apiService.handovers.requestMember(handoverId, { userId: p.matchedUserId });
+        setAddMsg(`${p.name} added to the project team.`);
+      } else {
+        const data = p.contactId ? { contactId: p.contactId, handoverRole: 'other' } : { name: p.name, email: p.email || null, handoverRole: 'other' };
+        await apiService.handovers.addStakeholder(handoverId, data);
+        setAddMsg(`${p.name} added as a contact.`);
+      }
+      await load();
+    } catch (e) { setAddMsg(e?.response?.data?.error?.message || 'Could not add.'); }
+  };
+
+  const unknownPeople = people.filter(p => !p.onProject);
+  const filterItems = (list) => (list || [])
+    .filter(m => channelFilter === 'all' || m.channel === channelFilter)
+    .filter(m => !personFilter || (m.participantKeys || []).includes(personFilter));
+
   return (
     <div>
       {/* Channel filter — All / Email / WhatsApp (Phone later) */}
@@ -2639,12 +2662,41 @@ function CommunicationsPanel({ handoverId }) {
             </button>
           );
         })}
+        {people.length > 0 && (
+          <select value={personFilter} onChange={e => setPersonFilter(e.target.value)}
+            style={{ marginLeft: 'auto', fontSize: 12, padding: '5px 8px', borderRadius: 6, border: '1px solid #d1d5db', maxWidth: 220 }}>
+            <option value="">All people</option>
+            {people.map(p => (
+              <option key={p.key} value={p.key}>{p.name}{p.type === 'user' || p.type === 'offteam_user' ? ' (team)' : ''}{!p.onProject ? ' — not on project' : ''}</option>
+            ))}
+          </select>
+        )}
       </div>
+
+      {/* #7 — participants not on the project */}
+      {unknownPeople.length > 0 && (
+        <div style={{ border: '1px solid #fde68a', background: '#fffbeb', borderRadius: 8, padding: '10px 12px', marginBottom: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#92400e', marginBottom: 6 }}>
+            {unknownPeople.length} {unknownPeople.length === 1 ? 'person is' : 'people are'} in these conversations but not on the project
+          </div>
+          {unknownPeople.map(p => (
+            <div key={p.key} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', fontSize: 13 }}>
+              <span style={{ flex: 1, minWidth: 0 }}>{p.name}{p.email ? <span style={{ color: '#9ca3af' }}> · {p.email}</span> : null}</span>
+              {p.matchedUserId && (
+                <button onClick={() => addParticipant(p, 'team')} style={{ fontSize: 11, padding: '3px 10px', borderRadius: 5, border: '1px solid #93c5fd', background: '#eff6ff', color: '#1d4ed8', cursor: 'pointer' }}>+ Add to team</button>
+              )}
+              <button onClick={() => addParticipant(p, 'contact')} style={{ fontSize: 11, padding: '3px 10px', borderRadius: 5, border: 'none', background: '#059669', color: '#fff', cursor: 'pointer' }}>+ Add as contact</button>
+            </div>
+          ))}
+          {addMsg && <div style={{ fontSize: 11, color: addMsg.includes('added') ? '#059669' : '#991b1b', marginTop: 6 }}>{addMsg}</div>}
+        </div>
+      )}
+
       <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, background: '#f9fafb', padding: 14,
         display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 440, overflowY: 'auto' }}>
-        {(items || []).filter(m => channelFilter === 'all' || m.channel === channelFilter).length === 0 ? (
-          <div style={{ color: '#9ca3af', fontSize: 13 }}>No communications with the customer team yet.</div>
-        ) : (items || []).filter(m => channelFilter === 'all' || m.channel === channelFilter).map(m => {
+        {filterItems(items).length === 0 ? (
+          <div style={{ color: '#9ca3af', fontSize: 13 }}>No communications match.</div>
+        ) : filterItems(items).map(m => {
           const out = m.direction === 'outbound';
           const ch  = CH[m.channel] || { label: m.channel, color: '#6b7280', bg: '#f3f4f6' };
           return (

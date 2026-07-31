@@ -1721,14 +1721,17 @@ async function getCommunications(handoverId, orgId) {
   const emails = await pool.query(
     `SELECT e.id, e.direction, e.subject, e.body, e.from_address, e.to_address, e.cc_addresses,
             e.contact_id, ct.first_name || ' ' || ct.last_name AS contact_name,
+            e.user_id AS sender_user_id, su.first_name || ' ' || su.last_name AS sender_name,
             e.sent_at, e.created_at
        FROM emails e
        LEFT JOIN contacts ct ON ct.id = e.contact_id
+       LEFT JOIN users su ON su.id = e.user_id
       WHERE e.org_id = $1 AND e.deal_id = $2`,
     [orgId, dealId]
   );
   const wa = await pool.query(
     `SELECT m.id, m.direction, m.body, m.from_name, m.is_automated, m.status,
+            m.sent_by_user_id AS sender_user_id, su.first_name || ' ' || su.last_name AS sender_name,
             COALESCE(m.sent_at, m.created_at) AS at,
             t.group_subject, t.contact_id, ct.first_name || ' ' || ct.last_name AS contact_name,
             (SELECT jsonb_agg(jsonb_build_object('name', p.display_name, 'side', p.side)
@@ -1737,6 +1740,7 @@ async function getCommunications(handoverId, orgId) {
        FROM whatsapp_messages m
        JOIN whatsapp_threads t ON t.id = m.thread_id
        LEFT JOIN contacts ct ON ct.id = t.contact_id
+       LEFT JOIN users su ON su.id = m.sent_by_user_id
       WHERE t.org_id = $1 AND t.handover_id = $2`,
     [orgId, handoverId]
   );
@@ -1746,26 +1750,73 @@ async function getCommunications(handoverId, orgId) {
     ...emails.rows.map(e => ({
       id: `email-${e.id}`, channel: 'email',
       direction: outbound(e.direction) ? 'outbound' : 'inbound',
-      from: outbound(e.direction) ? 'Delivery team' : (e.from_address || 'Customer'),
+      from: outbound(e.direction) ? (e.sender_name || 'Delivery team') : (e.from_address || 'Customer'),
       subject: e.subject, body: e.body,
       at: e.sent_at || e.created_at, isAutomated: false,
       to: e.to_address || null, cc: _splitAddrs(e.cc_addresses),
       groupSubject: null, participants: [],
       contactId: e.contact_id || null, contactName: e.contact_name || null,
+      senderUserId: e.sender_user_id || null, senderName: e.sender_name || null,
     })),
     ...wa.rows.map(m => ({
       id: `wa-${m.id}`, channel: 'whatsapp',
       direction: outbound(m.direction) ? 'outbound' : 'inbound',
-      from: outbound(m.direction) ? 'Delivery team' : (m.from_name || 'Customer'),
+      from: outbound(m.direction) ? (m.sender_name || 'Delivery team') : (m.from_name || 'Customer'),
       subject: null, body: m.body,
       at: m.at, isAutomated: !!m.is_automated,
       to: null, cc: [],
       groupSubject: m.group_subject || null, participants: m.participants || [],
       contactId: m.contact_id || null, contactName: m.contact_name || null,
+      senderUserId: m.sender_user_id || null, senderName: m.sender_name || null,
     })),
   ].sort((a, b) => new Date(a.at) - new Date(b.at));
 
-  return { items };
+  // ── Who's on the project (to flag participants who aren't) ──
+  const [memberRows, stakeRows, orgUserRows] = await Promise.all([
+    pool.query(`SELECT pm.user_id, u.email, u.first_name || ' ' || u.last_name AS name
+                  FROM project_members pm JOIN users u ON u.id = pm.user_id
+                 WHERE pm.context_type = 'handover' AND pm.context_id = $1 AND pm.org_id = $2 AND pm.status = 'active'`, [handoverId, orgId]),
+    pool.query(`SELECT pc.contact_id, c.email, c.first_name || ' ' || c.last_name AS name
+                  FROM project_contacts pc JOIN contacts c ON c.id = pc.contact_id
+                 WHERE pc.context_type = 'handover' AND pc.context_id = $1 AND pc.org_id = $2`, [handoverId, orgId]),
+    pool.query(`SELECT u.id, LOWER(u.email) AS email FROM org_users ou JOIN users u ON u.id = ou.user_id
+                 WHERE ou.org_id = $1 AND ou.is_active = TRUE AND u.email IS NOT NULL`, [orgId]),
+  ]);
+  const knownUserIds    = new Set(memberRows.rows.map(r => r.user_id));
+  const knownContactIds = new Set(stakeRows.rows.map(r => r.contact_id));
+  const knownEmails     = new Set([...memberRows.rows, ...stakeRows.rows].map(r => (r.email || '').toLowerCase()).filter(Boolean));
+  const orgUserByEmail  = new Map(orgUserRows.rows.map(r => [r.email, r.id]));
+
+  const peopleMap = new Map();
+  const addP = (p) => { if (!peopleMap.has(p.key)) peopleMap.set(p.key, p); };
+  for (const it of items) {
+    const keys = [];
+    if (it.contactId) {
+      const k = `contact:${it.contactId}`; keys.push(k);
+      addP({ key: k, type: 'contact', name: it.contactName || 'Contact', contactId: it.contactId, onProject: knownContactIds.has(it.contactId) });
+    }
+    if (it.senderUserId) {
+      const k = `user:${it.senderUserId}`; keys.push(k);
+      addP({ key: k, type: 'user', name: it.senderName || 'Team member', userId: it.senderUserId, onProject: knownUserIds.has(it.senderUserId) });
+    }
+    const addrs = [];
+    if (it.channel === 'email') {
+      if (it.direction === 'inbound' && it.from && it.from.includes('@')) addrs.push(it.from);
+      if (it.direction === 'outbound') { if (it.to) addrs.push(it.to); (it.cc || []).forEach(a => addrs.push(a)); }
+    }
+    for (const raw of addrs) {
+      const email = String(raw).trim().toLowerCase();
+      if (!email.includes('@') || knownEmails.has(email)) continue;
+      const k = `email:${email}`; keys.push(k);
+      const matchedUserId = orgUserByEmail.get(email) || null;
+      addP({ key: k, type: matchedUserId ? 'offteam_user' : 'external', name: String(raw).trim(), email, matchedUserId, onProject: false });
+    }
+    it.participantKeys = keys;
+  }
+  const people = [...peopleMap.values()]
+    .sort((a, b) => (a.onProject === b.onProject ? 0 : a.onProject ? -1 : 1) || a.name.localeCompare(b.name));
+
+  return { items, people };
 }
 
 /** Every project a team member is on, with their role — the person drill-down. */
