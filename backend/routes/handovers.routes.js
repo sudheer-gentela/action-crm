@@ -103,6 +103,16 @@ router.get('/sales/:id', async (req, res) => {
   }
 });
 
+// ── Restricted-tab viewers (e.g. commercial) ─────────────────────────────────
+router.get('/sales/:id/tab-viewers', async (req, res) => {
+  try { res.json(await handoverService.getTabViewers(parseInt(req.params.id), req.orgId, req.query.tab || 'commercial')); }
+  catch (err) { res.status(err.status || 500).json({ error: { message: err.message } }); }
+});
+router.put('/sales/:id/tab-viewers', async (req, res) => {
+  try { res.json(await handoverService.setTabViewers(parseInt(req.params.id), req.orgId, req.userId, req.body?.tabKey || 'commercial', req.body?.userIds || [])); }
+  catch (err) { res.status(err.status || 500).json({ error: { message: err.message } }); }
+});
+
 // ── Project actions (next steps) ──────────────────────────────────────────────
 router.get('/sales/:id/actions', async (req, res) => {
   try { res.json(await handoverService.listActions(parseInt(req.params.id), req.orgId)); }

@@ -472,6 +472,9 @@ async function getById(handoverId, orgId, userId = null) {
     projectMembers:        (await projectMembers.listForHandover(handoverId, orgId)).members,
     canRequestMember:      !!userId,
     isProjectAdmin:        userId ? await _isOrgAdmin(orgId, userId) : false,
+    canSeeCommercial:      userId ? await canSeeTab(handoverId, orgId, userId, 'commercial') : false,
+    canManageTabAccess:    userId ? await canManageTabAccess(handoverId, orgId, userId) : false,
+    commercialViewers:     (await getTabViewers(handoverId, orgId, 'commercial')).viewers,
   };
 }
 
@@ -2061,7 +2064,63 @@ async function completeAction(handoverId, orgId, actionId) {
   return { ok: true };
 }
 
+// ── Restricted-tab visibility (named viewers + role) ─────────────────────────
+async function _dealOwnerId(handoverId, orgId) {
+  const { rows } = await pool.query(
+    `SELECT d.owner_id FROM sales_handovers h JOIN deals d ON d.id = h.deal_id WHERE h.id = $1 AND h.org_id = $2`, [handoverId, orgId]);
+  return rows[0]?.owner_id ?? null;
+}
+async function _serviceOwnerId(handoverId, orgId) {
+  const { rows } = await pool.query(
+    `SELECT assigned_service_owner_id FROM sales_handovers WHERE id = $1 AND org_id = $2`, [handoverId, orgId]);
+  return rows[0]?.assigned_service_owner_id ?? null;
+}
+async function canManageTabAccess(handoverId, orgId, userId) {
+  if (!userId) return false;
+  if (await _isOrgAdmin(orgId, userId)) return true;
+  return (await _serviceOwnerId(handoverId, orgId)) === userId;
+}
+async function canSeeTab(handoverId, orgId, userId, tabKey) {
+  if (!userId) return false;
+  if (await _isOrgAdmin(orgId, userId)) return true;
+  const [so, dealOwner] = await Promise.all([_serviceOwnerId(handoverId, orgId), _dealOwnerId(handoverId, orgId)]);
+  if (so === userId || dealOwner === userId) return true;
+  const { rows } = await pool.query(
+    `SELECT 1 FROM project_tab_viewers WHERE handover_id = $1 AND tab_key = $2 AND user_id = $3`, [handoverId, tabKey, userId]);
+  return rows.length > 0;
+}
+async function getTabViewers(handoverId, orgId, tabKey) {
+  const { rows } = await pool.query(
+    `SELECT v.user_id, u.first_name || ' ' || u.last_name AS name, u.email
+       FROM project_tab_viewers v JOIN users u ON u.id = v.user_id
+      WHERE v.handover_id = $1 AND v.org_id = $2 AND v.tab_key = $3
+      ORDER BY name`, [handoverId, orgId, tabKey]);
+  return { viewers: rows.map(r => ({ userId: r.user_id, name: r.name, email: r.email })) };
+}
+async function setTabViewers(handoverId, orgId, userId, tabKey, userIds) {
+  if (!(await canManageTabAccess(handoverId, orgId, userId)))
+    throw Object.assign(new Error('Not allowed to manage tab access'), { status: 403 });
+  const ids = [...new Set((userIds || []).map(x => parseInt(x, 10)).filter(Boolean))];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`DELETE FROM project_tab_viewers WHERE handover_id = $1 AND org_id = $2 AND tab_key = $3`, [handoverId, orgId, tabKey]);
+    for (const uid of ids) {
+      await client.query(
+        `INSERT INTO project_tab_viewers (org_id, handover_id, tab_key, user_id, created_by)
+         VALUES ($1, $2, $3, $4, $5) ON CONFLICT (handover_id, tab_key, user_id) DO NOTHING`,
+        [orgId, handoverId, tabKey, uid, userId]);
+    }
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK'); throw e; }
+  finally { client.release(); }
+  return getTabViewers(handoverId, orgId, tabKey);
+}
+
 module.exports = {
+  canSeeTab,
+  getTabViewers,
+  setTabViewers,
   listActions,
   createAction,
   completeAction,

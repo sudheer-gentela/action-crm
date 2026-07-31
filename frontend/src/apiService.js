@@ -735,6 +735,8 @@ twilio: {
     personDashboard: (userId) => api.get(`/handovers/team-members/${userId}/dashboard`),
     contactCommunications: (contactId) => api.get(`/handovers/contacts/${contactId}/communications`),
     projectActions:        (id) => api.get(`/handovers/sales/${id}/actions`),
+    tabViewers:            (id, tab = 'commercial') => api.get(`/handovers/sales/${id}/tab-viewers?tab=${tab}`),
+    setTabViewers:         (id, tabKey, userIds) => api.put(`/handovers/sales/${id}/tab-viewers`, { tabKey, userIds }),
     addProjectAction:      (id, data) => api.post(`/handovers/sales/${id}/actions`, data),
     completeProjectAction: (id, actionId) => api.post(`/handovers/sales/${id}/actions/${actionId}/complete`),
     commitmentActivity: (cid) => api.get(`/handovers/commitments/${cid}/activity`),

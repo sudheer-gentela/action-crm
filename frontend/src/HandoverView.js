@@ -1505,7 +1505,9 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
 
       {/* ── Summary / Details sub-tabs ──────────────────── */}
       <div style={{ display: 'flex', gap: 4, padding: '0 20px', borderBottom: '1px solid #e5e7eb', background: '#fff' }}>
-        {[{ key: 'summary', label: 'Summary' }, { key: 'details', label: 'Details' }, { key: 'communications', label: 'Communications' }].map(t => (
+        {[{ key: 'summary', label: 'Summary' }, { key: 'details', label: 'Details' },
+          ...(detail.canSeeCommercial ? [{ key: 'commercial', label: '💰 Commercial' }] : []),
+          { key: 'communications', label: 'Communications' }].map(t => (
           <button key={t.key} onClick={() => setDetailTab(t.key)} style={{
             padding: '10px 16px', background: 'none', border: 'none',
             borderBottom: `2px solid ${detailTab === t.key ? '#0369a1' : 'transparent'}`,
@@ -1618,23 +1620,6 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
           )}
         </section>
 
-        {/* Commercial terms summary */}
-        {(detail.commercialTermsSummary || salesCanEdit) && (
-          <section style={{ marginBottom: 24 }}>
-            <h4 style={{ margin: '0 0 8px', fontSize: 14, color: '#374151' }}>💰 Commercial terms</h4>
-            {detail.commercialTermsSummary ? (
-              <p style={{ fontSize: 13, color: '#374151', lineHeight: 1.6, margin: 0,
-                padding: '10px 12px', background: '#f8fafc', borderRadius: 6, border: '1px solid #e5e7eb' }}>
-                {detail.commercialTermsSummary}
-              </p>
-            ) : (
-              <div style={{ fontSize: 12, color: '#9ca3af', fontStyle: 'italic' }}>
-                No commercial terms summary added.
-              </div>
-            )}
-          </section>
-        )}
-
         {/* Commitments / Risks */}
         <section style={{ marginBottom: 24 }}>
           <h4 style={{ margin: '0 0 8px', fontSize: 14, color: '#374151' }}>
@@ -1671,6 +1656,12 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
       {detailTab === 'communications' && (
         <div style={{ padding: '16px 20px' }}>
           <CommunicationsPanel handoverId={detail.id} />
+        </div>
+      )}
+
+      {detailTab === 'commercial' && detail.canSeeCommercial && (
+        <div style={{ padding: '16px 20px' }}>
+          <CommercialTab detail={detail} users={users} onRefresh={load} />
         </div>
       )}
     </div>
@@ -1756,6 +1747,74 @@ function NextStepsSection({ handoverId, users, card, h4 }) {
             <button onClick={() => { setAdding(true); setErr(''); }} style={{ marginTop: 8, fontSize: 12, padding: '4px 10px', borderRadius: 5, background: '#eff6ff', color: '#1d4ed8', border: '1px dashed #93c5fd', cursor: 'pointer' }}>+ Add next step</button>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+// ── CommercialTab: commercial terms + who-can-see-this-tab access ─────────────
+function CommercialTab({ detail, users, onRefresh }) {
+  const [managing, setManaging] = useState(false);
+  const [sel, setSel]           = useState((detail.commercialViewers || []).map(v => v.userId));
+  const [saving, setSaving]     = useState(false);
+  const [msg, setMsg]           = useState('');
+  const viewers = detail.commercialViewers || [];
+
+  const toggle = (id) => setSel(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
+  const save = async () => {
+    setSaving(true); setMsg('');
+    try { await apiService.handovers.setTabViewers(detail.id, 'commercial', sel); setMsg('Saved.'); setManaging(false); if (onRefresh) await onRefresh(); }
+    catch (e) { setMsg(e?.response?.data?.error?.message || 'Could not save.'); }
+    finally { setSaving(false); }
+  };
+
+  const card = { background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: 16, marginBottom: 16 };
+  return (
+    <div style={{ maxWidth: 720 }}>
+      <div style={card}>
+        <h4 style={{ margin: '0 0 10px', fontSize: 14, color: '#374151' }}>💰 Commercial terms</h4>
+        {detail.commercialTermsSummary ? (
+          <p style={{ fontSize: 13, color: '#374151', lineHeight: 1.6, margin: 0, padding: '10px 12px', background: '#f8fafc', borderRadius: 6, border: '1px solid #e5e7eb' }}>
+            {detail.commercialTermsSummary}
+          </p>
+        ) : (
+          <div style={{ fontSize: 12, color: '#9ca3af', fontStyle: 'italic' }}>No commercial terms summary added.</div>
+        )}
+      </div>
+
+      {detail.canManageTabAccess && (
+        <div style={card}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <h4 style={{ margin: 0, fontSize: 14, color: '#374151' }}>🔒 Who can see this tab</h4>
+            {!managing && <button onClick={() => { setManaging(true); setMsg(''); }} style={{ marginLeft: 'auto', fontSize: 12, color: '#0369a1', background: 'none', border: 'none', cursor: 'pointer' }}>Edit</button>}
+          </div>
+          <p style={{ fontSize: 12, color: '#6b7280', margin: '0 0 10px' }}>
+            The project owner, deal owner, and org admins can always see the Commercial tab. Add specific people below to grant them access too.
+          </p>
+          {!managing ? (
+            viewers.length === 0
+              ? <div style={{ fontSize: 12, color: '#9ca3af' }}>No named people added — only owners and admins can see it.</div>
+              : <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>{viewers.map(v => (
+                  <span key={v.userId} style={{ fontSize: 12, padding: '3px 10px', borderRadius: 999, background: '#eff6ff', color: '#1d4ed8' }}>{v.name}</span>
+                ))}</div>
+          ) : (
+            <div>
+              <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid #e5e7eb', borderRadius: 8, padding: 8 }}>
+                {(users || []).map(u => (
+                  <label key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '3px 0', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={sel.includes(u.id)} onChange={() => toggle(u.id)} />
+                    {u.name || u.email}
+                  </label>
+                ))}
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button onClick={save} disabled={saving} style={{ fontSize: 12, padding: '5px 14px', borderRadius: 6, border: 'none', background: saving ? '#9ca3af' : '#059669', color: '#fff', cursor: 'pointer' }}>{saving ? 'Saving…' : 'Save'}</button>
+                <button onClick={() => { setManaging(false); setSel(viewers.map(v => v.userId)); }} style={{ fontSize: 12, padding: '5px 12px', borderRadius: 6, border: 'none', background: '#f1f5f9', color: '#374151', cursor: 'pointer' }}>Cancel</button>
+              </div>
+            </div>
+          )}
+          {msg && <div style={{ fontSize: 11, color: msg === 'Saved.' ? '#059669' : '#991b1b', marginTop: 8 }}>{msg}</div>}
+        </div>
       )}
     </div>
   );
