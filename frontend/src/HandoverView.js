@@ -688,7 +688,7 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
   );
 }
 
-function StakeholderSection({ stakeholders, canEdit, onAdd, onRemove, accountId, handoverId, canEditPolicy }) {
+function StakeholderSection({ stakeholders, canEdit, onAdd, onRemove, accountId, handoverId, canEditPolicy, onOpenContact }) {
   const [adding,    setAdding]    = useState(false);
   const [mode,      setMode]      = useState('existing');   // 'existing' | 'new'
   const [contactId, setContactId] = useState('');
@@ -758,8 +758,10 @@ function StakeholderSection({ stakeholders, canEdit, onAdd, onRemove, accountId,
       )}
       {stakeholders.map(s => (
         <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderBottom: '1px solid #f3f4f6' }}>
-          <div style={{ flex: 1 }}>
-            <span style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>{s.name}</span>
+          <div style={{ flex: 1, cursor: s.contactId && onOpenContact ? 'pointer' : 'default' }}
+            onClick={() => { if (s.contactId && onOpenContact) onOpenContact(s); }}
+            title={s.contactId && onOpenContact ? 'View interactions & details' : ''}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: s.contactId && onOpenContact ? '#0369a1' : '#111827' }}>{s.name}</span>
             {s.isPrimaryContact && <span style={{ marginLeft: 6, fontSize: 10, color: '#0369a1', fontWeight: 700 }}>★ Primary</span>}
             <span style={{ marginLeft: 8, fontSize: 11, color: '#6b7280' }}>{HANDOVER_ROLE_LABELS[s.handoverRole] || s.handoverRole}</span>
             {s.contactPhone
@@ -1144,6 +1146,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   const [success,   setSuccess]   = useState('');
   const [closureFor, setClosureFor] = useState(null); // 'completed' | 'cancelled' | null
   const [menuOpen, setMenuOpen] = useState(false);    // header "⋯" overflow menu
+  const [contactPanel, setContactPanel] = useState(null); // customer contact drawer (Details tab)
   const [closureText, setClosureText] = useState('');
   const [detailTab, setDetailTab] = useState(initialTab || 'summary'); // 'summary' | 'details' | 'communications'
   // Keep the parent (and thus the URL hash) in step with the open sub-tab.
@@ -1599,6 +1602,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
             handoverId={detail.id}
             onAdd={handleAddStakeholder}
             onRemove={handleRemoveStakeholder}
+            onOpenContact={setContactPanel}
           />
         </section>
 
@@ -1640,6 +1644,8 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
           <CommunicationsPanel handoverId={detail.id} />
         </div>
       )}
+
+      {contactPanel && <CustomerContactPanel stakeholder={contactPanel} onClose={() => setContactPanel(null)} />}
     </div>
   );
 }
@@ -1908,11 +1914,36 @@ function CommMessageModal({ message, onClose, onOpenContact }) {
 function CustomerContactPanel({ stakeholder, onClose }) {
   const [data, setData] = useState(null);
   const [openComm, setOpenComm] = useState(null);
+  const [editing, setEditing] = useState(false);
+  const [phone, setPhone] = useState(stakeholder.contactPhone || '');
+  const [email, setEmail] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState('');
+
+  const loadComms = useCallback(() => apiService.handovers.contactCommunications(stakeholder.contactId)
+    .then(res => setData(res.data))
+    .catch(() => setData({ contact: { name: stakeholder.name }, communications: [] })),
+    [stakeholder.contactId, stakeholder.name]);
+
+  useEffect(() => { loadComms(); }, [loadComms]);
+
+  // Seed editable fields once the contact record loads.
   useEffect(() => {
-    apiService.handovers.contactCommunications(stakeholder.contactId)
-      .then(res => setData(res.data))
-      .catch(() => setData({ contact: { name: stakeholder.name }, communications: [] }));
-  }, [stakeholder.contactId, stakeholder.name]);
+    if (data?.contact) {
+      setPhone(p => p || data.contact.phone || stakeholder.contactPhone || '');
+      setEmail(e => e || data.contact.email || '');
+    }
+  }, [data, stakeholder.contactPhone]);
+
+  const saveContact = async () => {
+    setSaving(true); setSaveMsg('');
+    try {
+      await apiService.contacts.update(stakeholder.contactId, { phone: phone.trim() || null, email: email.trim() || null });
+      await loadComms();
+      setEditing(false); setSaveMsg('Saved.');
+    } catch (e) { setSaveMsg(e?.response?.data?.error?.message || 'Could not save.'); }
+    finally { setSaving(false); }
+  };
 
   const CH = { email: { label: 'Email', color: '#7c3aed' }, whatsapp: { label: 'WhatsApp', color: '#059669' } };
   const comms = data?.communications || [];
@@ -1939,6 +1970,41 @@ function CustomerContactPanel({ stakeholder, onClose }) {
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px' }}>
+          {/* Contact details (inline edit for missing data) */}
+          <div style={{ marginBottom: 16, padding: 12, background: '#f8fafc', borderRadius: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.4 }}>Contact details</span>
+              {!editing && stakeholder.contactId && (
+                <button onClick={() => { setEditing(true); setSaveMsg(''); }} style={{ fontSize: 11, color: '#0369a1', background: 'none', border: 'none', cursor: 'pointer' }}>Edit</button>
+              )}
+            </div>
+            {!editing ? (
+              <div style={{ fontSize: 13 }}>
+                <div style={{ marginBottom: 4 }} onClick={() => !phone && stakeholder.contactId && setEditing(true)}>
+                  📞 {phone || <span style={{ color: '#b45309', cursor: 'pointer' }}>Add phone</span>}
+                </div>
+                <div onClick={() => !email && stakeholder.contactId && setEditing(true)}>
+                  ✉️ {email || <span style={{ color: '#b45309', cursor: 'pointer' }}>Add email</span>}
+                </div>
+              </div>
+            ) : (
+              <div>
+                <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="Phone (with country code)"
+                  style={{ width: '100%', fontSize: 13, padding: '6px 8px', borderRadius: 6, border: '1px solid #d1d5db', boxSizing: 'border-box' }} />
+                <input value={email} onChange={e => setEmail(e.target.value)} placeholder="Email"
+                  style={{ width: '100%', fontSize: 13, padding: '6px 8px', borderRadius: 6, border: '1px solid #d1d5db', boxSizing: 'border-box', marginTop: 6 }} />
+                <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                  <button onClick={saveContact} disabled={saving}
+                    style={{ fontSize: 12, padding: '5px 14px', borderRadius: 6, border: 'none', background: saving ? '#9ca3af' : '#059669', color: '#fff', fontWeight: 600, cursor: saving ? 'default' : 'pointer' }}>
+                    {saving ? 'Saving…' : 'Save'}
+                  </button>
+                  <button onClick={() => setEditing(false)} style={{ fontSize: 12, padding: '5px 12px', borderRadius: 6, border: 'none', background: '#f1f5f9', color: '#374151', cursor: 'pointer' }}>Cancel</button>
+                </div>
+              </div>
+            )}
+            {saveMsg && <div style={{ fontSize: 11, color: saveMsg === 'Saved.' ? '#059669' : '#991b1b', marginTop: 6 }}>{saveMsg}</div>}
+          </div>
+
           <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 }}>
             Communications with the team{data ? ` (${comms.length})` : ''}
           </div>
@@ -2084,6 +2150,7 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject }) {
           handoverId={detail.id}
           onAdd={handleSummaryAdd}
           onRemove={handleSummaryRemove}
+          onOpenContact={setOpenContact}
         />
       </div>
 
