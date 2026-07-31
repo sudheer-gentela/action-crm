@@ -1147,6 +1147,12 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   const [closureFor, setClosureFor] = useState(null); // 'completed' | 'cancelled' | null
   const [menuOpen, setMenuOpen] = useState(false);    // header "⋯" overflow menu
   const [contactPanel, setContactPanel] = useState(null); // customer contact drawer (Details tab)
+  const [checklistLayout, setChecklistLayout] = useState(() => {
+    try { return localStorage.getItem('gw_project_checklist_layout') || 'grid'; } catch { return 'grid'; }
+  });
+  const [expandedPlays, setExpandedPlays] = useState({});
+  const setLayout = (v) => { setChecklistLayout(v); try { localStorage.setItem('gw_project_checklist_layout', v); } catch { /* ignore */ } };
+  const togglePlay = (id) => setExpandedPlays(x => ({ ...x, [id]: !x[id] }));
   const [closureText, setClosureText] = useState('');
   const [detailTab, setDetailTab] = useState(initialTab || 'summary'); // 'summary' | 'details' | 'communications'
   // Keep the parent (and thus the URL hash) in step with the open sub-tab.
@@ -1534,37 +1540,89 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
 
         {/* Handover Checklist (plays) — grouped by stage */}
         <section style={{ marginBottom: 24 }}>
-          <h4 style={{ margin: '0 0 12px', fontSize: 14, color: '#374151' }}>📋 Project checklist</h4>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 12px' }}>
+            <h4 style={{ margin: 0, fontSize: 14, color: '#374151' }}>📋 Project checklist</h4>
+            <div style={{ marginLeft: 'auto', display: 'inline-flex', border: '1px solid #d1d5db', borderRadius: 6, overflow: 'hidden' }}>
+              {[['grid', 'Grid'], ['detailed', 'Detailed']].map(([k, label]) => (
+                <button key={k} onClick={() => setLayout(k)} style={{ padding: '4px 12px', fontSize: 11, fontWeight: 600, border: 'none', cursor: 'pointer',
+                  background: checklistLayout === k ? '#0369a1' : '#fff', color: checklistLayout === k ? '#fff' : '#374151' }}>{label}</button>
+              ))}
+            </div>
+          </div>
           {plays.length === 0 && (
             <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 12 }}>No checklist items yet.</div>
           )}
-          {groupPlaysByStage(plays).map(group => {
-            const pct = group.items.length ? Math.round((group.done / group.items.length) * 100) : 0;
-            return (
-              <div key={group.key} style={{ marginBottom: 18 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4, whiteSpace: 'nowrap' }}>
-                    {group.label}
-                  </span>
-                  <span style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>{group.done}/{group.items.length} done</span>
-                  <div style={{ flex: 1, height: 4, background: '#f1f5f9', borderRadius: 2, overflow: 'hidden' }}>
-                    <div style={{ width: `${pct}%`, height: '100%', background: pct === 100 ? '#10b981' : '#0369a1', transition: 'width 0.2s' }} />
+
+          {checklistLayout === 'grid' ? (
+            /* ── Boxed grid: one card per stage, compact rows that expand ── */
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 14, alignItems: 'start' }}>
+              {groupPlaysByStage(plays).map(group => {
+                const pct = group.items.length ? Math.round((group.done / group.items.length) * 100) : 0;
+                return (
+                  <div key={group.key} style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 14, background: '#fff' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4 }}>{group.label}</span>
+                      <span style={{ fontSize: 11, color: '#6b7280' }}>{group.done}/{group.items.length}</span>
+                      <div style={{ flex: 1, height: 4, background: '#f1f5f9', borderRadius: 2, overflow: 'hidden' }}>
+                        <div style={{ width: `${pct}%`, height: '100%', background: pct === 100 ? '#10b981' : '#0369a1' }} />
+                      </div>
+                    </div>
+                    {group.items.map(play => {
+                      const done = ['completed', 'skipped'].includes(play.status);
+                      const icon = play.status === 'skipped' ? '⊘' : done ? '✅' : play.isGate ? '🔒' : play.status === 'in_progress' ? '🔄' : '⬜';
+                      const isOpen = !!expandedPlays[play.id];
+                      return (
+                        <div key={play.id} style={{ borderTop: '1px solid #f3f4f6' }}>
+                          <div onClick={() => togglePlay(play.id)} title="Click for detail"
+                            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 2px', cursor: 'pointer', fontSize: 13 }}>
+                            <span>{icon}</span>
+                            <span style={{ flex: 1, minWidth: 0, color: done ? '#6b7280' : '#111827', textDecoration: done ? 'line-through' : 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{play.title}</span>
+                            {play.isGate && !done && <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: '#eff6ff', color: '#1d4ed8' }}>GATE</span>}
+                            {done && play.completedAt && <span style={{ fontSize: 10, color: '#9ca3af' }}>{fmtDate(play.completedAt)}</span>}
+                            <span style={{ fontSize: 10, color: '#9ca3af' }}>{isOpen ? '▾' : '▸'}</span>
+                          </div>
+                          {isOpen && (
+                            <div style={{ paddingBottom: 8 }}>
+                              <PlaySection play={play} canEdit={salesCanEdit} onComplete={handleCompletePlay} onRemove={handleRemovePlay} onEdit={handleUpdatePlay} users={users} />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
+                );
+              })}
+            </div>
+          ) : (
+            /* ── Detailed: full grouped list ── */
+            groupPlaysByStage(plays).map(group => {
+              const pct = group.items.length ? Math.round((group.done / group.items.length) * 100) : 0;
+              return (
+                <div key={group.key} style={{ marginBottom: 18 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4, whiteSpace: 'nowrap' }}>
+                      {group.label}
+                    </span>
+                    <span style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>{group.done}/{group.items.length} done</span>
+                    <div style={{ flex: 1, height: 4, background: '#f1f5f9', borderRadius: 2, overflow: 'hidden' }}>
+                      <div style={{ width: `${pct}%`, height: '100%', background: pct === 100 ? '#10b981' : '#0369a1', transition: 'width 0.2s' }} />
+                    </div>
+                  </div>
+                  {group.items.map(play => (
+                    <PlaySection
+                      key={play.id}
+                      play={play}
+                      canEdit={salesCanEdit}
+                      onComplete={handleCompletePlay}
+                      onRemove={handleRemovePlay}
+                      onEdit={handleUpdatePlay}
+                      users={users}
+                    />
+                  ))}
                 </div>
-                {group.items.map(play => (
-                  <PlaySection
-                    key={play.id}
-                    play={play}
-                    canEdit={salesCanEdit}
-                    onComplete={handleCompletePlay}
-                    onRemove={handleRemovePlay}
-                    onEdit={handleUpdatePlay}
-                    users={users}
-                  />
-                ))}
-              </div>
-            );
-          })}
+              );
+            })
+          )}
           {salesCanEdit && (
             <div style={{ marginTop: 4 }}>
               <AddPlayForm users={users} onAdd={handleAddPlay} />
