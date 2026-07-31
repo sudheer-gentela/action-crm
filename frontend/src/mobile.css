@@ -139,6 +139,21 @@ a {
   flex-shrink: 0;
 }
 
+/* Horizontally scrollable data table. A table with width:100% and six columns
+   does not overflow on a phone — it compresses each column until the content is
+   unreadable, or gets clipped outright by an overflow:hidden ancestor. Pinning
+   the table to its natural width below the breakpoint makes it scroll instead,
+   which keeps every cell legible. Desktop behaviour is unchanged. */
+.gw-table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+@media (max-width: 768px) {
+  .gw-table-scroll > table {
+    min-width: max-content;
+  }
+}
+
 /* Below the breakpoint only. Applied to existing flex rows during the sweep. */
 @media (max-width: 768px) {
 

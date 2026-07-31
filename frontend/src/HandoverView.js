@@ -207,7 +207,7 @@ function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setS
           <div style={{ fontSize: 32, marginBottom: 8 }}>🤝</div>No projects match.
         </div>
       ) : (
-        <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden' }}>
+        <div className="gw-table-scroll" style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden', overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead><tr>
               <th style={th}>Project</th><th style={th}>Status</th><th style={{ ...th, textAlign: 'right' }}>Value</th>
@@ -1310,9 +1310,9 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
 
       {/* ── Header ─────────────────────────────────────── */}
       <div style={{ padding: '16px 20px', borderBottom: '1px solid #e5e7eb', background: '#fafafa' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
-          <div>
-            <h3 style={{ margin: '0 0 4px', fontSize: 16, color: '#111827' }}>
+        <div className="gw-wrap-mobile" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+          <div style={{ minWidth: 0 }}>
+            <h3 style={{ margin: '0 0 4px', fontSize: 16, color: '#111827', overflowWrap: 'anywhere' }}>
               {detail.dealName || `Deal #${detail.dealId}`}
             </h3>
             <div style={{ fontSize: 13, color: '#6b7280' }}>{detail.accountName}</div>
@@ -3266,52 +3266,54 @@ function PortfolioDashboard({ onOpenProject }) {
 
       {/* Projects table */}
       <DashCard title="Projects overview">
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-          <thead>
-            <tr style={{ color: '#6b7280', textAlign: 'left' }}>
-              <th style={{ padding: '6px 4px', fontWeight: 500 }}>Project</th>
-              <th style={{ padding: '6px 4px', fontWeight: 500 }}>Type</th>
-              <th style={{ padding: '6px 4px', fontWeight: 500 }}>Status</th>
-              <th style={{ padding: '6px 4px', fontWeight: 500, width: '22%' }}>Progress</th>
-              <th style={{ padding: '6px 4px', fontWeight: 500 }}>Next action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {projects.map(p => {
-              const s = DASH.status[p.status] || { label: p.status, color: '#6b7280' };
-              return (
-                <tr key={p.handoverId} onClick={() => onOpenProject?.(p.handoverId)}
-                  style={{ borderTop: '1px solid #f3f4f6', cursor: 'pointer' }}
-                  onMouseEnter={e => { e.currentTarget.style.background = '#f9fafb'; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
-                  <td style={{ padding: '8px 4px' }}>
-                    {p.account}
-                    {p.rain !== 'none' && (
-                      <span style={{ color: p.rain === 'high' ? '#dc2626' : '#d97706', fontSize: 11, marginLeft: 5 }}>
-                        ● {p.rain} rain
-                      </span>
-                    )}
-                  </td>
-                  <td style={{ padding: '8px 4px', color: '#6b7280' }}>{p.projectType}</td>
-                  <td style={{ padding: '8px 4px' }}>
-                    <span style={{ background: s.color + '1a', color: s.color, padding: '2px 7px', borderRadius: 6, fontSize: 11 }}>{s.label}</span>
-                  </td>
-                  <td style={{ padding: '8px 4px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <div style={{ flex: 1, height: 6, background: '#f3f4f6', borderRadius: 3 }}>
-                        <div style={{ width: `${p.progress}%`, height: '100%', background: s.color, borderRadius: 3 }} />
+        <div className="gw-table-scroll">
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <thead>
+              <tr style={{ color: '#6b7280', textAlign: 'left' }}>
+                <th style={{ padding: '6px 4px', fontWeight: 500 }}>Project</th>
+                <th style={{ padding: '6px 4px', fontWeight: 500 }}>Type</th>
+                <th style={{ padding: '6px 4px', fontWeight: 500 }}>Status</th>
+                <th style={{ padding: '6px 4px', fontWeight: 500, width: '22%' }}>Progress</th>
+                <th style={{ padding: '6px 4px', fontWeight: 500 }}>Next action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {projects.map(p => {
+                const s = DASH.status[p.status] || { label: p.status, color: '#6b7280' };
+                return (
+                  <tr key={p.handoverId} onClick={() => onOpenProject?.(p.handoverId)}
+                    style={{ borderTop: '1px solid #f3f4f6', cursor: 'pointer' }}
+                    onMouseEnter={e => { e.currentTarget.style.background = '#f9fafb'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
+                    <td style={{ padding: '8px 4px' }}>
+                      {p.account}
+                      {p.rain !== 'none' && (
+                        <span style={{ color: p.rain === 'high' ? '#dc2626' : '#d97706', fontSize: 11, marginLeft: 5 }}>
+                          ● {p.rain} rain
+                        </span>
+                      )}
+                    </td>
+                    <td style={{ padding: '8px 4px', color: '#6b7280' }}>{p.projectType}</td>
+                    <td style={{ padding: '8px 4px' }}>
+                      <span style={{ background: s.color + '1a', color: s.color, padding: '2px 7px', borderRadius: 6, fontSize: 11 }}>{s.label}</span>
+                    </td>
+                    <td style={{ padding: '8px 4px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <div style={{ flex: 1, height: 6, background: '#f3f4f6', borderRadius: 3 }}>
+                          <div style={{ width: `${p.progress}%`, height: '100%', background: s.color, borderRadius: 3 }} />
+                        </div>
+                        <span style={{ color: '#6b7280', width: 30, textAlign: 'right' }}>{p.progress}%</span>
                       </div>
-                      <span style={{ color: '#6b7280', width: 30, textAlign: 'right' }}>{p.progress}%</span>
-                    </div>
-                  </td>
-                  <td style={{ padding: '8px 4px', color: '#6b7280', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {p.nextAction || '—'}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                    </td>
+                    <td style={{ padding: '8px 4px', color: '#6b7280', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {p.nextAction || '—'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </DashCard>
 
       {/* Rain + risk */}

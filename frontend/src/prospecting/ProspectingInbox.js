@@ -1193,150 +1193,152 @@ function EmailInbox({ scope, search, campaignId, expandedId, onExpandedChange, o
           </div>
         ) : (
           <>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-              <thead>
-                <tr style={{ background: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
-                  {['Prospect', 'Company', 'Subject', 'Sent By', 'Date', 'Status'].map(h => (
-                    <th key={h} style={{
-                      padding: '9px 14px', textAlign: 'left', fontSize: 11,
-                      fontWeight: 700, color: '#6b7280', textTransform: 'uppercase',
-                      letterSpacing: 0.5, whiteSpace: 'nowrap',
-                    }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {emails.map(email => {
-                  const prospect   = email.prospect   || {};
-                  const sentBy     = email.sentBy     || {};
-                  const sender     = email.senderAccount || {};
-                  const isReply    = email.direction === 'inbound' || email.direction === 'received';
-                  const wasOpened  = !!email.openedAt;
-                  const wasReplied = !!email.repliedAt;
-                  return (
-                    <React.Fragment key={email.id}>
-                    <tr
-                      key={`${email.id}-main`}
-                      onClick={() => onExpandedChange(expandedId === email.id ? null : email.id)}
-                      style={{
-                        borderBottom: expandedId === email.id ? 'none' : '1px solid #f3f4f6',
-                        background: isReply ? '#f0fdf4' : '#fff',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {/* Prospect name + email */}
-                      <td style={{ padding: '10px 14px', minWidth: 160 }}>
-                        <div style={{ fontWeight: 600, color: '#1a202c' }}>
-                          {prospect.firstName} {prospect.lastName}
-                        </div>
-                        {prospect.email && (
-                          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 1 }}>
-                            {prospect.email}
+            <div className="gw-table-scroll">
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
+                    {['Prospect', 'Company', 'Subject', 'Sent By', 'Date', 'Status'].map(h => (
+                      <th key={h} style={{
+                        padding: '9px 14px', textAlign: 'left', fontSize: 11,
+                        fontWeight: 700, color: '#6b7280', textTransform: 'uppercase',
+                        letterSpacing: 0.5, whiteSpace: 'nowrap',
+                      }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {emails.map(email => {
+                    const prospect   = email.prospect   || {};
+                    const sentBy     = email.sentBy     || {};
+                    const sender     = email.senderAccount || {};
+                    const isReply    = email.direction === 'inbound' || email.direction === 'received';
+                    const wasOpened  = !!email.openedAt;
+                    const wasReplied = !!email.repliedAt;
+                    return (
+                      <React.Fragment key={email.id}>
+                      <tr
+                        key={`${email.id}-main`}
+                        onClick={() => onExpandedChange(expandedId === email.id ? null : email.id)}
+                        style={{
+                          borderBottom: expandedId === email.id ? 'none' : '1px solid #f3f4f6',
+                          background: isReply ? '#f0fdf4' : '#fff',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {/* Prospect name + email */}
+                        <td style={{ padding: '10px 14px', minWidth: 160 }}>
+                          <div style={{ fontWeight: 600, color: '#1a202c' }}>
+                            {prospect.firstName} {prospect.lastName}
                           </div>
-                        )}
-                      </td>
-
-                      {/* Company + stage */}
-                      <td style={{ padding: '10px 14px', minWidth: 130 }}>
-                        <div style={{ fontSize: 12, color: '#374151' }}>
-                          {prospect.companyName || '—'}
-                        </div>
-                        {prospect.stage && (
-                          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 1, textTransform: 'capitalize' }}>
-                            {prospect.stage}
-                          </div>
-                        )}
-                      </td>
-
-                      {/* Subject */}
-                      <td style={{ padding: '10px 14px', maxWidth: 260 }}>
-                        <div style={{
-                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                          color: isReply ? '#065f46' : '#374151',
-                          fontWeight: isReply ? 600 : 400,
-                        }}>
-                          {isReply ? '↩ ' : ''}{email.subject || '(no subject)'}
-                        </div>
-                      </td>
-
-                      {/* Sent by — CRM user + sender account email */}
-                      <td style={{ padding: '10px 14px', minWidth: 140 }}>
-                        <div style={{ fontSize: 12, color: '#374151' }}>
-                          {sentBy.firstName} {sentBy.lastName}
-                        </div>
-                        {(sender.email || email.fromAddress) && (
-                          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 1 }}>
-                            {sender.email || email.fromAddress}
-                          </div>
-                        )}
-                      </td>
-
-                      {/* Date */}
-                      <td style={{ padding: '10px 14px', whiteSpace: 'nowrap', color: '#6b7280', fontSize: 12 }}>
-                        {email.sentAt
-                          ? new Date(email.sentAt).toLocaleString(undefined, {
-                              month: 'short', day: 'numeric',
-                              hour: '2-digit', minute: '2-digit',
-                            })
-                          : '—'}
-                      </td>
-
-                      {/* Status badges */}
-                      <td style={{ padding: '10px 14px' }}>
-                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                          {isReply && (
-                            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: '#d1fae5', color: '#065f46', fontWeight: 600 }}>
-                              ↩ Reply
-                            </span>
-                          )}
-                          {wasOpened && !isReply && (
-                            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: '#ede9fe', color: '#6d28d9', fontWeight: 600 }}>
-                              Opened
-                            </span>
-                          )}
-                          {wasReplied && !isReply && (
-                            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: '#d1fae5', color: '#065f46', fontWeight: 600 }}>
-                              ✓ Replied
-                            </span>
-                          )}
-                          {!isReply && !wasOpened && !wasReplied && (
-                            <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: '#f3f4f6', color: '#9ca3af' }}>
-                              Sent
-                            </span>
-                          )}
-                          <CopyLinkButton hashPath={`email/${email.id}`} title="Copy link to this email" />
-                        </div>
-                      </td>
-                    </tr>
-                    {expandedId === email.id && (
-                      <tr key={`${email.id}-body`} style={{ borderBottom: '1px solid #f3f4f6', background: isReply ? '#f0fdf4' : '#fafafa' }}>
-                        <td colSpan={6} style={{ padding: '0 14px 14px 14px' }}>
-                          <div style={{ borderTop: '1px solid #e5e7eb', paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                            <div style={{ display: 'flex', gap: 16, fontSize: 11, color: '#6b7280', flexWrap: 'wrap' }}>
-                              <span><strong>From:</strong> {email.fromAddress || sender.email || ''}</span>
-                              <span><strong>To:</strong> {email.toAddress || prospect.email || ''}</span>
-                              {email.sentAt && <span><strong>Date:</strong> {new Date(email.sentAt).toLocaleString()}</span>}
+                          {prospect.email && (
+                            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 1 }}>
+                              {prospect.email}
                             </div>
-                            <div style={{
-                              background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8,
-                              padding: '12px 16px', fontSize: 13, color: '#374151',
-                              lineHeight: 1.7, whiteSpace: 'pre-wrap', maxHeight: 400,
-                              overflowY: 'auto', fontFamily: 'inherit',
-                            }}>
-                              {email.body
-                                ? email.body.replace(/<[^>]+>/g, '').trim()
-                                : <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>No body content stored.</span>
-                              }
+                          )}
+                        </td>
+
+                        {/* Company + stage */}
+                        <td style={{ padding: '10px 14px', minWidth: 130 }}>
+                          <div style={{ fontSize: 12, color: '#374151' }}>
+                            {prospect.companyName || '—'}
+                          </div>
+                          {prospect.stage && (
+                            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 1, textTransform: 'capitalize' }}>
+                              {prospect.stage}
                             </div>
+                          )}
+                        </td>
+
+                        {/* Subject */}
+                        <td style={{ padding: '10px 14px', maxWidth: 260 }}>
+                          <div style={{
+                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                            color: isReply ? '#065f46' : '#374151',
+                            fontWeight: isReply ? 600 : 400,
+                          }}>
+                            {isReply ? '↩ ' : ''}{email.subject || '(no subject)'}
+                          </div>
+                        </td>
+
+                        {/* Sent by — CRM user + sender account email */}
+                        <td style={{ padding: '10px 14px', minWidth: 140 }}>
+                          <div style={{ fontSize: 12, color: '#374151' }}>
+                            {sentBy.firstName} {sentBy.lastName}
+                          </div>
+                          {(sender.email || email.fromAddress) && (
+                            <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 1 }}>
+                              {sender.email || email.fromAddress}
+                            </div>
+                          )}
+                        </td>
+
+                        {/* Date */}
+                        <td style={{ padding: '10px 14px', whiteSpace: 'nowrap', color: '#6b7280', fontSize: 12 }}>
+                          {email.sentAt
+                            ? new Date(email.sentAt).toLocaleString(undefined, {
+                                month: 'short', day: 'numeric',
+                                hour: '2-digit', minute: '2-digit',
+                              })
+                            : '—'}
+                        </td>
+
+                        {/* Status badges */}
+                        <td style={{ padding: '10px 14px' }}>
+                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                            {isReply && (
+                              <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: '#d1fae5', color: '#065f46', fontWeight: 600 }}>
+                                ↩ Reply
+                              </span>
+                            )}
+                            {wasOpened && !isReply && (
+                              <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: '#ede9fe', color: '#6d28d9', fontWeight: 600 }}>
+                                Opened
+                              </span>
+                            )}
+                            {wasReplied && !isReply && (
+                              <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: '#d1fae5', color: '#065f46', fontWeight: 600 }}>
+                                ✓ Replied
+                              </span>
+                            )}
+                            {!isReply && !wasOpened && !wasReplied && (
+                              <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, background: '#f3f4f6', color: '#9ca3af' }}>
+                                Sent
+                              </span>
+                            )}
+                            <CopyLinkButton hashPath={`email/${email.id}`} title="Copy link to this email" />
                           </div>
                         </td>
                       </tr>
-                    )}
-                  </React.Fragment>
-                );
-                })}
-              </tbody>
-            </table>
+                      {expandedId === email.id && (
+                        <tr key={`${email.id}-body`} style={{ borderBottom: '1px solid #f3f4f6', background: isReply ? '#f0fdf4' : '#fafafa' }}>
+                          <td colSpan={6} style={{ padding: '0 14px 14px 14px' }}>
+                            <div style={{ borderTop: '1px solid #e5e7eb', paddingTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                              <div style={{ display: 'flex', gap: 16, fontSize: 11, color: '#6b7280', flexWrap: 'wrap' }}>
+                                <span><strong>From:</strong> {email.fromAddress || sender.email || ''}</span>
+                                <span><strong>To:</strong> {email.toAddress || prospect.email || ''}</span>
+                                {email.sentAt && <span><strong>Date:</strong> {new Date(email.sentAt).toLocaleString()}</span>}
+                              </div>
+                              <div style={{
+                                background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8,
+                                padding: '12px 16px', fontSize: 13, color: '#374151',
+                                lineHeight: 1.7, whiteSpace: 'pre-wrap', maxHeight: 400,
+                                overflowY: 'auto', fontFamily: 'inherit',
+                              }}>
+                                {email.body
+                                  ? email.body.replace(/<[^>]+>/g, '').trim()
+                                  : <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>No body content stored.</span>
+                                }
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                  })}
+                </tbody>
+              </table>
+            </div>
 
             {/* Pagination */}
             {total > LIMIT && (

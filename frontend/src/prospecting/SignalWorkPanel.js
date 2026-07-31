@@ -597,7 +597,7 @@ export default function SignalWorkPanel({ prospectId, onUseDraft, onOpenProspect
           </div>
           {showReplace && (
             <div style={{ ...card, marginTop: 8 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 6 }}>
                 {[['firstName', 'First name *'], ['lastName', 'Last name *'], ['title', 'Title'], ['email', 'Email'], ['linkedinUrl', 'LinkedIn URL']].map(([k, ph]) => (
                   <input key={k} placeholder={ph} value={replaceForm[k]}
                     onChange={(e) => setReplaceForm({ ...replaceForm, [k]: e.target.value })}

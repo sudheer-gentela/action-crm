@@ -142,7 +142,7 @@ function SequenceHealthTile({ campaignId }) {
 
               {isExpanded && (
                 <div style={{ padding: '4px 12px 12px', fontSize: 12, color: '#374151' }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8, marginBottom: 8 }}>
                     <div>
                       <div style={{ fontWeight: 600, marginBottom: 2 }}>Last 7 days</div>
                       <div style={{ color: '#6b7280', fontSize: 11 }}>
@@ -332,7 +332,7 @@ export default function CampaignsView() {
       )}
 
       {/* Sub-header */}
-      <div style={{
+      <div className="gw-wrap-mobile" style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         marginBottom: 12,
       }}>
@@ -1195,7 +1195,7 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
 
             {/* Metric cards — top row: prospects + total touches + in-sequences */}
             <div style={{
-              display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 12,
+              display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 8, marginBottom: 12,
             }}>
               <div style={{ cursor: 'pointer' }} title="Click to see who"
                    onClick={() => setDrill({ type: 'members' })}>
@@ -1374,7 +1374,7 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
                     EMAIL FUNNEL — {rangeFilter === 'all' ? 'ALL TIME' : 'THIS WEEK'}
                   </div>
                   <div style={{
-                    display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)',
+                    display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(105px, 1fr))',
                     gap: 8, marginBottom: 6,
                   }}>
                     {stages.map(st => {
@@ -1426,7 +1426,7 @@ function CampaignDetailDrawer({ campaignId, onClose, onChanged, onEdit, scope, c
                     LINKEDIN CONNECTIONS — ALL TIME
                   </div>
                   <div style={{
-                    display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)',
+                    display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
                     gap: 8, marginBottom: 10,
                   }}>
                     <div style={{ background: '#f8fafc', borderRadius: 8, padding: '10px 12px', cursor: 'pointer' }}

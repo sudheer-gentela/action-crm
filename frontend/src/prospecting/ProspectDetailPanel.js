@@ -1974,7 +1974,7 @@ function LinkedInPanel({ prospect, onEventLogged }) {
           <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
             LinkedIn stats
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8 }}>
             {li.message_count > 0 && (
               <div>
                 <div style={{ fontSize: 18, fontWeight: 600, color: '#1a202c' }}>{li.message_count}</div>
@@ -2651,7 +2651,7 @@ function ProspectIntelCard({ contextData, loading, prospect }) {
         </div>
         {expanded.engagement && (
           <div style={{ paddingTop: 8 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 6 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(85px, 1fr))', gap: 6 }}>
               {[
                 { label: 'Sent', value: d.sentEmailCount || 0 },
                 { label: 'Received', value: d.receivedEmailCount || 0 },
