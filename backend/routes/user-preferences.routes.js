@@ -27,6 +27,8 @@ const UI_PREF_DEFAULTS = {
   // Modules the user has pinned to the main sidebar. Capped at 2.
   // Only module IDs from PINNABLE_MODULE_IDS below are accepted.
   pinned_modules:          [],
+  // Order of cards on the project Summary tab (array of card keys). [] = default order.
+  project_summary_order:   [],
 };
 
 // Modules that are allowed to be pinned (must match orgModules keys in App.js)

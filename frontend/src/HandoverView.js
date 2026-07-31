@@ -2249,6 +2249,8 @@ function DeliverableModal({ commitmentId, onClose }) {
   );
 }
 
+const SUMMARY_CARD_KEYS = ['team', 'next_steps', 'commitments', 'customer', 'playbook', 'open_deliverables', 'where_we_stand', 'completed'];
+
 function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onGoToDetails }) {
   const team      = detail.dealTeam || [];
   const pb        = detail.playbook;
@@ -2262,6 +2264,31 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onG
   const [openMember, setOpenMember] = useState(null);
   const [openCommitment, setOpenCommitment] = useState(null);
   const [openContact, setOpenContact] = useState(null);
+
+  // Card order (drag-to-reorder, persisted cross-device via user prefs)
+  const [order, setOrder]           = useState(SUMMARY_CARD_KEYS);
+  const [dragKey, setDragKey]       = useState(null);
+  const [dragOverKey, setDragOverKey] = useState(null);
+  useEffect(() => {
+    apiService.userPreferences.get().then(r => {
+      const saved = r.data?.project_summary_order;
+      if (Array.isArray(saved) && saved.length) {
+        setOrder([...saved.filter(k => SUMMARY_CARD_KEYS.includes(k)), ...SUMMARY_CARD_KEYS.filter(k => !saved.includes(k))]);
+      }
+    }).catch(() => {});
+  }, []);
+  const onDropCard = (targetKey) => {
+    setDragOverKey(null);
+    const from = dragKey; setDragKey(null);
+    if (!from || from === targetKey) return;
+    setOrder(prev => {
+      const next = prev.filter(k => k !== from);
+      const idx = next.indexOf(targetKey);
+      next.splice(idx < 0 ? next.length : idx, 0, from);
+      apiService.userPreferences.update({ project_summary_order: next }).catch(() => {});
+      return next;
+    });
+  };
 
   const handleSummaryAdd = async (data) => {
     await apiService.handovers.addStakeholder(detail.id, data);
@@ -2278,164 +2305,178 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onG
   return (
     <>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 14, alignItems: 'start' }}>
-      {/* Project team */}
-      <div style={card}>
-        <h4 style={h4}>👥 Project team &amp; roles</h4>
-        {team.length === 0 ? (
-          <div style={{ fontSize: 12, color: '#9ca3af' }}>No project team assigned yet.</div>
-        ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 10 }}>
-            {team.map(m => (
-              <div key={m.userId} onClick={() => m.userId && setOpenMember(m)}
-                style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 13, cursor: m.userId ? 'pointer' : 'default' }}>
-                <div style={{ width: 30, height: 30, flexShrink: 0, borderRadius: '50%', background: '#e0f2fe',
-                  color: '#0369a1', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700 }}>
-                  {initials(m.name)}
+      {(() => {
+        const cardNodes = {
+          team: (
+            <div style={card}>
+              <h4 style={h4}>👥 Project team &amp; roles</h4>
+              {team.length === 0 ? (
+                <div style={{ fontSize: 12, color: '#9ca3af' }}>No project team assigned yet.</div>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 10 }}>
+                  {team.map(m => (
+                    <div key={m.userId} onClick={() => m.userId && setOpenMember(m)}
+                      style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 13, cursor: m.userId ? 'pointer' : 'default' }}>
+                      <div style={{ width: 30, height: 30, flexShrink: 0, borderRadius: '50%', background: '#e0f2fe',
+                        color: '#0369a1', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700 }}>
+                        {initials(m.name)}
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.name}</div>
+                        <div style={{ fontSize: 11, color: '#6b7280' }}>{m.role}</div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.name}</div>
-                  <div style={{ fontSize: 11, color: '#6b7280' }}>{m.role}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-        <ProjectMembersSection
-          handoverId={detail.id}
-          members={detail.projectMembers || []}
-          isAdmin={detail.isProjectAdmin}
-          canRequest={detail.canRequestMember}
-          onRefresh={onRefresh}
-        />
-      </div>
-
-      {/* Next steps (project-level actions) */}
-      <NextStepsSection handoverId={detail.id} users={users} card={card} h4={h4} />
-
-      {/* Commitments & risks (manage in Details) */}
-      <div style={card}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-          <h4 style={{ ...h4, margin: 0 }}>📌 Commitments &amp; risks ({allCommits.length})</h4>
-          {onGoToDetails && (
-            <button onClick={onGoToDetails} style={{ marginLeft: 'auto', fontSize: 11, color: '#0369a1', background: 'none', border: 'none', cursor: 'pointer' }}>Manage in Details →</button>
-          )}
-        </div>
-        {allCommits.length === 0 ? (
-          <div style={{ fontSize: 12, color: '#9ca3af' }}>None logged.</div>
-        ) : allCommits.slice(0, 10).map(c => {
-          const DOT = { open: '#d97706', in_progress: '#d97706', met: '#16a34a', waived: '#9ca3af', breached: '#dc2626' };
-          return (
-            <div key={c.id} onClick={onGoToDetails} title="Manage in Details"
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderTop: '1px solid #f3f4f6', fontSize: 13, cursor: onGoToDetails ? 'pointer' : 'default' }}>
-              <span style={{ width: 9, height: 9, flexShrink: 0, borderRadius: '50%', background: DOT[c.status] || '#9ca3af' }} />
-              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.description}</span>
-              {c.commitmentType && c.commitmentType !== 'promise' && (
-                <span style={{ fontSize: 10, fontWeight: 700, color: c.commitmentType === 'red_flag' ? '#dc2626' : '#d97706' }}>
-                  {c.commitmentType === 'red_flag' ? 'RED FLAG' : 'RISK'}
-                </span>
               )}
-              {c.ownerName && <span style={{ fontSize: 11, color: '#6b7280' }}>{c.ownerName}</span>}
+              <ProjectMembersSection
+                handoverId={detail.id}
+                members={detail.projectMembers || []}
+                isAdmin={detail.isProjectAdmin}
+                canRequest={detail.canRequestMember}
+                onRefresh={onRefresh}
+              />
             </div>
-          );
-        })}
-      </div>
-
-      {/* Customer team */}
-      <div style={card}>
-        <h4 style={h4}>🏛️ Customer team</h4>
-        <StakeholderSection
-          stakeholders={detail.stakeholders || []}
-          canEdit={detail.canAddContacts}
-          canEditPolicy={detail.canEditContactPolicy}
-          accountId={detail.accountId}
-          handoverId={detail.id}
-          onAdd={handleSummaryAdd}
-          onRemove={handleSummaryRemove}
-          onOpenContact={setOpenContact}
-        />
-      </div>
-
-      {/* Playbook + ownership */}
-      <div style={card}>
-        <h4 style={h4}>📋 Playbook &amp; ownership</h4>
-        <div style={{ fontSize: 13, color: '#374151', marginBottom: 10 }}>
-          {pb ? (
-            <span>
-              Following <strong>{pb.name}</strong>
-              <span style={{ marginLeft: 8, fontSize: 11, padding: '1px 7px', borderRadius: 5,
-                background: pb.gateEnforcement === 'strict' ? '#fee2e2' : '#f3f4f6',
-                color: pb.gateEnforcement === 'strict' ? '#991b1b' : '#6b7280' }}>
-                {pb.gateEnforcement === 'strict' ? 'strict gating' : 'advisory gating'}
-              </span>
-              {gatePlays.length > 0 && (
-                <span style={{ marginLeft: 8, color: '#6b7280', fontSize: 12 }}>
-                  · {gatesDone}/{gatePlays.length} gates complete
-                </span>
-              )}
-            </span>
-          ) : 'No playbook linked.'}
-        </div>
-        <ServiceOwnerPicker detail={detail} users={users} canEdit={canEdit} onRefresh={onRefresh} />
-      </div>
-
-      {/* Open deliverables */}
-      <div style={card}>
-        <h4 style={h4}>🎯 Open deliverables ({openItems.length})</h4>
-        {openItems.length === 0 ? (
-          <div style={{ fontSize: 12, color: '#9ca3af' }}>Nothing outstanding.</div>
-        ) : openItems.map(c => (
-          <div key={c.id} onClick={() => setOpenCommitment(c.id)}
-            style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '6px 0', borderTop: '1px solid #f3f4f6', cursor: 'pointer' }}>
-            <span style={{ flex: 1 }}>{c.description}</span>
-            {c.commitmentType && c.commitmentType !== 'promise' && (
-              <span style={{ fontSize: 10, fontWeight: 600, color: c.commitmentType === 'red_flag' ? '#dc2626' : '#d97706' }}>
-                {c.commitmentType === 'red_flag' ? 'red flag' : 'risk'}
-              </span>
-            )}
-            {c.ownerName && <span style={{ fontSize: 11, color: '#6b7280' }}>{c.ownerName}</span>}
-          </div>
-        ))}
-      </div>
-
-      {/* Where we stand */}
-      <div style={card}>
-        <h4 style={h4}>📊 Where we stand</h4>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-          <div style={{ flex: 1, height: 8, background: '#f3f4f6', borderRadius: 4 }}>
-            <div style={{ width: `${allCommits.length ? Math.round((doneItems.length / allCommits.length) * 100) : 0}%`,
-              height: '100%', background: '#16a34a', borderRadius: 4 }} />
-          </div>
-          <span style={{ fontSize: 12, color: '#6b7280' }}>{doneItems.length}/{allCommits.length} done</span>
-        </div>
-        <div style={{ fontSize: 12, color: '#6b7280' }}>
-          {onTimeCount} on time · {Math.max(doneItems.length - onTimeCount, 0)} late · {openItems.length} open
-        </div>
-      </div>
-
-      {/* Completed deliverables — planned vs actual */}
-      {doneItems.length > 0 && (
-        <div style={card}>
-          <h4 style={h4}>✅ Completed deliverables ({doneItems.length})</h4>
-          {doneItems.map(c => {
-            const late = lateDays(c);
-            return (
-              <div key={c.id} onClick={() => setOpenCommitment(c.id)}
-                style={{ padding: '7px 0', borderTop: '1px solid #f3f4f6', fontSize: 13, cursor: 'pointer' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ flex: 1 }}>{c.description}</span>
-                  {late > 0
-                    ? <span style={{ fontSize: 10, fontWeight: 600, color: '#dc2626' }}>{late}d late</span>
-                    : <span style={{ fontSize: 10, fontWeight: 600, color: '#16a34a' }}>on time</span>}
-                </div>
-                <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
-                  Due {c.dueDate ? fmtDate(c.dueDate) : '—'} · Completed {c.closedAt ? fmtDate(c.closedAt) : '—'}
-                  {c.closedByName ? ` · by ${c.closedByName}` : ''}
-                </div>
+          ),
+          next_steps: (
+            <NextStepsSection handoverId={detail.id} users={users} card={card} h4={h4} />
+          ),
+          commitments: (
+            <div style={card}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <h4 style={{ ...h4, margin: 0 }}>📌 Commitments &amp; risks ({allCommits.length})</h4>
+                {onGoToDetails && (
+                  <button onClick={onGoToDetails} style={{ marginLeft: 'auto', marginRight: 18, fontSize: 11, color: '#0369a1', background: 'none', border: 'none', cursor: 'pointer' }}>Manage in Details →</button>
+                )}
               </div>
-            );
-          })}
-        </div>
-      )}
+              {allCommits.length === 0 ? (
+                <div style={{ fontSize: 12, color: '#9ca3af' }}>None logged.</div>
+              ) : allCommits.slice(0, 10).map(c => {
+                const DOT = { open: '#d97706', in_progress: '#d97706', met: '#16a34a', waived: '#9ca3af', breached: '#dc2626' };
+                return (
+                  <div key={c.id} onClick={onGoToDetails} title="Manage in Details"
+                    style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderTop: '1px solid #f3f4f6', fontSize: 13, cursor: onGoToDetails ? 'pointer' : 'default' }}>
+                    <span style={{ width: 9, height: 9, flexShrink: 0, borderRadius: '50%', background: DOT[c.status] || '#9ca3af' }} />
+                    <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.description}</span>
+                    {c.commitmentType && c.commitmentType !== 'promise' && (
+                      <span style={{ fontSize: 10, fontWeight: 700, color: c.commitmentType === 'red_flag' ? '#dc2626' : '#d97706' }}>
+                        {c.commitmentType === 'red_flag' ? 'RED FLAG' : 'RISK'}
+                      </span>
+                    )}
+                    {c.ownerName && <span style={{ fontSize: 11, color: '#6b7280' }}>{c.ownerName}</span>}
+                  </div>
+                );
+              })}
+            </div>
+          ),
+          customer: (
+            <div style={card}>
+              <h4 style={h4}>🏛️ Customer team</h4>
+              <StakeholderSection
+                stakeholders={detail.stakeholders || []}
+                canEdit={detail.canAddContacts}
+                canEditPolicy={detail.canEditContactPolicy}
+                accountId={detail.accountId}
+                handoverId={detail.id}
+                onAdd={handleSummaryAdd}
+                onRemove={handleSummaryRemove}
+                onOpenContact={setOpenContact}
+              />
+            </div>
+          ),
+          playbook: (
+            <div style={card}>
+              <h4 style={h4}>📋 Playbook &amp; ownership</h4>
+              <div style={{ fontSize: 13, color: '#374151', marginBottom: 10 }}>
+                {pb ? (
+                  <span>
+                    Following <strong>{pb.name}</strong>
+                    <span style={{ marginLeft: 8, fontSize: 11, padding: '1px 7px', borderRadius: 5,
+                      background: pb.gateEnforcement === 'strict' ? '#fee2e2' : '#f3f4f6',
+                      color: pb.gateEnforcement === 'strict' ? '#991b1b' : '#6b7280' }}>
+                      {pb.gateEnforcement === 'strict' ? 'strict gating' : 'advisory gating'}
+                    </span>
+                    {gatePlays.length > 0 && (
+                      <span style={{ marginLeft: 8, color: '#6b7280', fontSize: 12 }}>
+                        · {gatesDone}/{gatePlays.length} gates complete
+                      </span>
+                    )}
+                  </span>
+                ) : 'No playbook linked.'}
+              </div>
+              <ServiceOwnerPicker detail={detail} users={users} canEdit={canEdit} onRefresh={onRefresh} />
+            </div>
+          ),
+          open_deliverables: (
+            <div style={card}>
+              <h4 style={h4}>🎯 Open deliverables ({openItems.length})</h4>
+              {openItems.length === 0 ? (
+                <div style={{ fontSize: 12, color: '#9ca3af' }}>Nothing outstanding.</div>
+              ) : openItems.map(c => (
+                <div key={c.id} onClick={() => setOpenCommitment(c.id)}
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, padding: '6px 0', borderTop: '1px solid #f3f4f6', cursor: 'pointer' }}>
+                  <span style={{ flex: 1 }}>{c.description}</span>
+                  {c.commitmentType && c.commitmentType !== 'promise' && (
+                    <span style={{ fontSize: 10, fontWeight: 600, color: c.commitmentType === 'red_flag' ? '#dc2626' : '#d97706' }}>
+                      {c.commitmentType === 'red_flag' ? 'red flag' : 'risk'}
+                    </span>
+                  )}
+                  {c.ownerName && <span style={{ fontSize: 11, color: '#6b7280' }}>{c.ownerName}</span>}
+                </div>
+              ))}
+            </div>
+          ),
+          where_we_stand: (
+            <div style={card}>
+              <h4 style={h4}>📊 Where we stand</h4>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <div style={{ flex: 1, height: 8, background: '#f3f4f6', borderRadius: 4 }}>
+                  <div style={{ width: `${allCommits.length ? Math.round((doneItems.length / allCommits.length) * 100) : 0}%`,
+                    height: '100%', background: '#16a34a', borderRadius: 4 }} />
+                </div>
+                <span style={{ fontSize: 12, color: '#6b7280' }}>{doneItems.length}/{allCommits.length} done</span>
+              </div>
+              <div style={{ fontSize: 12, color: '#6b7280' }}>
+                {onTimeCount} on time · {Math.max(doneItems.length - onTimeCount, 0)} late · {openItems.length} open
+              </div>
+            </div>
+          ),
+          completed: doneItems.length > 0 ? (
+            <div style={card}>
+              <h4 style={h4}>✅ Completed deliverables ({doneItems.length})</h4>
+              {doneItems.map(c => {
+                const late = lateDays(c);
+                return (
+                  <div key={c.id} onClick={() => setOpenCommitment(c.id)}
+                    style={{ padding: '7px 0', borderTop: '1px solid #f3f4f6', fontSize: 13, cursor: 'pointer' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ flex: 1 }}>{c.description}</span>
+                      {late > 0
+                        ? <span style={{ fontSize: 10, fontWeight: 600, color: '#dc2626' }}>{late}d late</span>
+                        : <span style={{ fontSize: 10, fontWeight: 600, color: '#16a34a' }}>on time</span>}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
+                      Due {c.dueDate ? fmtDate(c.dueDate) : '—'} · Completed {c.closedAt ? fmtDate(c.closedAt) : '—'}
+                      {c.closedByName ? ` · by ${c.closedByName}` : ''}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null,
+        };
+        return order.map(k => cardNodes[k] ? (
+          <div key={k}
+            onDragOver={e => { e.preventDefault(); setDragOverKey(k); }}
+            onDragLeave={() => setDragOverKey(d => (d === k ? null : d))}
+            onDrop={e => { e.preventDefault(); onDropCard(k); }}
+            style={{ position: 'relative', outline: dragOverKey === k ? '2px dashed #93c5fd' : 'none', outlineOffset: 2, borderRadius: 8 }}>
+            <div draggable onDragStart={() => setDragKey(k)} onDragEnd={() => { setDragKey(null); setDragOverKey(null); }}
+              title="Drag to reorder" style={{ position: 'absolute', top: 8, right: 10, zIndex: 3, cursor: 'grab', color: '#cbd5e1', fontSize: 13, userSelect: 'none', lineHeight: 1 }}>⠿</div>
+            {cardNodes[k]}
+          </div>
+        ) : null);
+      })()}
 
       </div>
 

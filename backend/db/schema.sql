@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict QC6OIiNEG4llx71MweUme98uPye4FnswvTmSlD5hMkeTvaGa4CfJ9WXyk29X7ep
+\restrict JqsesiFDp61LSe3NQiaRsfLQGJA2fcY3JRaZsrx0Q3dpDgOCJ9slsLFi7xh1yxS
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -5653,6 +5653,41 @@ ALTER SEQUENCE public.project_members_id_seq OWNED BY public.project_members.id;
 
 
 --
+-- Name: project_tab_viewers; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.project_tab_viewers (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    handover_id integer NOT NULL,
+    tab_key character varying(50) NOT NULL,
+    user_id integer NOT NULL,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now()
+);
+
+
+--
+-- Name: project_tab_viewers_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.project_tab_viewers_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: project_tab_viewers_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.project_tab_viewers_id_seq OWNED BY public.project_tab_viewers.id;
+
+
+--
 -- Name: prompts; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -9259,6 +9294,13 @@ ALTER TABLE ONLY public.project_members ALTER COLUMN id SET DEFAULT nextval('pub
 
 
 --
+-- Name: project_tab_viewers id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_tab_viewers ALTER COLUMN id SET DEFAULT nextval('public.project_tab_viewers_id_seq'::regclass);
+
+
+--
 -- Name: prompts id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -10802,6 +10844,22 @@ ALTER TABLE ONLY public.project_members
 
 ALTER TABLE ONLY public.project_members
     ADD CONSTRAINT project_members_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: project_tab_viewers project_tab_viewers_handover_id_tab_key_user_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_tab_viewers
+    ADD CONSTRAINT project_tab_viewers_handover_id_tab_key_user_id_key UNIQUE (handover_id, tab_key, user_id);
+
+
+--
+-- Name: project_tab_viewers project_tab_viewers_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_tab_viewers
+    ADD CONSTRAINT project_tab_viewers_pkey PRIMARY KEY (id);
 
 
 --
@@ -13903,6 +13961,13 @@ CREATE INDEX idx_project_members_ctx ON public.project_members USING btree (cont
 --
 
 CREATE INDEX idx_project_members_user ON public.project_members USING btree (org_id, user_id);
+
+
+--
+-- Name: idx_project_tab_viewers_lookup; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_project_tab_viewers_lookup ON public.project_tab_viewers USING btree (handover_id, tab_key);
 
 
 --
@@ -19482,5 +19547,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict QC6OIiNEG4llx71MweUme98uPye4FnswvTmSlD5hMkeTvaGa4CfJ9WXyk29X7ep
+\unrestrict JqsesiFDp61LSe3NQiaRsfLQGJA2fcY3JRaZsrx0Q3dpDgOCJ9slsLFi7xh1yxS
 
