@@ -49,11 +49,48 @@ router.get('/handovers/:id/members', (req, res) =>
 router.post('/handovers/:id/members', (req, res) =>
   send(res, svc.requestMember(parseInt(req.params.id, 10), req.orgId, req.userId, req.body || {})));
 
-router.post('/handovers/:id/members/:mid/review', adminOnly, (req, res) =>
+// Approve, reject and remove are project-scoped: an org admin OR the project's
+// service owner OR its creator. adminOnly stays on the org-wide domain routes
+// below, where org-admin really is the right bar.
+const canManage = async (req, res, next) => {
+  try {
+    const ok = req.isAdmin ||
+      await svc.canManageProject(parseInt(req.params.id, 10), req.orgId, req.userId);
+    return ok ? next() : res.status(403).json({
+      error: { message: 'Only an org admin, the service owner or the project creator can do that' },
+    });
+  } catch (e) { res.status(500).json({ error: { message: e.message } }); }
+};
+
+// Whether the caller may staff this project, and whether auto-approve is
+// actually available. Lets the UI warn about missing org domains up front
+// rather than after an add silently lands in 'pending'.
+router.get('/handovers/:id/members/permissions', async (req, res) => {
+  try {
+    const [canManageProject, decision] = await Promise.all([
+      svc.canManageProject(parseInt(req.params.id, 10), req.orgId, req.userId),
+      svc.autoApproveDecision(req.orgId, req.userId),
+    ]);
+    const { domains } = await svc.listDomains(req.orgId);
+    res.json({
+      canManage: req.isAdmin || canManageProject,
+      isOrgAdmin: req.isAdmin,
+      orgDomainsConfigured: domains.length > 0,
+      autoApprove: decision,
+    });
+  } catch (e) { res.status(500).json({ error: { message: e.message } }); }
+});
+
+// A member declining an invitation or leaving. Self-service by definition, so
+// no permission gate — the service refuses if the caller is not on the project.
+router.post('/handovers/:id/members/me/exit', (req, res) =>
+  send(res, svc.selfExit(parseInt(req.params.id, 10), req.orgId, req.userId, req.body?.reason)));
+
+router.post('/handovers/:id/members/:mid/review', canManage, (req, res) =>
   send(res, svc.reviewMember(parseInt(req.params.id, 10), req.orgId, req.userId,
     parseInt(req.params.mid, 10), req.body?.action, req.body?.reason)));
 
-router.delete('/handovers/:id/members/:mid', adminOnly, (req, res) =>
+router.delete('/handovers/:id/members/:mid', canManage, (req, res) =>
   send(res, svc.removeMember(parseInt(req.params.id, 10), req.orgId, parseInt(req.params.mid, 10))));
 
 // Org email domains

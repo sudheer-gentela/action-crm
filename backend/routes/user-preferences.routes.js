@@ -29,7 +29,17 @@ const UI_PREF_DEFAULTS = {
   pinned_modules:          [],
   // Order of cards on the project Summary tab (array of card keys). [] = default order.
   project_summary_order:   [],
+  // Which tabs the user wants in Projects. null = follow the org default, which
+  // is what almost everyone should stay on. An explicit array overrides it.
+  //
+  // 'assigned' (My Work) and 'dashboard' are always available and cannot be
+  // switched off — removing every tab would leave the module unusable, and a
+  // preference that can brick a screen is a preference not worth having.
+  project_tabs:            null,
 };
+
+// Tabs a user may choose to show. 'assigned' and 'dashboard' are implicit.
+const OPTIONAL_PROJECT_TABS = ['mine'];
 
 // Modules that are allowed to be pinned (must match orgModules keys in App.js)
 const PINNABLE_MODULE_IDS = ['prospecting', 'contracts', 'handovers', 'service', 'agency'];
@@ -61,6 +71,16 @@ router.get('/preferences', async (req, res) => {
 });
 
 // ── PATCH /users/me/preferences ───────────────────────────────────────────
+// Reject unknown tab keys rather than storing them: a stale key would silently
+// render nothing and look like a broken tab.
+function sanitizeProjectTabs(v) {
+  if (v === null || v === undefined) return null;
+  if (!Array.isArray(v)) throw Object.assign(new Error('project_tabs must be an array or null'), { status: 400 });
+  const bad = v.filter(t => !OPTIONAL_PROJECT_TABS.includes(t));
+  if (bad.length) throw Object.assign(new Error(`Unknown project tab(s): ${bad.join(', ')}`), { status: 400 });
+  return [...new Set(v)];
+}
+
 router.patch('/preferences', async (req, res) => {
   try {
     const allowed  = Object.keys(UI_PREF_DEFAULTS);
@@ -71,6 +91,15 @@ router.patch('/preferences', async (req, res) => {
 
     if (Object.keys(filtered).length === 0) {
       return res.status(400).json({ error: { message: 'No valid preference keys supplied' } });
+    }
+
+    // ── Validate project_tabs ─────────────────────────────────────────────
+    if ('project_tabs' in filtered) {
+      try {
+        filtered.project_tabs = sanitizeProjectTabs(filtered.project_tabs);
+      } catch (e) {
+        return res.status(400).json({ error: { message: e.message } });
+      }
     }
 
     // ── Validate pinned_modules ───────────────────────────────────────────

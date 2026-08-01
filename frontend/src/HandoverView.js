@@ -3209,6 +3209,10 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
   // Off by default: for most people "the deals I closed" is not a useful lens,
   // and they stay attached to those projects through project_members instead.
   const [showFromMyDeals, setShowFromMyDeals] = useState(false);
+  // null = follow the org default. An array is an explicit per-user choice and
+  // wins over it. 'assigned' and 'dashboard' are always present, so a user
+  // cannot leave themselves with no tabs at all.
+  const [tabPref, setTabPref] = useState(null);
   // Deep-link (refresh-survival): the handover id + sub-tab from the URL hash.
   const [pendingHashId,  setPendingHashId]  = useState(() => parseHandoverHash().id);
   const [detailSubTab,   setDetailSubTab]   = useState(() => parseHandoverHash().sub);
@@ -3230,6 +3234,13 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
   }, [tab, scope, kindFilter]);
 
   useEffect(() => { loadList(); setSelected(null); }, [loadList]);
+
+  // If the tab currently in view has just been switched off — by the org
+  // setting or by this user's own preference — move to My Work rather than
+  // leaving them on a view with no button to return to.
+  useEffect(() => {
+    if (tab === 'mine' && !fromMyDealsVisible) setTab('assigned');
+  }, [tab, fromMyDealsVisible]);
 
   // Org members for the commitment owner picker — fetched once, shared across
   // the detail panel. Failure is non-fatal: the picker just shows "Unassigned".
@@ -3300,6 +3311,20 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
     return () => { alive = false; };
   }, []);
 
+  useEffect(() => {
+    let alive = true;
+    apiService.userPreferences.get()
+      .then(r => {
+        const p = r.data?.preferences?.project_tabs;
+        if (alive && Array.isArray(p)) setTabPref(p);
+      })
+      .catch(() => {});   // fall back to the org default
+    return () => { alive = false; };
+  }, []);
+
+  // Explicit user choice wins; otherwise the org setting decides.
+  const fromMyDealsVisible = tabPref ? tabPref.includes('mine') : showFromMyDeals;
+
   const handleOpenProject = (id) => { setTab('mine'); setPendingOpenId(id); };
 
   const filtered = handovers.filter(h => {
@@ -3318,7 +3343,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
         {[
           // 'mine' is created_by — the deals this person closed. Off by default
           // (org/user config); they stay attached through project_members.
-          ...(showFromMyDeals ? [{ key: 'mine', label: '📤 From My Deals' }] : []),
+          ...(fromMyDealsVisible ? [{ key: 'mine', label: '📤 From My Deals' }] : []),
           { key: 'assigned',  label: '🧭 My Work' },
           { key: 'dashboard', label: '📊 Dashboard' },
         ].map(t => (

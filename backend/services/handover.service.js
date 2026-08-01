@@ -1997,21 +1997,55 @@ async function getCommunications(handoverId, orgId) {
 
 /** Every project a team member is on, with their role — the person drill-down. */
 async function getTeamMemberProjects(userId, orgId) {
+  // Rewritten 2026-08. The previous version started FROM deal_team_members and
+  // inner-joined deals, which answered "which deals is this person on" — not
+  // "which projects". It missed internal projects entirely (no deal), and
+  // missed anyone attached to a project without being on the originating deal
+  // team, which is now the common case.
+  //
+  // Starts from the project and unions the three ways someone can be attached.
   const { rows } = await pool.query(
-    `SELECT h.id AS handover_id, a.name AS account, d.name AS deal, h.status,
-            r.name AS role_name, dtm.custom_role
-       FROM deal_team_members dtm
-       JOIN deals d ON d.id = dtm.deal_id
-       JOIN accounts a ON a.id = d.account_id
-       LEFT JOIN sales_handovers h ON h.deal_id = d.id AND h.org_id = dtm.org_id
-       LEFT JOIN org_roles r ON r.id = dtm.role_id
-      WHERE dtm.user_id = $1 AND dtm.org_id = $2
-      ORDER BY d.close_date NULLS LAST, d.id`,
+    `SELECT h.id AS handover_id,
+            h.project_kind,
+            COALESCE(h.name, d.name)          AS project,
+            d.name                            AS deal,
+            a.name                            AS account,
+            h.status,
+            h.go_live_date,
+            h.contract_value,
+            h.budget,
+            (h.assigned_service_owner_id = $1) AS is_service_owner,
+            COALESCE(orole.name, pm.custom_role, dtmrole.name, dtm.custom_role) AS role_name
+       FROM sales_handovers h
+       LEFT JOIN deals    d ON d.id = h.deal_id
+       LEFT JOIN accounts a ON a.id = h.account_id
+       LEFT JOIN project_members pm
+              ON pm.context_type = 'handover' AND pm.context_id = h.id
+             AND pm.org_id = h.org_id AND pm.user_id = $1 AND pm.status = 'approved'
+       LEFT JOIN org_roles orole  ON orole.id = pm.role_id
+       LEFT JOIN deal_team_members dtm
+              ON dtm.deal_id = h.deal_id AND dtm.org_id = h.org_id AND dtm.user_id = $1
+       LEFT JOIN org_roles dtmrole ON dtmrole.id = dtm.role_id
+      WHERE h.org_id = $2
+        AND (h.assigned_service_owner_id = $1 OR pm.id IS NOT NULL OR dtm.id IS NOT NULL)
+      ORDER BY h.go_live_date NULLS LAST, h.id`,
     [userId, orgId]
   );
+
   return rows.map(r => ({
-    handoverId: r.handover_id, account: r.account, deal: r.deal,
-    status: r.status, role: r.role_name || r.custom_role || 'Team member',
+    handoverId:   r.handover_id,
+    projectKind:  r.project_kind || 'customer',
+    project:      r.project || `Project #${r.handover_id}`,
+    deal:         r.deal    || null,
+    // Internal projects have no account by design, so say so rather than
+    // rendering a blank cell that reads as missing data.
+    account:      r.account || (r.project_kind === 'internal' ? 'Internal project' : null),
+    status:       r.status,
+    goLiveDate:   r.go_live_date,
+    contractValue: r.contract_value ?? null,
+    budget:        r.budget ?? null,
+    // Service owner wins: it is the accountable role, whatever else they hold.
+    role: r.is_service_owner ? 'Service owner' : (r.role_name || 'Team member'),
   }));
 }
 

@@ -52,6 +52,7 @@ export default function OAProjectAccess() {
   const [saving, setSaving]   = useState(false);
   const [msg, setMsg]         = useState('');
   const [err, setErr]         = useState('');
+  const [domainsOk, setDomainsOk] = useState(null);   // null = still loading
 
   const load = useCallback(() => {
     apiService.handovers.projectAccess()
@@ -60,6 +61,16 @@ export default function OAProjectAccess() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Nothing populates org_email_domains automatically. With it empty, every
+  // project-member add lands in 'pending' and needs an org admin to clear —
+  // which reads as the feature being broken rather than as a missing
+  // prerequisite. Surface it here, where an admin can act on it.
+  useEffect(() => {
+    apiService.handovers.orgDomains()
+      .then(r => setDomainsOk((r.data?.domains || []).length > 0))
+      .catch(() => setDomainsOk(null));
+  }, []);
 
   const save = async (patch) => {
     setSaving(true); setMsg(''); setErr('');
@@ -86,6 +97,21 @@ export default function OAProjectAccess() {
 
   return (
     <div>
+      {domainsOk === false && (
+        <div style={{ fontSize: 12, color: '#92400e', background: '#fef3c7',
+                      border: '1px solid #fde68a', borderRadius: 6,
+                      padding: '10px 12px', marginBottom: 16, lineHeight: 1.6 }}>
+          <strong>No org email domains configured.</strong> Until at least one is
+          added, every project member added from outside a project's own
+          leadership goes to the approval queue instead of being approved
+          straight away. Add your domains under Org Admin → Email Domains.
+          <div style={{ marginTop: 4, color: '#a16207' }}>
+            Project creators and service owners can still staff their own projects
+            without approval — this only affects everyone else.
+          </div>
+        </div>
+      )}
+
       {readOnly && (
         <div style={{ fontSize: 12, color: '#92400e', background: '#fef3c7', border: '1px solid #fde68a',
                       borderRadius: 6, padding: '9px 12px', marginBottom: 16 }}>

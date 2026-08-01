@@ -36,6 +36,34 @@ async function removeDomain(orgId, id) {
   return listDomains(orgId);
 }
 
+// ── Authority ────────────────────────────────────────────────────────────────
+/**
+ * Who may add, approve and remove members on ONE project.
+ *
+ * Previously this was org admin only, which meant the person running a project
+ * could not staff it — they could raise a request and then wait for an org
+ * admin to approve their own team. The service owner and the creator are the
+ * two people accountable for the project, so they get the same authority over
+ * it that an org admin has.
+ *
+ * Scoped to the single project. Nothing here grants rights anywhere else.
+ */
+async function canManageProject(handoverId, orgId, userId) {
+  if (!userId) return false;
+  const { rows: [r] } = await pool.query(
+    `SELECT ou.role AS org_role,
+            h.assigned_service_owner_id,
+            h.created_by
+       FROM org_users ou
+       LEFT JOIN sales_handovers h ON h.id = $3 AND h.org_id = $1
+      WHERE ou.org_id = $1 AND ou.user_id = $2`,
+    [orgId, userId, handoverId]
+  );
+  if (!r) return false;
+  if (['admin', 'owner'].includes(r.org_role)) return true;
+  return r.assigned_service_owner_id === userId || r.created_by === userId;
+}
+
 // ── Auto-approve inputs ──────────────────────────────────────────────────────
 async function seatAvailable(orgId) {
   const { rows: [r] } = await pool.query(
@@ -44,15 +72,35 @@ async function seatAvailable(orgId) {
   return { used: Number(r.used), cap: Number(r.cap), available: Number(r.used) < Number(r.cap) };
 }
 
-async function shouldAutoApprove(orgId, targetUserId) {
+/**
+ * Returns { auto, reason } rather than a bare boolean.
+ *
+ * The reason matters operationally. Nothing populates org_email_domains
+ * automatically, so an org that never visited Org Admin → Email Domains has an
+ * empty table and EVERY add lands in 'pending' — which reads as the feature
+ * being broken rather than as a missing prerequisite. Naming the cause lets the
+ * UI say so instead of silently queueing.
+ */
+async function autoApproveDecision(orgId, targetUserId) {
   const { rows: [u] } = await pool.query(`SELECT email FROM users WHERE id = $1`, [targetUserId]);
   const dom = emailDomain(u?.email);
-  if (!dom) return false;
-  const { rows: [m] } = await pool.query(
-    `SELECT 1 FROM org_email_domains WHERE org_id = $1 AND lower(domain) = $2 LIMIT 1`, [orgId, dom]);
-  if (!m) return false;
+  if (!dom) return { auto: false, reason: 'no_email_domain' };
+
+  const { rows: domains } = await pool.query(
+    `SELECT lower(domain) AS domain FROM org_email_domains WHERE org_id = $1`, [orgId]);
+
+  if (!domains.length) return { auto: false, reason: 'no_org_domains_configured' };
+  if (!domains.some(d => d.domain === dom)) return { auto: false, reason: 'domain_not_registered' };
+
   const seat = await seatAvailable(orgId);
-  return seat.available;
+  if (!seat.available) return { auto: false, reason: 'no_seats_available', seat };
+
+  return { auto: true, reason: 'domain_verified' };
+}
+
+// Kept for callers that only need the boolean.
+async function shouldAutoApprove(orgId, targetUserId) {
+  return (await autoApproveDecision(orgId, targetUserId)).auto;
 }
 
 // ── Reads ────────────────────────────────────────────────────────────────────
@@ -112,8 +160,13 @@ async function requestMember(handoverId, orgId, requesterId, data) {
     `SELECT 1 FROM org_users WHERE org_id = $1 AND user_id = $2 AND is_active = TRUE`, [orgId, userId]);
   if (!ok) throw Object.assign(new Error('That user is not an active member of this org'), { status: 400 });
 
-  const auto = await shouldAutoApprove(orgId, userId);
-  const status = auto ? 'approved' : 'pending';
+  const decision = await autoApproveDecision(orgId, userId);
+  // A project owner or org admin adding someone to their own project is not
+  // making a request — they are staffing it. Approval exists to stop arbitrary
+  // people granting access, which does not describe this caller.
+  const byManager = await canManageProject(handoverId, orgId, requesterId);
+  const auto      = decision.auto || byManager;
+  const status    = auto ? 'approved' : 'pending';
 
   const { rows: [pm] } = await pool.query(
     `INSERT INTO project_members
@@ -127,7 +180,47 @@ async function requestMember(handoverId, orgId, requesterId, data) {
      RETURNING id`,
     [orgId, handoverId, userId, data.roleId || null, data.customRole || null, status, requesterId]);
 
-  return { id: pm.id, status, autoApproved: auto };
+  return {
+    id: pm.id,
+    status,
+    autoApproved: auto,
+    // 'added_by_project_manager' | 'domain_verified' | why it went to pending.
+    // The UI uses this to explain a pending row instead of leaving the adder
+    // wondering why nothing happened.
+    reason: auto ? (decision.auto ? decision.reason : 'added_by_project_manager') : decision.reason,
+  };
+}
+
+/**
+ * A member declines an invitation, or leaves a project they were on.
+ *
+ * Distinct from reviewMember(): that records an admin decision. This records
+ * the member's own, and writes exit_at / exit_reason rather than the review_*
+ * columns so the audit trail does not claim an admin acted.
+ *
+ * The row is kept, not deleted — "Deepa left this project on 3 Aug" is a fact
+ * someone reviewing the project later needs, and a DELETE would erase it.
+ */
+async function selfExit(handoverId, orgId, userId, reason = null) {
+  const { rows: [pm] } = await pool.query(
+    `SELECT id, status FROM project_members
+      WHERE context_type = 'handover' AND context_id = $1 AND org_id = $2 AND user_id = $3`,
+    [handoverId, orgId, userId]);
+
+  if (!pm) throw Object.assign(new Error('You are not on this project'), { status: 404 });
+  if (['declined', 'left'].includes(pm.status)) return { id: pm.id, status: pm.status, alreadyExited: true };
+  if (pm.status === 'rejected') throw Object.assign(new Error('That request was already rejected'), { status: 400 });
+
+  // Turning down an invitation and stepping off a project are different facts.
+  const next = pm.status === 'pending' ? 'declined' : 'left';
+
+  await pool.query(
+    `UPDATE project_members
+        SET status = $2, exited_at = now(), exit_reason = $3
+      WHERE id = $1`,
+    [pm.id, next, reason || null]);
+
+  return { id: pm.id, status: next, alreadyExited: false };
 }
 
 async function reviewMember(handoverId, orgId, adminId, memberId, action, reason) {
@@ -165,4 +258,5 @@ module.exports = {
   listDomains, addDomain, removeDomain,
   seatAvailable, shouldAutoApprove,
   listForHandover, requestMember, reviewMember, removeMember,
+  canManageProject, autoApproveDecision, selfExit,
 };
