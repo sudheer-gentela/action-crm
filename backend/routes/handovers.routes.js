@@ -27,6 +27,7 @@ const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext }    = require('../middleware/orgContext.middleware');
 const handoverService   = require('../services/handover.service');
 
+const projectSettings = require('../services/projectSettings.service');
 router.use(authenticateToken);
 router.use(orgContext);
 
@@ -51,11 +52,20 @@ router.get('/sales', async (req, res) => {
   try {
     const { scope = 'mine', status } = req.query;
 
-    if (!['mine', 'assigned', 'all'].includes(scope)) {
-      return res.status(400).json({ error: { message: 'scope must be mine|assigned|all' } });
+    // 'all' predates the rollup scopes and is kept as an alias for 'org' so any
+    // existing caller keeps working.
+    const requested = scope === 'all' ? 'org' : scope;
+    if (!['mine', 'assigned', 'team', 'org'].includes(requested)) {
+      return res.status(400).json({ error: { message: 'scope must be mine|assigned|team|org' } });
     }
 
-    const handovers = await handoverService.list(req.orgId, req.user.userId, { scope, status });
+    const handovers = await handoverService.list(req.orgId, req.user.userId, {
+      scope: requested,
+      status,
+      // Populated by orgContext on every request; covers solid and dotted lines.
+      subordinateIds: req.subordinateIds || [],
+      userRole:       await projectSettings.resolveRole(req.orgId, req.user.userId),
+    });
     res.json({ handovers });
   } catch (err) {
     console.error('List handovers error:', err);
@@ -411,6 +421,48 @@ router.get('/commitments/:cid/activity', async (req, res) => {
 });
 
 // ── PATCH /admin/module — enable/disable handovers module for org ─────────────
+
+// ── Project access configuration (org admin) ─────────────────────────────────
+// Who can see which projects, and whether restricted tabs follow the reporting
+// line. Read is open to any member so the UI can decide which scope buttons to
+// render; write is org admin only.
+
+router.get('/admin/project-access', async (req, res) => {
+  try {
+    const [cfg, role] = await Promise.all([
+      projectSettings.get(req.orgId),
+      projectSettings.resolveRole(req.orgId, req.user.userId),
+    ]);
+    res.json({
+      settings: cfg,
+      // Everything the client needs to render the scope switcher without a
+      // second round trip.
+      viewer: {
+        role,
+        hasTeam:    (req.subordinateIds || []).length > 0,
+        canUseOrg:  projectSettings.canUseOrgScope(cfg, role),
+        canUseTeam: cfg.team_scope_enabled && (req.subordinateIds || []).length > 0,
+      },
+    });
+  } catch (err) {
+    console.error('Get project access config error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+router.put('/admin/project-access', async (req, res) => {
+  try {
+    const role = await projectSettings.resolveRole(req.orgId, req.user.userId);
+    if (!['owner', 'admin'].includes(role)) {
+      return res.status(403).json({ error: { message: 'Only an org owner or admin can change project access' } });
+    }
+    const settings = await projectSettings.update(req.orgId, req.body || {});
+    res.json({ settings });
+  } catch (err) {
+    console.error('Update project access config error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
 
 router.patch('/admin/module', async (req, res) => {
   try {

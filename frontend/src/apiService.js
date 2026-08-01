@@ -702,6 +702,10 @@ twilio: {
     },
     create:    (dealId)      => api.post('/handovers/sales', { dealId }),
     portfolio: ()            => api.get('/handovers/portfolio'),
+    // Scope config + what the current viewer is allowed to use, in one call so
+    // the scope switcher can render without a second round trip.
+    projectAccess:    ()      => api.get('/handovers/admin/project-access'),
+    setProjectAccess: (patch) => api.put('/handovers/admin/project-access', patch),
     healthRollup: (groupBy = 'account') => api.get(`/reporting/health?groupBy=${groupBy}`),
     dealsHealth:   (groupBy = 'owner') => api.get(`/reporting/deals/health?groupBy=${groupBy}`),
     dealsFunnel:   () => api.get('/reporting/deals/funnel'),

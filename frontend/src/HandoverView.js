@@ -41,7 +41,7 @@ function parseHandoverHash() {
   const parts = hashParts();
   if (parts[0] !== 'handovers') return { scope: 'mine', id: null, sub: 'summary' };
   let i = 1, scope = 'mine';
-  if (parts[i] === 'assigned' || parts[i] === 'dashboard') { scope = parts[i]; i += 1; }
+  if (['assigned', 'team', 'org', 'dashboard'].includes(parts[i])) { scope = parts[i]; i += 1; }
   let id = null;
   const n = parseInt(parts[i], 10);
   if (Number.isInteger(n) && n > 0 && String(n) === parts[i]) { id = n; i += 1; }
@@ -142,7 +142,7 @@ function DueChip({ dueDate, isOverdue, daysOverdue }) {
 
 // ── HandoverRow ───────────────────────────────────────────────────────────────
 
-function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setStatusFilter, statusMeta, onOpen }) {
+function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setStatusFilter, statusMeta, onOpen, showOwner = false }) {
   const [sortBy, setSortBy] = useState('value');
   const [overdueOnly, setOverdueOnly] = useState(false);
 
@@ -167,6 +167,7 @@ function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setS
   const active       = projects.filter(h => !isTerminal(h)).length;
   const overdueCount = projects.filter(h => overdueOf(h) > 0).length;
   const completed    = projects.filter(h => h.status === 'completed').length;
+  const unassigned   = projects.filter(h => h.isUnassigned).length;
 
   const metric = (label, value, color) => (
     <div style={{ flex: 1, minWidth: 130, background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '12px 14px' }}>
@@ -187,6 +188,7 @@ function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setS
         {metric('Active', active, '#0369a1')}
         {metric('With overdue', overdueCount, overdueCount ? '#dc2626' : '#111827')}
         {metric('Completed', completed, '#16a34a')}
+        {showOwner && metric('Unassigned', unassigned, unassigned ? '#d97706' : '#111827')}
       </div>
 
       {/* Filters */}
@@ -217,7 +219,9 @@ function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setS
         <div className="gw-table-scroll" style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden', overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead><tr>
-              <th style={th}>Project</th><th style={th}>Status</th><th style={{ ...th, textAlign: 'right' }}>Value</th>
+              <th style={th}>Project</th>
+              {showOwner && <th style={th}>Service owner</th>}
+              <th style={th}>Status</th><th style={{ ...th, textAlign: 'right' }}>Value</th>
               <th style={th}>Go-live</th><th style={{ ...th, textAlign: 'center' }}>Overdue</th><th style={th}>Commitments</th>
             </tr></thead>
             <tbody>
@@ -232,6 +236,14 @@ function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setS
                       <div style={{ fontWeight: 600, color: '#111827' }}>{h.dealName || `Deal #${h.dealId}`}</div>
                       <div style={{ fontSize: 12, color: '#6b7280' }}>{h.accountName || '—'}</div>
                     </td>
+                    {showOwner && (
+                      <td style={td}>
+                        {h.isUnassigned
+                          ? <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999,
+                                           background: '#fef3c7', color: '#92400e', whiteSpace: 'nowrap' }}>Unassigned</span>
+                          : <span style={{ color: '#374151' }}>{h.serviceOwnerName || '—'}</span>}
+                      </td>
+                    )}
                     <td style={td}><StatusBadge status={h.status} /></td>
                     <td style={{ ...td, textAlign: 'right', fontWeight: 500 }}>{h.contractValue ? fmtCurrency(h.contractValue) : '—'}</td>
                     <td style={{ ...td, color: '#6b7280' }}>{h.goLiveDate ? fmtDate(h.goLiveDate) : '—'}</td>
@@ -3024,11 +3036,19 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
   const [statusFilter, setStatusFilter] = useState('');
   const [users,       setUsers]       = useState([]); // org members for owner pickers
   const [pendingOpenId, setPendingOpenId] = useState(null); // dashboard → open a project
+  // Which scope tabs this viewer may use. Server-resolved: team needs direct or
+  // indirect reports, org needs a role the org has whitelisted. Defaults to
+  // neither, so a failed call degrades to the original two tabs rather than
+  // showing a control that will 403.
+  const [access, setAccess] = useState({ canUseTeam: false, canUseOrg: false });
   // Deep-link (refresh-survival): the handover id + sub-tab from the URL hash.
   const [pendingHashId,  setPendingHashId]  = useState(() => parseHandoverHash().id);
   const [detailSubTab,   setDetailSubTab]   = useState(() => parseHandoverHash().sub);
 
   const loadList = useCallback(async () => {
+    // The dashboard renders from /portfolio and 'dashboard' is not a scope the
+    // list endpoint accepts — calling it would 400.
+    if (tab === 'dashboard') { setHandovers([]); setLoading(false); return; }
     setLoading(true);
     try {
       const res = await apiService.handovers.list(tab);
@@ -3085,14 +3105,22 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
       parts = ['handovers', 'dashboard'];
     } else if (selected) {
       const sub = (detailSubTab && detailSubTab !== 'summary') ? detailSubTab : null;
-      parts = tab === 'assigned'
-        ? ['handovers', 'assigned', selected.id, sub]
-        : ['handovers', selected.id, sub];
+      parts = tab === 'mine'
+        ? ['handovers', selected.id, sub]
+        : ['handovers', tab, selected.id, sub];
     } else {
-      parts = tab === 'assigned' ? ['handovers', 'assigned'] : ['handovers'];
+      parts = tab === 'mine' ? ['handovers'] : ['handovers', tab];
     }
     writeHash(parts);
   }, [tab, selected, detailSubTab, pendingHashId]);
+
+  useEffect(() => {
+    let alive = true;
+    apiService.handovers.projectAccess()
+      .then(r => { if (alive && r.data?.viewer) setAccess(r.data.viewer); })
+      .catch(() => {});   // stay on the default two tabs
+    return () => { alive = false; };
+  }, []);
 
   const handleOpenProject = (id) => { setTab('mine'); setPendingOpenId(id); };
 
@@ -3112,6 +3140,8 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
         {[
           { key: 'mine',      label: '📤 My Projects' },
           { key: 'assigned',  label: '📥 Assigned to Me' },
+          ...(access.canUseTeam ? [{ key: 'team', label: '👥 My Team' }] : []),
+          ...(access.canUseOrg  ? [{ key: 'org',  label: '🏢 All Projects' }] : []),
           { key: 'dashboard', label: '📊 Dashboard' },
         ].map(t => (
           <button key={t.key} onClick={() => setTab(t.key)} style={{
@@ -3172,6 +3202,9 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
               statusFilter={statusFilter} setStatusFilter={setStatusFilter}
               statusMeta={STATUS_META}
               onOpen={(h) => { setSelected(h); setDetailSubTab('summary'); }}
+              /* Who is delivering each project only matters once you are looking
+                 past your own — on 'mine' and 'assigned' the answer is always you. */
+              showOwner={tab === 'team' || tab === 'org'}
             />
           )}
         </div>

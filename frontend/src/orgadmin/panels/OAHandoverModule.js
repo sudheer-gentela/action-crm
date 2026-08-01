@@ -4,6 +4,7 @@
 import React, { useState, useEffect } from 'react';
 import { apiService } from '../../apiService';
 import { ModuleSubTabs, OAModuleGeneral, OAModuleSeedPanel } from '../shared';
+import OAProjectAccess from './OAProjectAccess';
 
 export default function OAHandoverModule() {
   const API    = process.env.REACT_APP_API_URL;
@@ -50,7 +51,7 @@ export default function OAHandoverModule() {
         </div>
       </div>
       <ModuleSubTabs
-        tabs={[['general', 'General'], ['playbook', 'Playbook']]}
+        tabs={[['general', 'General'], ['access', 'Access'], ['playbook', 'Playbook']]}
         active={subTab}
         onChange={setSubTab}
       />
@@ -63,6 +64,7 @@ export default function OAHandoverModule() {
           toggleFn={(enabled) => apiService.handovers.toggleModule(enabled)}
         />
       )}
+      {subTab === 'access' && <OAProjectAccess />}
       {subTab === 'playbook' && (
         <OAModuleSeedPanel
           seedDone={seedDone}

@@ -34,6 +34,8 @@ async function _isOrgAdmin(orgId, userId) {
 }
 const { getDiagnosticRulesConfig }  = require('../routes/orgAdmin.routes');
 const PlayCompletionService        = require('./PlayCompletionService');  // Phase 6
+const projectSettings              = require('./projectSettings.service');   // 2026-08 scope config
+const hierarchyService             = require('./hierarchyService');
 
 // ── Status machine ────────────────────────────────────────────────────────────
 
@@ -350,16 +352,53 @@ async function initiate(dealId, orgId, userId) {
  *   assigned — handovers where assigned_service_owner_id = userId (service view)
  *   all      — all org handovers (admin)
  */
-async function list(orgId, userId, { scope = 'mine', status } = {}) {
+async function list(orgId, userId, { scope = 'mine', status, subordinateIds = [], userRole = null } = {}) {
   const params = [orgId];
   const conditions = ['h.org_id = $1'];
 
+  // 'mine' and 'assigned' keep their original meaning so the existing two tabs
+  // are untouched. 'team' and 'org' are the rollup scopes (2026-08) and read
+  // their owner column from per-org config.
   if (scope === 'mine') {
     params.push(userId);
     conditions.push(`h.created_by = $${params.length}`);
+
   } else if (scope === 'assigned') {
     params.push(userId);
     conditions.push(`h.assigned_service_owner_id = $${params.length}`);
+
+  } else if (scope === 'team') {
+    const cfg = await projectSettings.get(orgId);
+    if (cfg.rollup_basis !== 'people') {
+      const e = new Error(`rollup_basis '${cfg.rollup_basis}' is not implemented yet`);
+      e.status = 501; throw e;
+    }
+    if (!cfg.team_scope_enabled) {
+      const e = new Error('Team scope is disabled for this organization');
+      e.status = 403; throw e;
+    }
+
+    const col     = projectSettings.ownerColumn(cfg);
+    const teamIds = [...new Set([userId, ...(subordinateIds || [])])];
+    params.push(teamIds);
+    const owned = `h.${col} = ANY($${params.length}::int[])`;
+
+    // A project with no service owner belongs to nobody and would otherwise be
+    // invisible to everyone except its creator — precisely the case a head of
+    // projects needs to catch. Surface it here and flag it in the payload.
+    conditions.push(
+      cfg.show_unassigned_in_team_scope
+        ? `(${owned} OR h.assigned_service_owner_id IS NULL)`
+        : owned
+    );
+
+  } else if (scope === 'org') {
+    const cfg = await projectSettings.get(orgId);
+    if (!projectSettings.canUseOrgScope(cfg, userRole)) {
+      const e = new Error('You do not have permission to view all organization projects');
+      e.status = 403; throw e;
+    }
+    // no owner filter — every project in the org
   }
 
   if (status) {
@@ -404,6 +443,9 @@ async function list(orgId, userId, { scope = 'mine', status } = {}) {
 
   return rows.map(r => ({
     ...fmt(r),
+    // Explicit rather than letting the UI infer from a null name: an
+    // unassigned project is an operational state to act on, not missing data.
+    isUnassigned:    r.assigned_service_owner_id == null,
     totalPlays:      r.total_plays,
     completedPlays:  r.completed_plays,
     stakeholderCount: r.stakeholder_count,
@@ -2078,13 +2120,41 @@ async function _serviceOwnerId(handoverId, orgId) {
 async function canManageTabAccess(handoverId, orgId, userId) {
   if (!userId) return false;
   if (await _isOrgAdmin(orgId, userId)) return true;
-  return (await _serviceOwnerId(handoverId, orgId)) === userId;
+  const so = await _serviceOwnerId(handoverId, orgId);
+  if (so === userId) return true;
+  return _isAboveServiceOwner(orgId, userId, so);
+}
+
+/**
+ * True when `userId` sits above `serviceOwnerId` in the org reporting lines and
+ * the org has commercial_follows_hierarchy enabled.
+ *
+ * Deliberately fails closed: any error resolving the hierarchy denies access
+ * rather than granting it. A visibility check is the wrong place to be
+ * optimistic.
+ */
+async function _isAboveServiceOwner(orgId, userId, serviceOwnerId) {
+  if (!serviceOwnerId || serviceOwnerId === userId) return false;
+  try {
+    const cfg = await projectSettings.get(orgId);
+    if (!cfg.commercial_follows_hierarchy) return false;
+    if (cfg.rollup_basis !== 'people') return false;
+    const subs = await hierarchyService.getSubordinates(orgId, userId);
+    return Array.isArray(subs) && subs.includes(serviceOwnerId);
+  } catch (err) {
+    console.warn('[handover] hierarchy tab check failed:', err.message);
+    return false;
+  }
 }
 async function canSeeTab(handoverId, orgId, userId, tabKey) {
   if (!userId) return false;
   if (await _isOrgAdmin(orgId, userId)) return true;
   const [so, dealOwner] = await Promise.all([_serviceOwnerId(handoverId, orgId), _dealOwnerId(handoverId, orgId)]);
   if (so === userId || dealOwner === userId) return true;
+  // Anyone above the service owner in the reporting line, when the org has
+  // opted in. Without this a manager can open their report's project but finds
+  // the commercial tab silently missing, with nothing explaining why.
+  if (await _isAboveServiceOwner(orgId, userId, so)) return true;
   const { rows } = await pool.query(
     `SELECT 1 FROM project_tab_viewers WHERE handover_id = $1 AND tab_key = $2 AND user_id = $3`, [handoverId, tabKey, userId]);
   return rows.length > 0;
