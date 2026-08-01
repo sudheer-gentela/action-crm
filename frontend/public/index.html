@@ -9,6 +9,16 @@
     <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
     <link rel="icon" type="image/svg+xml" href="%PUBLIC_URL%/favicon.svg" />
     <link rel="apple-touch-icon" href="%PUBLIC_URL%/favicon-512x512.png" />
+    <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
+
+    <!-- iOS has no manifest support for these; they must be meta tags.
+         apple-mobile-web-app-capable is what makes an added-to-home-screen
+         launch open without Safari chrome, and iOS 16.4+ will only deliver
+         web push to an app installed that way. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="GoWarm" />
+    <meta name="mobile-web-app-capable" content="yes" />
   </head>
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>

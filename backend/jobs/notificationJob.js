@@ -84,6 +84,20 @@ notificationQueue.process(async (job) => {
     job.progress(100);
     return result;
 
+  } else if (type === 'push_delivery') {
+    // Best-effort web push. The in-app notification row is the source of
+    // truth; this only mirrors it to the user's registered browsers.
+    job.progress(20);
+    const webPush = require('../services/webPush.service');
+    const result = await webPush.sendToUser({
+      orgId, userId, notificationId,
+      title: job.data.title,
+      body:  job.data.body,
+      url:   job.data.url || '/',
+    });
+    job.progress(100);
+    return result;
+
   } else {
     console.warn(`[notifications] Unknown job type: ${type}`);
     return { skipped: true, reason: 'unknown_type' };

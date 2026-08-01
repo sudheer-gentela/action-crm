@@ -240,6 +240,14 @@ async function createNotification(orgId, userId, type, title, body, entityType, 
       { type: 'slack_delivery', orgId, userId, notificationId: notif.id },
       { jobId: `slack-del-${notif.id}` }
     ).catch(err => console.warn('[notifications] slack enqueue failed:', err.message));
+
+    // Web push mirrors the same notification to the user's registered
+    // browsers. Same queue, same best-effort contract as Slack above:
+    // the in-app row is already written and is the source of truth.
+    notificationQueue.add(
+      { type: 'push_delivery', orgId, userId, notificationId: notif.id, title, body },
+      { jobId: `push-del-${notif.id}` }
+    ).catch(err => console.warn('[notifications] push enqueue failed:', err.message));
   } catch (err) {
     console.warn('[notifications] slack enqueue unavailable:', err.message);
   }

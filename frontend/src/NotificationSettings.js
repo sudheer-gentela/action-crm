@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { apiService, slackAPI } from './apiService';
 import './NotificationSettings.css';
+import PushNotificationToggle from './PushNotificationToggle';
 
 const HOURS_OPTIONS = [
   { value: 1,   label: '1 hour' },
@@ -442,6 +443,12 @@ export default function NotificationSettings() {
           </>
         );
       })()}
+
+      {/* On-device push. Independent of the alert toggles above: those
+          decide WHEN GoWarm notifies you, this decides whether it also
+          reaches your phone's lock screen. */}
+      <div className="ns-section-label" style={{ marginTop: 24 }}>On this device</div>
+      <PushNotificationToggle />
 
       {/* ── Who gets notified (only when an alert is on) ──────────────────── */}
       {anyAlert && (<>

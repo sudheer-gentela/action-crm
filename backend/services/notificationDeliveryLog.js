@@ -16,7 +16,7 @@
 
 const { pool: defaultPool } = require('../config/database');
 
-const CHANNELS = new Set(['in_app', 'email', 'slack', 'teams']);
+const CHANNELS = new Set(['in_app', 'email', 'slack', 'teams', 'push']);
 const STATUSES = new Set(['sent', 'failed', 'skipped']);
 
 async function record(db, {

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict JqsesiFDp61LSe3NQiaRsfLQGJA2fcY3JRaZsrx0Q3dpDgOCJ9slsLFi7xh1yxS
+\restrict kdVJ2yeVwvNoavX43CLJN2rR9gDA8TqvO5D6cs7b655P76wheNk33RajPldkcCY
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -4286,7 +4286,7 @@ CREATE TABLE public.notification_deliveries (
     reason text,
     metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT chk_notif_delivery_channel CHECK (((channel)::text = ANY ((ARRAY['in_app'::character varying, 'email'::character varying, 'slack'::character varying, 'teams'::character varying, 'whatsapp'::character varying])::text[]))),
+    CONSTRAINT chk_notif_delivery_channel CHECK (((channel)::text = ANY ((ARRAY['in_app'::character varying, 'email'::character varying, 'slack'::character varying, 'teams'::character varying, 'push'::character varying])::text[]))),
     CONSTRAINT chk_notif_delivery_status CHECK (((status)::text = ANY ((ARRAY['sent'::character varying, 'failed'::character varying, 'skipped'::character varying])::text[])))
 );
 
@@ -6486,6 +6486,44 @@ CREATE SEQUENCE public.prospects_id_seq
 --
 
 ALTER SEQUENCE public.prospects_id_seq OWNED BY public.prospects.id;
+
+
+--
+-- Name: push_subscriptions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.push_subscriptions (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    user_id integer NOT NULL,
+    endpoint text NOT NULL,
+    p256dh text NOT NULL,
+    auth text NOT NULL,
+    user_agent text,
+    failure_count integer DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_used_at timestamp with time zone
+);
+
+
+--
+-- Name: push_subscriptions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.push_subscriptions_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: push_subscriptions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.push_subscriptions_id_seq OWNED BY public.push_subscriptions.id;
 
 
 --
@@ -9385,6 +9423,13 @@ ALTER TABLE ONLY public.prospects ALTER COLUMN id SET DEFAULT nextval('public.pr
 
 
 --
+-- Name: push_subscriptions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.push_subscriptions ALTER COLUMN id SET DEFAULT nextval('public.push_subscriptions_id_seq'::regclass);
+
+
+--
 -- Name: rule_violations id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -10967,6 +11012,14 @@ ALTER TABLE ONLY public.prospects
 
 
 --
+-- Name: push_subscriptions push_subscriptions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.push_subscriptions
+    ADD CONSTRAINT push_subscriptions_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: rule_violations rule_violations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -11268,6 +11321,14 @@ ALTER TABLE ONLY public.deal_health_config
 
 ALTER TABLE ONLY public.org_skill_installs
     ADD CONSTRAINT uq_org_skill_installs UNIQUE (org_id, skill_name);
+
+
+--
+-- Name: push_subscriptions uq_push_subscriptions_endpoint; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.push_subscriptions
+    ADD CONSTRAINT uq_push_subscriptions_endpoint UNIQUE (endpoint);
 
 
 --
@@ -14255,6 +14316,20 @@ CREATE INDEX idx_psa_user ON public.prospecting_sender_accounts USING btree (org
 --
 
 CREATE UNIQUE INDEX idx_psa_user_email_unique ON public.prospecting_sender_accounts USING btree (user_id, email) WHERE (user_id IS NOT NULL);
+
+
+--
+-- Name: idx_push_subs_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_push_subs_org ON public.push_subscriptions USING btree (org_id);
+
+
+--
+-- Name: idx_push_subs_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_push_subs_user ON public.push_subscriptions USING btree (user_id);
 
 
 --
@@ -19547,5 +19622,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict JqsesiFDp61LSe3NQiaRsfLQGJA2fcY3JRaZsrx0Q3dpDgOCJ9slsLFi7xh1yxS
+\unrestrict kdVJ2yeVwvNoavX43CLJN2rR9gDA8TqvO5D6cs7b655P76wheNk33RajPldkcCY
 
