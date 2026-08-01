@@ -83,6 +83,14 @@ function fmt(row) {
     status:                 row.status,
     goLiveDate:             row.go_live_date,
     contractValue:          row.contract_value,
+    // ── internal projects (2026_87) ──
+    projectKind:            row.project_kind || 'customer',
+    budget:                 row.budget ?? null,
+    name:                   row.name ?? null,
+    // One label the UI can rely on. A project with no deal has no deal name to
+    // borrow, so its own name is the only source; customer projects keep
+    // showing the deal name so nothing changes for existing rows.
+    projectName:            row.name || row.deal_name || null,
     commercialTermsSummary: row.commercial_terms_summary,
     playbookId:             row.playbook_id,
     createdBy:              row.created_by,
@@ -358,6 +366,78 @@ async function initiate(dealId, orgId, userId) {
   return { handover: fmt(handover), created: true, warnings };
 }
 
+/**
+ * Create a project that does not come from a won deal.
+ *
+ *   kind 'internal' — run inside the org. No account, no deal; the DB CHECK
+ *                     enforces that. Budget is allowed here and only here.
+ *   kind 'customer' — the documented exception: delivery for an account that
+ *                     never went through the pipeline. Requires an account.
+ *
+ * Deliberately does NOT reuse initiate(): that path is deal-driven, idempotent
+ * on deal_id, copies contract_value from the deal and activates the closed_won
+ * playbook stage. None of that applies here, and bending it to fit would make
+ * both paths harder to reason about.
+ *
+ * The creator joins as an approved member for the same reason as in initiate() —
+ * otherwise they are attached by created_by alone and lose the project as soon
+ * as the "From my deals" tab is hidden.
+ */
+async function createProject(orgId, userId, data = {}) {
+  const kind = data.kind === 'internal' ? 'internal' : 'customer';
+  const name = (data.name || '').trim();
+
+  if (!name) {
+    throw Object.assign(new Error('A project name is required'), { status: 400 });
+  }
+
+  let accountId = null;
+  if (kind === 'customer') {
+    accountId = parseInt(data.accountId, 10);
+    if (!accountId) {
+      throw Object.assign(new Error('A customer project needs an account'), { status: 400 });
+    }
+    const { rows } = await pool.query(
+      'SELECT 1 FROM accounts WHERE id = $1 AND org_id = $2', [accountId, orgId]);
+    if (!rows.length) {
+      throw Object.assign(new Error('Account not found'), { status: 404 });
+    }
+  }
+
+  // Budget is internal-only; silently dropping it for a customer project is
+  // kinder than a CHECK violation the caller cannot interpret.
+  const budget = kind === 'internal' && data.budget != null && data.budget !== ''
+    ? data.budget
+    : null;
+
+  const serviceOwnerId = data.assignedServiceOwnerId
+    ? parseInt(data.assignedServiceOwnerId, 10)
+    : null;
+
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows } = await client.query(
+      `INSERT INTO sales_handovers
+         (org_id, project_kind, name, account_id, deal_id, budget,
+          assigned_service_owner_id, go_live_date, status, created_by)
+       VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, 'draft', $8)
+       RETURNING *`,
+      [orgId, kind, name, accountId, budget, serviceOwnerId, data.goLiveDate || null, userId]
+    );
+    const h = rows[0];
+
+    await client.query(
+      `INSERT INTO project_members
+         (org_id, context_type, context_id, user_id, custom_role, status,
+          requested_by, reviewed_by, reviewed_at)
+       VALUES ($1, 'handover', $2, $3, 'Project creator', 'approved', $3, $3, now())
+       ON CONFLICT (context_type, context_id, user_id) DO NOTHING`,
+      [orgId, h.id, userId]
+    );
+
+    return fmt(h);
+  });
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // LIST
 // ═══════════════════════════════════════════════════════════════════════════
@@ -370,7 +450,7 @@ async function initiate(dealId, orgId, userId) {
  *   assigned — handovers where assigned_service_owner_id = userId (service view)
  *   all      — all org handovers (admin)
  */
-async function list(orgId, userId, { scope = 'mine', status, subordinateIds = [], userRole = null } = {}) {
+async function list(orgId, userId, { scope = 'mine', status, kind = null, subordinateIds = [], userRole = null } = {}) {
   const params = [orgId];
   const conditions = ['h.org_id = $1'];
 
@@ -450,6 +530,13 @@ async function list(orgId, userId, { scope = 'mine', status, subordinateIds = []
     conditions.push(`h.status = $${params.length}`);
   }
 
+  // 'customer' | 'internal'. Omitted means both — the mixed view, where the UI
+  // shows revenue and budget as separate cards rather than one merged total.
+  if (kind === 'customer' || kind === 'internal') {
+    params.push(kind);
+    conditions.push(`h.project_kind = $${params.length}`);
+  }
+
   const { rows } = await pool.query(
     `SELECT
        h.*,
@@ -470,8 +557,8 @@ async function list(orgId, userId, { scope = 'mine', status, subordinateIds = []
        r.days_to_go_live                         AS r_days_to_go_live,
        r.is_closeable                            AS r_is_closeable
      FROM sales_handovers h
-     JOIN deals    d      ON d.id  = h.deal_id
-     JOIN accounts a      ON a.id  = h.account_id
+     LEFT JOIN deals    d ON d.id  = h.deal_id
+     LEFT JOIN accounts a ON a.id  = h.account_id
      LEFT JOIN users u_so ON u_so.id = h.assigned_service_owner_id
      LEFT JOIN users u_cb ON u_cb.id = h.created_by
      LEFT JOIN sales_handover_plays shp ON shp.handover_id = h.id
@@ -520,8 +607,8 @@ async function getById(handoverId, orgId, userId = null) {
        pb.name                                   AS playbook_name,
        pb.gate_enforcement                       AS playbook_gate_enforcement
      FROM sales_handovers h
-     JOIN deals    d      ON d.id  = h.deal_id
-     JOIN accounts a      ON a.id  = h.account_id
+     LEFT JOIN deals    d ON d.id  = h.deal_id
+     LEFT JOIN accounts a ON a.id  = h.account_id
      LEFT JOIN users u_so ON u_so.id = h.assigned_service_owner_id
      LEFT JOIN users u_cb ON u_cb.id = h.created_by
      LEFT JOIN playbooks pb ON pb.id = h.playbook_id
@@ -1735,8 +1822,8 @@ async function getPortfolio(orgId) {
               WHERE c.handover_id = h.id AND c.status IN ('open','in_progress')
               ORDER BY c.due_date NULLS LAST, c.id LIMIT 1) AS next_action
        FROM sales_handovers h
-       JOIN deals    d ON d.id = h.deal_id
-       JOIN accounts a ON a.id = h.account_id
+       LEFT JOIN deals    d ON d.id = h.deal_id
+       LEFT JOIN accounts a ON a.id = h.account_id
        LEFT JOIN handover_deliverable_rollup r ON r.handover_id = h.id
       WHERE h.org_id = $1 AND h.status <> 'cancelled'
       ORDER BY d.close_date NULLS LAST, h.id`,
@@ -1975,7 +2062,7 @@ async function getPersonDashboard(userId, orgId) {
             a.name AS account, h.id AS handover_id
        FROM sales_handover_commitments c
        JOIN sales_handovers h ON h.id = c.handover_id
-       JOIN accounts a ON a.id = h.account_id
+       LEFT JOIN accounts a ON a.id = h.account_id
       WHERE c.org_id = $2 AND c.owner_user_id = $1
       ORDER BY (c.status IN ('open','in_progress')) DESC, c.due_date NULLS LAST, c.id`,
     [userId, orgId]
@@ -2156,6 +2243,11 @@ async function _dealOwnerId(handoverId, orgId) {
     `SELECT d.owner_id FROM sales_handovers h JOIN deals d ON d.id = h.deal_id WHERE h.id = $1 AND h.org_id = $2`, [handoverId, orgId]);
   return rows[0]?.owner_id ?? null;
 }
+async function _isInternal(handoverId, orgId) {
+  const { rows } = await pool.query(
+    `SELECT project_kind FROM sales_handovers WHERE id = $1 AND org_id = $2`, [handoverId, orgId]);
+  return rows[0]?.project_kind === 'internal';
+}
 async function _serviceOwnerId(handoverId, orgId) {
   const { rows } = await pool.query(
     `SELECT assigned_service_owner_id FROM sales_handovers WHERE id = $1 AND org_id = $2`, [handoverId, orgId]);
@@ -2192,6 +2284,9 @@ async function _isAboveServiceOwner(orgId, userId, serviceOwnerId) {
 }
 async function canSeeTab(handoverId, orgId, userId, tabKey) {
   if (!userId) return false;
+  // An internal project has no contract and no deal owner, so the commercial
+  // tab has nothing to show. Hide it rather than rendering an empty panel.
+  if (tabKey === 'commercial' && await _isInternal(handoverId, orgId)) return false;
   if (await _isOrgAdmin(orgId, userId)) return true;
   const [so, dealOwner] = await Promise.all([_serviceOwnerId(handoverId, orgId), _dealOwnerId(handoverId, orgId)]);
   if (so === userId || dealOwner === userId) return true;
@@ -2239,6 +2334,7 @@ module.exports = {
   createAction,
   completeAction,
   initiate,
+  createProject,           // standalone / internal projects (2026_87)
   list,
   getTeamMemberProjects,  // person drill-down
   getPersonDashboard,     // person side-panel (individual dashboard)

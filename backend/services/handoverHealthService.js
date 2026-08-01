@@ -93,13 +93,14 @@ function computeHealth(s, rules = STANDARD_RULES) {
 async function listWithHealth(orgId, { includeInactive = false } = {}) {
   const { rows } = await pool.query(
     `SELECT h.id, h.status, h.account_id, h.assigned_service_owner_id AS service_owner_id,
-            d.name AS project_name, a.name AS account_name,
+            COALESCE(h.name, d.name) AS project_name, a.name AS account_name,
+            h.project_kind,
             (so.first_name || ' ' || so.last_name) AS service_owner_name,
             r.plays_overdue, r.gates_open, r.commitments_total, r.commitments_closed,
             r.commitments_overdue, r.days_to_go_live
        FROM sales_handovers h
-       JOIN deals d ON d.id = h.deal_id
-       JOIN accounts a ON a.id = h.account_id
+       LEFT JOIN deals d ON d.id = h.deal_id
+       LEFT JOIN accounts a ON a.id = h.account_id
        LEFT JOIN users so ON so.id = h.assigned_service_owner_id
        LEFT JOIN handover_deliverable_rollup r ON r.handover_id = h.id
       WHERE h.org_id = $1`, [orgId]);
@@ -112,6 +113,7 @@ async function listWithHealth(orgId, { includeInactive = false } = {}) {
       name: row.project_name || row.account_name || `Project #${row.id}`,
       status: row.status,
       accountId: row.account_id, accountName: row.account_name,
+      projectKind: row.project_kind || 'customer',
       serviceOwnerId: row.service_owner_id, serviceOwnerName: row.service_owner_name || 'Unassigned',
       health: health.status, active: health.active, reasons: health.reasons,
     };

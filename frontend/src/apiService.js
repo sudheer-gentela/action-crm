@@ -696,10 +696,17 @@ twilio: {
   // Handovers — Sales → Implementation  (Phase 3)
   // ══════════════════════════════════════════════════════════
   handovers: {
-    list:      (scope = 'mine', status) => {
-      const qs = new URLSearchParams({ scope, ...(status && { status }) }).toString();
+    list:      (scope = 'mine', status, kind) => {
+      const qs = new URLSearchParams({
+        scope,
+        ...(status && { status }),
+        ...(kind && { kind }),        // 'customer' | 'internal'; omit for both
+      }).toString();
       return api.get(`/handovers/sales?${qs}`);
     },
+    // Projects that don't come from a won deal: internal, or the customer
+    // exception. Deal-driven creation stays on create().
+    createProject: (data) => api.post('/handovers/projects', data),
     create:    (dealId)      => api.post('/handovers/sales', { dealId }),
     portfolio: ()            => api.get('/handovers/portfolio'),
     // Scope config + what the current viewer is allowed to use, in one call so

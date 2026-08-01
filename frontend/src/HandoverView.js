@@ -159,7 +159,7 @@ function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setS
     if (sortBy === 'value')  return (Number(b.contractValue) || 0) - (Number(a.contractValue) || 0);
     if (sortBy === 'golive') return new Date(a.goLiveDate || '2999-01-01') - new Date(b.goLiveDate || '2999-01-01');
     if (sortBy === 'overdue') return overdueOf(b) - overdueOf(a);
-    return (a.dealName || '').localeCompare(b.dealName || '');
+    return (a.projectName || a.dealName || '').localeCompare(b.projectName || b.dealName || '');
   });
 
   // contract_value is numeric(15,2). node-postgres returns numeric as a STRING
@@ -169,6 +169,12 @@ function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setS
   // Number() is safe here: numeric(15,2) tops out well inside float64's exact
   // integer range.
   const totalValue   = projects.reduce((s, h) => s + (Number(h.contractValue) || 0), 0);
+  // Revenue is money in, budget is money out. Adding them produces a number
+  // that looks plausible and means nothing, so they stay as separate cards and
+  // each only appears when the list actually contains that kind of project.
+  const totalBudget  = projects.reduce((s, h) => s + (Number(h.budget) || 0), 0);
+  const hasCustomer  = projects.some(h => (h.projectKind || 'customer') === 'customer');
+  const hasInternal  = projects.some(h => h.projectKind === 'internal');
   const active       = projects.filter(h => !isTerminal(h)).length;
   const overdueCount = projects.filter(h => overdueOf(h) > 0).length;
   const completed    = projects.filter(h => h.status === 'completed').length;
@@ -189,7 +195,8 @@ function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setS
       {/* Metrics */}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
         {metric('Projects', projects.length)}
-        {metric('Total value', fmtCurrency(totalValue))}
+        {hasCustomer && metric('Revenue', fmtCurrency(totalValue))}
+        {hasInternal && metric('Budget', fmtCurrency(totalBudget), '#7c3aed')}
         {metric('Active', active, '#0369a1')}
         {metric('With overdue', overdueCount, overdueCount ? '#dc2626' : '#111827')}
         {metric('Completed', completed, '#16a34a')}
@@ -238,8 +245,17 @@ function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setS
                     onMouseEnter={e => { e.currentTarget.style.background = '#f9fafb'; }}
                     onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
                     <td style={td}>
-                      <div style={{ fontWeight: 600, color: '#111827' }}>{h.dealName || `Deal #${h.dealId}`}</div>
-                      <div style={{ fontSize: 12, color: '#6b7280' }}>{h.accountName || '—'}</div>
+                      <div style={{ fontWeight: 600, color: '#111827' }}>
+                        {h.projectName || h.dealName || h.name || `Project #${h.id}`}
+                        {h.projectKind === 'internal' && (
+                          <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, padding: '2px 6px',
+                                         borderRadius: 999, background: '#ede9fe', color: '#5b21b6',
+                                         textTransform: 'uppercase', letterSpacing: 0.3 }}>Internal</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#6b7280' }}>
+                        {h.projectKind === 'internal' ? 'Internal project' : (h.accountName || '—')}
+                      </div>
                     </td>
                     {showOwner && (
                       <td style={td}>
@@ -1337,7 +1353,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
         <div className="gw-wrap-mobile" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
           <div style={{ minWidth: 0 }}>
             <h3 style={{ margin: '0 0 4px', fontSize: 16, color: '#111827', overflowWrap: 'anywhere' }}>
-              {detail.dealName || `Deal #${detail.dealId}`}
+              {detail.projectName || detail.dealName || detail.name || `Project #${detail.id}`}
             </h3>
             <div style={{ fontSize: 13, color: '#6b7280' }}>{detail.accountName}</div>
           </div>
@@ -3030,6 +3046,143 @@ function ServiceNotes({ handoverId, initialNotes, onSaved }) {
   );
 }
 
+// ── CreateProjectModal ────────────────────────────────────────────────────────
+// Projects that don't come from a won deal. Internal ones carry no account —
+// putting your own company in Accounts to satisfy a foreign key would pollute
+// pipeline, prospecting and every account-grouped report.
+function CreateProjectModal({ users = [], onClose, onCreated }) {
+  const [kind, setKind]       = useState('internal');
+  const [name, setName]       = useState('');
+  const [budget, setBudget]   = useState('');
+  const [goLive, setGoLive]   = useState('');
+  const [ownerId, setOwnerId] = useState('');
+  const [accountId, setAccountId] = useState('');
+  const [accounts, setAccounts]   = useState([]);
+  const [saving, setSaving]   = useState(false);
+  const [err, setErr]         = useState('');
+
+  useEffect(() => {
+    if (kind !== 'customer') return undefined;
+    let alive = true;
+    apiService.accounts.getAll('org')
+      .then(r => { if (alive) setAccounts(r.data?.accounts || []); })
+      .catch(() => { if (alive) setAccounts([]); });
+    return () => { alive = false; };
+  }, [kind]);
+
+  const submit = async () => {
+    setErr('');
+    if (!name.trim())                        return setErr('Give the project a name.');
+    if (kind === 'customer' && !accountId)   return setErr('A customer project needs an account.');
+    setSaving(true);
+    try {
+      await apiService.handovers.createProject({
+        kind,
+        name: name.trim(),
+        ...(kind === 'customer' ? { accountId } : {}),
+        ...(kind === 'internal' && budget ? { budget } : {}),
+        ...(goLive  ? { goLiveDate: goLive } : {}),
+        ...(ownerId ? { assignedServiceOwnerId: ownerId } : {}),
+      });
+      onCreated();
+    } catch (e) {
+      setErr(e?.response?.data?.error?.message || 'Could not create the project.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const label = { fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 };
+  const input = { width: '100%', fontSize: 14, padding: '9px 10px', borderRadius: 8,
+                  border: '1px solid #d1d5db', minHeight: 44, boxSizing: 'border-box' };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 700,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <div style={{ background: '#fff', borderRadius: 12, width: 'min(520px, 94vw)',
+                    maxHeight: '90vh', overflowY: 'auto', padding: 22 }}>
+        <h3 style={{ margin: '0 0 4px', fontSize: 17, color: '#111827' }}>New project</h3>
+        <p style={{ margin: '0 0 18px', fontSize: 12, color: '#6b7280', lineHeight: 1.55 }}>
+          For work that didn't come from a won deal. Projects created when a deal closes
+          appear here automatically.
+        </p>
+
+        <div style={{ marginBottom: 14 }}>
+          <span style={label}>Type</span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {[['internal', 'Internal'], ['customer', 'Customer']].map(([k, l]) => (
+              <button key={k} type="button" onClick={() => setKind(k)} style={{
+                flex: 1, minHeight: 44, borderRadius: 8, fontSize: 13, cursor: 'pointer',
+                border: `1px solid ${kind === k ? '#0369a1' : '#d1d5db'}`,
+                background: kind === k ? '#e0f2fe' : '#fff',
+                color: kind === k ? '#0369a1' : '#4b5563',
+                fontWeight: kind === k ? 600 : 400,
+              }}>{l}</button>
+            ))}
+          </div>
+          <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 6, lineHeight: 1.5 }}>
+            {kind === 'internal'
+              ? 'Run inside your own organisation — no customer, no account.'
+              : 'Delivery for an account that never went through the pipeline.'}
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <label style={label}>Project name</label>
+          <input style={input} value={name} onChange={e => setName(e.target.value)}
+                 placeholder={kind === 'internal' ? 'e.g. ISO 27001 certification' : 'e.g. Goodwill remediation'} />
+        </div>
+
+        {kind === 'customer' && (
+          <div style={{ marginBottom: 14 }}>
+            <label style={label}>Account</label>
+            <select style={input} value={accountId} onChange={e => setAccountId(e.target.value)}>
+              <option value="">Select an account…</option>
+              {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          </div>
+        )}
+
+        {kind === 'internal' && (
+          <div style={{ marginBottom: 14 }}>
+            <label style={label}>Budget <span style={{ fontWeight: 400, color: '#9ca3af' }}>(optional)</span></label>
+            <input style={input} type="number" min="0" value={budget}
+                   onChange={e => setBudget(e.target.value)} placeholder="0" />
+          </div>
+        )}
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12, marginBottom: 14 }}>
+          <div>
+            <label style={label}>Target date <span style={{ fontWeight: 400, color: '#9ca3af' }}>(optional)</span></label>
+            <input style={input} type="date" value={goLive} onChange={e => setGoLive(e.target.value)} />
+          </div>
+          <div>
+            <label style={label}>Service owner <span style={{ fontWeight: 400, color: '#9ca3af' }}>(optional)</span></label>
+            <select style={input} value={ownerId} onChange={e => setOwnerId(e.target.value)}>
+              <option value="">Unassigned</option>
+              {users.map(u => <option key={u.id} value={u.id}>{u.name || u.email}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {err && <div style={{ fontSize: 12, color: '#991b1b', marginBottom: 12 }}>{err}</div>}
+
+        <div className="gw-wrap-mobile" style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button onClick={onClose} disabled={saving} style={{
+            minHeight: 44, padding: '9px 18px', borderRadius: 8, fontSize: 13,
+            border: '1px solid #d1d5db', background: '#fff', color: '#4b5563', cursor: 'pointer',
+          }}>Cancel</button>
+          <button onClick={submit} disabled={saving} style={{
+            minHeight: 44, padding: '9px 18px', borderRadius: 8, fontSize: 13, fontWeight: 600,
+            border: '1px solid #0369a1', background: '#0369a1', color: '#fff',
+            cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? 0.6 : 1,
+          }}>{saving ? 'Creating…' : 'Create project'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── HandoverView ──────────────────────────────────────────────────────────────
 
 export default function HandoverView({ openHandoverId, onHandoverOpened }) {
@@ -3049,6 +3202,10 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
   // Which people's projects to show within My Work. Independent of `tab`,
   // which selects the view.
   const [scope, setScope] = useState('mine');
+  // '' = both kinds. Independent of scope: kind is what a project IS, scope is
+  // whose it is.
+  const [kindFilter, setKindFilter] = useState('');
+  const [showCreate, setShowCreate] = useState(false);
   // Off by default: for most people "the deals I closed" is not a useful lens,
   // and they stay attached to those projects through project_members instead.
   const [showFromMyDeals, setShowFromMyDeals] = useState(false);
@@ -3065,12 +3222,12 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
       // 'mine' on the From My Deals tab means created_by; 'mine' inside My Work
       // means "projects I have a role on", which the API calls 'assigned'.
       const apiScope = tab === 'mine' ? 'mine' : (scope === 'mine' ? 'assigned' : scope);
-      const res = await apiService.handovers.list(apiScope);
+      const res = await apiService.handovers.list(apiScope, undefined, kindFilter || undefined);
       setHandovers(res.data.handovers || []);
     } catch {
       setHandovers([]);
     } finally { setLoading(false); }
-  }, [tab, scope]);
+  }, [tab, scope, kindFilter]);
 
   useEffect(() => { loadList(); setSelected(null); }, [loadList]);
 
@@ -3147,7 +3304,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
 
   const filtered = handovers.filter(h => {
     const matchSearch = !searchTerm ||
-      (h.dealName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (h.projectName || h.dealName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
       (h.accountName || '').toLowerCase().includes(searchTerm.toLowerCase());
     const matchStatus = !statusFilter || h.status === statusFilter;
     return matchSearch && matchStatus;
@@ -3197,6 +3354,40 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
             }}>{sc.label}</button>
           ))}
         </div>
+      )}
+
+      {tab !== 'dashboard' && (
+        <div className="gw-scroll-x" style={{
+          display: 'flex', gap: 6, alignItems: 'center',
+          padding: '10px 20px 0', background: '#fff', flexShrink: 0,
+        }}>
+          {[
+            { key: '',         label: 'All projects' },
+            { key: 'customer', label: 'Customer' },
+            { key: 'internal', label: 'Internal' },
+          ].map(k => (
+            <button key={k.key} onClick={() => setKindFilter(k.key)} style={{
+              padding: '6px 14px', borderRadius: 8, fontSize: 13, cursor: 'pointer',
+              border: `1px solid ${kindFilter === k.key ? '#7c3aed' : '#e2e4ea'}`,
+              background: kindFilter === k.key ? '#ede9fe' : '#fff',
+              color: kindFilter === k.key ? '#5b21b6' : '#4b5563',
+              fontWeight: kindFilter === k.key ? 600 : 400,
+            }}>{k.label}</button>
+          ))}
+          <button onClick={() => setShowCreate(true)} style={{
+            marginLeft: 'auto', padding: '6px 14px', borderRadius: 8, fontSize: 13,
+            border: '1px solid #0369a1', background: '#0369a1', color: '#fff',
+            fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap',
+          }}>+ New project</button>
+        </div>
+      )}
+
+      {showCreate && (
+        <CreateProjectModal
+          users={users}
+          onClose={() => setShowCreate(false)}
+          onCreated={() => { setShowCreate(false); loadList(); }}
+        />
       )}
 
       {tab === 'dashboard' ? (

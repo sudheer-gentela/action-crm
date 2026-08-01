@@ -50,7 +50,7 @@ router.get('/assignable-users', async (req, res) => {
 
 router.get('/sales', async (req, res) => {
   try {
-    const { scope = 'mine', status } = req.query;
+    const { scope = 'mine', status, kind } = req.query;
 
     // 'all' predates the rollup scopes and is kept as an alias for 'org' so any
     // existing caller keeps working.
@@ -62,6 +62,7 @@ router.get('/sales', async (req, res) => {
     const handovers = await handoverService.list(req.orgId, req.user.userId, {
       scope: requested,
       status,
+      kind,
       // Populated by orgContext on every request; covers solid and dotted lines.
       subordinateIds: req.subordinateIds || [],
       userRole:       await projectSettings.resolveRole(req.orgId, req.user.userId),
@@ -85,6 +86,20 @@ router.get('/portfolio', async (req, res) => {
 });
 
 // ── POST /sales — manual creation (edge case; normally auto-triggered) ────────
+
+// ── POST /projects — create without a won deal ───────────────────────────────
+// Internal projects (no account, no deal) and the documented exception of a
+// customer project with an account but no deal. Deal-driven creation stays on
+// POST /sales, which is idempotent per deal.
+router.post('/projects', async (req, res) => {
+  try {
+    const project = await handoverService.createProject(req.orgId, req.user.userId, req.body || {});
+    res.status(201).json({ project });
+  } catch (err) {
+    console.error('Create project error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
 
 router.post('/sales', async (req, res) => {
   try {
