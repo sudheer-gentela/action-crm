@@ -151,13 +151,19 @@ function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setS
 
   let rows = overdueOnly ? projects.filter(h => overdueOf(h) > 0) : projects;
   rows = [...rows].sort((a, b) => {
-    if (sortBy === 'value')  return (b.contractValue || 0) - (a.contractValue || 0);
+    if (sortBy === 'value')  return (Number(b.contractValue) || 0) - (Number(a.contractValue) || 0);
     if (sortBy === 'golive') return new Date(a.goLiveDate || '2999-01-01') - new Date(b.goLiveDate || '2999-01-01');
     if (sortBy === 'overdue') return overdueOf(b) - overdueOf(a);
     return (a.dealName || '').localeCompare(b.dealName || '');
   });
 
-  const totalValue   = projects.reduce((s, h) => s + (h.contractValue || 0), 0);
+  // contract_value is numeric(15,2). node-postgres returns numeric as a STRING
+  // to avoid float precision loss, so `s + h.contractValue` concatenates rather
+  // than adds and the formatted total comes out as $NaN. Per-row display is
+  // unaffected because Intl.format coerces a numeric string on its own.
+  // Number() is safe here: numeric(15,2) tops out well inside float64's exact
+  // integer range.
+  const totalValue   = projects.reduce((s, h) => s + (Number(h.contractValue) || 0), 0);
   const active       = projects.filter(h => !isTerminal(h)).length;
   const overdueCount = projects.filter(h => overdueOf(h) > 0).length;
   const completed    = projects.filter(h => h.status === 'completed').length;
