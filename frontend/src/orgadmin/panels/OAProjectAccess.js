@@ -140,6 +140,14 @@ export default function OAProjectAccess() {
       </Row>
 
       <Row
+        title="Show the 'From my deals' tab"
+        desc="Lists projects by who closed the originating deal. Off by default — it answers 'which deals did I hand over', not 'what am I working on'. Whoever closes a deal is added to the project team automatically, so they keep access to it either way."
+      >
+        <Switch on={cfg.show_from_my_deals_tab} disabled={readOnly || saving}
+                onChange={v => save({ show_from_my_deals_tab: v })} />
+      </Row>
+
+      <Row
         title="Commercial tab follows the reporting line"
         desc="Lets anyone above the service owner see and grant the Commercial tab without a per-project grant. Turn it off if contract values should stay strictly need-to-know — org admins, the service owner, the deal owner and named viewers keep access either way."
       >

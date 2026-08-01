@@ -300,6 +300,24 @@ async function initiate(dealId, orgId, userId) {
       );
     }
 
+    // The person who closed the deal joins the project team as an approved
+    // member. Without this they are attached only via created_by, so any view
+    // built on membership loses them the moment the "From my deals" tab is
+    // hidden — and that tab is off by default.
+    //
+    // Inserted unconditionally approved rather than through
+    // projectMembers.addMember(): that path consults the org's auto-approve
+    // config and can land on 'pending', which would leave the closer waiting
+    // for someone to approve them onto their own handover.
+    await client.query(
+      `INSERT INTO project_members
+         (org_id, context_type, context_id, user_id, custom_role, status,
+          requested_by, reviewed_by, reviewed_at)
+       VALUES ($1, 'handover', $2, $3, 'Sales owner', 'approved', $3, $3, now())
+       ON CONFLICT (context_type, context_id, user_id) DO NOTHING`,
+      [orgId, h.id, userId]
+    );
+
     return h;
   });
 
@@ -364,8 +382,22 @@ async function list(orgId, userId, { scope = 'mine', status, subordinateIds = []
     conditions.push(`h.created_by = $${params.length}`);
 
   } else if (scope === 'assigned') {
+    // "My work" — every project I have a role on, not only the ones I own.
+    // Membership is via project_members, which is the internal team (external
+    // people live in project_contacts). Only 'approved' counts: a 'pending'
+    // row is an unreviewed access request, and honouring it here would let
+    // anyone see a project just by asking.
     params.push(userId);
-    conditions.push(`h.assigned_service_owner_id = $${params.length}`);
+    const me = `$${params.length}`;
+    conditions.push(`(
+         h.assigned_service_owner_id = ${me}
+      OR EXISTS (SELECT 1 FROM project_members pm
+                  WHERE pm.context_type = 'handover'
+                    AND pm.context_id   = h.id
+                    AND pm.org_id       = h.org_id
+                    AND pm.user_id      = ${me}
+                    AND pm.status       = 'approved')
+    )`);
 
   } else if (scope === 'team') {
     const cfg = await projectSettings.get(orgId);
@@ -381,7 +413,19 @@ async function list(orgId, userId, { scope = 'mine', status, subordinateIds = []
     const col     = projectSettings.ownerColumn(cfg);
     const teamIds = [...new Set([userId, ...(subordinateIds || [])])];
     params.push(teamIds);
-    const owned = `h.${col} = ANY($${params.length}::int[])`;
+    const ids = `$${params.length}::int[]`;
+    // Mirrors 'assigned': ownership OR approved membership. Without the second
+    // half a manager would see strictly fewer projects than their own reports
+    // can see, which reads as data missing rather than as a scope rule.
+    const owned = `(
+         h.${col} = ANY(${ids})
+      OR EXISTS (SELECT 1 FROM project_members pm
+                  WHERE pm.context_type = 'handover'
+                    AND pm.context_id   = h.id
+                    AND pm.org_id       = h.org_id
+                    AND pm.user_id      = ANY(${ids})
+                    AND pm.status       = 'approved')
+    )`;
 
     // A project with no service owner belongs to nobody and would otherwise be
     // invisible to everyone except its creator — precisely the case a head of
@@ -1820,7 +1864,7 @@ async function getCommunications(handoverId, orgId) {
   const [memberRows, stakeRows, orgUserRows] = await Promise.all([
     pool.query(`SELECT pm.user_id, u.email, u.first_name || ' ' || u.last_name AS name
                   FROM project_members pm JOIN users u ON u.id = pm.user_id
-                 WHERE pm.context_type = 'handover' AND pm.context_id = $1 AND pm.org_id = $2 AND pm.status = 'active'`, [handoverId, orgId]),
+                 WHERE pm.context_type = 'handover' AND pm.context_id = $1 AND pm.org_id = $2 AND pm.status = 'approved'`, [handoverId, orgId]),
     pool.query(`SELECT pc.contact_id, c.email, c.first_name || ' ' || c.last_name AS name
                   FROM project_contacts pc JOIN contacts c ON c.id = pc.contact_id
                  WHERE pc.context_type = 'handover' AND pc.context_id = $1 AND pc.org_id = $2`, [handoverId, orgId]),

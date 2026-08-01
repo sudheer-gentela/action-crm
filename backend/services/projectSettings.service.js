@@ -54,6 +54,12 @@ const SYSTEM_DEFAULTS = {
   // reporting line. That is a legitimate policy, which is why this is a switch
   // rather than a hard-coded rule.
   commercial_follows_hierarchy: true,
+
+  // The "From my deals" tab lists projects by created_by — the deals this
+  // person closed. Off by default because for most people it is not a useful
+  // lens, and the closer now stays attached through project_members anyway, so
+  // hiding it no longer costs them visibility.
+  show_from_my_deals_tab: false,
 };
 
 const VALID_ROLES  = ['owner', 'admin', 'member', 'viewer'];
@@ -118,7 +124,8 @@ async function update(orgId, patch = {}) {
     next.org_scope_roles = [...new Set(['owner', ...patch.org_scope_roles])];
   }
 
-  for (const k of ['team_scope_enabled', 'show_unassigned_in_team_scope', 'commercial_follows_hierarchy']) {
+  for (const k of ['team_scope_enabled', 'show_unassigned_in_team_scope',
+                   'commercial_follows_hierarchy', 'show_from_my_deals_tab']) {
     if (patch[k] !== undefined) {
       if (typeof patch[k] !== 'boolean') {
         const e = new Error(`${k} must be a boolean`); e.status = 400; throw e;

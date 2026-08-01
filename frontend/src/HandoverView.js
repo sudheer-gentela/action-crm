@@ -41,7 +41,12 @@ function parseHandoverHash() {
   const parts = hashParts();
   if (parts[0] !== 'handovers') return { scope: 'mine', id: null, sub: 'summary' };
   let i = 1, scope = 'mine';
-  if (['assigned', 'team', 'org', 'dashboard'].includes(parts[i])) { scope = parts[i]; i += 1; }
+  // 'team' and 'org' were briefly tabs; they are scopes now. Map old links onto
+  // My Work rather than leaving `tab` on a value that renders no button.
+  if (['assigned', 'team', 'org', 'dashboard'].includes(parts[i])) {
+    scope = (parts[i] === 'team' || parts[i] === 'org') ? 'assigned' : parts[i];
+    i += 1;
+  }
   let id = null;
   const n = parseInt(parts[i], 10);
   if (Number.isInteger(n) && n > 0 && String(n) === parts[i]) { id = n; i += 1; }
@@ -3041,6 +3046,12 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
   // neither, so a failed call degrades to the original two tabs rather than
   // showing a control that will 403.
   const [access, setAccess] = useState({ canUseTeam: false, canUseOrg: false });
+  // Which people's projects to show within My Work. Independent of `tab`,
+  // which selects the view.
+  const [scope, setScope] = useState('mine');
+  // Off by default: for most people "the deals I closed" is not a useful lens,
+  // and they stay attached to those projects through project_members instead.
+  const [showFromMyDeals, setShowFromMyDeals] = useState(false);
   // Deep-link (refresh-survival): the handover id + sub-tab from the URL hash.
   const [pendingHashId,  setPendingHashId]  = useState(() => parseHandoverHash().id);
   const [detailSubTab,   setDetailSubTab]   = useState(() => parseHandoverHash().sub);
@@ -3051,12 +3062,15 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
     if (tab === 'dashboard') { setHandovers([]); setLoading(false); return; }
     setLoading(true);
     try {
-      const res = await apiService.handovers.list(tab);
+      // 'mine' on the From My Deals tab means created_by; 'mine' inside My Work
+      // means "projects I have a role on", which the API calls 'assigned'.
+      const apiScope = tab === 'mine' ? 'mine' : (scope === 'mine' ? 'assigned' : scope);
+      const res = await apiService.handovers.list(apiScope);
       setHandovers(res.data.handovers || []);
     } catch {
       setHandovers([]);
     } finally { setLoading(false); }
-  }, [tab]);
+  }, [tab, scope]);
 
   useEffect(() => { loadList(); setSelected(null); }, [loadList]);
 
@@ -3111,13 +3125,20 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
     } else {
       parts = tab === 'mine' ? ['handovers'] : ['handovers', tab];
     }
+    // `scope` is intentionally not in the hash: it is a per-viewer lens, not
+    // part of what a shared link should mean. A colleague opening the link
+    // must resolve it against their own rights, not the sender's.
     writeHash(parts);
   }, [tab, selected, detailSubTab, pendingHashId]);
 
   useEffect(() => {
     let alive = true;
     apiService.handovers.projectAccess()
-      .then(r => { if (alive && r.data?.viewer) setAccess(r.data.viewer); })
+      .then(r => {
+        if (!alive) return;
+        if (r.data?.viewer)   setAccess(r.data.viewer);
+        if (r.data?.settings) setShowFromMyDeals(Boolean(r.data.settings.show_from_my_deals_tab));
+      })
       .catch(() => {});   // stay on the default two tabs
     return () => { alive = false; };
   }, []);
@@ -3138,10 +3159,10 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
       {/* ── Top tabs (full width) ─────────────────────── */}
       <div className="gw-scroll-x" style={{ display: 'flex', borderBottom: '2px solid #e5e7eb', background: '#fff', flexShrink: 0 }}>
         {[
-          { key: 'mine',      label: '📤 My Projects' },
-          { key: 'assigned',  label: '📥 Assigned to Me' },
-          ...(access.canUseTeam ? [{ key: 'team', label: '👥 My Team' }] : []),
-          ...(access.canUseOrg  ? [{ key: 'org',  label: '🏢 All Projects' }] : []),
+          // 'mine' is created_by — the deals this person closed. Off by default
+          // (org/user config); they stay attached through project_members.
+          ...(showFromMyDeals ? [{ key: 'mine', label: '📤 From My Deals' }] : []),
+          { key: 'assigned',  label: '🧭 My Work' },
           { key: 'dashboard', label: '📊 Dashboard' },
         ].map(t => (
           <button key={t.key} onClick={() => setTab(t.key)} style={{
@@ -3153,6 +3174,30 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
           }}>{t.label}</button>
         ))}
       </div>
+
+      {/* Scope applies to My Work only: which people's projects, as opposed to
+          which view. Hidden entirely when the viewer has neither team nor org
+          rights, so a solo contributor sees no dead control. */}
+      {tab === 'assigned' && (access.canUseTeam || access.canUseOrg) && (
+        <div className="gw-scroll-x" style={{
+          display: 'flex', gap: 6, padding: '10px 20px 0', background: '#fff',
+          flexShrink: 0,
+        }}>
+          {[
+            { key: 'mine', label: 'Mine' },
+            ...(access.canUseTeam ? [{ key: 'team', label: 'My Team' }] : []),
+            ...(access.canUseOrg  ? [{ key: 'org',  label: 'All Org' }] : []),
+          ].map(sc => (
+            <button key={sc.key} onClick={() => setScope(sc.key)} style={{
+              padding: '6px 14px', borderRadius: 8, fontSize: 13, cursor: 'pointer',
+              border: `1px solid ${scope === sc.key ? '#0369a1' : '#e2e4ea'}`,
+              background: scope === sc.key ? '#0369a1' : '#fff',
+              color: scope === sc.key ? '#fff' : '#4b5563',
+              fontWeight: scope === sc.key ? 600 : 400,
+            }}>{sc.label}</button>
+          ))}
+        </div>
+      )}
 
       {tab === 'dashboard' ? (
         <div style={{ flex: 1, overflowY: 'auto' }}>
@@ -3204,7 +3249,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
               onOpen={(h) => { setSelected(h); setDetailSubTab('summary'); }}
               /* Who is delivering each project only matters once you are looking
                  past your own — on 'mine' and 'assigned' the answer is always you. */
-              showOwner={tab === 'team' || tab === 'org'}
+              showOwner={tab === 'assigned' && scope !== 'mine'}
             />
           )}
         </div>
