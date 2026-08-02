@@ -2450,7 +2450,7 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onG
                       </span>
                     )}
                   </span>
-                ) : 'No playbook linked.'}
+                ) : <PlaybookPicker detail={detail} canEdit={canEdit} onRefresh={onRefresh} />}
               </div>
               <ServiceOwnerPicker detail={detail} users={users} canEdit={canEdit} onRefresh={onRefresh} />
             </div>
@@ -3043,6 +3043,75 @@ function ServiceNotes({ handoverId, initialNotes, onSaved }) {
         {saving ? 'Saving…' : saved ? '✓ Saved' : 'Save notes'}
       </button>
     </div>
+  );
+}
+
+// ── PlaybookPicker ────────────────────────────────────────────────────────────
+// Shown on the Summary tab when a project has no playbook. Until now that state
+// was a dead end: playbook_id was only ever written when a deal closed, so any
+// project created another way kept an empty checklist with no way to fill it.
+function PlaybookPicker({ detail, canEdit, onRefresh }) {
+  const [options, setOptions] = useState(null);
+  const [choice, setChoice]   = useState('');
+  const [busy, setBusy]       = useState(false);
+  const [msg, setMsg]         = useState('');
+
+  const load = () => {
+    if (options) return;
+    apiService.handovers.availablePlaybooks()
+      .then(r => setOptions(r.data?.playbooks || []))
+      .catch(() => setOptions([]));
+  };
+
+  const apply = async () => {
+    if (!choice) return;
+    setBusy(true); setMsg('');
+    try {
+      const r = await apiService.handovers.setPlaybook(detail.id, choice);
+      const w = r.data?.warnings || [];
+      // Linking always succeeds; activation may not. Say which happened rather
+      // than reporting a flat success and leaving an empty checklist unexplained.
+      setMsg(r.data?.activated
+        ? `${r.data.playbookName} linked — ${r.data.activated} plays added.`
+        : (w[0] || `${r.data?.playbookName || 'Playbook'} linked, but no plays were activated.`));
+      onRefresh?.();
+    } catch (e) {
+      setMsg(e?.response?.data?.error?.message || 'Could not link the playbook.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!canEdit) return <span style={{ color: '#6b7280' }}>No playbook linked.</span>;
+
+  return (
+    <span style={{ display: 'inline-flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+      <span style={{ color: '#6b7280' }}>No playbook linked.</span>
+      <select
+        value={choice}
+        onFocus={load}
+        onMouseDown={load}
+        onChange={e => setChoice(e.target.value)}
+        style={{ fontSize: 13, padding: '6px 8px', borderRadius: 6, border: '1px solid #d1d5db', minHeight: 36 }}
+      >
+        <option value="">{options === null ? 'Choose a playbook…' : (options.length ? 'Choose a playbook…' : 'No playbooks available')}</option>
+        {(options || []).map(p => (
+          <option key={p.id} value={p.id}>{p.name}{p.is_default ? ' (default)' : ''}</option>
+        ))}
+      </select>
+      <button
+        type="button"
+        onClick={apply}
+        disabled={!choice || busy}
+        style={{
+          fontSize: 13, padding: '6px 12px', borderRadius: 6, minHeight: 36,
+          border: '1px solid #0369a1', background: choice && !busy ? '#0369a1' : '#e5e7eb',
+          color: choice && !busy ? '#fff' : '#9ca3af', fontWeight: 600,
+          cursor: choice && !busy ? 'pointer' : 'not-allowed',
+        }}
+      >{busy ? 'Linking…' : 'Link'}</button>
+      {msg && <span style={{ fontSize: 12, color: '#374151' }}>{msg}</span>}
+    </span>
   );
 }
 

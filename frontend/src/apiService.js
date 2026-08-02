@@ -707,6 +707,9 @@ twilio: {
     // Projects that don't come from a won deal: internal, or the customer
     // exception. Deal-driven creation stays on create().
     createProject: (data) => api.post('/handovers/projects', data),
+    availablePlaybooks: ()                 => api.get('/handovers/playbooks/available'),
+    setPlaybook: (id, playbookId, stageKey) =>
+      api.put(`/handovers/sales/${id}/playbook`, { playbookId, ...(stageKey && { stageKey }) }),
     create:    (dealId)      => api.post('/handovers/sales', { dealId }),
     portfolio: ()            => api.get('/handovers/portfolio'),
     // Scope config + what the current viewer is allowed to use, in one call so

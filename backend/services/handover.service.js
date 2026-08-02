@@ -438,6 +438,77 @@ async function createProject(orgId, userId, data = {}) {
   });
 }
 
+/**
+ * Attach a playbook to a project and activate its first stage.
+ *
+ * playbook_id had only ever been written by initiate(), from the org's default
+ * handover_s2i playbook — so a project created any other way had no route to
+ * one and its checklist stayed permanently empty.
+ *
+ * Activation is best-effort and reported: linking the playbook is the durable
+ * change, and a stage that produces no plays should not roll that back. The
+ * caller gets the warnings so the UI can say what happened.
+ */
+async function setPlaybook(handoverId, orgId, userId, playbookId, stageKey = null) {
+  const { rows: [h] } = await pool.query(
+    `SELECT id, deal_id, playbook_id, project_kind FROM sales_handovers WHERE id = $1 AND org_id = $2`,
+    [handoverId, orgId]);
+  if (!h) throw Object.assign(new Error('Project not found'), { status: 404 });
+
+  const { rows: [pb] } = await pool.query(
+    `SELECT id, name, type FROM playbooks WHERE id = $1 AND org_id = $2`, [playbookId, orgId]);
+  if (!pb) throw Object.assign(new Error('Playbook not found'), { status: 404 });
+
+  if (h.playbook_id && h.playbook_id !== playbookId) {
+    // Swapping playbooks would leave instances from the old one attached with
+    // no obvious owner. Refuse rather than silently mixing two checklists.
+    throw Object.assign(
+      new Error('This project already has a playbook. Remove its plays before changing it.'),
+      { status: 409 });
+  }
+
+  await pool.query(
+    `UPDATE sales_handovers SET playbook_id = $1, updated_at = now() WHERE id = $2 AND org_id = $3`,
+    [playbookId, handoverId, orgId]);
+
+  // First stage of the playbook, unless the caller named one.
+  let stage = stageKey;
+  if (!stage) {
+    const { rows: [st] } = await pool.query(
+      `SELECT stage_key FROM playbook_stages WHERE playbook_id = $1
+        ORDER BY sort_order ASC LIMIT 1`, [playbookId]);
+    stage = st?.stage_key || null;
+  }
+  if (!stage) {
+    return { playbookId, playbookName: pb.name, activated: 0,
+             warnings: ['Playbook linked, but it has no stages to activate'] };
+  }
+
+  const PlaybookPlayService = require('./PlaybookPlayService');
+  try {
+    // A project with a deal keeps using the deal path, so nothing about the
+    // existing behaviour changes for handovers created from a won deal.
+    const { instances, warnings } = h.deal_id
+      ? await PlaybookPlayService.activateStageForPlaybook(h.deal_id, stage, orgId, userId, playbookId)
+      : await PlaybookPlayService.activateStageForProject(handoverId, stage, orgId, userId, playbookId);
+
+    if (h.deal_id && instances.length) {
+      const values = instances.map((_, i) => `($1, $${i * 2 + 2}, $${i * 2 + 3})`).join(', ');
+      const params = [handoverId];
+      for (const inst of instances) params.push(inst.id, orgId);
+      await pool.query(
+        `INSERT INTO sales_handover_plays (handover_id, play_instance_id, org_id)
+         VALUES ${values} ON CONFLICT DO NOTHING`, params);
+    }
+
+    return { playbookId, playbookName: pb.name, stage, activated: instances.length, warnings };
+  } catch (err) {
+    console.error('setPlaybook activation error:', err);
+    return { playbookId, playbookName: pb.name, stage, activated: 0,
+             warnings: [`Playbook linked, but activation failed: ${err.message}`] };
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // LIST
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2369,6 +2440,7 @@ module.exports = {
   completeAction,
   initiate,
   createProject,           // standalone / internal projects (2026_87)
+  setPlaybook,             // attach + activate a playbook (2026_89)
   list,
   getTeamMemberProjects,  // person drill-down
   getPersonDashboard,     // person side-panel (individual dashboard)

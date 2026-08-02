@@ -350,6 +350,37 @@ router.post('/sales/:id/plays/:instanceId/complete', async (req, res) => {
 
 // ── POST /sales/:id/plays  — add an ad-hoc checklist item ─────────────────────
 
+// ── PUT /sales/:id/playbook — attach a playbook and activate its first stage ──
+// Projects created from a won deal get one automatically; every other project
+// had no route to one until now.
+router.put('/sales/:id/playbook', async (req, res) => {
+  try {
+    const playbookId = parseInt(req.body?.playbookId, 10);
+    if (!playbookId) {
+      return res.status(400).json({ error: { message: 'playbookId is required' } });
+    }
+    res.json(await handoverService.setPlaybook(
+      parseInt(req.params.id, 10), req.orgId, req.user.userId, playbookId, req.body?.stageKey || null));
+  } catch (err) {
+    console.error('Set project playbook error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// Playbooks this org can attach to a project.
+router.get('/playbooks/available', async (req, res) => {
+  try {
+    const { pool } = require('../config/database');
+    const { rows } = await pool.query(
+      `SELECT id, name, type, is_default FROM playbooks
+        WHERE org_id = $1 AND type IN ('handover_s2i', 'handover', 'custom')
+        ORDER BY is_default DESC, name`, [req.orgId]);
+    res.json({ playbooks: rows });
+  } catch (err) {
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
 router.post('/sales/:id/plays', async (req, res) => {
   try {
     const result = await handoverService.addPlay(

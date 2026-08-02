@@ -395,6 +395,173 @@ class PlaybookPlayService {
    * @param {number} playbookId  — explicit playbook to activate plays from
    * @returns {{ instances: Array, warnings: string[] }}
    */
+  /**
+   * Activate a playbook stage on a PROJECT that has no deal (2026_89).
+   *
+   * Sibling of activateStageForPlaybook(). Deliberately a separate method
+   * rather than a refactor of that one: the deal path is what fires on every
+   * won deal in production, and reshaping it to take a polymorphic context in
+   * the same change that introduces project plays would put both at risk at
+   * once. The duplication is real and should be collapsed once the project path
+   * has run in anger — noting it here so it is a decision, not an oversight.
+   *
+   * Differences from the deal path:
+   *   • existing-instance lookup keys on handover_id, not deal_id
+   *   • entity context is the handover; there is no deal owner, so ownership
+   *     falls back to the service owner and then the caller
+   *   • go-live comes off the handover directly instead of via the deal
+   *   • fire_conditions that reference deal fields cannot be evaluated, so
+   *     plays carrying them are skipped and reported rather than fired blind
+   */
+  static async activateStageForProject(handoverId, stageKey, orgId, userId, playbookId) {
+    const warnings = [];
+
+    const playsResult = await db.query(
+      `SELECT pp.*,
+              COALESCE(
+                json_agg(json_build_object(
+                  'role_id', ppr.role_id,
+                  'role_name', dr.name,
+                  'role_key', dr.key,
+                  'ownership_type', ppr.ownership_type
+                )) FILTER (WHERE ppr.id IS NOT NULL),
+                '[]'
+              ) AS roles
+       FROM playbook_plays pp
+       LEFT JOIN playbook_play_roles ppr ON ppr.play_id = pp.id
+       LEFT JOIN org_roles dr ON dr.id = ppr.role_id
+       WHERE pp.playbook_id = $1 AND pp.stage_key = $2 AND pp.is_active = TRUE
+         AND (pp.trigger_mode IS NULL OR pp.trigger_mode = 'stage_change')
+       GROUP BY pp.id
+       ORDER BY pp.sort_order ASC`,
+      [playbookId, stageKey]
+    );
+
+    if (playsResult.rows.length === 0) {
+      return { instances: [], warnings: [`No plays defined in playbook ${playbookId} for stage: ${stageKey}`] };
+    }
+
+    const existingResult = await db.query(
+      `SELECT dpi.play_id FROM deal_play_instances dpi
+       JOIN playbook_plays pp ON pp.id = dpi.play_id
+       WHERE dpi.handover_id = $1 AND dpi.stage_key = $2 AND pp.playbook_id = $3`,
+      [handoverId, stageKey, playbookId]
+    );
+    const existingPlayIds = new Set(existingResult.rows.map(r => r.play_id));
+
+    const { rows: [handover] } = await db.query(
+      `SELECT id, org_id, assigned_service_owner_id, go_live_date, created_by, project_kind
+         FROM sales_handovers WHERE id = $1 AND org_id = $2`,
+      [handoverId, orgId]
+    );
+    if (!handover) {
+      throw Object.assign(new Error('Project not found'), { status: 404 });
+    }
+
+    const goLiveDate = handover.go_live_date
+      ? new Date(handover.go_live_date).toISOString().slice(0, 10)
+      : null;
+
+    const instances = [];
+
+    for (const play of playsResult.rows) {
+      if (existingPlayIds.has(play.id)) continue;
+
+      // fire_conditions are written against deal fields (days in stage, days to
+      // close). With no deal there is nothing to evaluate them against, and
+      // firing regardless would silently ignore a rule the author meant to
+      // apply. Skip and say so.
+      const conditions = Array.isArray(play.fire_conditions) ? play.fire_conditions : [];
+      if (conditions.length > 0) {
+        warnings.push(`Play "${play.title}" skipped: fire conditions need a deal, which this project does not have`);
+        continue;
+      }
+
+      let initialStatus = 'not_started';
+      if (play.execution_type === 'sequential' && play.depends_on && play.depends_on.length > 0) {
+        initialStatus = 'blocked';
+      }
+
+      const anchor  = play.due_anchor || 'created';
+      const dueDate = computeInstanceDueDate(anchor, play.due_offset_days, goLiveDate);
+
+      const instResult = await db.query(
+        `INSERT INTO deal_play_instances (
+           handover_id, deal_id, org_id, play_id, stage_key,
+           title, description, channel, priority,
+           execution_type, is_gate, due_date, sort_order,
+           status, due_anchor, playbook_id
+         ) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+         RETURNING *`,
+        [
+          handoverId, orgId, play.id, stageKey,
+          play.title, play.description, play.channel, play.priority,
+          play.execution_type, play.is_gate, dueDate,
+          play.sort_order, initialStatus, anchor, playbookId,
+        ]
+      );
+      const instance = instResult.rows[0];
+
+      // Link it to the project the same way the deal path does, so the
+      // Summary tab and deliverable rollup pick it up with no changes.
+      await db.query(
+        `INSERT INTO sales_handover_plays (handover_id, play_instance_id, org_id)
+         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [handoverId, instance.id, orgId]
+      );
+
+      const plays_roles = Array.isArray(play.roles)
+        ? play.roles
+        : (play.roles ? (typeof play.roles === 'string' ? JSON.parse(play.roles) : play.roles) : []);
+
+      const primaryRole = plays_roles.find(r => r.ownership_type === 'owner')
+        || plays_roles.find(r => r.ownership_type === 'co_owner')
+        || plays_roles[0]
+        || null;
+
+      const assignedUserIds = await resolveForPlay({
+        orgId,
+        roleKey:      primaryRole?.role_key || null,
+        roleId:       primaryRole?.role_id  || null,
+        // No deal owner exists, so the service owner stands in as the entity's
+        // owner for role resolution.
+        entity:       { id: handover.id, owner_id: handover.assigned_service_owner_id, org_id: orgId },
+        entityType:   'handover',
+        callerUserId: userId,
+      });
+      const assignedUserId = assignedUserIds[0]
+        || handover.assigned_service_owner_id
+        || userId;
+      const assignee = assignedUserId ? { userId: assignedUserId } : null;
+
+      // Contained per play, matching the deal path: one play failing to produce
+      // an action must not abort the whole stage, and the failure is returned
+      // rather than swallowed.
+      let actionId = null;
+      if (initialStatus === 'not_started' && assignee) {
+        try {
+          actionId = await this._createActionForPlay(
+            instance, assignee, orgId, 'handovers',
+            {
+              intendedRoleId:   primaryRole ? primaryRole.role_id : null,
+              assignmentSource: assignedUserIds.length === 0 ? 'project_owner' : 'role_holder',
+            }
+          );
+          if (actionId) {
+            await db.query('UPDATE deal_play_instances SET action_id = $1 WHERE id = $2',
+              [actionId, instance.id]);
+          }
+        } catch (err) {
+          warnings.push(`Play "${play.title}" created but its action failed: ${err.message}`);
+        }
+      }
+
+      instances.push({ ...instance, action_id: actionId });
+    }
+
+    return { instances, warnings };
+  }
+
   static async activateStageForPlaybook(dealId, stageKey, orgId, userId, playbookId) {
     const warnings = [];
 
