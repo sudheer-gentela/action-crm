@@ -800,6 +800,25 @@ async function update(handoverId, orgId, data) {
              exit_reason = NULL`,
       [orgId, handoverId, newOwnerId]
     ).catch(err => console.warn('[handover] owner membership sync failed:', err.message));
+
+    // Reassigning the owner must also un-label the previous one, or the project
+    // ends up showing two "Project owner" rows — the column holds one person,
+    // so the team list must not claim otherwise.
+    //
+    // Demoted rather than removed: the outgoing owner is usually still involved,
+    // and deleting the row would also discard their membership history. Only
+    // rows carrying the label WE applied are touched — a member with a
+    // hand-entered role keeps it.
+    await pool.query(
+      `UPDATE project_members
+          SET custom_role = 'Team member'
+        WHERE context_type = 'handover'
+          AND context_id   = $1
+          AND org_id       = $2
+          AND user_id     <> $3
+          AND custom_role  = 'Project owner'`,
+      [handoverId, orgId, newOwnerId]
+    ).catch(err => console.warn('[handover] previous owner demotion failed:', err.message));
   }
 
   return fmt(rows[0]);
