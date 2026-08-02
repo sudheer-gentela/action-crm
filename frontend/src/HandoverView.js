@@ -623,7 +623,22 @@ function AddPlayForm({ users, onAdd }) {
 
 // ── StakeholderSection ────────────────────────────────────────────────────────
 
-function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRefresh }) {
+function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRefresh,
+                                serviceOwnerId = null, managerLabel = 'Project Manager' }) {
+  // The stored custom_role for the accountable person is the literal string
+  // 'Project owner'. That string is an internal marker — the demote query keys
+  // on it, so renaming it would break ownership handling — but it must not leak
+  // into the UI, or the same person reads as "Project Manager" in the header and
+  // "Project owner" in this list.
+  //
+  // Derived from serviceOwnerId rather than by string-matching the stored role,
+  // so the two can never disagree.
+  const displayRole = (m) => (
+    serviceOwnerId && m.userId === serviceOwnerId
+      ? managerLabel
+      : (m.roleName || m.customRole || '—')
+  );
+
   const [adding, setAdding]   = useState(false);
   const [users, setUsers]     = useState([]);
   const [roles, setRoles]     = useState([]);
@@ -677,7 +692,7 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
           opacity: m.status === 'approved' ? 1 : 0.7 }}>
           <div style={{ flex: 1, fontSize: 13 }}>
             <span style={{ fontWeight: 600 }}>{m.name}</span>
-            <span style={{ marginLeft: 8, fontSize: 11, color: '#6b7280' }}>{m.roleName || m.customRole || '—'}</span>
+            <span style={{ marginLeft: 8, fontSize: 11, color: '#6b7280' }}>{displayRole(m)}</span>
             {m.status === 'pending'  && <span style={{ marginLeft: 8 }}>{badge('pending', '#fef3c7', '#92400e')}</span>}
             {m.status === 'rejected' && <span style={{ marginLeft: 8 }}>{badge('rejected', '#fee2e2', '#991b1b')}</span>}
             {m.status === 'rejected' && m.reviewReason && <div style={{ fontSize: 11, color: '#991b1b' }}>Reason: {m.reviewReason}</div>}
@@ -2399,6 +2414,8 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onG
                 isAdmin={detail.isProjectAdmin}
                 canRequest={detail.canRequestMember}
                 onRefresh={onRefresh}
+                serviceOwnerId={detail.assignedServiceOwnerId}
+                managerLabel={managerLabel}
               />
             </div>
           ),
