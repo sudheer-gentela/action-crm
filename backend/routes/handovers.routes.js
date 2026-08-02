@@ -360,7 +360,8 @@ router.put('/sales/:id/playbook', async (req, res) => {
       return res.status(400).json({ error: { message: 'playbookId is required' } });
     }
     res.json(await handoverService.setPlaybook(
-      parseInt(req.params.id, 10), req.orgId, req.user.userId, playbookId, req.body?.stageKey || null));
+      parseInt(req.params.id, 10), req.orgId, req.user.userId, playbookId,
+      req.body?.stageKey || null, Boolean(req.body?.replace)));
   } catch (err) {
     console.error('Set project playbook error:', err);
     res.status(err.status || 500).json({ error: { message: err.message } });
@@ -495,6 +496,9 @@ router.get('/admin/project-access', async (req, res) => {
       settings: cfg,
       // Everything the client needs to render the scope switcher without a
       // second round trip.
+      // Resolved once here so every screen uses the same word for the person
+      // accountable for a project.
+      managerLabel: cfg.manager_label,
       viewer: {
         role,
         hasTeam:    (req.subordinateIds || []).length > 0,

@@ -135,6 +135,25 @@ export default function OAProjectAccess() {
       </Row>
 
       <Row
+        title="What you call the person running a project"
+        desc="Shown wherever a project's accountable person appears. The underlying field does not change — this is only what your team sees. A single project can override it."
+      >
+        <input
+          type="text"
+          defaultValue={cfg.manager_label}
+          onBlur={e => {
+            const v = e.target.value.trim();
+            if (v && v !== cfg.manager_label) save({ manager_label: v });
+            else e.target.value = cfg.manager_label;
+          }}
+          disabled={readOnly || saving}
+          maxLength={40}
+          style={{ fontSize: 14, padding: '10px 12px', borderRadius: 8,
+                   border: '1px solid #d1d5db', minHeight: 44, width: 200 }}
+        />
+      </Row>
+
+      <Row
         title="Project owner"
         desc="Which person a project counts as belonging to when rolling up to a manager. Service owner is the person delivering it; creator is whoever the handover record came from."
       >

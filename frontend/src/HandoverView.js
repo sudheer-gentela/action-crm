@@ -147,7 +147,7 @@ function DueChip({ dueDate, isOverdue, daysOverdue }) {
 
 // ── HandoverRow ───────────────────────────────────────────────────────────────
 
-function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setStatusFilter, statusMeta, onOpen, showOwner = false }) {
+function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setStatusFilter, statusMeta, onOpen, showOwner = false, managerLabel = 'Project Manager' }) {
   const [sortBy, setSortBy] = useState('value');
   const [overdueOnly, setOverdueOnly] = useState(false);
 
@@ -232,7 +232,7 @@ function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setS
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead><tr>
               <th style={th}>Project</th>
-              {showOwner && <th style={th}>Service owner</th>}
+              {showOwner && <th style={th}>{managerLabel}</th>}
               <th style={th}>Status</th><th style={{ ...th, textAlign: 'right' }}>Value</th>
               <th style={th}>Go-live</th><th style={{ ...th, textAlign: 'center' }}>Overdue</th><th style={th}>Commitments</th>
             </tr></thead>
@@ -1176,7 +1176,7 @@ function DeliverableRollup({ rollup }) {
 
 // ── HandoverDetail ────────────────────────────────────────────────────────────
 
-function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject, initialTab, onTabChange }) {
+function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject, initialTab, onTabChange, managerLabel = 'Project Manager'}) {
   const [detail,    setDetail]    = useState(null);
   const [canSubmit, setCanSubmit] = useState(false);
   const [closeInfo, setCloseInfo] = useState(null); // { canClose, blockers, rollup }
@@ -1326,6 +1326,10 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   // buttons became unreachable, which would have stranded every draft project
   // in draft forever. Any working view now qualifies; the dashboard is
   // read-only and does not.
+  // A project may override what its accountable person is called; otherwise the
+  // org default applies.
+  const ownerLabel = detail.managerLabel || managerLabel;
+
   const isSalesView    = viewMode !== 'dashboard';
   const isServiceView  = viewMode === 'assigned';
   const isDraft        = detail.status === 'draft';
@@ -1406,7 +1410,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
               {statCard(goLiveText, detail.goLiveDate ? `Go-live · ${fmtDate(detail.goLiveDate)}` : 'Go-live', goLiveColor)}
               {detail.contractValue ? statCard(fmtCurrency(detail.contractValue), 'Contract value') : null}
-              {detail.serviceOwnerName ? statCard(detail.serviceOwnerName, 'Project owner') : null}
+              {detail.serviceOwnerName ? statCard(detail.serviceOwnerName, ownerLabel) : null}
               {gatesTotal > 0 ? statCard(`${gatesDone} / ${gatesTotal}`, 'Gate plays') : null}
             </div>
           );
@@ -1573,7 +1577,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
       {/* ── Summary ─────────────────────────────────────── */}
       {detailTab === 'summary' && (
         <div style={{ padding: '16px 20px' }}>
-          <HandoverSummary detail={detail} users={users} canEdit={isServiceView || salesCanEdit} onRefresh={load} onOpenProject={onOpenProject} onGoToDetails={() => setDetailTab('details')} />
+          <HandoverSummary detail={detail} users={users} canEdit={isServiceView || salesCanEdit} managerLabel={ownerLabel} onRefresh={load} onOpenProject={onOpenProject} onGoToDetails={() => setDetailTab('details')} />
         </div>
       )}
 
@@ -2311,7 +2315,7 @@ function DeliverableModal({ commitmentId, onClose }) {
 
 const SUMMARY_CARD_KEYS = ['team', 'next_steps', 'commitments', 'customer', 'playbook', 'open_deliverables', 'where_we_stand', 'completed'];
 
-function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onGoToDetails }) {
+function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onGoToDetails, managerLabel = 'Project Manager'}) {
   const team      = detail.dealTeam || [];
   const pb        = detail.playbook;
   const allCommits = detail.commitments || [];
@@ -2464,7 +2468,7 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onG
                   </span>
                 ) : <PlaybookPicker detail={detail} canEdit={canEdit} onRefresh={onRefresh} />}
               </div>
-              <ServiceOwnerPicker detail={detail} users={users} canEdit={canEdit} onRefresh={onRefresh} />
+              <ServiceOwnerPicker detail={detail} users={users} canEdit={canEdit} onRefresh={onRefresh} managerLabel={detail.managerLabel || managerLabel} />
             </div>
           ),
           open_deliverables: (
@@ -2549,7 +2553,7 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onG
 
 // ── ServiceOwnerPicker: reassign the assigned service owner in-app ────────────
 
-function ServiceOwnerPicker({ detail, users, canEdit, onRefresh }) {
+function ServiceOwnerPicker({ detail, users, canEdit, onRefresh, managerLabel = 'Project Manager'}) {
   const [val,    setVal]    = useState(detail.assignedServiceOwnerId != null ? String(detail.assignedServiceOwnerId) : '');
   const [saving, setSaving] = useState(false);
   const [msg,    setMsg]    = useState('');
@@ -2558,7 +2562,7 @@ function ServiceOwnerPicker({ detail, users, canEdit, onRefresh }) {
     setVal(next); setSaving(true); setMsg('');
     try {
       await apiService.handovers.update(detail.id, { assignedServiceOwnerId: next ? parseInt(next, 10) : null });
-      setMsg('Project owner updated.');
+      setMsg(`${managerLabel} updated.`);
       onRefresh?.();
     } catch {
       setMsg('Could not update.');
@@ -2570,7 +2574,7 @@ function ServiceOwnerPicker({ detail, users, canEdit, onRefresh }) {
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, flexWrap: 'wrap' }}>
-      <span style={{ color: '#6b7280' }}>Project owner:</span>
+      <span style={{ color: '#6b7280' }}>{managerLabel}:</span>
       {canEdit ? (
         <select value={val} onChange={e => save(e.target.value)} disabled={saving}
           style={{ fontSize: 12, padding: '4px 8px', borderRadius: 4, border: '1px solid #d1d5db', maxWidth: 220 }}>
@@ -3067,6 +3071,10 @@ function PlaybookPicker({ detail, canEdit, onRefresh }) {
   const [choice, setChoice]   = useState('');
   const [busy, setBusy]       = useState(false);
   const [msg, setMsg]         = useState('');
+  // Swapping cancels work already in flight, so it needs a deliberate second
+  // press rather than happening as a side effect of a mis-click.
+  const [replaceConfirmed, setReplaceConfirmed] = useState(false);
+  const [confirmText, setConfirmText] = useState('');
 
   const load = () => {
     if (options) return;
@@ -3079,7 +3087,7 @@ function PlaybookPicker({ detail, canEdit, onRefresh }) {
     if (!choice) return;
     setBusy(true); setMsg('');
     try {
-      const r = await apiService.handovers.setPlaybook(detail.id, choice);
+      const r = await apiService.handovers.setPlaybook(detail.id, choice, null, replaceConfirmed);
       const w = r.data?.warnings || [];
       // Linking always succeeds; activation may not. Say which happened rather
       // than reporting a flat success and leaving an empty checklist unexplained.
@@ -3088,7 +3096,15 @@ function PlaybookPicker({ detail, canEdit, onRefresh }) {
         : (w[0] || `${r.data?.playbookName || 'Playbook'} linked, but no plays were activated.`));
       onRefresh?.();
     } catch (e) {
-      setMsg(e?.response?.data?.error?.message || 'Could not link the playbook.');
+      const err = e?.response?.data?.error;
+      if (e?.response?.status === 409) {
+        // The server refused because a playbook is already linked. Explain the
+        // cost, then let a second press go through.
+        setConfirmText(err?.message || 'A playbook is already linked.');
+        setReplaceConfirmed(true);
+      } else {
+        setMsg(err?.message || 'Could not link the playbook.');
+      }
     } finally {
       setBusy(false);
     }
@@ -3121,7 +3137,13 @@ function PlaybookPicker({ detail, canEdit, onRefresh }) {
           color: choice && !busy ? '#fff' : '#9ca3af', fontWeight: 600,
           cursor: choice && !busy ? 'pointer' : 'not-allowed',
         }}
-      >{busy ? 'Linking…' : 'Link'}</button>
+      >{busy ? 'Linking…' : (replaceConfirmed ? 'Replace anyway' : 'Link')}</button>
+      {confirmText && (
+        <span style={{ fontSize: 12, color: '#92400e', background: '#fef3c7',
+                       border: '1px solid #fde68a', borderRadius: 6, padding: '6px 9px', lineHeight: 1.5 }}>
+          {confirmText}
+        </span>
+      )}
       {msg && <span style={{ fontSize: 12, color: '#374151' }}>{msg}</span>}
     </span>
   );
@@ -3280,6 +3302,9 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
   // neither, so a failed call degrades to the original two tabs rather than
   // showing a control that will 403.
   const [access, setAccess] = useState({ canUseTeam: false, canUseOrg: false });
+  // What this org calls the person accountable for a project. Resolved on the
+  // server from org config; a project may override it.
+  const [managerLabel, setManagerLabel] = useState('Project Manager');
   // Which people's projects to show within My Work. Independent of `tab`,
   // which selects the view.
   const [scope, setScope] = useState('mine');
@@ -3380,6 +3405,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
         if (!alive) return;
         if (r.data?.viewer)   setAccess(r.data.viewer);
         if (r.data?.settings) setShowFromMyDeals(Boolean(r.data.settings.show_from_my_deals_tab));
+        if (r.data?.managerLabel) setManagerLabel(r.data.managerLabel);
       })
       .catch(() => {});   // stay on the default two tabs
     return () => { alive = false; };
@@ -3513,6 +3539,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
             key={selected.id}
             handover={selected}
             viewMode={tab}
+            managerLabel={managerLabel}
             users={users}
             onRefresh={loadList}
             onOpenProject={handleOpenProject}
@@ -3547,6 +3574,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
               /* Who is delivering each project only matters once you are looking
                  past your own — on 'mine' and 'assigned' the answer is always you. */
               showOwner={tab === 'assigned' && scope !== 'mine'}
+              managerLabel={managerLabel}
             />
           )}
         </div>

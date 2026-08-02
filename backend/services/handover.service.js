@@ -83,6 +83,7 @@ function fmt(row) {
     status:                 row.status,
     goLiveDate:             row.go_live_date,
     contractValue:          row.contract_value,
+    managerLabel:           row.manager_label || null,
     // ── internal projects (2026_87) ──
     projectKind:            row.project_kind || 'customer',
     budget:                 row.budget ?? null,
@@ -449,7 +450,52 @@ async function createProject(orgId, userId, data = {}) {
  * change, and a stage that produces no plays should not roll that back. The
  * caller gets the warnings so the UI can say what happened.
  */
-async function setPlaybook(handoverId, orgId, userId, playbookId, stageKey = null) {
+/**
+ * Cancel the in-flight work belonging to a playbook being replaced.
+ *
+ * Cancelled, never deleted. "What was on the old checklist and how far had we
+ * got" is exactly what someone asks after a swap, and a DELETE would erase it.
+ *
+ * Completed and skipped plays are left alone — that work genuinely happened and
+ * rewriting its status would falsify the record. Only open work is closed.
+ *
+ * Actions are cancelled in the same sweep. Without that, a rep keeps seeing
+ * items in their queue for a checklist the project has abandoned, which is how
+ * an action list stops being trusted.
+ */
+async function _cancelOpenPlaybookWork(handoverId, orgId, userId, oldPlaybookId) {
+  const OPEN = ['not_started', 'in_progress', 'blocked', 'snoozed'];
+
+  // Actions first: once the instances are cancelled their ids are harder to
+  // find, and an orphaned open action is worse than an orphaned cancelled play.
+  const { rowCount: actions } = await pool.query(
+    `UPDATE actions SET status = 'cancelled', updated_at = now()
+      WHERE org_id = $1
+        AND status = ANY($2::text[])
+        AND id IN (
+          -- Filtered on the ACTION being open, deliberately not the play.
+          -- A play that was skipped can still have left an open action behind,
+          -- and after a swap no open action from the old checklist should
+          -- survive — that is precisely the orphan this sweep exists to stop.
+          SELECT dpi.action_id FROM deal_play_instances dpi
+           WHERE dpi.handover_id = $3
+             AND dpi.action_id IS NOT NULL
+             AND (dpi.playbook_id = $4 OR dpi.playbook_id IS NULL)
+        )`,
+    [orgId, OPEN, handoverId, oldPlaybookId]);
+
+  const { rowCount: plays } = await pool.query(
+    `UPDATE deal_play_instances
+        SET status = 'cancelled', updated_at = now()
+      WHERE handover_id = $1 AND org_id = $2
+        AND status = ANY($3::text[])
+        AND (playbook_id = $4 OR playbook_id IS NULL)`,
+    [handoverId, orgId, OPEN, oldPlaybookId]);
+
+  return { plays, actions };
+}
+
+async function setPlaybook(handoverId, orgId, userId, playbookId, stageKey = null, replace = false) {
   const { rows: [h] } = await pool.query(
     `SELECT id, deal_id, playbook_id, project_kind FROM sales_handovers WHERE id = $1 AND org_id = $2`,
     [handoverId, orgId]);
@@ -459,12 +505,25 @@ async function setPlaybook(handoverId, orgId, userId, playbookId, stageKey = nul
     `SELECT id, name, type FROM playbooks WHERE id = $1 AND org_id = $2`, [playbookId, orgId]);
   if (!pb) throw Object.assign(new Error('Playbook not found'), { status: 404 });
 
-  if (h.playbook_id && h.playbook_id !== playbookId) {
-    // Swapping playbooks would leave instances from the old one attached with
-    // no obvious owner. Refuse rather than silently mixing two checklists.
+  // ── Swapping an existing playbook ──────────────────────────────────────
+  // Previously refused outright. Now allowed, but only deliberately: the caller
+  // must pass replace=true, because swapping cancels work that is already in
+  // flight and should never happen as a side effect of a mis-click.
+  const isSwap = Boolean(h.playbook_id && h.playbook_id !== playbookId);
+  if (isSwap && !replace) {
     throw Object.assign(
-      new Error('This project already has a playbook. Remove its plays before changing it.'),
-      { status: 409 });
+      new Error('This project already has a playbook. Confirm the change to replace it — open plays and their actions will be cancelled.'),
+      { status: 409, code: 'PLAYBOOK_ALREADY_LINKED' });
+  }
+
+  let cancelled = { plays: 0, actions: 0 };
+  if (isSwap) {
+    cancelled = await _cancelOpenPlaybookWork(handoverId, orgId, userId, h.playbook_id);
+    await pool.query(
+      `UPDATE sales_handovers
+          SET previous_playbook_id = $1, playbook_changed_at = now(), playbook_changed_by = $2
+        WHERE id = $3 AND org_id = $4`,
+      [h.playbook_id, userId, handoverId, orgId]);
   }
 
   await pool.query(
@@ -475,9 +534,10 @@ async function setPlaybook(handoverId, orgId, userId, playbookId, stageKey = nul
   let stage = stageKey;
   if (!stage) {
     const { rows: [st] } = await pool.query(
-      `SELECT stage_key FROM playbook_stages WHERE playbook_id = $1
-        ORDER BY sort_order ASC LIMIT 1`, [playbookId]);
-    stage = st?.stage_key || null;
+      `SELECT key FROM playbook_stages
+        WHERE playbook_id = $1 AND org_id = $2 AND is_active = TRUE
+        ORDER BY sort_order ASC LIMIT 1`, [playbookId, orgId]);
+    stage = st?.key || null;
   }
   if (!stage) {
     return { playbookId, playbookName: pb.name, activated: 0,
@@ -501,7 +561,13 @@ async function setPlaybook(handoverId, orgId, userId, playbookId, stageKey = nul
          VALUES ${values} ON CONFLICT DO NOTHING`, params);
     }
 
-    return { playbookId, playbookName: pb.name, stage, activated: instances.length, warnings };
+    return {
+      playbookId, playbookName: pb.name, stage,
+      activated: instances.length,
+      replaced: isSwap,
+      cancelled,
+      warnings,
+    };
   } catch (err) {
     console.error('setPlaybook activation error:', err);
     return { playbookId, playbookName: pb.name, stage, activated: 0,
@@ -796,6 +862,12 @@ async function update(handoverId, orgId, data) {
        VALUES ($1, 'handover', $2, $3, 'Project owner', 'approved', $3, $3, now())
        ON CONFLICT (context_type, context_id, user_id) DO UPDATE
          SET status      = 'approved',
+             -- The label MUST be re-applied here. Without it, promoting someone
+             -- already on the team (very common — they were demoted by an
+             -- earlier reassignment) left them as 'Team member', and the demote
+             -- below then cleared the outgoing owner too, leaving the project
+             -- with no owner at all despite the column being set.
+             custom_role = 'Project owner',
              exited_at   = NULL,
              exit_reason = NULL`,
       [orgId, handoverId, newOwnerId]

@@ -60,6 +60,13 @@ const SYSTEM_DEFAULTS = {
   // lens, and the closer now stays attached through project_members anyway, so
   // hiding it no longer costs them visibility.
   show_from_my_deals_tab: false,
+
+  // What the person accountable for a project is called. The database column is
+  // assigned_service_owner_id and stays that way — renaming it would touch every
+  // query in the handover, reporting and health services for no functional gain.
+  // Orgs differ here (Project Manager, Delivery Lead, Engagement Manager), and a
+  // single project can override it.
+  manager_label: 'Project Manager',
 };
 
 const VALID_ROLES  = ['owner', 'admin', 'member', 'viewer'];
@@ -122,6 +129,13 @@ async function update(orgId, patch = {}) {
     }
     // Owners must never be able to lock themselves out of org-wide visibility.
     next.org_scope_roles = [...new Set(['owner', ...patch.org_scope_roles])];
+  }
+
+  if (patch.manager_label !== undefined) {
+    const v = String(patch.manager_label || '').trim();
+    if (!v)          { const e = new Error('manager_label cannot be blank'); e.status = 400; throw e; }
+    if (v.length > 40) { const e = new Error('manager_label must be 40 characters or fewer'); e.status = 400; throw e; }
+    next.manager_label = v;
   }
 
   for (const k of ['team_scope_enabled', 'show_unassigned_in_team_scope',
