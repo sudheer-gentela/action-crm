@@ -372,9 +372,21 @@ router.get('/playbooks/available', async (req, res) => {
   try {
     const { pool } = require('../config/database');
     const { rows } = await pool.query(
-      `SELECT id, name, type, is_default FROM playbooks
-        WHERE org_id = $1 AND type IN ('handover_s2i', 'handover', 'custom')
-        ORDER BY is_default DESC, name`, [req.orgId]);
+      // Deliberately NOT filtered by type. playbooks.type defaults to 'custom'
+      // and is set inconsistently — PlaybookBuilderService.listPlaybooks(), which
+      // powers the Playbooks module itself, filters on org / department /
+      // is_active and never on type. Filtering here on a guessed set returned
+      // nothing for orgs whose playbooks carry other type values.
+      //
+      // Instead: every active playbook, with handover-oriented ones sorted first
+      // and `type` returned so the picker can label what it is offering.
+      `SELECT id, name, type, entity_type, is_default
+         FROM playbooks
+        WHERE org_id = $1 AND is_active = TRUE
+        ORDER BY (type IN ('handover_s2i','handover')) DESC,
+                 (entity_type = 'implementation') DESC,
+                 is_default DESC,
+                 name`, [req.orgId]);
     res.json({ playbooks: rows });
   } catch (err) {
     res.status(500).json({ error: { message: err.message } });

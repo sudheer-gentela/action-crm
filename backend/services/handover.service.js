@@ -784,6 +784,24 @@ async function update(handoverId, orgId, data) {
     ]
   );
 
+  // Keep project membership in step with the owner column. Without this the
+  // person accountable for the project is missing from "Project team & roles",
+  // and every view built on membership silently excludes them.
+  const newOwnerId = rows[0]?.assigned_service_owner_id;
+  if (newOwnerId) {
+    await pool.query(
+      `INSERT INTO project_members
+         (org_id, context_type, context_id, user_id, custom_role, status,
+          requested_by, reviewed_by, reviewed_at)
+       VALUES ($1, 'handover', $2, $3, 'Project owner', 'approved', $3, $3, now())
+       ON CONFLICT (context_type, context_id, user_id) DO UPDATE
+         SET status      = 'approved',
+             exited_at   = NULL,
+             exit_reason = NULL`,
+      [orgId, handoverId, newOwnerId]
+    ).catch(err => console.warn('[handover] owner membership sync failed:', err.message));
+  }
+
   return fmt(rows[0]);
 }
 

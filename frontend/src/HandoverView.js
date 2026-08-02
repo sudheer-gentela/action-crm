@@ -1321,7 +1321,12 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   if (!detail) return <div style={{ padding: 24, color: '#9ca3af', fontSize: 13 }}>Could not load project.</div>;
 
   // Derived
-  const isSalesView    = viewMode === 'mine';
+  // "Sales-side" actions — submit a project, pull it back to draft — used to
+  // mean "you are on the 'mine' tab". With that tab hidden by default those
+  // buttons became unreachable, which would have stranded every draft project
+  // in draft forever. Any working view now qualifies; the dashboard is
+  // read-only and does not.
+  const isSalesView    = viewMode !== 'dashboard';
   const isServiceView  = viewMode === 'assigned';
   const isDraft        = detail.status === 'draft';
   const isSubmitted    = detail.status === 'submitted';
@@ -1329,7 +1334,14 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   const isInProgress   = detail.status === 'in_progress';
   const isTerminal     = detail.status === 'completed' || detail.status === 'cancelled';
 
-  const salesCanEdit   = isSalesView && isDraft;
+  // Editing a draft used to require being on the 'mine' tab (From My Deals).
+  // That tab is hidden by default, so hiding it removed the only route to
+  // editing any project — navigation was doing the job of permission.
+  //
+  // The backend has never gated update() on ownership; it allows any org member
+  // while the project is a draft. So the real rule is simply "draft, and you
+  // are in a working view rather than the read-only dashboard".
+  const salesCanEdit   = isDraft && viewMode !== 'dashboard';
   // Commitments are tracked THROUGH implementation, so they stay editable by
   // either side until the handover is terminal. (The backend permits any org
   // member; the two tabs represent the two legitimate actors.)
