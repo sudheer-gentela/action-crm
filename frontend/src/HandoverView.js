@@ -3304,13 +3304,6 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
 
   useEffect(() => { loadList(); setSelected(null); }, [loadList]);
 
-  // If the tab currently in view has just been switched off — by the org
-  // setting or by this user's own preference — move to My Work rather than
-  // leaving them on a view with no button to return to.
-  useEffect(() => {
-    if (tab === 'mine' && !fromMyDealsVisible) setTab('assigned');
-  }, [tab, fromMyDealsVisible]);
-
   // Org members for the commitment owner picker — fetched once, shared across
   // the detail panel. Failure is non-fatal: the picker just shows "Unassigned".
   useEffect(() => {
@@ -3393,6 +3386,13 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
 
   // Explicit user choice wins; otherwise the org setting decides.
   const fromMyDealsVisible = tabPref ? tabPref.includes('mine') : showFromMyDeals;
+
+  // If the tab currently in view has just been switched off — by the org
+  // setting or by this user's own preference — move to My Work rather than
+  // leaving them on a view with no button to return to.
+  useEffect(() => {
+    if (tab === 'mine' && !fromMyDealsVisible) setTab('assigned');
+  }, [tab, fromMyDealsVisible]);
 
   const handleOpenProject = (id) => { setTab('mine'); setPendingOpenId(id); };
 
