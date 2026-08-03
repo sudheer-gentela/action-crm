@@ -321,6 +321,91 @@ async function linkStatus(orgId, provider, providerFileIds = []) {
   return { status };
 }
 
+/**
+ * Upload a file from the user's own machine into the project's attachment
+ * folder.
+ *
+ * THE FALLBACK THIS EXISTS FOR
+ *   WhatsApp capture is automatic, but it can fail in ways nothing here can
+ *   recover: Redis down long enough for Meta's ~30-day retention to lapse,
+ *   storage disconnected while attachments arrived, or the media expiring
+ *   before anyone noticed. In every one of those cases a HUMAN in the group
+ *   still has the file on their phone. This is how they put it back.
+ *
+ * WHOSE CREDENTIAL: the ORG'S storage account, not the uploader's. Same
+ * account, same folder, same ownership as an automatic capture — so a manually
+ * recovered file is indistinguishable from one that arrived normally, and it
+ * works for someone who has never connected their own Drive.
+ *
+ * Optionally links back to the WhatsApp message it belongs to, so the gap in
+ * the timeline closes rather than leaving a permanently 'expired' row beside a
+ * file that is plainly right there.
+ */
+async function uploadLocalFile(handoverId, orgId, userId, { fileName, mimeType, buffer, whatsappMessageId }) {
+  await assertCanFile(handoverId, orgId, userId);
+  if (!buffer || !buffer.length) {
+    throw Object.assign(new Error('No file received'), { status: 400 });
+  }
+
+  const storage = require('./orgStorageAccounts.service');
+  const { getProvider } = require('./StorageProviderFactory');
+  const { resolveCategory } = require('./contentExtractor');
+
+  const target = await storage.resolveUploadTarget(orgId, handoverId);
+  if (!target) {
+    // Deliberately specific: "upload failed" would send someone hunting through
+    // logs for a problem that is one setting away.
+    throw Object.assign(
+      new Error('This project has no attachment folder yet. Map a folder on the Files tab and mark it for attachments, and connect storage in Settings.'),
+      { status: 400 });
+  }
+
+  const accessToken = await storage.getFreshAccessToken(orgId, target.provider);
+  if (!accessToken) {
+    throw Object.assign(
+      new Error('The storage account needs reconnecting before files can be uploaded.'),
+      { status: 400 });
+  }
+
+  const safeName = String(fileName || 'upload').replace(/[\/\\:*?"<>|]/g, '_').slice(0, 180);
+  const provider = getProvider(target.provider);
+  const uploaded = await provider.uploadFileWithToken(
+    accessToken, target.folderId, safeName, mimeType || 'application/octet-stream', buffer);
+
+  const { rows: [file] } = await pool.query(
+    `INSERT INTO storage_files (
+       org_id, user_id, provider, provider_file_id, web_url, file_name,
+       file_size, mime_type, category, source_label, folder_id,
+       handover_id, tag_source, tagged_by, tagged_at, processing_status
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'manual',$2,now(),'pending')
+     RETURNING id, file_name, web_url`,
+    [orgId, userId, target.provider, uploaded.id,
+     uploaded.webViewLink || uploaded.webUrl || null, safeName,
+     buffer.length, mimeType || null, resolveCategory(mimeType),
+     `Uploaded · ${target.folderName || 'project folder'}`,
+     target.folderId, handoverId]
+  );
+
+  // Close the loop on the message this recovers, if one was named.
+  let linkedMessage = null;
+  if (whatsappMessageId) {
+    const { rows } = await pool.query(
+      `UPDATE whatsapp_messages m
+          SET storage_file_id = $3, media_status = 'stored',
+              media_error = NULL,
+              media_reviewed_by = $4, media_reviewed_at = now()
+         FROM whatsapp_threads t
+        WHERE m.id = $1 AND m.org_id = $2 AND t.id = m.thread_id AND t.handover_id = $5
+        RETURNING m.id`,
+      [whatsappMessageId, orgId, file.id, userId, handoverId]
+    );
+    linkedMessage = rows[0]?.id || null;
+  }
+
+  await storage.markUsed(orgId, target.provider);
+  return { file, folderName: target.folderName, linkedMessage };
+}
+
 // ── Writes: tag / untag / hide / unhide ──────────────────────────────────────
 
 /**
@@ -424,6 +509,6 @@ async function unhideFile(handoverId, orgId, userId, recordId) {
 module.exports = {
   canManageFiles, canFile,
   listFolders, mapFolder, unmapFolder, resolveFolderMembership, setUploadTarget,
-  listForProject, linkStatus,
+  listForProject, linkStatus, uploadLocalFile,
   tagFile, untagFile, hideFile, unhideFile,
 };

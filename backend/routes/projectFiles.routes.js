@@ -20,7 +20,16 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const express = require('express');
+const multer  = require('multer');
 const router  = express.Router();
+
+// Memory storage, matching the other upload routes here. 100 MB is Meta's own
+// ceiling for WhatsApp video, so a file a human is putting BACK cannot be
+// larger than the one that would have arrived automatically.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 100 * 1024 * 1024 },
+});
 
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext }    = require('../middleware/orgContext.middleware');
@@ -96,6 +105,37 @@ router.post('/:handoverId/link-status', async (req, res) => {
     if (!provider) return res.status(400).json({ error: { message: 'provider is required' } });
     res.json(await projectFiles.linkStatus(req.orgId, provider, providerFileIds || []));
   } catch (err) { fail(res, err, 'linkStatus'); }
+});
+
+// ── Manual upload ────────────────────────────────────────────────────────────
+//
+// The fallback for when automatic capture could not run — someone in the group
+// still has the file on their phone. Goes to the same folder, with the same
+// org storage credential, as an automatic capture.
+//
+// multipart: file, and optionally whatsappMessageId to close the gap on the
+// message it recovers.
+router.post('/:handoverId/upload', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: { message: 'No file received' } });
+    res.status(201).json(await projectFiles.uploadLocalFile(
+      idOf(req.params.handoverId), req.orgId, req.user.userId,
+      {
+        fileName: req.file.originalname,
+        mimeType: req.file.mimetype,
+        buffer:   req.file.buffer,
+        whatsappMessageId: req.body?.whatsappMessageId
+          ? idOf(req.body.whatsappMessageId) : null,
+      }
+    ));
+  } catch (err) {
+    // multer rejects an oversized file before the handler, so surface that as a
+    // size problem rather than a generic 500.
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ error: { message: 'That file is over the 100 MB limit.' } });
+    }
+    fail(res, err, 'upload');
+  }
 });
 
 // ── Tag / untag / hide / unhide ──────────────────────────────────────────────

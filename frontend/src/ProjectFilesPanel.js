@@ -36,6 +36,26 @@ async function apiFetch(path, options = {}) {
   return body;
 }
 
+/**
+ * Multipart upload.
+ *
+ * Deliberately not apiFetch: that sets Content-Type: application/json, and for
+ * FormData the browser must set the header itself so it can include the
+ * multipart boundary. Setting it by hand produces a body the server cannot
+ * parse, with a misleading "no file received" at the other end.
+ */
+async function apiUpload(path, formData) {
+  const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body?.error?.message || res.statusText);
+  return body;
+}
+
 const PROVIDER_LABELS = { onedrive: 'OneDrive', googledrive: 'Google Drive' };
 
 const CATEGORY_ICONS = {
@@ -286,6 +306,7 @@ export default function ProjectFilesPanel({ handoverId }) {
   const [canFile,   setCanFile]   = useState(false);
   const [showHidden, setShowHidden] = useState(false);
   const [browsing,  setBrowsing]  = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState('');
   const [notice,    setNotice]    = useState('');
@@ -329,6 +350,34 @@ export default function ProjectFilesPanel({ handoverId }) {
     } catch (e) { setError(`Could not set the attachment folder: ${e.message}`); }
   }
 
+  // The fallback for when automatic WhatsApp capture could not run — someone in
+  // the group still has the file on their phone. Goes to the same folder with
+  // the same org credential, so a recovered file is indistinguishable from one
+  // that arrived automatically.
+  async function uploadLocal(e) {
+    const chosen = Array.from(e.target.files || []);
+    e.target.value = '';                 // allow re-picking the same file
+    if (!chosen.length) return;
+
+    setError(''); setNotice(''); setUploading(true);
+    const done = [];
+    try {
+      for (const file of chosen) {
+        const fd = new FormData();
+        fd.append('file', file);
+        const out = await apiUpload(`/project-files/${handoverId}/upload`, fd);
+        done.push(out.file?.file_name || file.name);
+      }
+      setNotice(`Uploaded ${done.length} file${done.length === 1 ? '' : 's'} to the project folder.`);
+      await load();
+    } catch (err) {
+      setError(done.length
+        ? `Uploaded ${done.length}, then stopped: ${err.message}`
+        : err.message);
+      if (done.length) await load();
+    } finally { setUploading(false); }
+  }
+
   async function openFile(file) {
     setError('');
     try {
@@ -358,9 +407,17 @@ export default function ProjectFilesPanel({ handoverId }) {
             <span style={{ fontSize: 11, fontWeight: 400, color: '#9ca3af' }}> · {visible.length} file{visible.length === 1 ? '' : 's'}</span>
           </h4>
           {canFile && (
-            <button style={{ ...S.btnPri, marginLeft: 'auto' }} onClick={() => setBrowsing(b => !b)}>
-              {browsing ? 'Done' : '+ Add files'}
-            </button>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
+              <label style={{ ...S.btn, cursor: uploading ? 'default' : 'pointer', opacity: uploading ? 0.6 : 1 }}
+                title="Upload from this computer — the fallback when a WhatsApp attachment was not captured automatically">
+                {uploading ? 'Uploading…' : '⬆ Upload from computer'}
+                <input type="file" multiple disabled={uploading}
+                  onChange={uploadLocal} style={{ display: 'none' }} />
+              </label>
+              <button style={S.btnPri} onClick={() => setBrowsing(b => !b)}>
+                {browsing ? 'Done' : '+ Add files'}
+              </button>
+            </div>
           )}
         </div>
 
