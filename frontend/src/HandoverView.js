@@ -1347,6 +1347,9 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
 
   const isSalesView    = viewMode !== 'dashboard';
   const isServiceView  = viewMode === 'assigned';
+  // Internal projects have no counterparty, so they skip submitted/acknowledged
+  // and go straight from draft to in_progress. See INTERNAL_TRANSITIONS.
+  const isInternal     = detail.projectKind === 'internal';
   const isDraft        = detail.status === 'draft';
   const isSubmitted    = detail.status === 'submitted';
   const isAcknowledged = detail.status === 'acknowledged';
@@ -1475,16 +1478,18 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
         {/* Action buttons */}
         <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
           {isSalesView && isDraft && (
-            <button onClick={() => handleAction('submitted')}
+            <button onClick={() => handleAction(isInternal ? 'in_progress' : 'submitted')}
               disabled={actioning || !canSubmit}
-              title={!canSubmit ? 'Complete all gate plays before submitting' : ''}
+              title={!canSubmit ? `Complete all gate plays before ${isInternal ? 'starting' : 'submitting'}` : ''}
               style={{
                 fontSize: 12, padding: '6px 14px', borderRadius: 6, fontWeight: 600, border: 'none',
                 background: canSubmit ? '#0369a1' : '#e5e7eb',
                 color: canSubmit ? '#fff' : '#9ca3af',
                 cursor: actioning || !canSubmit ? 'not-allowed' : 'pointer',
               }}>
-              {actioning ? '⏳ Submitting…' : '📤 Submit project'}
+              {actioning
+                ? (isInternal ? '⏳ Starting…' : '⏳ Submitting…')
+                : (isInternal ? '▶️ Start project' : '📤 Submit project')}
             </button>
           )}
           {isSalesView && isSubmitted && (

@@ -62,8 +62,26 @@ const TRANSITION_ROLES = {
   cancelled:    'either',    // either side can abandon (deal unwound, etc.)
 };
 
-function assertTransition(from, to) {
-  if (!TRANSITIONS[from]?.includes(to)) {
+// Internal projects have no second party. 'submitted' and 'acknowledged' exist
+// to make the sales-to-service transfer of responsibility explicit and
+// timestamped; with nobody on the other side they are two clicks of ceremony,
+// and 'submitted' additionally locks editing. So internal projects go straight
+// from draft to in_progress.
+const INTERNAL_TRANSITIONS = {
+  draft:        ['in_progress', 'cancelled'],
+  in_progress:  ['draft', 'completed', 'cancelled'],   // draft = reopen for rework
+  submitted:    ['draft', 'in_progress', 'cancelled'], // legacy rows, if any
+  acknowledged: ['in_progress', 'cancelled'],
+  completed:    ['in_progress'],                       // reopen a project closed too early
+  cancelled:    [],
+};
+
+function transitionsFor(kind) {
+  return kind === 'internal' ? INTERNAL_TRANSITIONS : TRANSITIONS;
+}
+
+function assertTransition(from, to, kind = 'customer') {
+  if (!transitionsFor(kind)[from]?.includes(to)) {
     const err = new Error(`Cannot transition from '${from}' to '${to}'`);
     err.status = 400;
     throw err;
@@ -820,8 +838,19 @@ async function _getDealTeam(dealId, orgId) {
 async function update(handoverId, orgId, data) {
   const existing = await _getHandover(handoverId, orgId);
 
-  if (existing.status !== 'draft') {
-    throw Object.assign(new Error('Only draft handovers can be edited'), { status: 400 });
+  // Editing used to stop at 'draft'. That made sense when a submitted handover
+  // was a document being passed between two parties, but a project is a live
+  // thing — dates move, owners change, budgets get revised — and locking those
+  // fields the moment work starts forced people to recall a project to draft to
+  // correct a typo.
+  //
+  // Now blocked only once the project is terminal. A completed or cancelled
+  // project is a record of what happened and must not be rewritten; reopen it
+  // first if it genuinely needs to change.
+  if (TERMINAL_STATUSES.has(existing.status)) {
+    throw Object.assign(
+      new Error(`A ${existing.status} project cannot be edited. Reopen it first if it needs to change.`),
+      { status: 400 });
   }
 
   const {
@@ -910,7 +939,7 @@ async function update(handoverId, orgId, data) {
 async function advanceStatus(handoverId, orgId, userId, toStatus, closureSummary = null) {
   const existing = await _getHandover(handoverId, orgId);
 
-  assertTransition(existing.status, toStatus);
+  assertTransition(existing.status, toStatus, existing.projectKind || 'customer');
 
   // Gate check: cannot submit unless all is_gate plays are complete
   //
@@ -947,8 +976,13 @@ async function advanceStatus(handoverId, orgId, userId, toStatus, closureSummary
     }
   }
 
-  // Permission check
-  const requiredRole = TRANSITION_ROLES[toStatus];
+  // Permission check.
+  // On an internal project the sales/service split does not exist — the creator
+  // and the project manager are the two accountable people. Gating 'in_progress'
+  // on the service role would stop a creator from starting their own project
+  // whenever someone else is named manager.
+  const isInternalKind = (existing.projectKind || 'customer') === 'internal';
+  const requiredRole = isInternalKind ? 'either' : TRANSITION_ROLES[toStatus];
   if (requiredRole === 'sales' && existing.createdBy !== userId) {
     throw Object.assign(new Error('Only the handover creator can perform this action'), { status: 403 });
   }
