@@ -18,7 +18,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import apiService from './apiService';
+import { apiService } from './apiService';
 
 const KINDS = [
   { key: 'vendor',  label: 'Vendors',  fetch: (st) => apiService.accountRelationships.vendors(st) },

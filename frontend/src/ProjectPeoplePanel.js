@@ -18,7 +18,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import apiService from './apiService';
+import { apiService } from './apiService';
 
 const SIDES = [
   { key: 'customer', label: 'Customer team', icon: '🏛️' },
