@@ -147,7 +147,7 @@ async function getThreadForHandover(handoverId, orgId, { createIfMissing = false
     [handoverId, orgId]
   );
   if (!cust) {
-    throw Object.assign(new Error('No stakeholder with a phone number on this handover'), { status: 400 });
+    throw Object.assign(new Error('No customer contact with a phone number on this project. Internal team members can be picked as recipients, but are never messaged automatically.'), { status: 400 });
   }
 
   const waPhone = normalizePhone(cust.phone);
@@ -343,6 +343,36 @@ async function listSendTargets(handoverId, orgId) {
     [handoverId, orgId]
   );
   for (const st of stake) addIndividual(st.phone, st.full_name, st.contact_id, st.side || 'customer');
+
+  // ── Internal team members ──
+  //
+  // project_members, NOT project_contacts. The picker only ever knew about
+  // contacts, which predates internal projects entirely — so on a project whose
+  // team is users, every phone number added to a user was invisible here and
+  // the composer said "No reachable recipients yet" while the numbers sat
+  // correctly in the database.
+  //
+  // PICKER ONLY. Added AFTER the customer contacts above, and the `seen` set
+  // means a customer contact already listed wins. They are labelled 'internal'
+  // so the sender can see who they are writing to, and they are deliberately
+  // absent from getThreadForHandover / preferredDirectThreadForHandover — the
+  // two paths that pick a recipient FOR you. Auto-selecting a colleague as a
+  // project's default WhatsApp recipient is how a customer-facing update goes
+  // to the wrong person.
+  //
+  // whatsapp_phone wins over phone when set; that is what the column is for.
+  const { rows: members } = await pool.query(
+    `SELECT COALESCE(NULLIF(u.whatsapp_phone, ''), u.phone) AS phone,
+            (u.first_name || ' ' || u.last_name) AS full_name
+       FROM project_members pm
+       JOIN users u ON u.id = pm.user_id
+      WHERE pm.context_type = 'handover' AND pm.context_id = $1 AND pm.org_id = $2
+        AND pm.status = 'approved'
+        AND COALESCE(NULLIF(u.whatsapp_phone, ''), u.phone) IS NOT NULL
+      ORDER BY full_name`,
+    [handoverId, orgId]
+  );
+  for (const mb of members) addIndividual(mb.phone, mb.full_name, null, 'internal');
 
   for (const dt of directThreads) addIndividual(dt.wa_phone, null, dt.contact_id);
 
