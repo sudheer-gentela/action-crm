@@ -7,7 +7,7 @@
 const axios = require('axios');
 const StorageProviderBase  = require('./StorageProviderBase');
 const { resolveCategory, assertSizeAllowed, extractTextFromBuffer } = require('./contentExtractor');
-const { getTokenByUserId, refreshUserToken } = require('./tokenService');
+const { getTokenByUserId, refreshUserToken } = require('./oauthTokenService');
 
 const MICROSOFT_PROVIDER = 'outlook';
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';

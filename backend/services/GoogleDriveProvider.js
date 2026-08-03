@@ -9,7 +9,7 @@ const axios = require('axios');
 const { OAuth2Client } = require('google-auth-library');
 const StorageProviderBase  = require('./StorageProviderBase');
 const { resolveCategory, assertSizeAllowed, extractTextFromBuffer } = require('./contentExtractor');
-const { getTokenByUserId, saveUserToken } = require('./tokenService');
+const { getTokenByUserId, saveUserToken } = require('./oauthTokenService');
 
 const GOOGLE_PROVIDER = 'google';
 const DRIVE_BASE = 'https://www.googleapis.com/drive/v3';

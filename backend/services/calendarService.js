@@ -4,7 +4,7 @@
  */
 
 const { Client } = require('@microsoft/microsoft-graph-client');
-const { getTokenByUserId, refreshUserToken } = require('./tokenService');
+const { getTokenByUserId, refreshUserToken } = require('./oauthTokenService');
 
 /**
  * Get Microsoft Graph client for calendar access

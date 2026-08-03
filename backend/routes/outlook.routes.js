@@ -12,7 +12,7 @@
 const express = require('express');
 const router  = express.Router();
 const { getAuthUrl, getTokenFromCode, getUserProfile, getProfileWithAccessToken } = require('../services/outlookService');
-const { saveUserToken, deleteUserTokens } = require('../services/tokenService');
+const { saveUserToken, deleteUserTokens } = require('../services/oauthTokenService');
 const { pool } = require('../config/database');
 
 /**

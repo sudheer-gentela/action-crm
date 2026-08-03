@@ -13,7 +13,7 @@
 const express = require('express');
 const router  = express.Router();
 const { getAuthUrl, getTokenFromCode, getUserProfile } = require('../services/googleService');
-const { saveUserToken, deleteUserTokens } = require('../services/tokenService');
+const { saveUserToken, deleteUserTokens } = require('../services/oauthTokenService');
 const { pool } = require('../config/database');
 
 /**

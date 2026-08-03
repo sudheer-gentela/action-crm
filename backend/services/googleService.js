@@ -2,12 +2,12 @@
 // services/googleService.js
 //
 // Google OAuth + Gmail / Calendar / Drive API integration.
-// Mirrors outlookService.js patterns — uses oauth_tokens table via tokenService.
+// Mirrors outlookService.js patterns — uses oauth_tokens table via oauthTokenService.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const { google } = require('googleapis');
 const crypto = require('crypto');
-const { getTokenByUserId, saveUserToken, refreshUserToken } = require('./tokenService');
+const { getTokenByUserId, saveUserToken, refreshUserToken } = require('./oauthTokenService');
 
 // ── OAuth2 Client ─────────────────────────────────────────────────────────────
 

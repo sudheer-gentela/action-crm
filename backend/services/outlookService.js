@@ -1,7 +1,7 @@
 const { Client } = require('@microsoft/microsoft-graph-client');
 const { ConfidentialClientApplication } = require('@azure/msal-node');
 const axios = require('axios');
-const { getTokenByUserId, saveUserToken, refreshUserToken } = require('./tokenService');
+const { getTokenByUserId, saveUserToken, refreshUserToken } = require('./oauthTokenService');
 
 const msalConfig = {
   auth: {
@@ -14,16 +14,15 @@ const msalConfig = {
 const cca = new ConfidentialClientApplication(msalConfig);
 
 // ── Scopes ────────────────────────────────────────────────────────────────────
-// Mail.Send added — users who already consented with the old scope list will be
-// prompted to re-consent once when they next click "Connect Outlook".
-const SCOPES = [
-  'https://graph.microsoft.com/Mail.Read',
-  'https://graph.microsoft.com/Mail.Send',   // ← NEW
-  'https://graph.microsoft.com/Calendars.Read',
-  'https://graph.microsoft.com/User.Read',
-  'offline_access',
-  'https://graph.microsoft.com/Files.Read',
-];
+// Now defined once in config/microsoftScopes.js. There used to be a second,
+// hard-coded copy inside oauthTokenService.refreshUserToken, so changing this list
+// alone silently downgraded every refreshed token back to the old scopes.
+//
+// Files.ReadWrite (was Files.Read) — users who consented under the old list are
+// prompted to re-consent once when they next click "Connect Outlook". Until
+// they do, refreshMicrosoftToken keeps their mail working on the scopes they
+// already granted; only file WRITE waits for the reconnect.
+const { MICROSOFT_SCOPES: SCOPES, refreshMicrosoftToken } = require('../config/microsoftScopes');
 
 /**
  * Get authorization URL for OAuth flow
@@ -127,18 +126,15 @@ async function _getGraphClientFromAccessToken({ accessToken, refreshToken = null
 
         if (isExpired) {
           console.log(`🔄 Outlook sender ${senderEmail} token expires at ${rawExpiry} — refreshing proactively`);
-          const tenantId = process.env.MICROSOFT_TENANT_ID;
-          const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
-          const params = new URLSearchParams({
-            client_id:     process.env.MICROSOFT_CLIENT_ID,
-            client_secret: process.env.MICROSOFT_CLIENT_SECRET,
-            refresh_token: refreshToken,
-            grant_type:    'refresh_token',
-            scope:         SCOPES.join(' '),
-          });
-          const response = await axios.post(tokenUrl, params.toString(), {
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          });
+          const { data: refreshed, downgraded } = await refreshMicrosoftToken(axios, refreshToken);
+          if (downgraded) {
+            console.warn(
+              `⚠️  Outlook sender ${senderEmail} has not consented to Files.ReadWrite — ` +
+              `refreshed on their existing scopes. Mail is unaffected; writing files to ` +
+              `OneDrive will fail until they reconnect in Settings → Outreach.`
+            );
+          }
+          const response = { data: refreshed };
           resolvedAccessToken = response.data.access_token;
           const newRefresh = response.data.refresh_token || refreshToken;
           const newExpiry  = new Date(Date.now() + response.data.expires_in * 1000);
