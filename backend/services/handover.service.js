@@ -2234,16 +2234,35 @@ async function getCommunications(handoverId, orgId) {
   if (hrows.length === 0) throw Object.assign(new Error('Handover not found'), { status: 404 });
   const dealId = hrows[0].deal_id;
 
+  // Deal-tagged OR project-tagged. Two changes from before:
+  //
+  //   • dealId may be NULL (internal projects have no deal), in which case the
+  //     old `e.deal_id = $2` matched nothing and the tab showed no mail at all.
+  //   • project-tagged mail is org-scoped, not user-scoped — tagging a thread
+  //     publishes every mailbox copy to the project's members, which is the
+  //     point of thread-level tagging.
+  //
+  // DISTINCT ON collapses those copies. One message in three colleagues'
+  // mailboxes is three rows (Graph issues a message id per mailbox), and
+  // without this the Communications tab shows it three times. The surviving row
+  // is the one that carries the most context — a resolved contact first, then
+  // lowest id for stability.
+  const emailThreads = require('./emailThreads.service');
   const emails = await pool.query(
-    `SELECT e.id, e.direction, e.subject, e.body, e.from_address, e.to_address, e.cc_addresses,
+    `SELECT DISTINCT ON (${emailThreads.DEDUPE_KEY})
+            e.id, e.direction, e.subject, e.body, e.from_address, e.to_address, e.cc_addresses,
             e.contact_id, ct.first_name || ' ' || ct.last_name AS contact_name,
             e.user_id AS sender_user_id, su.first_name || ' ' || su.last_name AS sender_name,
-            e.sent_at, e.created_at
+            e.sent_at, e.created_at, e.conversation_id, e.handover_id, e.tag_source
        FROM emails e
        LEFT JOIN contacts ct ON ct.id = e.contact_id
        LEFT JOIN users su ON su.id = e.user_id
-      WHERE e.org_id = $1 AND e.deal_id = $2`,
-    [orgId, dealId]
+      WHERE e.org_id = $1
+        AND e.deleted_at IS NULL
+        AND e.hidden_at IS NULL
+        AND ( ($2::int IS NOT NULL AND e.deal_id = $2) OR e.handover_id = $3 )
+      ORDER BY ${emailThreads.DEDUPE_KEY}, (e.contact_id IS NOT NULL) DESC, e.id`,
+    [orgId, dealId, handoverId]
   );
   const wa = await pool.query(
     `SELECT m.id, m.direction, m.body, m.from_name, m.is_automated, m.status,

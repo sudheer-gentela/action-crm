@@ -195,7 +195,7 @@ async function fetchEmails(userId, options = {}) {
       .select([
         'id', 'subject', 'from', 'toRecipients', 'ccRecipients',
         'receivedDateTime', 'bodyPreview', 'body', 'importance',
-        'hasAttachments', 'conversationId', 'isRead', 'categories'
+        'hasAttachments', 'conversationId', 'isRead', 'categories', 'internetMessageId'
       ].join(','))
       .top(top)
       .skip(skip)
@@ -227,7 +227,7 @@ async function fetchEmailById(userId, emailId) {
       .select([
         'id', 'subject', 'from', 'toRecipients', 'ccRecipients',
         'receivedDateTime', 'body', 'importance',
-        'hasAttachments', 'conversationId', 'isRead', 'categories'
+        'hasAttachments', 'conversationId', 'isRead', 'categories', 'internetMessageId'
       ].join(','))
       .get();
   } catch (error) {

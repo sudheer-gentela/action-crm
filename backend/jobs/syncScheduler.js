@@ -499,8 +499,38 @@ async function storeEmailRow(client, {
   fromAddress, toAddresses, ccAddresses,
   dealId, contactId, prospectId, accountId,
   secondaryMatches = [],
+  // Reassigned below when the message's conversation is already filed to a
+  // project. Destructured parameters are mutable bindings, so this is legal.
   tagSource, taggedAt, taggedBy,
 }) {
+  // Project inheritance at ingest.
+  //
+  // If this message's conversation has been filed to a project, the message is
+  // filed on arrival rather than waiting for someone to notice and tag it
+  // again. That is what makes thread-level tagging worth having.
+  //
+  // Resolved here, in the one place that writes the row, rather than at the
+  // four call sites that decide tagSource.
+  //
+  // 'thread' outranks 'auto': a person filed this conversation deliberately,
+  // whereas 'auto' records that the matcher guessed a deal. deal_id and
+  // handover_id are separate columns, so an auto-matched deal link survives
+  // alongside the project link — only the provenance label is overwritten.
+  let handoverId = null;
+  if (email.conversationId) {
+    const { rows: mapped } = await client.query(
+      `SELECT handover_id, tagged_by FROM email_threads
+        WHERE org_id = $1 AND conversation_id = $2`,
+      [orgId, email.conversationId]
+    );
+    if (mapped.length) {
+      handoverId = mapped[0].handover_id;
+      tagSource  = 'thread';
+      taggedAt   = taggedAt || new Date();
+      taggedBy   = taggedBy || mapped[0].tagged_by;
+    }
+  }
+
   const insertResult = await client.query(
     `INSERT INTO emails (
       org_id, user_id, deal_id, contact_id, prospect_id, direction,
@@ -509,8 +539,9 @@ async function storeEmailRow(client, {
       sent_at, external_id, external_data,
       conversation_id, provider,
       tag_source, tagged_at, tagged_by,
+      handover_id,
       created_at
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW())
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,NOW())
     RETURNING id`,
     [
       orgId, userId, dealId, contactId, prospectId, direction,
@@ -523,6 +554,11 @@ async function storeEmailRow(client, {
       email.id,
       JSON.stringify({
         conversationId:    email.conversationId,
+        // RFC 5322 Message-ID: globally unique and IDENTICAL in every mailbox
+        // that received a copy, unlike email.id which Graph issues per mailbox.
+        // It is the only stable key for collapsing the same message across
+        // colleagues' mailboxes in the project Communications view.
+        internetMessageId: email.internetMessageId || undefined,
         importance:        email.importance,
         hasAttachments:    email.hasAttachments,
         isRead:            email.isRead,
@@ -535,6 +571,7 @@ async function storeEmailRow(client, {
       email.conversationId || null,
       provider,
       tagSource, taggedAt, taggedBy,
+      handoverId,
     ]
   );
 

@@ -315,13 +315,37 @@ router.get('/untagged', async (req, res) => {
 });
 
 // ── PATCH /:id/tag ────────────────────────────────────────────────────────────
-// Manually tag an email to a deal.
-// Body: { dealId: number }
+// Manually tag an email to a deal, a project, or both.
+// Body: { dealId?: number, handoverId?: number, wholeThread?: boolean }
+//
+// dealId keeps its existing meaning and behaviour. handoverId is new: by default
+// it files the WHOLE conversation, because tagging one row would tag only the
+// tagger's mailbox copy and leave colleagues' copies untagged — the thing that
+// made per-message tagging useless for a team. Pass wholeThread:false to tag
+// just this message, which records tag_source='manual' and outranks the thread.
 router.patch('/:id/tag', async (req, res) => {
   try {
-    const { dealId } = req.body;
-    if (!dealId) {
-      return res.status(400).json({ error: { message: 'dealId is required' } });
+    const { dealId, handoverId, wholeThread = true } = req.body;
+    if (!dealId && !handoverId) {
+      return res.status(400).json({ error: { message: 'dealId or handoverId is required' } });
+    }
+
+    if (handoverId) {
+      const emailThreads = require('../services/emailThreads.service');
+      const out = wholeThread
+        ? await emailThreads.tagThread(parseInt(handoverId, 10), req.orgId, req.user.userId,
+            { emailId: parseInt(req.params.id, 10) })
+        : await (async () => {
+            const { rows } = await db.query(
+              `UPDATE emails SET handover_id = $2, tag_source = 'manual',
+                      tagged_by = $3, tagged_at = NOW(), hidden_at = NULL, hidden_by = NULL
+                WHERE id = $1 AND org_id = $4 AND deleted_at IS NULL
+                RETURNING id`,
+              [req.params.id, parseInt(handoverId, 10), req.user.userId, req.orgId]);
+            if (!rows.length) throw Object.assign(new Error('Email not found'), { status: 404 });
+            return { messagesLinked: rows.length, wholeThread: false };
+          })();
+      if (!dealId) return res.json({ success: true, ...out });
     }
 
     const emailCheck = await db.query(
