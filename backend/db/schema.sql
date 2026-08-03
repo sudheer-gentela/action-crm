@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict Q8WqM7sWYQi2jOIHuJi5N277pN5sAfrvW0wf8bmNWEmCIX0j3d4ShyglOpBZWKQ
+\restrict WCwJUbVhNU9GdZlKcfRqpWxGlvrbxBCnP7J7EjtffoKIZ3h9XzwXIKrfNjRL8S2
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -3586,6 +3586,55 @@ ALTER SEQUENCE public.email_sync_history_id_seq OWNED BY public.email_sync_histo
 
 
 --
+-- Name: email_threads; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.email_threads (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    conversation_id character varying(500) NOT NULL,
+    handover_id integer NOT NULL,
+    subject text,
+    tagged_by integer,
+    tagged_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE email_threads; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.email_threads IS 'Maps an email conversation to a project. One conversation, one project ΓÇö so a message cannot be inherited into two. Messages arriving later on a mapped conversation are stamped at ingest with tag_source = ''thread''. Tagging a conversation does not move mail; it publishes every mailbox copy to the project team.';
+
+
+--
+-- Name: COLUMN email_threads.subject; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.email_threads.subject IS 'Subject at the time of tagging, kept so the project can list its threads without joining to a message that may since have been deleted from a mailbox.';
+
+
+--
+-- Name: email_threads_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.email_threads_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: email_threads_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.email_threads_id_seq OWNED BY public.email_threads.id;
+
+
+--
 -- Name: emails; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -3618,8 +3667,12 @@ CREATE TABLE public.emails (
     sender_account_id integer,
     body_quotable text,
     body_format text,
+    handover_id integer,
+    hidden_at timestamp with time zone,
+    hidden_by integer,
     CONSTRAINT emails_body_format_check CHECK (((body_format IS NULL) OR (body_format = ANY (ARRAY['html'::text, 'plain'::text])))),
-    CONSTRAINT emails_tag_source_check CHECK ((tag_source = ANY (ARRAY['auto'::text, 'manual'::text, 'team'::text])))
+    CONSTRAINT emails_hidden_shape_chk CHECK ((((hidden_at IS NULL) AND (hidden_by IS NULL)) OR ((hidden_at IS NOT NULL) AND (hidden_by IS NOT NULL)))),
+    CONSTRAINT emails_tag_source_check CHECK (((tag_source IS NULL) OR (tag_source = ANY (ARRAY['auto'::text, 'manual'::text, 'thread'::text]))))
 );
 
 
@@ -3649,6 +3702,20 @@ COMMENT ON COLUMN public.emails.body_quotable IS 'The outbound HTML body as it s
 --
 
 COMMENT ON COLUMN public.emails.body_format IS 'Format of body and body_quotable on this row. NULL = pre-2026_76, treat as html. Read by the threaded-reply quote builder: when the parent''s format differs from the current send format the quote block is skipped rather than emitted as broken markup.';
+
+
+--
+-- Name: COLUMN emails.handover_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.emails.handover_id IS 'The one project this message belongs to. Effective value, whether tagged directly or inherited from its conversation ΓÇö see tag_source.';
+
+
+--
+-- Name: COLUMN emails.hidden_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.emails.hidden_at IS 'Suppressed from the project view. Distinct from untagging: the link and its provenance are kept, so it is reversible and auditable.';
 
 
 --
@@ -9363,6 +9430,13 @@ ALTER TABLE ONLY public.email_sync_history ALTER COLUMN id SET DEFAULT nextval('
 
 
 --
+-- Name: email_threads id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_threads ALTER COLUMN id SET DEFAULT nextval('public.email_threads_id_seq'::regclass);
+
+
+--
 -- Name: emails id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -10691,6 +10765,14 @@ ALTER TABLE ONLY public.email_sync_history
 
 
 --
+-- Name: email_threads email_threads_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_threads
+    ADD CONSTRAINT email_threads_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: emails emails_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -11664,6 +11746,14 @@ ALTER TABLE ONLY public.contact_roles
 
 ALTER TABLE ONLY public.deal_health_config
     ADD CONSTRAINT uq_deal_health_config_user_org UNIQUE (user_id, org_id);
+
+
+--
+-- Name: email_threads uq_email_threads; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_threads
+    ADD CONSTRAINT uq_email_threads UNIQUE (org_id, conversation_id);
 
 
 --
@@ -13502,10 +13592,24 @@ CREATE INDEX idx_email_sync_history_user ON public.email_sync_history USING btre
 
 
 --
+-- Name: idx_email_threads_handover; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_email_threads_handover ON public.email_threads USING btree (handover_id);
+
+
+--
 -- Name: idx_emails_contact; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_emails_contact ON public.emails USING btree (contact_id);
+
+
+--
+-- Name: idx_emails_conversation; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_emails_conversation ON public.emails USING btree (org_id, conversation_id) WHERE (conversation_id IS NOT NULL);
 
 
 --
@@ -13548,6 +13652,13 @@ CREATE INDEX idx_emails_external_data ON public.emails USING gin (external_data)
 --
 
 CREATE INDEX idx_emails_external_id ON public.emails USING btree (user_id, external_id);
+
+
+--
+-- Name: idx_emails_handover; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_emails_handover ON public.emails USING btree (handover_id) WHERE (handover_id IS NOT NULL);
 
 
 --
@@ -17661,6 +17772,30 @@ ALTER TABLE ONLY public.email_sync_history
 
 
 --
+-- Name: email_threads email_threads_handover_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_threads
+    ADD CONSTRAINT email_threads_handover_id_fkey FOREIGN KEY (handover_id) REFERENCES public.sales_handovers(id) ON DELETE CASCADE;
+
+
+--
+-- Name: email_threads email_threads_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_threads
+    ADD CONSTRAINT email_threads_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: email_threads email_threads_tagged_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_threads
+    ADD CONSTRAINT email_threads_tagged_by_fkey FOREIGN KEY (tagged_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
 -- Name: emails emails_contact_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -17674,6 +17809,22 @@ ALTER TABLE ONLY public.emails
 
 ALTER TABLE ONLY public.emails
     ADD CONSTRAINT emails_deal_id_fkey FOREIGN KEY (deal_id) REFERENCES public.deals(id) ON DELETE CASCADE;
+
+
+--
+-- Name: emails emails_handover_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.emails
+    ADD CONSTRAINT emails_handover_id_fkey FOREIGN KEY (handover_id) REFERENCES public.sales_handovers(id) ON DELETE SET NULL;
+
+
+--
+-- Name: emails emails_hidden_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.emails
+    ADD CONSTRAINT emails_hidden_by_fkey FOREIGN KEY (hidden_by) REFERENCES public.users(id) ON DELETE SET NULL;
 
 
 --
@@ -20183,5 +20334,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Q8WqM7sWYQi2jOIHuJi5N277pN5sAfrvW0wf8bmNWEmCIX0j3d4ShyglOpBZWKQ
+\unrestrict WCwJUbVhNU9GdZlKcfRqpWxGlvrbxBCnP7J7EjtffoKIZ3h9XzwXIKrfNjRL8S2
 

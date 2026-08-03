@@ -2292,6 +2292,11 @@ async function getCommunications(handoverId, orgId) {
       groupSubject: null, participants: [],
       contactId: e.contact_id || null, contactName: e.contact_name || null,
       senderUserId: e.sender_user_id || null, senderName: e.sender_name || null,
+      // Needed by the UI to file or unfile the conversation this message belongs
+      // to. tagSource distinguishes a thread the team filed from a message that
+      // merely arrived on a deal.
+      emailId: e.id, conversationId: e.conversation_id || null,
+      handoverId: e.handover_id || null, tagSource: e.tag_source || null,
     })),
     ...wa.rows.map(m => ({
       id: `wa-${m.id}`, channel: 'whatsapp',

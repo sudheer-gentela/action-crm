@@ -31,6 +31,7 @@ import PortfolioHealthReport from './PortfolioHealthReport';
 import { hashParts, hashSegment, writeHash } from './hashNav';
 import ProjectFilesPanel from './ProjectFilesPanel';
 import ProjectPeoplePanel from './ProjectPeoplePanel';
+import ProjectEmailThreads from './ProjectEmailThreads';
 
 // ── Deep-link parsing ─────────────────────────────────────────────────────────
 // #/handovers                         → My Handovers list
@@ -1604,7 +1605,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
 
       {detailTab === 'communications' && (
         <div style={{ padding: '16px 20px' }}>
-          <CommunicationsPanel handoverId={detail.id} />
+          <CommunicationsPanel handoverId={detail.id} accountId={detail.accountId} />
         </div>
       )}
 
@@ -2520,7 +2521,7 @@ const WA_TEMPLATES = [
   },
 ];
 
-function CommunicationsPanel({ handoverId }) {
+function CommunicationsPanel({ handoverId, accountId }) {
   const [items,   setItems]   = useState(null);
   const [people,  setPeople]  = useState([]);
   const [personFilter, setPersonFilter] = useState('');
@@ -2716,6 +2717,11 @@ function CommunicationsPanel({ handoverId }) {
 
   return (
     <div>
+      {/* Which conversations belong to this project. The timeline below renders
+          the messages; this decides what is on it. Filing is thread-level, so
+          every colleague's mailbox copy and every future reply come with it. */}
+      <ProjectEmailThreads handoverId={handoverId} accountId={accountId} onChanged={load} />
+
       {/* Channel filter — All / Email / WhatsApp (Phone later) */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
         {[['all', 'All'], ['email', 'Email'], ['whatsapp', 'WhatsApp']].map(([k, label]) => {
@@ -2798,7 +2804,17 @@ function CommunicationsPanel({ handoverId }) {
               {targets.some(t => t.type === 'individual') && (
                 <optgroup label="People">
                   {targets.filter(t => t.type === 'individual').map(t => (
-                    <option key={t.key} value={t.key}>{t.name}{t.phone ? ` · +${t.phone}` : ''}{t.phoneValid === false ? ' · ⚠ needs country code' : ''}{t.optedOut ? ' · opted out' : ''}</option>
+                    <option key={t.key} value={t.key}>
+                      {t.name}
+                      {/* Vendors and partners stay selectable — messaging one
+                          deliberately is legitimate. They are labelled so the
+                          sender can see they are not writing to the customer.
+                          Only the IMPLICIT default recipient is customer-only. */}
+                      {t.side && t.side !== 'customer' ? ` · ${t.side}` : ''}
+                      {t.phone ? ` · +${t.phone}` : ''}
+                      {t.phoneValid === false ? ' · ⚠ needs country code' : ''}
+                      {t.optedOut ? ' · opted out' : ''}
+                    </option>
                   ))}
                 </optgroup>
               )}

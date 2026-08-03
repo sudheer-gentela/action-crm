@@ -723,6 +723,19 @@ twilio: {
     setPolicy:  (patch)             => api.put('/account-relationships/policy', patch),
   },
 
+  // Email conversations filed to a project. Thread-level: tagging one message
+  // files the whole conversation and publishes every mailbox copy to the team.
+  projectEmails: {
+    threads:     (handoverId)        => api.get(`/project-emails/${handoverId}/threads`),
+    tagThread:   (handoverId, body)  => api.post(`/project-emails/${handoverId}/threads`, body),
+    untagThread: (handoverId, convId) =>
+      api.delete(`/project-emails/${handoverId}/threads/${encodeURIComponent(convId)}`),
+    hide:        (handoverId, emailId) => api.post(`/project-emails/${handoverId}/messages/${emailId}/hide`),
+    unhide:      (handoverId, emailId) => api.post(`/project-emails/${handoverId}/messages/${emailId}/unhide`),
+    untagged:    (accountId)         =>
+      api.get(`/emails/untagged${accountId ? `?accountId=${accountId}` : ''}`),
+  },
+
   handovers: {
     list:      (scope = 'mine', status, kind) => {
       const qs = new URLSearchParams({
