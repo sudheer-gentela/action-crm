@@ -144,6 +144,13 @@ function fmtStakeholder(row) {
     accountTeamId:     null,
     name:              row.name,
     handoverRole:      row.handover_role,
+    // Which side of the table, for THIS project. Defaulted rather than left
+    // undefined so a caller that predates 2026_93 still gets a usable value.
+    side:              row.side ?? 'customer',
+    // Resolved from contact_roles; falls back to the raw key when the role was
+    // later deactivated, so the row still renders.
+    handoverRoleLabel: row.handover_role_label ?? row.handover_role,
+    accountName:       row.account_name ?? null,
     relationshipNotes: row.relationship_notes,
     isPrimaryContact:  row.is_primary_contact,
     createdAt:         row.created_at,
@@ -803,6 +810,7 @@ async function getById(handoverId, orgId, userId = null) {
     canSeeCommercial:      userId ? await canSeeTab(handoverId, orgId, userId, 'commercial') : false,
     canManageTabAccess:    userId ? await canManageTabAccess(handoverId, orgId, userId) : false,
     commercialViewers:     (await getTabViewers(handoverId, orgId, 'commercial')).viewers,
+    signoff:               await _signoffState(handoverId, orgId),
   };
 }
 
@@ -1087,7 +1095,105 @@ async function canClose(handoverId, orgId) {
     blockers.push(`${openCommitments} commitment${openCommitments === 1 ? '' : 's'} not yet resolved`);
   }
 
-  return { canClose: blockers.length === 0, blockers, rollup: r };
+  // Internal-customer sign-off.
+  //
+  // Only bites when BOTH are true: the org has turned the hard gate on, AND an
+  // internal customer has actually been named on this project. Gating a project
+  // that has no named acceptor would strand it with nobody able to unblock it —
+  // so an org that switches to 'hard' does not retroactively freeze every
+  // project that predates the setting.
+  const signoff = await _signoffState(handoverId, orgId);
+  if (signoff.mode === 'hard' && signoff.acceptors.length && !signoff.signedOffAt) {
+    const names = signoff.acceptors.map(a => a.name).join(', ');
+    blockers.push(`awaiting sign-off from ${names}`);
+  }
+
+  return { canClose: blockers.length === 0, blockers, rollup: r, signoff };
+}
+
+/**
+ * Who has to accept this project, whether they have, and whether it blocks.
+ *
+ * Acceptors are project_members with side = 'internal_customer' — users, never
+ * contacts. The person the work is FOR.
+ */
+async function _signoffState(handoverId, orgId) {
+  const projectSettings = require('./projectSettings.service');
+  const cfg = await projectSettings.get(orgId);
+
+  const { rows } = await pool.query(
+    `SELECT pm.user_id, (u.first_name || ' ' || u.last_name) AS name
+       FROM project_members pm
+       JOIN users u ON u.id = pm.user_id
+      WHERE pm.context_type = 'handover' AND pm.context_id = $1 AND pm.org_id = $2
+        AND pm.side = 'internal_customer' AND pm.status = 'approved'
+      ORDER BY name`,
+    [handoverId, orgId]
+  );
+
+  const { rows: [h] } = await pool.query(
+    `SELECT signed_off_by, signed_off_at, signoff_note,
+            (su.first_name || ' ' || su.last_name) AS signed_off_by_name
+       FROM sales_handovers sh
+       LEFT JOIN users su ON su.id = sh.signed_off_by
+      WHERE sh.id = $1 AND sh.org_id = $2`,
+    [handoverId, orgId]
+  );
+
+  return {
+    mode:            cfg.closure_signoff_mode || 'soft',
+    acceptors:       rows.map(r => ({ userId: r.user_id, name: r.name })),
+    signedOffAt:     h?.signed_off_at || null,
+    signedOffBy:     h?.signed_off_by || null,
+    signedOffByName: h?.signed_off_by_name || null,
+    note:            h?.signoff_note || null,
+  };
+}
+
+/**
+ * Record that the internal customer accepts the project as done.
+ *
+ * Only a named acceptor may do this. Deliberately NOT open to the project
+ * manager or an org admin — the whole point is that somebody other than the
+ * people doing the work agrees it is finished, and letting an admin sign on
+ * their behalf would make the record say something untrue.
+ */
+async function signOff(handoverId, orgId, userId, note = null) {
+  const state = await _signoffState(handoverId, orgId);
+
+  if (!state.acceptors.length) {
+    throw Object.assign(
+      new Error('No internal customer has been named on this project yet. Add one to the Customer team first.'),
+      { status: 400 });
+  }
+  if (!state.acceptors.some(a => a.userId === userId)) {
+    throw Object.assign(
+      new Error('Only the named internal customer can sign this project off'), { status: 403 });
+  }
+  if (state.signedOffAt) return { alreadySignedOff: true, ...state };
+
+  const { rows } = await pool.query(
+    `UPDATE sales_handovers
+        SET signed_off_by = $3, signed_off_at = now(), signoff_note = $4
+      WHERE id = $1 AND org_id = $2
+      RETURNING signed_off_at`,
+    [handoverId, orgId, userId, note ? String(note).trim() : null]
+  );
+  if (!rows.length) throw Object.assign(new Error('Project not found'), { status: 404 });
+
+  return { ...(await _signoffState(handoverId, orgId)), alreadySignedOff: false };
+}
+
+/** Withdraw a sign-off. Same authority as giving it. */
+async function revokeSignOff(handoverId, orgId, userId) {
+  const state = await _signoffState(handoverId, orgId);
+  if (!state.acceptors.some(a => a.userId === userId)) {
+    throw Object.assign(new Error('Only the named internal customer can withdraw sign-off'), { status: 403 });
+  }
+  await pool.query(
+    `UPDATE sales_handovers SET signed_off_by = NULL, signed_off_at = NULL, signoff_note = NULL
+      WHERE id = $1 AND org_id = $2`, [handoverId, orgId]);
+  return _signoffState(handoverId, orgId);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1137,15 +1243,26 @@ async function addStakeholder(handoverId, orgId, userId, data) {
     contactId = c.id;
   }
 
-  const role = data.handoverRole || data.role || 'other';
+  // Which side of the table this person sits on, for THIS project. Not derived
+  // from their account: the same firm is a vendor on one project and the
+  // customer on the next, with the same people.
+  const side = ['customer', 'vendor', 'partner'].includes(data.side) ? data.side : 'customer';
+
+  // project_contacts_role_chk was dropped in 2026_93 because roles are
+  // configurable, so this is the only thing between a typo and an unrenderable
+  // label.
+  const contactRoles = require('./contactRoles.service');
+  const role = await contactRoles.resolveRoleKey(orgId, side, data.handoverRole || data.role || 'other');
+
   const { rows: [pc] } = await pool.query(
     `INSERT INTO project_contacts
-       (org_id, context_type, context_id, contact_id, role, is_primary, notes, created_by)
-     VALUES ($1, 'handover', $2, $3, $4, $5, $6, $7)
+       (org_id, context_type, context_id, contact_id, role, side, is_primary, notes, created_by)
+     VALUES ($1, 'handover', $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT (context_type, context_id, contact_id)
-       DO UPDATE SET role = EXCLUDED.role, is_primary = EXCLUDED.is_primary, notes = EXCLUDED.notes
+       DO UPDATE SET role = EXCLUDED.role, side = EXCLUDED.side,
+                     is_primary = EXCLUDED.is_primary, notes = EXCLUDED.notes
      RETURNING id`,
-    [orgId, handoverId, contactId, role, !!data.isPrimaryContact, data.relationshipNotes || null, userId]);
+    [orgId, handoverId, contactId, role, side, !!data.isPrimaryContact, data.relationshipNotes || null, userId]);
 
   const list = await _getStakeholders(handoverId, orgId);
   return list.find(s => s.id === pc.id) || null;
@@ -1534,17 +1651,26 @@ async function _getStakeholders(handoverId, orgId) {
             pc.context_id                        AS handover_id,
             pc.contact_id,
             pc.role                              AS handover_role,
+            pc.side                              AS side,
+            cr.name                              AS handover_role_label,
             pc.is_primary                        AS is_primary_contact,
             pc.notes                             AS relationship_notes,
             pc.created_at,
             (c.first_name || ' ' || c.last_name) AS name,
             c.email                              AS contact_email,
             c.title                              AS contact_title,
-            c.phone                              AS contact_phone
+            c.phone                              AS contact_phone,
+            a.name                               AS account_name
      FROM project_contacts pc
      JOIN contacts c ON c.id = pc.contact_id
+     LEFT JOIN accounts a ON a.id = c.account_id
+     -- Roles are configurable now (2026_93), so the label comes from
+     -- contact_roles rather than a hard-coded map. LEFT JOIN so a row whose
+     -- role was later deactivated still renders, using its raw key.
+     LEFT JOIN contact_roles cr
+            ON cr.org_id = pc.org_id AND cr.side = pc.side AND cr.key = pc.role
      WHERE pc.context_type = 'handover' AND pc.context_id = $1 AND pc.org_id = $2
-     ORDER BY pc.is_primary DESC, name ASC`,
+     ORDER BY pc.side, pc.is_primary DESC, name ASC`,
     [handoverId, orgId]
   );
   return rows.map(fmtStakeholder);
@@ -2575,6 +2701,8 @@ async function setTabViewers(handoverId, orgId, userId, tabKey, userIds) {
 }
 
 module.exports = {
+  signOff,
+  revokeSignOff,
   canSeeTab,
   getTabViewers,
   setTabViewers,

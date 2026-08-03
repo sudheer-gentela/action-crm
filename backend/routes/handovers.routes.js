@@ -203,6 +203,28 @@ router.get('/sales/:id/can-submit', async (req, res) => {
 // Closure gate: returns is_closeable plus the deliverable rollup, so the UI can
 // both disable the Complete button and explain exactly what is blocking it.
 
+// ── Internal-customer sign-off ───────────────────────────────────────────────
+// Only a named acceptor can call these; the service enforces it. Not open to
+// admins on purpose — the record must not claim someone accepted the work who
+// did not.
+router.post('/sales/:id/sign-off', async (req, res) => {
+  try {
+    res.json(await handoverService.signOff(
+      parseInt(req.params.id), req.orgId, req.user.userId, req.body?.note));
+  } catch (err) {
+    console.error('Project sign-off error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+router.delete('/sales/:id/sign-off', async (req, res) => {
+  try {
+    res.json(await handoverService.revokeSignOff(parseInt(req.params.id), req.orgId, req.user.userId));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
 router.get('/sales/:id/can-close', async (req, res) => {
   try {
     const result = await handoverService.canClose(parseInt(req.params.id), req.orgId);

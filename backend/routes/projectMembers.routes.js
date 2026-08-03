@@ -90,6 +90,10 @@ router.post('/handovers/:id/members/:mid/review', canManage, (req, res) =>
   send(res, svc.reviewMember(parseInt(req.params.id, 10), req.orgId, req.userId,
     parseInt(req.params.mid, 10), req.body?.action, req.body?.reason)));
 
+router.patch('/handovers/:id/members/:mid', canManage, (req, res) =>
+  send(res, svc.changeRole(parseInt(req.params.id, 10), req.orgId,
+    parseInt(req.params.mid, 10), req.body || {})));
+
 router.delete('/handovers/:id/members/:mid', canManage, (req, res) =>
   send(res, svc.removeMember(parseInt(req.params.id, 10), req.orgId, parseInt(req.params.mid, 10))));
 

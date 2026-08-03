@@ -108,6 +108,7 @@ function fmt(row) {
   return {
     id: row.id, userId: row.user_id, name: row.name, email: row.email,
     roleId: row.role_id, roleName: row.role_name, customRole: row.custom_role,
+    side: row.side || 'delivery',
     status: row.status, reviewReason: row.review_reason,
     requestedBy: row.requested_by, requestedByName: row.requested_by_name,
     createdAt: row.created_at,
@@ -160,25 +161,39 @@ async function requestMember(handoverId, orgId, requesterId, data) {
     `SELECT 1 FROM org_users WHERE org_id = $1 AND user_id = $2 AND is_active = TRUE`, [orgId, userId]);
   if (!ok) throw Object.assign(new Error('That user is not an active member of this org'), { status: 400 });
 
+  // 'internal_customer' is the person the work is FOR — the one who accepts it
+  // as done. Stored as a side rather than a role name because closure sign-off
+  // keys off it, and a role label can be renamed in the config screen.
+  const side = data.side === 'internal_customer' ? 'internal_customer' : 'delivery';
+
   const decision = await autoApproveDecision(orgId, userId);
   // A project owner or org admin adding someone to their own project is not
   // making a request — they are staffing it. Approval exists to stop arbitrary
   // people granting access, which does not describe this caller.
   const byManager = await canManageProject(handoverId, orgId, requesterId);
-  const auto      = decision.auto || byManager;
+  // ...but naming your own acceptor is exactly the thing sign-off exists to
+  // prevent, so an internal customer always goes to an org admin.
+  const auto      = side === 'internal_customer'
+    ? false
+    : (decision.auto || byManager);
   const status    = auto ? 'approved' : 'pending';
 
   const { rows: [pm] } = await pool.query(
     `INSERT INTO project_members
        (org_id, context_type, context_id, user_id, role_id, custom_role, status,
-        requested_by, reviewed_by, reviewed_at)
-     VALUES ($1,'handover',$2,$3,$4,$5,$6,$7,
-             CASE WHEN $6 = 'approved' THEN $7 ELSE NULL END,
-             CASE WHEN $6 = 'approved' THEN now() ELSE NULL END)
+        requested_by, reviewed_by, reviewed_at, side)
+     VALUES ($1,'handover',$2,$3,$4,$5,$6,$7::int,
+             -- Explicit cast: $7 feeds both requested_by and, through a CASE
+             -- compared against a text parameter, reviewed_by. Without it
+             -- Postgres deduces conflicting types for the same parameter.
+             CASE WHEN $6 = 'approved' THEN $7::int ELSE NULL END,
+             CASE WHEN $6 = 'approved' THEN now() ELSE NULL END,
+             $8)
      ON CONFLICT (context_type, context_id, user_id)
-       DO UPDATE SET role_id = EXCLUDED.role_id, custom_role = EXCLUDED.custom_role
+       DO UPDATE SET role_id = EXCLUDED.role_id, custom_role = EXCLUDED.custom_role,
+                     side = EXCLUDED.side
      RETURNING id`,
-    [orgId, handoverId, userId, data.roleId || null, data.customRole || null, status, requesterId]);
+    [orgId, handoverId, userId, data.roleId || null, data.customRole || null, status, requesterId, side]);
 
   return {
     id: pm.id,
@@ -246,6 +261,47 @@ async function reviewMember(handoverId, orgId, adminId, memberId, action, reason
   throw Object.assign(new Error("action must be 'approve' or 'reject'"), { status: 400 });
 }
 
+/**
+ * Change an existing member's role or side.
+ *
+ * There was no way to do this at all — the routes had add, review, remove and
+ * self-exit, and the row rendered as flat text. So a member added as "Team
+ * member" stayed one forever, and the open question of restoring somebody's
+ * prior role after a Project Manager demotion had no mechanism behind it.
+ *
+ * Moving someone INTO internal_customer resets them to pending: they are being
+ * made the acceptor of the work, which is an org-admin decision, not the
+ * project manager's.
+ */
+async function changeRole(handoverId, orgId, memberId, patch = {}) {
+  const { rows: [pm] } = await pool.query(
+    `SELECT id, side, status FROM project_members
+      WHERE id = $1 AND org_id = $2 AND context_type = 'handover' AND context_id = $3`,
+    [memberId, orgId, handoverId]);
+  if (!pm) throw Object.assign(new Error('Member not found'), { status: 404 });
+  if (['declined', 'left', 'rejected'].includes(pm.status)) {
+    throw Object.assign(new Error('That person is no longer on the project'), { status: 400 });
+  }
+
+  const sets = ['role_id = $3', 'custom_role = $4'];
+  const vals = [memberId, orgId, patch.roleId || null, patch.customRole || null];
+
+  if (patch.side !== undefined) {
+    const side = patch.side === 'internal_customer' ? 'internal_customer' : 'delivery';
+    vals.push(side); sets.push(`side = $${vals.length}`);
+    if (side === 'internal_customer' && pm.side !== 'internal_customer') {
+      sets.push(`status = 'pending'`, `reviewed_by = NULL`, `reviewed_at = NULL`);
+    }
+  }
+
+  const { rows } = await pool.query(
+    `UPDATE project_members SET ${sets.join(', ')}
+      WHERE id = $1 AND org_id = $2
+      RETURNING id, role_id, custom_role, side, status`,
+    vals);
+  return { member: rows[0] };
+}
+
 async function removeMember(handoverId, orgId, memberId) {
   const { rowCount } = await pool.query(
     `DELETE FROM project_members WHERE id=$1 AND org_id=$2 AND context_type='handover' AND context_id=$3`,
@@ -257,6 +313,6 @@ async function removeMember(handoverId, orgId, memberId) {
 module.exports = {
   listDomains, addDomain, removeDomain,
   seatAvailable, shouldAutoApprove,
-  listForHandover, requestMember, reviewMember, removeMember,
+  listForHandover, requestMember, reviewMember, removeMember, changeRole,
   canManageProject, autoApproveDecision, selfExit,
 };

@@ -1553,6 +1553,18 @@ async function upsertRoles(client, orgId) {
 }
 
 /**
+ * Seed the external contact roles (customer / vendor / partner) for an org.
+ *
+ * Sits beside upsertRoles, which does the same for INTERNAL roles in org_roles.
+ * Without this a newly provisioned org has an empty contact-role list and the
+ * "add contact" role picker comes up blank.
+ */
+async function upsertContactRoles(client, orgId) {
+  const contactRoles = require('./contactRoles.service');
+  await contactRoles.seedDefaults(orgId, client);
+}
+
+/**
  * Insert playbook_roles rows for all roles used by a module's plays.
  * Derives the distinct role set from PLAY_ROLE_MAP for the given module.
  */

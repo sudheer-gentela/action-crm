@@ -10,11 +10,12 @@ const { pool } = require('../config/database');
 const moduleAccessRequests = require('./moduleAccessRequests.service');
 const inviteProvisioning   = require('./inviteProvisioning.service');
 const projectMembers       = require('./projectMembers.service');
+const accountRelationships = require('./accountRelationships.service');
 
 const LABELS = { prospecting: 'Prospecting', contracts: 'Contracts', handovers: 'Handovers', service: 'Service', agency: 'Agency' };
 
 async function listPending(orgId) {
-  const [grants, invites, members] = await Promise.all([
+  const [grants, invites, members, relationships] = await Promise.all([
     pool.query(
       `SELECT r.id, r.module_key, r.created_at,
               (tu.first_name || ' ' || tu.last_name) AS for_name, tu.email AS for_email,
@@ -42,6 +43,7 @@ async function listPending(orgId) {
          LEFT JOIN sales_handovers h ON h.id = pm.context_id
          LEFT JOIN deals d ON d.id = h.deal_id
         WHERE pm.org_id = $1 AND pm.status = 'pending' AND pm.context_type = 'handover'`, [orgId]),
+    accountRelationships.listPending(orgId),
   ]);
 
   const items = [];
@@ -67,6 +69,16 @@ async function listPending(orgId) {
     sub: `Project team${m.role_name ? ` · ${m.role_name}` : ''}${m.by_name ? ` · by ${m.by_name}` : ''}`,
   });
 
+  // Vendor and partner relationships are approved ONCE, org-wide, by a named
+  // approver — not per project. They land in the same queue so an admin has one
+  // place to clear, but review() dispatches them to their own service, which
+  // enforces the approver policy rather than plain org-admin.
+  for (const r of relationships) items.push({
+    type: 'account_relationship', id: r.id, createdAt: r.created_at,
+    title: `${r.account_name} as ${r.relationship}`,
+    sub: `Relationship${r.by_name ? ` · requested by ${r.by_name}` : ''}`,
+  });
+
   items.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
   return { approvals: items, count: items.length };
 }
@@ -80,6 +92,7 @@ async function review(orgId, adminId, { type, id, contextId, action, reason }) {
       : inviteProvisioning.rejectInvite(orgId, adminId, id, reason);
   }
   if (type === 'project_member') return projectMembers.reviewMember(parseInt(contextId, 10), orgId, adminId, id, action, reason);
+  if (type === 'account_relationship') return accountRelationships.review(orgId, adminId, id, action, reason);
   throw Object.assign(new Error('Unknown approval type'), { status: 400 });
 }
 

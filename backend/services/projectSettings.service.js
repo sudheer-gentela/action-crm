@@ -67,11 +67,26 @@ const SYSTEM_DEFAULTS = {
   // Orgs differ here (Project Manager, Delivery Lead, Engagement Manager), and a
   // single project can override it.
   manager_label: 'Project Manager',
+
+  // Whether an internal customer must accept the project before it can be
+  // completed.
+  //   'soft' — sign-off is recorded if it happens, and never blocks.
+  //   'hard' — completion is blocked until the project is signed off.
+  //
+  // The gate only bites once an internal customer has actually been named on
+  // the project (project_members.side = 'internal_customer', status approved).
+  // Blocking a project that has no named acceptor would strand it with nobody
+  // able to unblock it.
+  //
+  // Default 'soft' so turning this on is a deliberate act and nothing currently
+  // in flight is caught by it.
+  closure_signoff_mode: 'soft',
 };
 
 const VALID_ROLES  = ['owner', 'admin', 'member', 'viewer'];
 const VALID_BASIS  = ['people', 'team'];
 const VALID_OWNER  = ['service_owner', 'created_by'];
+const VALID_SIGNOFF = ['soft', 'hard'];
 
 function merge(stored) {
   const s = stored && typeof stored === 'object' ? stored : {};
@@ -136,6 +151,14 @@ async function update(orgId, patch = {}) {
     if (!v)          { const e = new Error('manager_label cannot be blank'); e.status = 400; throw e; }
     if (v.length > 40) { const e = new Error('manager_label must be 40 characters or fewer'); e.status = 400; throw e; }
     next.manager_label = v;
+  }
+
+  if (patch.closure_signoff_mode !== undefined) {
+    if (!VALID_SIGNOFF.includes(patch.closure_signoff_mode)) {
+      const e = new Error(`closure_signoff_mode must be one of: ${VALID_SIGNOFF.join(', ')}`);
+      e.status = 400; throw e;
+    }
+    next.closure_signoff_mode = patch.closure_signoff_mode;
   }
 
   for (const k of ['team_scope_enabled', 'show_unassigned_in_team_scope',
