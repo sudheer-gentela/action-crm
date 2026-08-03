@@ -73,7 +73,18 @@ class GoogleDriveProvider extends StorageProviderBase {
         corpora: 'allDrives',
       },
     });
-    return response.data.files.map((item) => this._normalize(item));
+    const items = response.data.files.map((item) => this._normalize(item));
+
+    // At the drive root, prepend the Shared Drives. They are NOT files and
+    // never appear in files.list at any corpora setting, so without this a user
+    // sees only My Drive and cannot reach a Shared Drive folder at all — which
+    // means they cannot map one to a project. Deeper folders are ordinary
+    // listings and need nothing extra.
+    if (!folderId) {
+      const drives = await this.listSharedDrives(userId);
+      return [...drives, ...items];
+    }
+    return items;
   }
 
   /**
