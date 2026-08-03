@@ -25,6 +25,29 @@
 
 BEGIN;
 
+-- ── 0. Preflight: 2026_95 must have run first ────────────────────────────────
+--
+-- This migration extends whatsapp_messages.media_status, which 2026_95 creates.
+-- Without this guard the failure is 'column "media_status" does not exist'
+-- followed by four 'current transaction is aborted' lines — which says what
+-- broke but not why, and does not name the migration you actually need.
+--
+-- Everything here is one transaction, so a failure rolls back completely and
+-- nothing is left half-applied.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name   = 'whatsapp_messages'
+       AND column_name  = 'media_status'
+  ) THEN
+    RAISE EXCEPTION
+      'Migration 2026_95_org_storage_accounts.sql has not been applied. Run it first, then re-run this file.'
+      USING HINT = 'psql $DATABASE_URL -f backend/db/2026_95_org_storage_accounts.sql';
+  END IF;
+END $$;
+
 -- ── 1. Per-project capture mode ──────────────────────────────────────────────
 --
 -- Per PROJECT, not per thread: the upload target is per project, and a project

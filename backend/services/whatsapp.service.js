@@ -562,15 +562,44 @@ async function ingestWebhook(payload) {
           ? await threadForInboundGroup(org, m.group_id, m.from, value)
           : await threadForInbound(org, m.from, value);
         if (!thread) continue;
-        const bodyText = m.text?.body ?? `[${m.type}]`;
+        // ── Attachment identity ──
+        //
+        // The webhook payload is the ONLY place a media id ever appears, and
+        // this used to write `[document]` and drop the whole object with it.
+        // The number is registered to the Cloud API, so it cannot also be used
+        // in the consumer or Business app — there is no inbox anywhere. Once
+        // the webhook is processed without keeping the id, nobody on the team
+        // can obtain that file by any route.
+        //
+        // Meta's download URL expires in minutes but the ID stays valid for the
+        // full ~30-day retention, so keeping it is what makes a fetch (and a
+        // retry after a failed one) possible at all.
+        const media = m.image || m.document || m.video || m.audio || m.sticker || null;
+
+        // Prefer the caption a person actually wrote over a `[image]`
+        // placeholder — it is usually the only description of the attachment.
+        const bodyText =
+          m.text?.body
+          ?? media?.caption
+          ?? (media?.filename ? `[${m.type}] ${media.filename}` : `[${m.type}]`);
+
         const res = await pool.query(
           `INSERT INTO whatsapp_messages
              (org_id, thread_id, wa_message_id, direction, message_type, body,
-              from_phone, from_name, status, sent_at)
-           VALUES ($1,$2,$3,'inbound',$4,$5,$6,$7,'received', to_timestamp($8))
+              from_phone, from_name, status, sent_at,
+              wa_media_id, media_mime_type, media_sha256, media_filename, media_caption,
+              media_status, media_expires_at)
+           VALUES ($1,$2,$3,'inbound',$4,$5,$6,$7,'received', to_timestamp($8),
+                   $9,$10,$11,$12,$13,
+                   -- 'pending' only when there is something to fetch, so plain
+                   -- text messages are not swept looking for attachments.
+                   CASE WHEN $9::text IS NULL THEN NULL ELSE 'pending' END,
+                   CASE WHEN $9::text IS NULL THEN NULL ELSE now() + interval '30 days' END)
            ON CONFLICT (org_id, wa_message_id) WHERE wa_message_id IS NOT NULL DO NOTHING`,
           [org, thread.id, m.id, m.type || 'text', bodyText, m.from,
-           contactNameFromValue(value, m.from), Number(m.timestamp) || (Date.now() / 1000)]
+           contactNameFromValue(value, m.from), Number(m.timestamp) || (Date.now() / 1000),
+           media?.id || null, media?.mime_type || null, media?.sha256 || null,
+           media?.filename || null, media?.caption || null]
         );
         if (res.rowCount > 0) inbound++;   // window opens via the touch trigger
       }
