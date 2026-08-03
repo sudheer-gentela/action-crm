@@ -695,6 +695,30 @@ twilio: {
   // ══════════════════════════════════════════════════════════
   // Handovers — Sales → Implementation  (Phase 3)
   // ══════════════════════════════════════════════════════════
+  // Configurable roles for EXTERNAL project people, per side. Separate from
+  // orgRoles (internal, routable) on purpose.
+  contactRoles: {
+    list:    (side)        => api.get(`/contact-roles${side ? `?side=${side}` : ''}`),
+    listAll: (side)        => api.get(`/contact-roles?all=true${side ? `&side=${side}` : ''}`),
+    create:  (data)        => api.post('/contact-roles', data),
+    update:  (id, patch)   => api.patch(`/contact-roles/${id}`, patch),
+    remove:  (id)          => api.delete(`/contact-roles/${id}`),
+    reorder: (side, ids)   => api.post('/contact-roles/reorder', { side, ids }),
+  },
+
+  // Vendors and partners are ACCOUNTS carrying a relationship, so these return
+  // the account shape.
+  accountRelationships: {
+    vendors:    (status = 'active') => api.get(`/account-relationships/vendors?status=${status}`),
+    partners:   (status = 'active') => api.get(`/account-relationships/partners?status=${status}`),
+    forAccount: (accountId)         => api.get(`/account-relationships/account/${accountId}`),
+    request:    (data)              => api.post('/account-relationships', data),
+    review:     (id, body)          => api.post(`/account-relationships/${id}/review`, body),
+    end:        (id)                => api.post(`/account-relationships/${id}/end`),
+    getPolicy:  ()                  => api.get('/account-relationships/policy'),
+    setPolicy:  (patch)             => api.put('/account-relationships/policy', patch),
+  },
+
   handovers: {
     list:      (scope = 'mine', status, kind) => {
       const qs = new URLSearchParams({
@@ -733,6 +757,11 @@ twilio: {
     setStatus: (id, status, closureSummary) => api.patch(`/handovers/sales/${id}/status`, { status, closureSummary }),
     canSubmit: (id)          => api.get(`/handovers/sales/${id}/can-submit`),
     canClose:  (id)          => api.get(`/handovers/sales/${id}/can-close`),
+
+    // Internal-customer sign-off. Only a named acceptor may call these — the
+    // service enforces it, so the UI only ever hides the button.
+    signOff:       (id, note) => api.post(`/handovers/sales/${id}/sign-off`, { note }),
+    revokeSignOff: (id)       => api.delete(`/handovers/sales/${id}/sign-off`),
 
     addStakeholder:    (id, data) => api.post(`/handovers/sales/${id}/stakeholders`, data),    updateStakeholder: (id, sid, data) => api.put(`/handovers/sales/${id}/stakeholders/${sid}`, data),
     removeStakeholder: (id, sid)  => api.delete(`/handovers/sales/${id}/stakeholders/${sid}`),
@@ -773,6 +802,9 @@ twilio: {
     // Project members (internal team, request/approve) + org email domains
     members:        (id)          => api.get(`/project-members/handovers/${id}/members`),
     requestMember:  (id, data)    => api.post(`/project-members/handovers/${id}/members`, data),
+    // Change an existing member's role or side. There was no way to do this
+    // before — members could only be added and removed.
+    updateMember:   (id, mid, data) => api.patch(`/project-members/handovers/${id}/members/${mid}`, data),
     reviewMember:   (id, mid, b)  => api.post(`/project-members/handovers/${id}/members/${mid}/review`, b),
     removeMember:   (id, mid)     => api.delete(`/project-members/handovers/${id}/members/${mid}`),
     orgDomains:     ()            => api.get('/project-members/domains'),

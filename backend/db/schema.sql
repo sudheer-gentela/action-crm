@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict Ag01xriipbYomh2azZowWCZ6HT8GoXVwXxJRwW66TsD6ue0Bsv9glEbCNvpzOXp
+\restrict Q8WqM7sWYQi2jOIHuJi5N277pN5sAfrvW0wf8bmNWEmCIX0j3d4ShyglOpBZWKQ
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -395,6 +395,55 @@ CREATE SEQUENCE public.account_hierarchy_id_seq
 --
 
 ALTER SEQUENCE public.account_hierarchy_id_seq OWNED BY public.account_hierarchy.id;
+
+
+--
+-- Name: account_relationships; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.account_relationships (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    account_id integer NOT NULL,
+    relationship text NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    approved_by integer,
+    approved_at timestamp with time zone,
+    ended_at timestamp with time zone,
+    notes text,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT account_relationships_approval_shape_chk CHECK ((((status = 'active'::text) AND (approved_by IS NOT NULL) AND (approved_at IS NOT NULL)) OR ((status <> 'active'::text) AND ((approved_at IS NULL) OR (approved_by IS NOT NULL))))),
+    CONSTRAINT account_relationships_kind_chk CHECK ((relationship = ANY (ARRAY['vendor'::text, 'partner'::text, 'reseller'::text]))),
+    CONSTRAINT account_relationships_status_chk CHECK ((status = ANY (ARRAY['pending'::text, 'active'::text, 'rejected'::text, 'ended'::text])))
+);
+
+
+--
+-- Name: TABLE account_relationships; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.account_relationships IS 'What an org is to us ΓÇö vendor, partner, reseller ΓÇö separate from and additive to accounts.account_type, which is sales lifecycle. Multi-valued: an account can be a customer AND a partner AND a vendor. Approved once per relationship by a named approver, not per project.';
+
+
+--
+-- Name: account_relationships_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.account_relationships_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: account_relationships_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.account_relationships_id_seq OWNED BY public.account_relationships.id;
 
 
 --
@@ -1972,6 +2021,58 @@ ALTER SEQUENCE public.contact_identities_id_seq OWNED BY public.contact_identiti
 
 
 --
+-- Name: contact_roles; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.contact_roles (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    side text NOT NULL,
+    key text NOT NULL,
+    name text NOT NULL,
+    is_system boolean DEFAULT false NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    sort_order integer DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT contact_roles_side_chk CHECK ((side = ANY (ARRAY['customer'::text, 'vendor'::text, 'partner'::text])))
+);
+
+
+--
+-- Name: TABLE contact_roles; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.contact_roles IS 'Configurable roles for EXTERNAL project people, per side. Sibling to org_roles, not an extension: org_roles is routable (plays resolve an assignee among users) and these are descriptive labels for people who are not users.';
+
+
+--
+-- Name: COLUMN contact_roles.is_system; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.contact_roles.is_system IS 'Referenced by application logic, so it may be renamed but not deleted. go_live_approver gates project sign-off; other is the fallback default for project_contacts.role.';
+
+
+--
+-- Name: contact_roles_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.contact_roles_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: contact_roles_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.contact_roles_id_seq OWNED BY public.contact_roles.id;
+
+
+--
 -- Name: contacts; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2763,9 +2864,16 @@ ALTER SEQUENCE public.deal_activities_id_seq OWNED BY public.deal_activities.id;
 CREATE TABLE public.deal_contacts (
     deal_id integer NOT NULL,
     contact_id integer NOT NULL,
-    role character varying(50),
+    role character varying(50) DEFAULT 'other'::character varying,
     is_primary boolean DEFAULT false
 );
+
+
+--
+-- Name: COLUMN deal_contacts.role; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.deal_contacts.role IS 'Key into contact_roles where side = ''customer'', same vocabulary as project_contacts.role. Validated in the service layer.';
 
 
 --
@@ -3820,11 +3928,15 @@ CREATE TABLE public.sales_handovers (
     playbook_changed_at timestamp with time zone,
     playbook_changed_by integer,
     previous_playbook_id integer,
+    signed_off_by integer,
+    signed_off_at timestamp with time zone,
+    signoff_note text,
     CONSTRAINT sales_handovers_budget_internal_chk CHECK (((budget IS NULL) OR (project_kind = 'internal'::text))),
     CONSTRAINT sales_handovers_kind_shape_chk CHECK ((((project_kind = 'internal'::text) AND (account_id IS NULL) AND (deal_id IS NULL)) OR ((project_kind = 'customer'::text) AND ((account_id IS NOT NULL) OR (deal_id IS NOT NULL))))),
     CONSTRAINT sales_handovers_manager_label_chk CHECK (((manager_label IS NULL) OR (btrim(manager_label) <> ''::text))),
     CONSTRAINT sales_handovers_name_required_chk CHECK (((deal_id IS NOT NULL) OR ((name IS NOT NULL) AND (btrim(name) <> ''::text)))),
     CONSTRAINT sales_handovers_project_kind_chk CHECK ((project_kind = ANY (ARRAY['customer'::text, 'internal'::text]))),
+    CONSTRAINT sales_handovers_signoff_shape_chk CHECK ((((signed_off_at IS NULL) AND (signed_off_by IS NULL)) OR ((signed_off_at IS NOT NULL) AND (signed_off_by IS NOT NULL)))),
     CONSTRAINT sales_handovers_status_check CHECK (((status)::text = ANY ((ARRAY['draft'::character varying, 'submitted'::character varying, 'acknowledged'::character varying, 'in_progress'::character varying, 'completed'::character varying, 'cancelled'::character varying])::text[])))
 );
 
@@ -3883,6 +3995,13 @@ COMMENT ON COLUMN public.sales_handovers.manager_label IS 'Per-project override 
 --
 
 COMMENT ON COLUMN public.sales_handovers.previous_playbook_id IS 'The playbook replaced by the most recent swap. Its plays are cancelled, not deleted.';
+
+
+--
+-- Name: COLUMN sales_handovers.signed_off_by; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sales_handovers.signed_off_by IS 'The internal customer who accepted the project as done. Distinct from completed_by, which is whoever moved the record to completed. Whether sign-off BLOCKS completion is per-org config: settings->project_access->closure_signoff_mode (soft|hard).';
 
 
 --
@@ -5642,7 +5761,8 @@ CREATE TABLE public.project_contacts (
     notes text,
     created_by integer,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT project_contacts_role_chk CHECK ((role = ANY (ARRAY['implementation_lead'::text, 'day_to_day_admin'::text, 'go_live_approver'::text, 'exec_sponsor'::text, 'technical_lead'::text, 'other'::text])))
+    side text DEFAULT 'customer'::text NOT NULL,
+    CONSTRAINT project_contacts_side_chk CHECK ((side = ANY (ARRAY['customer'::text, 'vendor'::text, 'partner'::text])))
 );
 
 
@@ -5667,6 +5787,49 @@ ALTER SEQUENCE public.project_contacts_id_seq OWNED BY public.project_contacts.i
 
 
 --
+-- Name: project_folders; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.project_folders (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    handover_id integer NOT NULL,
+    provider character varying(50) NOT NULL,
+    folder_id text NOT NULL,
+    folder_name text,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE project_folders; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.project_folders IS 'Maps a cloud storage folder to a project. Covers subfolders: resolution matches the folder id anywhere in storage_files.folder_path. Mapping a folder does not import its contents ΓÇö it decides which project a file lands in when someone adds it.';
+
+
+--
+-- Name: project_folders_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.project_folders_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: project_folders_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.project_folders_id_seq OWNED BY public.project_folders.id;
+
+
+--
 -- Name: project_members; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -5686,7 +5849,9 @@ CREATE TABLE public.project_members (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     exited_at timestamp with time zone,
     exit_reason text,
+    side text DEFAULT 'delivery'::text NOT NULL,
     CONSTRAINT project_members_exit_shape_chk CHECK ((((status = ANY (ARRAY['declined'::text, 'left'::text])) AND (exited_at IS NOT NULL)) OR ((status <> ALL (ARRAY['declined'::text, 'left'::text])) AND (exited_at IS NULL)))),
+    CONSTRAINT project_members_side_chk CHECK ((side = ANY (ARRAY['delivery'::text, 'internal_customer'::text]))),
     CONSTRAINT project_members_status_chk CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'declined'::text, 'left'::text])))
 );
 
@@ -5703,6 +5868,13 @@ COMMENT ON COLUMN public.project_members.exited_at IS 'When the member declined 
 --
 
 COMMENT ON COLUMN public.project_members.exit_reason IS 'Optional note from the member on why they declined or left. Distinct from review_reason, which is an admin decision.';
+
+
+--
+-- Name: COLUMN project_members.side; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.project_members.side IS 'delivery = doing the work. internal_customer = the person the work is FOR, who accepts it as done. A column rather than a role name because closure sign-off keys off it, and a role label can be renamed in the config screen.';
 
 
 --
@@ -7500,7 +7672,17 @@ CREATE TABLE public.storage_files (
     health_status_after character varying(20),
     actions_generated integer DEFAULT 0,
     source_label text,
-    org_id integer NOT NULL
+    org_id integer NOT NULL,
+    folder_id text,
+    folder_path text[],
+    handover_id integer,
+    tag_source text,
+    tagged_by integer,
+    tagged_at timestamp with time zone,
+    hidden_at timestamp with time zone,
+    hidden_by integer,
+    CONSTRAINT storage_files_hidden_shape_chk CHECK ((((hidden_at IS NULL) AND (hidden_by IS NULL)) OR ((hidden_at IS NOT NULL) AND (hidden_by IS NOT NULL)))),
+    CONSTRAINT storage_files_tag_source_chk CHECK (((tag_source IS NULL) OR (tag_source = ANY (ARRAY['manual'::text, 'folder'::text]))))
 );
 
 
@@ -7523,6 +7705,41 @@ COMMENT ON COLUMN public.storage_files.provider_file_id IS 'Opaque provider-spec
 --
 
 COMMENT ON COLUMN public.storage_files.source_label IS 'Human-readable identifier shown in the actions table. Format: "<Provider>: <FileName>". E.g. "OneDrive: Q3 Proposal Final.docx"';
+
+
+--
+-- Name: COLUMN storage_files.folder_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.storage_files.folder_id IS 'Provider id of the immediate parent folder. Populated at import from metadata the providers already fetch (Drive "parents", Graph "parentReference"). Backfilled by POST /storage/imported/:recordId/folder-url for pre-existing rows.';
+
+
+--
+-- Name: COLUMN storage_files.folder_path; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.storage_files.folder_path IS 'Ancestor folder ids, nearest parent first. Lets a folder mapping cover subfolders without a provider call at read time, and resolves for files added before the mapping existed.';
+
+
+--
+-- Name: COLUMN storage_files.handover_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.storage_files.handover_id IS 'The one project this file belongs to. Effective value, whether it was tagged directly or inherited from a mapped folder ΓÇö see tag_source.';
+
+
+--
+-- Name: COLUMN storage_files.tag_source; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.storage_files.tag_source IS 'manual = someone tagged this file to this project and it outranks any folder mapping. folder = inherited from project_folders and may be re-resolved.';
+
+
+--
+-- Name: COLUMN storage_files.hidden_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.storage_files.hidden_at IS 'Suppressed from the project team view. Distinct from untagging: the link and its provenance are kept, so hiding is reversible and auditable.';
 
 
 --
@@ -8719,6 +8936,13 @@ ALTER TABLE ONLY public.account_hierarchy ALTER COLUMN id SET DEFAULT nextval('p
 
 
 --
+-- Name: account_relationships id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.account_relationships ALTER COLUMN id SET DEFAULT nextval('public.account_relationships_id_seq'::regclass);
+
+
+--
 -- Name: account_team_members id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -8919,6 +9143,13 @@ ALTER TABLE ONLY public.contact_dotted_lines ALTER COLUMN id SET DEFAULT nextval
 --
 
 ALTER TABLE ONLY public.contact_identities ALTER COLUMN id SET DEFAULT nextval('public.contact_identities_id_seq'::regclass);
+
+
+--
+-- Name: contact_roles id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.contact_roles ALTER COLUMN id SET DEFAULT nextval('public.contact_roles_id_seq'::regclass);
 
 
 --
@@ -9398,6 +9629,13 @@ ALTER TABLE ONLY public.project_contacts ALTER COLUMN id SET DEFAULT nextval('pu
 
 
 --
+-- Name: project_folders id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_folders ALTER COLUMN id SET DEFAULT nextval('public.project_folders_id_seq'::regclass);
+
+
+--
 -- Name: project_members id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -9813,6 +10051,14 @@ ALTER TABLE ONLY public.account_hierarchy
 
 
 --
+-- Name: account_relationships account_relationships_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.account_relationships
+    ADD CONSTRAINT account_relationships_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: account_team_members account_team_members_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -10146,6 +10392,14 @@ ALTER TABLE ONLY public.contact_identities
 
 ALTER TABLE ONLY public.contact_identities
     ADD CONSTRAINT contact_identities_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: contact_roles contact_roles_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.contact_roles
+    ADD CONSTRAINT contact_roles_pkey PRIMARY KEY (id);
 
 
 --
@@ -10949,6 +11203,14 @@ ALTER TABLE ONLY public.project_contacts
 
 
 --
+-- Name: project_folders project_folders_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_folders
+    ADD CONSTRAINT project_folders_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: project_members project_members_context_type_context_id_user_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -11381,6 +11643,22 @@ ALTER TABLE ONLY public.tracking_domains
 
 
 --
+-- Name: account_relationships uq_account_relationships; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.account_relationships
+    ADD CONSTRAINT uq_account_relationships UNIQUE (org_id, account_id, relationship);
+
+
+--
+-- Name: contact_roles uq_contact_roles; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.contact_roles
+    ADD CONSTRAINT uq_contact_roles UNIQUE (org_id, side, key);
+
+
+--
 -- Name: deal_health_config uq_deal_health_config_user_org; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -11394,6 +11672,14 @@ ALTER TABLE ONLY public.deal_health_config
 
 ALTER TABLE ONLY public.org_skill_installs
     ADD CONSTRAINT uq_org_skill_installs UNIQUE (org_id, skill_name);
+
+
+--
+-- Name: project_folders uq_project_folders_folder; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_folders
+    ADD CONSTRAINT uq_project_folders_folder UNIQUE (org_id, provider, folder_id);
 
 
 --
@@ -11659,6 +11945,13 @@ CREATE INDEX discovered_models_provider_idx ON public.discovered_models USING bt
 --
 
 CREATE UNIQUE INDEX emails_external_id_unique ON public.emails USING btree (external_id) WHERE (external_id IS NOT NULL);
+
+
+--
+-- Name: idx_account_relationships_lookup; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_account_relationships_lookup ON public.account_relationships USING btree (org_id, relationship, status);
 
 
 --
@@ -12632,6 +12925,13 @@ CREATE INDEX idx_contact_identities_pending ON public.contact_identities USING b
 --
 
 CREATE INDEX idx_contact_identities_prospect ON public.contact_identities USING btree (canonical_prospect_id) WHERE (canonical_prospect_id IS NOT NULL);
+
+
+--
+-- Name: idx_contact_roles_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_contact_roles_active ON public.contact_roles USING btree (org_id, side, sort_order) WHERE is_active;
 
 
 --
@@ -14098,6 +14398,20 @@ CREATE INDEX idx_project_contacts_ctx ON public.project_contacts USING btree (co
 
 
 --
+-- Name: idx_project_contacts_side; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_project_contacts_side ON public.project_contacts USING btree (context_type, context_id, side);
+
+
+--
+-- Name: idx_project_folders_handover; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_project_folders_handover ON public.project_folders USING btree (handover_id);
+
+
+--
 -- Name: idx_project_members_approved; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -14109,6 +14423,13 @@ CREATE INDEX idx_project_members_approved ON public.project_members USING btree 
 --
 
 CREATE INDEX idx_project_members_ctx ON public.project_members USING btree (context_type, context_id, status);
+
+
+--
+-- Name: idx_project_members_side; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_project_members_side ON public.project_members USING btree (context_type, context_id, side) WHERE (status = 'approved'::text);
 
 
 --
@@ -14746,6 +15067,27 @@ CREATE INDEX idx_storage_files_contact_id ON public.storage_files USING btree (c
 --
 
 CREATE INDEX idx_storage_files_deal_id ON public.storage_files USING btree (deal_id);
+
+
+--
+-- Name: idx_storage_files_folder; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_storage_files_folder ON public.storage_files USING btree (org_id, provider, folder_id) WHERE (folder_id IS NOT NULL);
+
+
+--
+-- Name: idx_storage_files_folder_path; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_storage_files_folder_path ON public.storage_files USING gin (folder_path);
+
+
+--
+-- Name: idx_storage_files_handover; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_storage_files_handover ON public.storage_files USING btree (handover_id) WHERE (handover_id IS NOT NULL);
 
 
 --
@@ -15519,6 +15861,13 @@ CREATE UNIQUE INDEX uq_ssv_exp_step_key ON public.sequence_step_variants USING b
 
 
 --
+-- Name: uq_storage_files_project_ref; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_storage_files_project_ref ON public.storage_files USING btree (org_id, provider, provider_file_id) WHERE (handover_id IS NOT NULL);
+
+
+--
 -- Name: uq_target_profiles_org_name; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -15821,6 +16170,38 @@ ALTER TABLE ONLY public.account_hierarchy
 
 ALTER TABLE ONLY public.account_hierarchy
     ADD CONSTRAINT account_hierarchy_parent_account_id_fkey FOREIGN KEY (parent_account_id) REFERENCES public.accounts(id) ON DELETE CASCADE;
+
+
+--
+-- Name: account_relationships account_relationships_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.account_relationships
+    ADD CONSTRAINT account_relationships_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id) ON DELETE CASCADE;
+
+
+--
+-- Name: account_relationships account_relationships_approved_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.account_relationships
+    ADD CONSTRAINT account_relationships_approved_by_fkey FOREIGN KEY (approved_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: account_relationships account_relationships_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.account_relationships
+    ADD CONSTRAINT account_relationships_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: account_relationships account_relationships_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.account_relationships
+    ADD CONSTRAINT account_relationships_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
 
 
 --
@@ -16605,6 +16986,14 @@ ALTER TABLE ONLY public.contact_identities
 
 ALTER TABLE ONLY public.contact_identities
     ADD CONSTRAINT contact_identities_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: contact_roles contact_roles_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.contact_roles
+    ADD CONSTRAINT contact_roles_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
 
 
 --
@@ -18224,6 +18613,30 @@ ALTER TABLE ONLY public.project_contacts
 
 
 --
+-- Name: project_folders project_folders_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_folders
+    ADD CONSTRAINT project_folders_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: project_folders project_folders_handover_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_folders
+    ADD CONSTRAINT project_folders_handover_id_fkey FOREIGN KEY (handover_id) REFERENCES public.sales_handovers(id) ON DELETE CASCADE;
+
+
+--
+-- Name: project_folders project_folders_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_folders
+    ADD CONSTRAINT project_folders_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
 -- Name: project_members project_members_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -18687,6 +19100,14 @@ ALTER TABLE ONLY public.sales_handovers
 
 
 --
+-- Name: sales_handovers sales_handovers_signed_off_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_handovers
+    ADD CONSTRAINT sales_handovers_signed_off_by_fkey FOREIGN KEY (signed_off_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
 -- Name: sequence_enrollments sequence_enrollments_current_step_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -18860,6 +19281,30 @@ ALTER TABLE ONLY public.storage_files
 
 ALTER TABLE ONLY public.storage_files
     ADD CONSTRAINT storage_files_deal_id_fkey FOREIGN KEY (deal_id) REFERENCES public.deals(id) ON DELETE SET NULL;
+
+
+--
+-- Name: storage_files storage_files_handover_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.storage_files
+    ADD CONSTRAINT storage_files_handover_id_fkey FOREIGN KEY (handover_id) REFERENCES public.sales_handovers(id) ON DELETE SET NULL;
+
+
+--
+-- Name: storage_files storage_files_hidden_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.storage_files
+    ADD CONSTRAINT storage_files_hidden_by_fkey FOREIGN KEY (hidden_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: storage_files storage_files_tagged_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.storage_files
+    ADD CONSTRAINT storage_files_tagged_by_fkey FOREIGN KEY (tagged_by) REFERENCES public.users(id) ON DELETE SET NULL;
 
 
 --
@@ -19738,5 +20183,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Ag01xriipbYomh2azZowWCZ6HT8GoXVwXxJRwW66TsD6ue0Bsv9glEbCNvpzOXp
+\unrestrict Q8WqM7sWYQi2jOIHuJi5N277pN5sAfrvW0wf8bmNWEmCIX0j3d4ShyglOpBZWKQ
 

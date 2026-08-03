@@ -9,6 +9,7 @@ import EmailView from './EmailView';
 import ActionsView from './ActionsView';
 import CalendarView from './CalendarView';
 import FilesView from './FilesView';
+import VendorsView from './VendorsView';
 import SettingsView from './SettingsView';
 import SuperAdminView from './SuperAdminView';
 import ImpersonationBanner from './ImpersonationBanner';
@@ -89,6 +90,9 @@ const NAV_ITEMS_BY_ROLE = {
     { id: 'actions',      label: 'Actions',      icon: '⚡' },
     { id: 'deals',        label: 'Deals',        icon: '💼' },
     { id: 'accounts',     label: 'Accounts',     icon: '🏢' },
+    // Vendors and partners are accounts carrying a relationship, so this sits
+    // beside Accounts rather than being its own kind of record.
+    { id: 'vendors',      label: 'Vendors',      icon: '🤝' },
     { id: 'contacts',     label: 'Contacts',     icon: '👥' },
     { id: 'email',        label: 'Email',        icon: '✉️' },
     { id: 'calendar',     label: 'Calendar',     icon: '📅' },
@@ -1031,6 +1035,7 @@ function Dashboard({ user, onLogout }) {
               onAccountOpened={() => setPendingAccountId(null)}
             />
           )}
+          {currentTab === 'vendors'     && <VendorsView />}
           {currentTab === 'contacts'    && (
             <ContactsView
               openContactId={pendingContactId}
