@@ -135,6 +135,13 @@ async function getThreadForHandover(handoverId, orgId, { createIfMissing = false
        FROM project_contacts s
        JOIN contacts c ON c.id = s.contact_id
       WHERE s.context_type = 'handover' AND s.context_id = $1 AND s.org_id = $2 AND c.phone IS NOT NULL
+        -- Customer side only. Before 2026_93 every project contact WAS a
+        -- customer contact, so no filter was needed. Now a vendor or partner on
+        -- the project would be eligible to become the project's DEFAULT
+        -- WhatsApp recipient — which is how a customer-facing update reaches a
+        -- subcontractor. Explicit sends to a vendor still work; see
+        -- resolveDirectThreadByPhone and listSendTargets.
+        AND s.side = 'customer'
       ORDER BY s.is_primary DESC, s.id
       LIMIT 1`,
     [handoverId, orgId]
@@ -242,10 +249,11 @@ async function preferredDirectThreadForHandover(handoverId, orgId, userId) {
   const { rows: [cust] } = await pool.query(
     `SELECT c.phone FROM project_contacts s JOIN contacts c ON c.id = s.contact_id
       WHERE s.context_type = 'handover' AND s.context_id = $1 AND s.org_id = $2 AND c.phone IS NOT NULL
+        AND s.side = 'customer'   -- implicit default recipient; see getThreadForHandover
       ORDER BY s.is_primary DESC, s.id LIMIT 1`,
     [handoverId, orgId]
   );
-  if (!cust) throw Object.assign(new Error('No stakeholder with a phone number on this handover'), { status: 400 });
+  if (!cust) throw Object.assign(new Error('No customer contact with a phone number on this project'), { status: 400 });
   return resolveDirectThreadByPhone(handoverId, orgId, cust.phone, userId);
 }
 
@@ -288,7 +296,7 @@ async function listSendTargets(handoverId, orgId) {
   }
 
   const seen = new Set();
-  const addIndividual = (phone, name, contactId) => {
+  const addIndividual = (phone, name, contactId, side = null) => {
     const p = normalizePhone(phone);
     if (!p || seen.has(p)) return;
     seen.add(p);
@@ -301,6 +309,11 @@ async function listSendTargets(handoverId, orgId) {
       name: name || p,
       phone: v.ok ? v.phone : p,
       contactId: contactId ?? null,
+      // Which side of the project this person is on, so the picker can say
+      // "Vendor" instead of leaving the sender to guess. NOT filtered out —
+      // messaging a vendor deliberately is fine; having one selected for you
+      // is not.
+      side: side ?? null,
       windowOpen: dt ? waChannel.isWindowOpen(dt) : false,
       windowExpiresAt: dt ? dt.window_expires_at : null,
       deliverable: v.ok,
@@ -319,17 +332,17 @@ async function listSendTargets(handoverId, orgId) {
         ORDER BY id`,
       [orgId, groupThreads.map(g => g.id)]
     );
-    for (const pt of parts) addIndividual(pt.wa_phone, pt.display_name, pt.contact_id);
+    for (const pt of parts) addIndividual(pt.wa_phone, pt.display_name, pt.contact_id, 'customer');
   }
 
   const { rows: stake } = await pool.query(
-    `SELECT c.phone, c.first_name || ' ' || c.last_name AS full_name, c.id AS contact_id
+    `SELECT c.phone, c.first_name || ' ' || c.last_name AS full_name, c.id AS contact_id, s.side
        FROM project_contacts s JOIN contacts c ON c.id = s.contact_id
       WHERE s.context_type = 'handover' AND s.context_id = $1 AND s.org_id = $2 AND c.phone IS NOT NULL
-      ORDER BY s.is_primary DESC, s.id`,
+      ORDER BY (s.side = 'customer') DESC, s.is_primary DESC, s.id`,
     [handoverId, orgId]
   );
-  for (const st of stake) addIndividual(st.phone, st.full_name, st.contact_id);
+  for (const st of stake) addIndividual(st.phone, st.full_name, st.contact_id, st.side || 'customer');
 
   for (const dt of directThreads) addIndividual(dt.wa_phone, null, dt.contact_id);
 

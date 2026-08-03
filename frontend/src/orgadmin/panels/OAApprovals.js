@@ -14,6 +14,10 @@ const TYPE_BADGE = {
   module_grant:   { label: 'Module', bg: '#eff6ff', fg: '#1d4ed8' },
   invite:         { label: 'Invite', bg: '#ecfdf5', fg: '#047857' },
   project_member: { label: 'Project', bg: '#fef3c7', fg: '#92400e' },
+  // Vendor / partner relationships, approved ONCE org-wide by a named approver
+  // (finance) rather than per project — accountRelationships.review enforces
+  // that, which is why this is not gated on plain org-admin like the others.
+  account_relationship: { label: 'Vendor', bg: '#f5f3ff', fg: '#6d28d9' },
 };
 
 export default function OAApprovals() {

@@ -140,6 +140,12 @@ function TagEmailModal({ deal, onTagged, onClose }) {
   const [tagging,  setTagging]  = useState(null);  // email id being tagged
   const [snoozed,  setSnoozed]  = useState(null);  // contact id being snoozed
   const [error,    setError]    = useState('');
+  // Where the mail is being filed. A deal is the default and the historical
+  // behaviour; a project is the new option. Filing to a project is THREAD-level
+  // — it links every message on the conversation, in every colleague's mailbox,
+  // and every reply that follows. Filing to a deal stays per-message.
+  const [projects, setProjects] = useState([]);
+  const [target,   setTarget]   = useState('deal');   // 'deal' | `project:<id>`
 
   useEffect(() => {
     const accountId = deal.account?.id || deal.account_id;
@@ -150,15 +156,30 @@ function TagEmailModal({ deal, onTagged, onClose }) {
       .finally(() => setLoading(false));
   }, [deal]);
 
+  // Projects this mail could be filed to. Scoped to the ones the caller can
+  // already see; the backend refuses anything they are not a member of, so this
+  // only decides what is offered.
+  useEffect(() => {
+    apiFetch('/handovers/sales?scope=org')
+      .then(r => setProjects((r.handovers || []).filter(h =>
+        !['completed', 'cancelled'].includes(h.status))))
+      .catch(() => setProjects([]));
+  }, []);
+
   async function handleTag(email) {
     setTagging(email.id);
     setError('');
+    const handoverId = target.startsWith('project:') ? Number(target.split(':')[1]) : null;
     try {
       await apiFetch(`/emails/${email.id}/tag`, {
         method: 'PATCH',
-        body: JSON.stringify({ dealId: deal.id }),
+        body: JSON.stringify(handoverId ? { handoverId } : { dealId: deal.id }),
       });
-      setEmails(prev => prev.filter(e => e.id !== email.id));
+      // A project tag files the whole conversation, so every message on it
+      // leaves the untagged list — not just the row that was clicked.
+      setEmails(prev => prev.filter(e => (handoverId && email.conversationId)
+        ? e.conversationId !== email.conversationId
+        : e.id !== email.id));
       onTagged();
     } catch (e) {
       setError(e.message);
@@ -189,12 +210,34 @@ function TagEmailModal({ deal, onTagged, onClose }) {
       <div className="deh-modal">
         <div className="deh-modal__header">
           <div>
-            <h3>🏷️ Tag Emails to this Deal</h3>
+            <h3>🏷️ Tag Emails</h3>
             <p className="deh-modal__subtitle">
-              Emails from contacts on this account that haven't been linked to a deal yet.
+              Emails from contacts on this account that haven't been linked yet.
             </p>
           </div>
           <button className="deh-modal__close" onClick={onClose}>×</button>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, color: '#6b7280' }}>File to:</span>
+          <select value={target} onChange={e => setTarget(e.target.value)}
+            style={{ fontSize: 12, padding: '5px 8px', borderRadius: 6, border: '1px solid #d1d5db', maxWidth: 280 }}>
+            <option value="deal">{deal.name || 'This deal'}</option>
+            {projects.length > 0 && (
+              <optgroup label="Projects">
+                {projects.map(p => (
+                  <option key={p.id} value={`project:${p.id}`}>
+                    {p.projectName || p.name || `Project ${p.id}`}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+          {target.startsWith('project:') && (
+            <span style={{ fontSize: 11, color: '#6b7280' }}>
+              Files the whole conversation — every colleague's copy, and replies that follow.
+            </span>
+          )}
         </div>
 
         {error && <div className="deh-modal__error">⚠️ {error}</div>}
@@ -235,7 +278,9 @@ function TagEmailModal({ deal, onTagged, onClose }) {
                       onClick={() => handleTag(email)}
                       disabled={tagging === email.id}
                     >
-                      {tagging === email.id ? '…' : '🏷️ Tag to Deal'}
+                      {tagging === email.id
+                        ? '…'
+                        : (target.startsWith('project:') ? '🏷️ File thread' : '🏷️ Tag to Deal')}
                     </button>
                     {email.contact && (
                       <button

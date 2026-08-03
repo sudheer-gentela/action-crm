@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict WCwJUbVhNU9GdZlKcfRqpWxGlvrbxBCnP7J7EjtffoKIZ3h9XzwXIKrfNjRL8S2
+\restrict LLUMpnerpf6cMQqy4reAvu2cheP7ZyXeecLDCzZaL0uSBa9WNvIQlgyN3iM5f8L
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -4513,6 +4513,46 @@ ALTER SEQUENCE public.merged_contacts_archive_id_seq OWNED BY public.merged_cont
 
 
 --
+-- Name: module_access_requests; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.module_access_requests (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    user_id integer NOT NULL,
+    requested_by integer,
+    module_key text NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    reason text,
+    review_reason text,
+    reviewed_by integer,
+    reviewed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT module_access_requests_status_chk CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text])))
+);
+
+
+--
+-- Name: module_access_requests_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.module_access_requests_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: module_access_requests_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.module_access_requests_id_seq OWNED BY public.module_access_requests.id;
+
+
+--
 -- Name: notification_deliveries; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4661,7 +4701,8 @@ CREATE TABLE public.org_action_config (
     prospecting_escalation jsonb DEFAULT '{}'::jsonb NOT NULL,
     linkedin_automation jsonb DEFAULT '{}'::jsonb NOT NULL,
     network_jobchange jsonb DEFAULT '{}'::jsonb NOT NULL,
-    sales_resolver jsonb DEFAULT '{}'::jsonb NOT NULL
+    sales_resolver jsonb DEFAULT '{}'::jsonb NOT NULL,
+    activity_report jsonb
 );
 
 
@@ -4701,6 +4742,13 @@ COMMENT ON COLUMN public.org_action_config.network_jobchange IS 'Org-level netwo
 --
 
 COMMENT ON COLUMN public.org_action_config.sales_resolver IS 'Background Sales-Nav URL resolver ORG policy (hard ceiling). Keys (all optional; services/salesResolverPolicy.js supplies defaults): enabled (default false, opt-in), max_per_user_per_day (default 100), min_gap_seconds (default 45), quiet_hours {start,end} local (default 22:00ΓÇô07:00), require_presence (default true). Per-user prefs in user_preferences.preferences->''sales_resolver'' may only tighten these; effective policy = element-wise min(user, org).';
+
+
+--
+-- Name: COLUMN org_action_config.activity_report; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.org_action_config.activity_report IS 'Org-default roll-up definition for the Activity reporting tab (numerator/denominator over action-state atoms). NULL = system default. User-level saved definitions live in user_preferences.preferences.activity_report.';
 
 
 --
@@ -9514,6 +9562,13 @@ ALTER TABLE ONLY public.merged_contacts_archive ALTER COLUMN id SET DEFAULT next
 
 
 --
+-- Name: module_access_requests id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.module_access_requests ALTER COLUMN id SET DEFAULT nextval('public.module_access_requests_id_seq'::regclass);
+
+
+--
 -- Name: notification_deliveries id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -10874,6 +10929,14 @@ ALTER TABLE ONLY public.meetings
 
 ALTER TABLE ONLY public.merged_contacts_archive
     ADD CONSTRAINT merged_contacts_archive_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: module_access_requests module_access_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.module_access_requests
+    ADD CONSTRAINT module_access_requests_pkey PRIMARY KEY (id);
 
 
 --
@@ -13984,6 +14047,13 @@ CREATE INDEX idx_meetings_user ON public.meetings USING btree (user_id);
 
 
 --
+-- Name: idx_module_req_org_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_module_req_org_status ON public.module_access_requests USING btree (org_id, status);
+
+
+--
 -- Name: idx_notif_deliveries_notification; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -15822,6 +15892,13 @@ CREATE UNIQUE INDEX uq_linkedin_connections_identity ON public.linkedin_connecti
 --
 
 CREATE UNIQUE INDEX uq_list_signal_mappings_org_name ON public.list_signal_mappings USING btree (org_id, lower((name)::text)) WHERE active;
+
+
+--
+-- Name: uq_module_req_pending; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_module_req_pending ON public.module_access_requests USING btree (org_id, user_id, module_key) WHERE (status = 'pending'::text);
 
 
 --
@@ -18236,6 +18313,22 @@ ALTER TABLE ONLY public.meetings
 
 
 --
+-- Name: module_access_requests module_access_requests_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.module_access_requests
+    ADD CONSTRAINT module_access_requests_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: module_access_requests module_access_requests_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.module_access_requests
+    ADD CONSTRAINT module_access_requests_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
 -- Name: notifications notifications_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -20334,5 +20427,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict WCwJUbVhNU9GdZlKcfRqpWxGlvrbxBCnP7J7EjtffoKIZ3h9XzwXIKrfNjRL8S2
+\unrestrict LLUMpnerpf6cMQqy4reAvu2cheP7ZyXeecLDCzZaL0uSBa9WNvIQlgyN3iM5f8L
 

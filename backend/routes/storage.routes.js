@@ -21,25 +21,15 @@ const {
 
 // ── Resolve file open URL (POST — token in Authorization header, returns JSON) ──
 //
-// SECURITY NOTE (pre-existing, not introduced by project files):
-// This resolves the URL with the IMPORTER's token — provider._getAccessToken(
-// file.user_id) — not the requester's, and for OneDrive it mints an ANONYMOUS
-// share link. Any user in the org who can reach this endpoint therefore gets
-// access the provider never granted them, which is an alternate file-permission
-// mechanism sitting alongside Drive/OneDrive's own.
-//
-// Project files deliberately do NOT reuse this: see
-// POST /api/project-files/:handoverId/files/:recordId/open-url, which uses the
-// requester's own token and returns PROVIDER_ACCESS_DENIED when they lack
-// access. Fixing this endpoint the same way affects deal and contact files too,
-// so it is left as its own change rather than folded in here.
+// Opens a file with the REQUESTER'S own provider credentials and returns
+// PROVIDER_ACCESS_DENIED when they do not have access. Matches
+// POST /api/project-files/:handoverId/files/:recordId/open-url.
 // Frontend calls this with fetch() using Authorization header, then does window.open(url).
 // Avoids passing token as query param (proxies mangle URLs with __ in JWT signatures).
 router.post('/imported/:recordId/open-url', async (req, res) => {
   try {
     const jwt  = require('jsonwebtoken');
     const { pool } = require('../config/database');
-    const axios = require('axios');
 
     // Token comes in Authorization header: "Bearer <token>"
     const authHeader = req.headers['authorization'];
@@ -73,31 +63,62 @@ router.post('/imported/:recordId/open-url', async (req, res) => {
 
     const file = result.rows[0];
     const provider = getProvider(file.provider);
-    const accessToken = await provider._getAccessToken(file.user_id);
 
-    if (file.provider === 'googledrive') {
-      const url = `https://drive.google.com/file/d/${file.provider_file_id}/view?access_token=${accessToken}`;
-      return res.json({ url });
+    // Resolved with the REQUESTER'S OWN provider credentials, never the
+    // importer's.
+    //
+    // This endpoint previously called provider._getAccessToken(file.user_id) —
+    // the person who imported the file — which meant anyone in the org who
+    // could reach it got access the provider never granted them. For OneDrive
+    // it went further and minted an ANONYMOUS share link, and for Drive it
+    // appended the OAuth token to a URL handed to the browser, where it lands
+    // in history and referrer headers.
+    //
+    // A storage_files row records that a file is REFERENCED by a deal, contact
+    // or project. It does not say the reader may open it. Google and Microsoft
+    // already hold that answer; borrowing someone else's token replaced their
+    // permission model with ours.
+    const denied = (message) => res.status(403).json({
+      error: {
+        code: 'PROVIDER_ACCESS_DENIED',
+        provider: file.provider,
+        message,
+      },
+    });
+
+    const providerName = file.provider === 'onedrive' ? 'OneDrive' : 'Google Drive';
+
+    try {
+      // A metadata read the requester's own token has to satisfy. If they
+      // cannot see the file in Drive/OneDrive, this is where we find out —
+      // before we hand them a link.
+      await provider.getFileMetadata(decoded.userId, file.provider_file_id);
+    } catch (e) {
+      const status = e.response && e.response.status;
+      if (/No tokens found/.test(e.message || '')) {
+        return denied(
+          `Connect your ${providerName} account to open "${file.file_name}". ` +
+          `Files are opened with your own access, not the person who imported them.`
+        );
+      }
+      if (status === 401 || status === 403 || status === 404) {
+        return denied(
+          `You do not have permission to open "${file.file_name}" in ${providerName}. ` +
+          `Ask the document owner for access — file permissions are managed there, not in GoWarm.`
+        );
+      }
+      throw e;
     }
 
-    if (file.provider === 'onedrive') {
-      try {
-        const shareRes = await axios.post(
-          `https://graph.microsoft.com/v1.0/me/drive/items/${file.provider_file_id}/createLink`,
-          { type: 'view', scope: 'anonymous' },
-          { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
-        );
-        const link = shareRes.data?.link?.webUrl;
-        if (link) return res.json({ url: link });
-      } catch (e) {
-        console.warn('[storage/open-url] OneDrive createLink failed, falling back to web_url:', e.message);
-      }
-      if (file.web_url) return res.json({ url: file.web_url });
-      return res.status(404).json({ error: { message: 'No URL available for this file' } });
+    // No token in the URL. The browser is already signed in to the provider, or
+    // the provider will ask; either way the credential does not travel through
+    // a link.
+    if (file.provider === 'googledrive') {
+      return res.json({ url: file.web_url || `https://drive.google.com/file/d/${file.provider_file_id}/view` });
     }
 
     if (file.web_url) return res.json({ url: file.web_url });
-    res.status(404).json({ error: { message: 'No URL available for this file' } });
+    return res.status(404).json({ error: { message: 'No URL available for this file' } });
 
   } catch (err) {
     console.error('[storage/open-url]', err.message);
@@ -112,7 +133,6 @@ router.post('/imported/:recordId/folder-url', async (req, res) => {
   try {
     const jwt    = require('jsonwebtoken');
     const { pool } = require('../config/database');
-    const axios  = require('axios');
 
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -143,17 +163,22 @@ router.post('/imported/:recordId/folder-url', async (req, res) => {
 
     const file = result.rows[0];
     const provider = getProvider(file.provider);
-    const accessToken = await provider._getAccessToken(file.user_id);
 
     // This endpoint already had to resolve the parent folder to build the badge
     // URL, and then threw the id away. Persisting it here is what back-fills
     // folder_id / folder_path for rows imported before project files existed —
     // new imports get both written by createImportRecord instead.
+    //
+    // Walked with the REQUESTER'S credentials, like open-url. A folder id is
+    // less sensitive than a file link, but reading it on the importer's behalf
+    // is the same borrowed-credential pattern, and it would let someone map a
+    // folder tree they cannot see. A requester without access simply gets the
+    // provider root and no back-fill — the next person who can see it fills it in.
     let parentId = null;
     try {
-      parentId = await provider.getParentFolderId(file.user_id, file.provider_file_id);
+      parentId = await provider.getParentFolderId(decoded.userId, file.provider_file_id);
       if (parentId && !file.folder_id) {
-        const folderPath = await resolveFolderPath(file.provider, file.user_id, parentId);
+        const folderPath = await resolveFolderPath(file.provider, decoded.userId, parentId);
         await setFolderMetadata(file.id, orgId, parentId, folderPath);
       }
     } catch (e) {
