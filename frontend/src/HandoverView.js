@@ -664,6 +664,18 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
   // Change an existing member's role. The PATCH endpoint is new — before it
   // there was no way to do this at all, which also left "restore a prior role
   // after a Project Manager demotion" with no mechanism behind it.
+  // Saved on blur so a half-typed number is never submitted. An empty value
+  // clears the field rather than erroring.
+  const saveContact = async (mid, patch) => {
+    setErr('');
+    try {
+      await apiService.handovers.updateMemberContact(handoverId, mid, patch);
+      await refresh();
+    } catch (e) {
+      setErr(e?.response?.data?.error?.message || 'Could not save that number.');
+    }
+  };
+
   const saveRole = async (mid, roleId) => {
     setErr('');
     try {
@@ -729,6 +741,26 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
                   <option value="">No role</option>
                   {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
                 </select>
+
+                {/* On an internal project the team IS users, and a user could
+                    only ever edit their own phone — so a member with no number
+                    could not be reached and nobody could fix it. Email stays
+                    read-only: it is the login identity, not a contact detail. */}
+                <input
+                  defaultValue={m.phone || ''}
+                  onBlur={e => saveContact(m.id, { phone: e.target.value })}
+                  placeholder="+91 7207583441"
+                  title="Phone — include the country code"
+                  style={{ ...inp, width: 150 }} />
+                <input
+                  defaultValue={m.whatsappPhone || ''}
+                  onBlur={e => saveContact(m.id, { whatsappPhone: e.target.value })}
+                  placeholder="WhatsApp (if different)"
+                  style={{ ...inp, width: 170 }} />
+                <span style={{ fontSize: 11, color: '#9ca3af' }}>
+                  {m.email} · email is changed in account settings
+                </span>
+
                 <button onClick={() => setEditing(null)} style={{ fontSize: 11, padding: '3px 9px',
                   borderRadius: 4, border: '1px solid #d1d5db', background: '#fff', cursor: 'pointer' }}>Done</button>
               </div>

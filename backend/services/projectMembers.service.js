@@ -109,6 +109,9 @@ function fmt(row) {
     id: row.id, userId: row.user_id, name: row.name, email: row.email,
     roleId: row.role_id, roleName: row.role_name, customRole: row.custom_role,
     side: row.side || 'delivery',
+    email: row.email || null,
+    phone: row.phone || null,
+    whatsappPhone: row.whatsapp_phone || null,
     status: row.status, reviewReason: row.review_reason,
     requestedBy: row.requested_by, requestedByName: row.requested_by_name,
     createdAt: row.created_at,
@@ -118,6 +121,7 @@ function fmt(row) {
 async function listForHandover(handoverId, orgId) {
   const { rows } = await pool.query(
     `SELECT pm.*, (u.first_name || ' ' || u.last_name) AS name, u.email,
+            u.phone, u.whatsapp_phone,
             r.name AS role_name, (ru.first_name || ' ' || ru.last_name) AS requested_by_name
        FROM project_members pm
        JOIN users u  ON u.id = pm.user_id
@@ -302,6 +306,93 @@ async function changeRole(handoverId, orgId, memberId, patch = {}) {
   return { member: rows[0] };
 }
 
+/**
+ * Set a project member's contact phone numbers.
+ *
+ * WHY THIS EXISTS: on an internal project the team IS users, and users could
+ * only ever edit their own phone (PATCH /user-phone/phone is WHERE id =
+ * caller). So if somebody never set a number, the project could not WhatsApp
+ * them and nobody could fix it. Contacts on a customer project had no such
+ * problem, which is the asymmetry this closes.
+ *
+ * EMAIL IS NOT EDITABLE HERE, deliberately. users.email is the login identity —
+ * sign-in, password reset, invitations and the oauth_tokens rows all hang off
+ * it. Changing it from a project panel would be an account-takeover primitive
+ * rather than a convenience. A wrong address is fixed by re-inviting.
+ *
+ * Gated on canManageProject: org admin/owner, the assigned Project Manager, or
+ * the creator.
+ */
+async function updateMemberContact(handoverId, orgId, actorId, memberId, patch = {}) {
+  if (!(await canManageProject(handoverId, orgId, actorId))) {
+    throw Object.assign(
+      new Error('Only an org admin or the Project Manager can edit a member\'s details'),
+      { status: 403 });
+  }
+
+  const { rows: [pm] } = await pool.query(
+    `SELECT pm.user_id FROM project_members pm
+      WHERE pm.id = $1 AND pm.org_id = $2 AND pm.context_type = 'handover' AND pm.context_id = $3`,
+    [memberId, orgId, handoverId]);
+  if (!pm) throw Object.assign(new Error('Member not found'), { status: 404 });
+
+  const sets = [];
+  const vals = [pm.user_id, orgId];
+
+  for (const [key, column] of [['phone', 'phone'], ['whatsappPhone', 'whatsapp_phone']]) {
+    if (patch[key] === undefined) continue;
+    const raw = patch[key];
+    if (raw === null || String(raw).trim() === '') {
+      sets.push(`${column} = NULL`);
+      continue;
+    }
+    vals.push(normalisePhone(raw));
+    sets.push(`${column} = $${vals.length}`);
+  }
+  if (!sets.length) throw Object.assign(new Error('Nothing to update'), { status: 400 });
+
+  const { rows } = await pool.query(
+    `UPDATE users SET ${sets.join(', ')}, updated_at = NOW()
+      WHERE id = $1 AND org_id = $2
+      RETURNING id, email, phone, whatsapp_phone`,
+    vals);
+  if (!rows.length) throw Object.assign(new Error('User not found in this org'), { status: 404 });
+  return { user: rows[0] };
+}
+
+/**
+ * Store E.164 — leading '+', country code included, digits only.
+ *
+ * WhatsApp matches an inbound sender with
+ * regexp_replace(phone,'[^0-9]','','g') against Meta's full international
+ * `from`, so a number saved without its country code silently never routes.
+ * That failure is invisible — no error, the thread just never threads — so this
+ * rejects rather than storing something that looks fine and is not.
+ */
+function normalisePhone(input) {
+  const raw = String(input).trim();
+
+  // A leading '+' is REQUIRED, and length alone cannot replace it. '7207583441'
+  // is ten digits and would pass any plausible length check, then be stored as
+  // '+7207583441' — a number whose "country code" is 72. There is no way to
+  // infer the intended country from the digits, so the caller must say. The UI
+  // supplies it from a country-code field; anything else is rejected rather
+  // than guessed.
+  if (!raw.startsWith('+')) {
+    throw Object.assign(
+      new Error('Include the country code, e.g. +91 7207583441. Without it WhatsApp cannot match this number.'),
+      { status: 400 });
+  }
+
+  const digits = raw.replace(/[^0-9]/g, '');
+  if (digits.length < 8 || digits.length > 15) {   // E.164 caps at 15
+    throw Object.assign(
+      new Error('That does not look like a valid phone number.'),
+      { status: 400 });
+  }
+  return `+${digits}`;
+}
+
 async function removeMember(handoverId, orgId, memberId) {
   const { rowCount } = await pool.query(
     `DELETE FROM project_members WHERE id=$1 AND org_id=$2 AND context_type='handover' AND context_id=$3`,
@@ -314,5 +405,6 @@ module.exports = {
   listDomains, addDomain, removeDomain,
   seatAvailable, shouldAutoApprove,
   listForHandover, requestMember, reviewMember, removeMember, changeRole,
+  updateMemberContact,
   canManageProject, autoApproveDecision, selfExit,
 };

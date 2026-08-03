@@ -94,6 +94,12 @@ router.patch('/handovers/:id/members/:mid', canManage, (req, res) =>
   send(res, svc.changeRole(parseInt(req.params.id, 10), req.orgId,
     parseInt(req.params.mid, 10), req.body || {})));
 
+// Phone only — email is the login identity and stays read-only. The service
+// re-checks authority; canManage here keeps the 403 consistent with siblings.
+router.patch('/handovers/:id/members/:mid/contact', canManage, (req, res) =>
+  send(res, svc.updateMemberContact(parseInt(req.params.id, 10), req.orgId, req.user.userId,
+    parseInt(req.params.mid, 10), req.body || {})));
+
 router.delete('/handovers/:id/members/:mid', canManage, (req, res) =>
   send(res, svc.removeMember(parseInt(req.params.id, 10), req.orgId, parseInt(req.params.mid, 10))));
 
