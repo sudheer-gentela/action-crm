@@ -35,6 +35,15 @@ class StorageProviderBase {
   async extractFileContent(userId, fileId) {
     throw new Error(`${this.constructor.name} must implement extractFileContent()`);
   }
+
+  /**
+   * Provider id of this item's immediate parent folder, or null at the root.
+   * Every provider must answer this; the tree walk that turns it into an
+   * ancestor chain is provider-agnostic and lives in storageFileService.
+   */
+  async getParentFolderId(userId, itemId) {
+    throw new Error(`${this.constructor.name} must implement getParentFolderId()`);
+  }
 }
 
 module.exports = StorageProviderBase;

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict kdVJ2yeVwvNoavX43CLJN2rR9gDA8TqvO5D6cs7b655P76wheNk33RajPldkcCY
+\restrict Ag01xriipbYomh2azZowWCZ6HT8GoXVwXxJRwW66TsD6ue0Bsv9glEbCNvpzOXp
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -2864,7 +2864,7 @@ ALTER SEQUENCE public.deal_play_assignees_id_seq OWNED BY public.deal_play_assig
 
 CREATE TABLE public.deal_play_instances (
     id integer NOT NULL,
-    deal_id integer NOT NULL,
+    deal_id integer,
     org_id integer NOT NULL,
     play_id integer,
     stage_key text NOT NULL,
@@ -2889,6 +2889,8 @@ CREATE TABLE public.deal_play_instances (
     completion_note text,
     completion_evidence jsonb,
     owner_user_id integer,
+    handover_id integer,
+    CONSTRAINT deal_play_instances_owner_chk CHECK ((((deal_id IS NOT NULL) AND (handover_id IS NULL)) OR ((deal_id IS NULL) AND (handover_id IS NOT NULL)))),
     CONSTRAINT deal_play_instances_status_check CHECK ((status = ANY (ARRAY['not_started'::text, 'in_progress'::text, 'blocked'::text, 'snoozed'::text, 'completed'::text, 'skipped'::text, 'cancelled'::text])))
 );
 
@@ -2898,6 +2900,13 @@ CREATE TABLE public.deal_play_instances (
 --
 
 COMMENT ON COLUMN public.deal_play_instances.owner_user_id IS 'Person accountable for this checklist item on the handover. NULL = unassigned; role/queue routing (playbook_plays.role_id ΓåÆ PlayRouteResolver) still applies.';
+
+
+--
+-- Name: COLUMN deal_play_instances.handover_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.deal_play_instances.handover_id IS 'Set when the play belongs to a project rather than a deal. Exactly one of deal_id / handover_id is non-null.';
 
 
 --
@@ -3785,8 +3794,8 @@ COMMENT ON TABLE public.sales_handover_plays IS 'Join between a sales_handover a
 CREATE TABLE public.sales_handovers (
     id integer NOT NULL,
     org_id integer NOT NULL,
-    deal_id integer NOT NULL,
-    account_id integer NOT NULL,
+    deal_id integer,
+    account_id integer,
     assigned_service_owner_id integer,
     status character varying(30) DEFAULT 'draft'::character varying NOT NULL,
     go_live_date date,
@@ -3804,6 +3813,18 @@ CREATE TABLE public.sales_handovers (
     cancelled_by integer,
     closure_summary text,
     contact_add_policy jsonb DEFAULT '{"admins": true, "deal_owner": true, "named_users": [], "service_owner": true}'::jsonb NOT NULL,
+    name text,
+    project_kind text DEFAULT 'customer'::text NOT NULL,
+    budget numeric(15,2),
+    manager_label text,
+    playbook_changed_at timestamp with time zone,
+    playbook_changed_by integer,
+    previous_playbook_id integer,
+    CONSTRAINT sales_handovers_budget_internal_chk CHECK (((budget IS NULL) OR (project_kind = 'internal'::text))),
+    CONSTRAINT sales_handovers_kind_shape_chk CHECK ((((project_kind = 'internal'::text) AND (account_id IS NULL) AND (deal_id IS NULL)) OR ((project_kind = 'customer'::text) AND ((account_id IS NOT NULL) OR (deal_id IS NOT NULL))))),
+    CONSTRAINT sales_handovers_manager_label_chk CHECK (((manager_label IS NULL) OR (btrim(manager_label) <> ''::text))),
+    CONSTRAINT sales_handovers_name_required_chk CHECK (((deal_id IS NOT NULL) OR ((name IS NOT NULL) AND (btrim(name) <> ''::text)))),
+    CONSTRAINT sales_handovers_project_kind_chk CHECK ((project_kind = ANY (ARRAY['customer'::text, 'internal'::text]))),
     CONSTRAINT sales_handovers_status_check CHECK (((status)::text = ANY ((ARRAY['draft'::character varying, 'submitted'::character varying, 'acknowledged'::character varying, 'in_progress'::character varying, 'completed'::character varying, 'cancelled'::character varying])::text[])))
 );
 
@@ -3827,6 +3848,41 @@ COMMENT ON COLUMN public.sales_handovers.playbook_id IS 'The handover_s2i playbo
 --
 
 COMMENT ON COLUMN public.sales_handovers.closure_summary IS 'Free-text wrap-up captured at completion or cancellation. Required for cancelled (enforced in service layer, not DB, so an admin backfill is not blocked).';
+
+
+--
+-- Name: COLUMN sales_handovers.name; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sales_handovers.name IS 'Project name. Required when there is no deal; otherwise falls back to deals.name.';
+
+
+--
+-- Name: COLUMN sales_handovers.project_kind; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sales_handovers.project_kind IS 'customer = delivery for an account. internal = run inside the org, no account, no deal.';
+
+
+--
+-- Name: COLUMN sales_handovers.budget; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sales_handovers.budget IS 'Planned spend, internal projects only. Not revenue ΓÇö see contract_value.';
+
+
+--
+-- Name: COLUMN sales_handovers.manager_label; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sales_handovers.manager_label IS 'Per-project override for what the accountable person is called. NULL = use the org default.';
+
+
+--
+-- Name: COLUMN sales_handovers.previous_playbook_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sales_handovers.previous_playbook_id IS 'The playbook replaced by the most recent swap. Its plays are cancelled, not deleted.';
 
 
 --
@@ -5628,8 +5684,25 @@ CREATE TABLE public.project_members (
     review_reason text,
     reviewed_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT project_members_status_chk CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text])))
+    exited_at timestamp with time zone,
+    exit_reason text,
+    CONSTRAINT project_members_exit_shape_chk CHECK ((((status = ANY (ARRAY['declined'::text, 'left'::text])) AND (exited_at IS NOT NULL)) OR ((status <> ALL (ARRAY['declined'::text, 'left'::text])) AND (exited_at IS NULL)))),
+    CONSTRAINT project_members_status_chk CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'declined'::text, 'left'::text])))
 );
+
+
+--
+-- Name: COLUMN project_members.exited_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.project_members.exited_at IS 'When the member declined or left. NULL for every other status.';
+
+
+--
+-- Name: COLUMN project_members.exit_reason; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.project_members.exit_reason IS 'Optional note from the member on why they declined or left. Distinct from review_reason, which is an admin decision.';
 
 
 --
@@ -12996,10 +13069,24 @@ CREATE INDEX idx_deals_user_id ON public.deals USING btree (user_id);
 
 
 --
+-- Name: idx_dpi_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dpi_active ON public.deal_play_instances USING btree (handover_id, status) WHERE ((handover_id IS NOT NULL) AND (status <> 'cancelled'::text));
+
+
+--
 -- Name: idx_dpi_go_live_anchored; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_dpi_go_live_anchored ON public.deal_play_instances USING btree (deal_id) WHERE (((due_anchor)::text = 'go_live'::text) AND (status <> ALL (ARRAY['completed'::text, 'skipped'::text])));
+
+
+--
+-- Name: idx_dpi_handover; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dpi_handover ON public.deal_play_instances USING btree (handover_id, stage_key) WHERE (handover_id IS NOT NULL);
 
 
 --
@@ -14011,6 +14098,13 @@ CREATE INDEX idx_project_contacts_ctx ON public.project_contacts USING btree (co
 
 
 --
+-- Name: idx_project_members_approved; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_project_members_approved ON public.project_members USING btree (context_type, context_id, user_id) WHERE (status = 'approved'::text);
+
+
+--
 -- Name: idx_project_members_ctx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -14375,10 +14469,24 @@ CREATE INDEX idx_sales_handovers_account ON public.sales_handovers USING btree (
 
 
 --
+-- Name: idx_sales_handovers_kind; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sales_handovers_kind ON public.sales_handovers USING btree (org_id, project_kind);
+
+
+--
 -- Name: idx_sales_handovers_org_status; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_sales_handovers_org_status ON public.sales_handovers USING btree (org_id, status);
+
+
+--
+-- Name: idx_sales_handovers_playbook; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sales_handovers_playbook ON public.sales_handovers USING btree (org_id, playbook_id) WHERE (playbook_id IS NOT NULL);
 
 
 --
@@ -16937,6 +17045,14 @@ ALTER TABLE ONLY public.deal_play_instances
 
 ALTER TABLE ONLY public.deal_play_instances
     ADD CONSTRAINT deal_play_instances_deal_id_fkey FOREIGN KEY (deal_id) REFERENCES public.deals(id) ON DELETE CASCADE;
+
+
+--
+-- Name: deal_play_instances deal_play_instances_handover_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.deal_play_instances
+    ADD CONSTRAINT deal_play_instances_handover_fkey FOREIGN KEY (handover_id) REFERENCES public.sales_handovers(id) ON DELETE CASCADE;
 
 
 --
@@ -19622,5 +19738,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict kdVJ2yeVwvNoavX43CLJN2rR9gDA8TqvO5D6cs7b655P76wheNk33RajPldkcCY
+\unrestrict Ag01xriipbYomh2azZowWCZ6HT8GoXVwXxJRwW66TsD6ue0Bsv9glEbCNvpzOXp
 

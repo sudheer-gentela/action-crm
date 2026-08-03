@@ -16,9 +16,23 @@ const { processStorageFile }               = require('../services/storageProcess
 const {
   getFilesForDeal, getFilesForContact, getAllFilesForUser,
   checkDuplicate, deleteImportRecord,
+  resolveFolderPath, setFolderMetadata,
 } = require('../services/storageFileService');
 
 // ── Resolve file open URL (POST — token in Authorization header, returns JSON) ──
+//
+// SECURITY NOTE (pre-existing, not introduced by project files):
+// This resolves the URL with the IMPORTER's token — provider._getAccessToken(
+// file.user_id) — not the requester's, and for OneDrive it mints an ANONYMOUS
+// share link. Any user in the org who can reach this endpoint therefore gets
+// access the provider never granted them, which is an alternate file-permission
+// mechanism sitting alongside Drive/OneDrive's own.
+//
+// Project files deliberately do NOT reuse this: see
+// POST /api/project-files/:handoverId/files/:recordId/open-url, which uses the
+// requester's own token and returns PROVIDER_ACCESS_DENIED when they lack
+// access. Fixing this endpoint the same way affects deal and contact files too,
+// so it is left as its own change rather than folded in here.
 // Frontend calls this with fetch() using Authorization header, then does window.open(url).
 // Avoids passing token as query param (proxies mangle URLs with __ in JWT signatures).
 router.post('/imported/:recordId/open-url', async (req, res) => {
@@ -119,7 +133,7 @@ router.post('/imported/:recordId/folder-url', async (req, res) => {
     if (!orgId) return res.status(403).json({ error: { message: 'No org found for user' } });
 
     const result = await pool.query(
-      `SELECT id, provider, provider_file_id, user_id, web_url
+      `SELECT id, provider, provider_file_id, user_id, web_url, folder_id
        FROM storage_files WHERE id = $1 AND org_id = $2`,
       [req.params.recordId, orgId]
     );
@@ -131,26 +145,30 @@ router.post('/imported/:recordId/folder-url', async (req, res) => {
     const provider = getProvider(file.provider);
     const accessToken = await provider._getAccessToken(file.user_id);
 
-    if (file.provider === 'googledrive') {
-      try {
-        // Fetch file metadata to get parent folder ID
-        const metaRes = await axios.get(
-          `https://www.googleapis.com/drive/v3/files/${file.provider_file_id}?fields=parents`,
-          { headers: { Authorization: `Bearer ${accessToken}` } }
-        );
-        const parentId = metaRes.data?.parents?.[0];
-        if (parentId) {
-          return res.json({ url: `https://drive.google.com/drive/folders/${parentId}` });
-        }
-      } catch (e) {
-        console.warn('[storage/folder-url] Could not fetch parent folder:', e.message);
+    // This endpoint already had to resolve the parent folder to build the badge
+    // URL, and then threw the id away. Persisting it here is what back-fills
+    // folder_id / folder_path for rows imported before project files existed —
+    // new imports get both written by createImportRecord instead.
+    let parentId = null;
+    try {
+      parentId = await provider.getParentFolderId(file.user_id, file.provider_file_id);
+      if (parentId && !file.folder_id) {
+        const folderPath = await resolveFolderPath(file.provider, file.user_id, parentId);
+        await setFolderMetadata(file.id, orgId, parentId, folderPath);
       }
-      // Fallback: open Drive root
+    } catch (e) {
+      console.warn('[storage/folder-url] Could not resolve parent folder:', e.message);
+    }
+
+    if (file.provider === 'googledrive') {
+      if (parentId) return res.json({ url: `https://drive.google.com/drive/folders/${parentId}` });
       return res.json({ url: 'https://drive.google.com' });
     }
 
     if (file.provider === 'onedrive') {
-      // OneDrive: open the drive root
+      // Graph has no stable folder-by-id web URL, so the drive root stays the
+      // destination. folder_id is still persisted above, which is what the
+      // mapping needs.
       return res.json({ url: 'https://onedrive.live.com' });
     }
 

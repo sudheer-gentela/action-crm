@@ -120,12 +120,33 @@ class GoogleDriveProvider extends StorageProviderBase {
         web_url: meta.webViewLink, file_name: meta.name,
         file_size: meta.size || buffer.length, mime_type: meta.mimeType,
         category: meta.category, last_modified_at: meta.lastModified,
+        parent_folder_id: meta.parentFolderId || null,
       },
       metadata: {
         size: meta.size || buffer.length, lastModified: meta.lastModified,
         parentFolder: meta.parentFolder, wasExported: isGoogleNative,
       },
     };
+  }
+
+  /**
+   * One step up the folder tree. The generic walk that builds
+   * storage_files.folder_path lives in storageFileService so the loop is not
+   * written twice — a provider only has to answer "who is this item's parent".
+   * Returns null at the root, or when the caller cannot see the parent.
+   */
+  async getParentFolderId(userId, itemId) {
+    const accessToken = await this._getAccessToken(userId);
+    try {
+      const res = await axios.get(`${DRIVE_BASE}/files/${itemId}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        params: { fields: 'parents' },
+      });
+      return (res.data && res.data.parents && res.data.parents[0]) || null;
+    } catch (err) {
+      if (err.response && [401, 403, 404].includes(err.response.status)) return null;
+      throw err;
+    }
   }
 
   async _getAccessToken(userId) {
@@ -166,6 +187,10 @@ class GoogleDriveProvider extends StorageProviderBase {
       id: item.id, name: item.name, size: parseInt(item.size, 10) || 0,
       lastModified: item.modifiedTime, mimeType: isFolder ? null : item.mimeType,
       isFolder, childCount: 0, parentFolder: null,
+      // Drive already returns `parents` in every fields= list below; it was
+      // being discarded here. Surfacing it populates storage_files.folder_id at
+      // import with no extra API call.
+      parentFolderId: (item.parents && item.parents[0]) || null,
       webViewLink: item.webViewLink || null,
       category: isFolder ? 'folder' : resolveCategory(item.mimeType),
       provider: this.providerId,

@@ -29,6 +29,7 @@ import DesktopOnlyNotice from './DesktopOnlyNotice';
 import { apiService } from './apiService';
 import PortfolioHealthReport from './PortfolioHealthReport';
 import { hashParts, hashSegment, writeHash } from './hashNav';
+import ProjectFilesPanel from './ProjectFilesPanel';
 
 // ── Deep-link parsing ─────────────────────────────────────────────────────────
 // #/handovers                         → My Handovers list
@@ -36,7 +37,7 @@ import { hashParts, hashSegment, writeHash } from './hashNav';
 // #/handovers/dashboard               → Dashboard tab
 // #/handovers/<id>[/<subtab>]         → open handover <id> (mine), subtab
 // #/handovers/assigned/<id>[/<subtab>]→ open handover <id> (assigned), subtab
-// subtab ∈ summary | details | communications  (summary omitted from the URL)
+// subtab ∈ summary | details | files | communications  (summary omitted from the URL)
 function parseHandoverHash() {
   const parts = hashParts();
   if (parts[0] !== 'handovers') return { scope: 'mine', id: null, sub: 'summary' };
@@ -1584,6 +1585,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
       <div className="gw-scroll-x" style={{ display: 'flex', gap: 4, padding: '0 20px', borderBottom: '1px solid #e5e7eb', background: '#fff' }}>
         {[{ key: 'summary', label: 'Summary' }, { key: 'details', label: 'Details' },
           ...(detail.canSeeCommercial ? [{ key: 'commercial', label: '💰 Commercial' }] : []),
+          { key: 'files', label: '📎 Files' },
           { key: 'communications', label: 'Communications' }].map(t => (
           <button key={t.key} onClick={() => setDetailTab(t.key)} style={{
             padding: '10px 16px', background: 'none', border: 'none',
@@ -1732,6 +1734,12 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
       )}
 
       {/* ── Communications (email + WhatsApp) ───────────── */}
+      {detailTab === 'files' && (
+        <div style={{ padding: '16px 20px' }}>
+          <ProjectFilesPanel handoverId={detail.id} />
+        </div>
+      )}
+
       {detailTab === 'communications' && (
         <div style={{ padding: '16px 20px' }}>
           <CommunicationsPanel handoverId={detail.id} />

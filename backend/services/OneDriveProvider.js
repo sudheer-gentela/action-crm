@@ -127,6 +127,7 @@ class OneDriveProvider extends StorageProviderBase {
         mime_type:        meta.mimeType,
         category:         meta.category,
         last_modified_at: meta.lastModified,
+        parent_folder_id: meta.parentFolderId || null,
       },
       metadata: {
         size:         meta.size,
@@ -134,6 +135,23 @@ class OneDriveProvider extends StorageProviderBase {
         parentFolder: meta.parentFolder,
       },
     };
+  }
+
+  /** One step up the folder tree. See GoogleDriveProvider.getParentFolderId. */
+  async getParentFolderId(userId, itemId) {
+    const accessToken = await this._getAccessToken(userId);
+    try {
+      const res = await axios.get(`${GRAPH_BASE}/me/drive/items/${itemId}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        params: { $select: 'parentReference' },
+      });
+      const ref = res.data && res.data.parentReference;
+      // Graph reports the drive root as a parent with no id worth walking past.
+      return (ref && ref.id) || null;
+    } catch (err) {
+      if (err.response && [401, 403, 404].includes(err.response.status)) return null;
+      throw err;
+    }
   }
 
   async _getAccessToken(userId) {
@@ -154,7 +172,11 @@ class OneDriveProvider extends StorageProviderBase {
       mimeType,
       isFolder:     !!item.folder,
       childCount:   (item.folder && item.folder.childCount) || 0,
-      parentFolder: (item.parentReference && item.parentReference.name) || null,
+      // parentFolder stays the NAME — extractFileContent's metadata block
+      // already returns it and changing it would break that caller. The id is
+      // added alongside it, which is what folder mapping needs.
+      parentFolder:   (item.parentReference && item.parentReference.name) || null,
+      parentFolderId: (item.parentReference && item.parentReference.id)   || null,
       webUrl:       item.webUrl || null,
       category:     item.folder ? 'folder' : resolveCategory(mimeType),
       provider:     this.providerId,

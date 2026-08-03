@@ -35,6 +35,37 @@ async function apiFetch(path, options = {}) {
   return res.json();
 }
 
+/**
+ * One document can hold more than one link row — a deal link and a project link
+ * are separate rows by design, so the deal's file list and the project's file
+ * list each own their own lifecycle. This feed lists everything, so it would
+ * otherwise show the same document twice.
+ *
+ * Collapse by provider + provider_file_id and carry every link onto the surviving
+ * row. Nothing is hidden; the row just says "Deal X · Project Y" instead of
+ * appearing on two lines.
+ */
+function collapseLinks(rows) {
+  const byFile = new Map();
+  for (const r of rows) {
+    const key = `${r.provider}::${r.provider_file_id}`;
+    const seen = byFile.get(key);
+    if (!seen) {
+      byFile.set(key, { ...r, deal_names: r.deal_name ? [r.deal_name] : [], project_names: r.project_name ? [r.project_name] : [] });
+      continue;
+    }
+    if (r.deal_name && !seen.deal_names.includes(r.deal_name)) seen.deal_names.push(r.deal_name);
+    if (r.project_name && !seen.project_names.includes(r.project_name)) seen.project_names.push(r.project_name);
+    // Keep the richest row: a processed one carries the AI fields.
+    if (!seen.deal_id && r.deal_id) { seen.deal_id = r.deal_id; seen.deal_name = r.deal_name; }
+    if (!seen.handover_id && r.handover_id) { seen.handover_id = r.handover_id; seen.project_name = r.project_name; }
+    if (seen.processing_status !== 'completed' && r.processing_status === 'completed') {
+      seen.processing_status = r.processing_status;
+    }
+  }
+  return [...byFile.values()];
+}
+
 function formatFileSize(bytes) {
   const b = parseInt(bytes, 10);
   if (!b || isNaN(b)) return '—';
@@ -162,7 +193,7 @@ export default function FilesView({ pendingDealId, onDealOpened } = {}) {
       }
 
       if (filesRes.status === 'fulfilled') {
-        setImportedFiles(filesRes.value.files || []);
+        setImportedFiles(collapseLinks(filesRes.value.files || []));
       } else {
         setImportedFiles([]);
       }
