@@ -68,8 +68,28 @@ mediaQueue.on('failed', (job, err) => {
  * twice. The sweep will pick it up.
  */
 async function enqueue(orgId, messageId) {
+  const jobId = `wa-media-${messageId}`;
   try {
-    await mediaQueue.add({ orgId, messageId }, { jobId: `wa-media-${messageId}` });
+    // A fixed jobId stops the same attachment being processed twice when the
+    // ingest enqueue and the sweep overlap. But Bull KEEPS finished jobs
+    // (removeOnComplete: 200), and add() with an existing jobId is a silent
+    // no-op — so once a message had been through once, every later retry was
+    // quietly discarded.
+    //
+    // That is not academic: the first run of a message whose project had no
+    // attachment folder completes as 'skipped', which is a SUCCESS as far as
+    // Bull is concerned. Configure the folder afterwards and the retry could
+    // never run, with no error anywhere. Sweep says "sweeping 1", nothing
+    // happens, nothing is logged.
+    //
+    // So: clear a finished job before re-adding, and leave a live one alone.
+    const existing = await mediaQueue.getJob(jobId);
+    if (existing) {
+      const state = await existing.getState();
+      if (['waiting', 'active', 'delayed'].includes(state)) return true;  // already coming
+      await existing.remove();
+    }
+    await mediaQueue.add({ orgId, messageId }, { jobId });
     return true;
   } catch (err) {
     console.warn(`[whatsapp-media] could not enqueue message ${messageId}: ${err.message} — the sweep will retry`);
