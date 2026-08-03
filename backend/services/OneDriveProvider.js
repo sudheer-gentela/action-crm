@@ -137,6 +137,78 @@ class OneDriveProvider extends StorageProviderBase {
     };
   }
 
+  // Graph's simple upload tops out at 4 MB. WhatsApp video routinely exceeds
+  // that, so anything larger goes through a resumable upload session.
+  static get SIMPLE_UPLOAD_LIMIT() { return 4 * 1024 * 1024; }
+
+  /**
+   * Write bytes into an existing folder in the caller's own OneDrive.
+   *
+   * Verified against the live API with Files.ReadWrite only — a 201 into a
+   * hand-made folder, and a colleague the folder was shared with could see the
+   * result. That is what makes Files.ReadWrite sufficient and Files.ReadWrite.All
+   * unnecessary: we write into the STORAGE ACCOUNT'S OWN drive, not into a
+   * folder shared with it. Writing into someone else's shared folder is the
+   * case that needs .All, and this deliberately does not do that.
+   */
+  async uploadFile(userId, folderId, fileName, mimeType, buffer) {
+    const accessToken = await this._getAccessToken(userId);
+    const safeName = encodeURIComponent(fileName);
+
+    if (buffer.length <= OneDriveProvider.SIMPLE_UPLOAD_LIMIT) {
+      const res = await axios.put(
+        `${GRAPH_BASE}/me/drive/items/${folderId}:/${safeName}:/content`,
+        buffer,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': mimeType || 'application/octet-stream',
+          },
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
+        }
+      );
+      return this._normalize(res.data);
+    }
+
+    // ── Resumable session for anything larger ──
+    const session = await axios.post(
+      `${GRAPH_BASE}/me/drive/items/${folderId}:/${safeName}:/createUploadSession`,
+      { item: { '@microsoft.graph.conflictBehavior': 'rename' } },
+      { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
+    );
+    const uploadUrl = session.data.uploadUrl;
+
+    // Graph requires each chunk to be a multiple of 320 KiB, except the last.
+    const CHUNK = 5 * 320 * 1024;   // 1.6 MB
+    let last = null;
+    for (let start = 0; start < buffer.length; start += CHUNK) {
+      const end = Math.min(start + CHUNK, buffer.length) - 1;
+      const slice = buffer.subarray(start, end + 1);
+      last = await axios.put(uploadUrl, slice, {
+        headers: {
+          'Content-Length': String(slice.length),
+          'Content-Range': `bytes ${start}-${end}/${buffer.length}`,
+        },
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+        // 202 is returned for every chunk but the last; only the final PUT
+        // returns 200/201 with the item.
+        validateStatus: (st) => st === 200 || st === 201 || st === 202,
+      });
+    }
+    return this._normalize(last.data);
+  }
+
+  /** Delete a file this app created — the undo behind "Remove". */
+  async deleteFile(userId, fileId) {
+    const accessToken = await this._getAccessToken(userId);
+    await axios.delete(`${GRAPH_BASE}/me/drive/items/${fileId}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    return true;
+  }
+
   /** One step up the folder tree. See GoogleDriveProvider.getParentFolderId. */
   async getParentFolderId(userId, itemId) {
     const accessToken = await this._getAccessToken(userId);

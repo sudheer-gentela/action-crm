@@ -175,6 +175,61 @@ class GoogleDriveProvider extends StorageProviderBase {
   }
 
   /**
+   * Multipart upload into an existing folder.
+   *
+   * `parents` is what makes drive.file sufficient: the app may write into a
+   * folder it did not create as long as the id is supplied. Verified against
+   * the live API before this was written — a 201 into a hand-made My Drive
+   * folder, with the folder's sharing inherited by the new file.
+   *
+   * supportsAllDrives is required or this 404s against a Shared Drive, which is
+   * where project folders should live: a Shared Drive OWNS its files, so they
+   * survive the uploader leaving. In My Drive the uploader owns them and they
+   * do not.
+   */
+  async uploadFile(userId, folderId, fileName, mimeType, buffer) {
+    const accessToken = await this._getAccessToken(userId);
+    const boundary = `gw${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+    const metadata = JSON.stringify({ name: fileName, parents: [folderId] });
+
+    const body = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n`),
+      Buffer.from(`--${boundary}\r\nContent-Type: ${mimeType || 'application/octet-stream'}\r\n\r\n`),
+      buffer,
+      Buffer.from(`\r\n--${boundary}--`),
+    ]);
+
+    const res = await axios.post(
+      'https://www.googleapis.com/upload/drive/v3/files',
+      body,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': `multipart/related; boundary=${boundary}`,
+        },
+        params: {
+          uploadType: 'multipart',
+          fields: 'id,name,size,mimeType,parents,webViewLink,driveId',
+          supportsAllDrives: true,
+        },
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+      }
+    );
+    return this._normalize(res.data);
+  }
+
+  /** Delete a file this app created — the undo behind "Remove". */
+  async deleteFile(userId, fileId) {
+    const accessToken = await this._getAccessToken(userId);
+    await axios.delete(`${DRIVE_BASE}/files/${fileId}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      params: SHARED_DRIVE_PARAMS,
+    });
+    return true;
+  }
+
+  /**
    * One step up the folder tree. The generic walk that builds
    * storage_files.folder_path lives in storageFileService so the loop is not
    * written twice — a provider only has to answer "who is this item's parent".

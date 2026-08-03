@@ -44,6 +44,22 @@ class StorageProviderBase {
   async getParentFolderId(userId, itemId) {
     throw new Error(`${this.constructor.name} must implement getParentFolderId()`);
   }
+
+  /**
+   * Write bytes into an existing folder and return a normalised file record.
+   *
+   * The file inherits that folder's sharing, which is what lets the project
+   * team see it without GoWarm managing permissions of its own.
+   *
+   * @param {number} userId        whose credential writes — for WhatsApp media
+   *                               this is the org storage account, not a person
+   * @param {string} folderId      destination, already mapped to the project
+   * @param {Buffer} buffer
+   * @returns {Promise<object>}    { id, name, size, mimeType, webViewLink, parentFolderId }
+   */
+  async uploadFile(userId, folderId, fileName, mimeType, buffer) {
+    throw new Error(`${this.constructor.name} must implement uploadFile()`);
+  }
 }
 
 module.exports = StorageProviderBase;
