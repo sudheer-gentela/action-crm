@@ -127,8 +127,14 @@ function AddPerson({ handoverId, accountId, onDone, onCancel }) {
   const [role,      setRole]      = useState('');
   const [contactId, setContactId] = useState('');
   const [name,      setName]      = useState('');
+  // Country code is separate on purpose. WhatsApp matches an inbound sender by
+  // stripping non-digits from contacts.phone and comparing to Meta's `from`,
+  // which is full international digits. A number saved without the country code
+  // never matches, and the thread silently fails to route.
+  const [cc,        setCc]        = useState('+91');
   const [phone,     setPhone]     = useState('');
   const [email,     setEmail]     = useState('');
+  const [notes,     setNotes]     = useState('');
   const [users,     setUsers]     = useState([]);
   const [userId,    setUserId]    = useState('');
   const [contacts,  setContacts]  = useState([]);
@@ -182,10 +188,14 @@ function AddPerson({ handoverId, accountId, onDone, onCancel }) {
 
       if (mode === 'existing' && !contactId) { setErr('Pick a contact.'); setSaving(false); return; }
       if (mode === 'new' && !name.trim())    { setErr('Enter a name.');   setSaving(false); return; }
+      if (mode === 'new' && !phone.trim())   { setErr('Enter a phone number.'); setSaving(false); return; }
 
       const payload = mode === 'existing'
-        ? { contactId, side, handoverRole: role }
-        : { name: name.trim(), phone: phone.trim() || null, email: email.trim() || null, side, handoverRole: role };
+        ? { contactId, side, handoverRole: role, relationshipNotes: notes }
+        : { name: name.trim(),
+            phone: `${cc}${phone.replace(/[^0-9]/g, '')}`,
+            email: email.trim() || null,
+            side, handoverRole: role, relationshipNotes: notes };
       await apiService.handovers.addStakeholder(handoverId, payload);
       await onDone({});
     } catch (e) {
@@ -228,12 +238,18 @@ function AddPerson({ handoverId, accountId, onDone, onCancel }) {
             <>
               <input value={name}  onChange={e => setName(e.target.value)}  placeholder="Full name" style={{ ...S.inp, minWidth: 150 }} />
               <input value={email} onChange={e => setEmail(e.target.value)} placeholder="email (optional)" style={S.inp} />
-              <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="phone (optional)" style={S.inp} />
+              <input value={cc}    onChange={e => setCc(e.target.value)}    style={{ ...S.inp, width: 64 }} />
+              <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="national number" style={S.inp} />
+              <span style={{ ...S.meta, flexBasis: '100%' }}>
+                e.g. +91 and 7207583441 — the country code is required for WhatsApp.
+              </span>
             </>
           )}
           <select value={role} onChange={e => setRole(e.target.value)} style={S.inp}>
             {roles.map(r => <option key={r.id} value={r.key}>{r.name}</option>)}
           </select>
+          <input value={notes} onChange={e => setNotes(e.target.value)}
+            placeholder="relationship notes (optional)" style={{ ...S.inp, minWidth: 200 }} />
         </>
       )}
 
@@ -264,10 +280,76 @@ function AddPerson({ handoverId, accountId, onDone, onCancel }) {
   );
 }
 
+// ── Who can add contacts to this project ────────────────────────────────────
+//
+// Restored: this existed on the old card and the backend endpoints were still
+// live with nothing calling them. detail.canEditContactPolicy gates the button.
+
+function ContactPolicy({ handoverId, onClose }) {
+  const [policy, setPolicy] = useState(null);
+  const [users,  setUsers]  = useState([]);
+  const [msg,    setMsg]    = useState('');
+
+  useEffect(() => {
+    Promise.all([
+      apiService.handovers.getContactPolicy(handoverId),
+      apiService.handovers.assignableUsers(),
+    ]).then(([p, u]) => {
+      setPolicy(p.data.policy);
+      setUsers(u.data.users || []);
+    }).catch(() => setMsg('Could not load policy.'));
+  }, [handoverId]);
+
+  const toggleNamed = (uid) => setPolicy(p => {
+    const set = new Set((p.named_users || []).map(Number));
+    if (set.has(uid)) set.delete(uid); else set.add(uid);
+    return { ...p, named_users: [...set] };
+  });
+
+  const save = async () => {
+    try { await apiService.handovers.setContactPolicy(handoverId, policy); setMsg('Saved.'); }
+    catch (e) { setMsg(errText(e, 'Could not save.')); }
+  };
+
+  if (!policy) return <div style={{ ...S.meta, marginTop: 8 }}>{msg || 'Loading…'}</div>;
+
+  return (
+    <div style={{ marginTop: 10, padding: 10, background: '#f8fafc',
+                  borderRadius: 8, border: '1px solid #e5e7eb' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <strong style={{ fontSize: 12 }}>Who can add contacts to this project</strong>
+        <button onClick={onClose} style={{ ...S.btn, marginLeft: 'auto' }}>Close</button>
+      </div>
+      {[['deal_owner', 'Deal owner'], ['service_owner', 'Project manager'], ['admins', 'Org admins']].map(([k, label]) => (
+        <label key={k} style={{ display: 'block', fontSize: 12, padding: '2px 0' }}>
+          <input type="checkbox" checked={!!policy[k]}
+            onChange={e => setPolicy(p => ({ ...p, [k]: e.target.checked }))} />
+          {' '}{label}
+        </label>
+      ))}
+      <div style={{ ...S.meta, margin: '6px 0 4px' }}>Named people:</div>
+      <div style={{ maxHeight: 150, overflowY: 'auto', marginBottom: 8 }}>
+        {users.map(u => (
+          <label key={u.id} style={{ display: 'block', fontSize: 12, padding: '2px 0' }}>
+            <input type="checkbox"
+              checked={(policy.named_users || []).map(Number).includes(u.id)}
+              onChange={() => toggleNamed(u.id)} />
+            {' '}{u.name || `${u.first_name} ${u.last_name}`}
+          </label>
+        ))}
+      </div>
+      <button onClick={save} style={{ fontSize: 12, padding: '5px 11px', borderRadius: 4,
+        border: 'none', background: '#0369a1', color: '#fff', cursor: 'pointer' }}>Save</button>
+      {msg && <span style={{ ...S.meta, marginLeft: 8 }}>{msg}</span>}
+    </div>
+  );
+}
+
 // ── Panel ────────────────────────────────────────────────────────────────────
 
 export default function ProjectPeoplePanel({ detail, onRefresh, onOpenContact, currentUserId }) {
   const [adding, setAdding] = useState(false);
+  const [policyOpen, setPolicyOpen] = useState(false);
   const [err,    setErr]    = useState('');
   const [busy,   setBusy]   = useState(false);
 
@@ -351,11 +433,16 @@ export default function ProjectPeoplePanel({ detail, onRefresh, onOpenContact, c
 
       {err && <div style={S.err}>{err}</div>}
 
-      {canEdit && !adding && (
-        <button onClick={() => { setAdding(true); setErr(''); }} style={{ ...S.add, marginTop: 10 }}>
-          + Add contact
-        </button>
-      )}
+      <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+        {canEdit && !adding && (
+          <button onClick={() => { setAdding(true); setErr(''); }} style={S.add}>+ Add contact</button>
+        )}
+        {detail?.canEditContactPolicy && (
+          <button onClick={() => setPolicyOpen(o => !o)} style={S.btn}>Who can add contacts…</button>
+        )}
+      </div>
+
+      {policyOpen && <ContactPolicy handoverId={handoverId} onClose={() => setPolicyOpen(false)} />}
 
       {adding && (
         <AddPerson
