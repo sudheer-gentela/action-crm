@@ -547,6 +547,10 @@ twilio: {
     testSlack:        () => api.post('/team-notifications/test-slack'),
     setSlackEmail:    (slack_email) => api.patch('/team-notifications/slack-email', { slack_email }),
     getOrgMembers:    () => api.get('/team-notifications/org-members'),
+    // Backs the "which teams am I on" modal in NotificationSettings. The route
+    // has existed since the team-notifications work; only this binding was
+    // missing, so the call resolved to undefined and the modal never opened.
+    getMyTeams:       () => api.get('/team-notifications/my-teams'),
     triggerImmediate: () => api.post('/team-notifications/trigger/immediate'),
     triggerDigest:    () => api.post('/team-notifications/trigger/digest'),
   },

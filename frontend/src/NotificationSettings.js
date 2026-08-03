@@ -209,12 +209,16 @@ export default function NotificationSettings() {
   const openTeamsModal = useCallback(async () => {
     if (teamsData) { setTeamsOpen(true); return; }
     setTeamsLoading(true);
+    setError('');
     try {
       const res = await apiService.teamNotifications.getMyTeams();
       setTeamsData(res.data);
       setTeamsOpen(true);
     } catch (err) {
+      // Previously this only wrote to the console, so the button silently did
+      // nothing and the missing apiService binding went unnoticed. Surface it.
       console.error('Failed to load teams:', err);
+      setError(err?.response?.data?.error?.message || 'Could not load your teams.');
     } finally {
       setTeamsLoading(false);
     }
