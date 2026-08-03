@@ -40,6 +40,18 @@ const SCOPES = [
   'https://www.googleapis.com/auth/gmail.modify',
   'https://www.googleapis.com/auth/calendar.readonly',
   'https://www.googleapis.com/auth/drive.readonly',
+  // WRITE. drive.readonly cannot upload, which is why WhatsApp attachment
+  // capture failed with "Request had insufficient authentication scopes".
+  //
+  // drive.file, not full drive: it grants write access only to files this app
+  // creates, which is exactly what an upload is. It is a SENSITIVE scope, while
+  // drive.readonly is already RESTRICTED — so adding it does NOT move the app
+  // into a stricter verification tier or trigger a new CASA assessment.
+  //
+  // MUST also be declared in Google Cloud Console → OAuth consent screen →
+  // Data access, or consent is rejected in production. Adding it here alone is
+  // not enough.
+  'https://www.googleapis.com/auth/drive.file',
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile',
 ];

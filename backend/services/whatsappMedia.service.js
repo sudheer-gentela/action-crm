@@ -266,6 +266,22 @@ async function captureMessage(orgId, messageId) {
       return { status: 'expired', reason: err.message };
     }
     const detail = err.response?.data?.error?.message || err.message;
+
+    // A scope or permission problem cannot be fixed by trying again — it needs
+    // a reconnect with wider consent, or access granting on the folder. Marking
+    // it retryable meant five identical failures filling the log while the real
+    // cause scrolled away. 'skipped' keeps wa_media_id, so it stays fully
+    // recoverable the moment the consent is fixed.
+    const notRetryable =
+      /insufficient authentication scopes|insufficientPermissions|insufficientFilePermissions/i.test(detail)
+      || err.response?.status === 401
+      || err.response?.status === 403;
+
+    if (notRetryable) {
+      await setStatus(messageId, 'skipped', { error: `${detail} — reconnect storage with write access, then retry.` });
+      return { status: 'skipped', reason: detail, needsReconnect: true };
+    }
+
     await setStatus(messageId, 'failed', { error: detail });
     return { status: 'failed', reason: detail, retryable: true };
   }
