@@ -14,6 +14,12 @@ const { getTokenByUserId, saveUserToken } = require('./tokenService');
 const GOOGLE_PROVIDER = 'google';
 const DRIVE_BASE = 'https://www.googleapis.com/drive/v3';
 
+// Drive v3 defaults to My Drive only. Every file-level call needs
+// supportsAllDrives; every listing also needs includeItemsFromAllDrives.
+// Omitting them does not error — it silently returns nothing, or 404s on an
+// item that plainly exists, which is the worst shape a bug can take.
+const SHARED_DRIVE_PARAMS = { supportsAllDrives: true, includeItemsFromAllDrives: true };
+
 const GOOGLE_NATIVE_EXPORT_MAP = {
   'application/vnd.google-apps.document':
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -56,12 +62,47 @@ class GoogleDriveProvider extends StorageProviderBase {
       headers: { Authorization: `Bearer ${accessToken}` },
       params: {
         q: `${parentQuery} and trashed = false`,
-        fields: 'files(id,name,size,modifiedTime,mimeType,parents,webViewLink)',
+        fields: 'files(id,name,size,modifiedTime,mimeType,parents,webViewLink,driveId)',
         orderBy: 'modifiedTime desc',
         pageSize: 100,
+        // Without these three, every call here is scoped to the caller's My
+        // Drive and a Shared Drive is invisible — which matters because a
+        // Shared Drive is the right home for project folders: the drive owns
+        // the files, so they survive the uploader leaving the company.
+        ...SHARED_DRIVE_PARAMS,
+        corpora: 'allDrives',
       },
     });
     return response.data.files.map((item) => this._normalize(item));
+  }
+
+  /**
+   * Shared Drives the caller can see, shaped like folders so the picker can
+   * navigate into them.
+   *
+   * They are NOT files and never appear in a files.list, so without this a user
+   * cannot reach a Shared Drive folder at all — and therefore cannot map one to
+   * a project.
+   */
+  async listSharedDrives(userId) {
+    const accessToken = await this._getAccessToken(userId);
+    try {
+      const res = await axios.get(`${DRIVE_BASE}/drives`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        params: { pageSize: 100, fields: 'drives(id,name)' },
+      });
+      return (res.data.drives || []).map(d => ({
+        id: d.id, name: d.name, size: 0, mimeType: 'application/vnd.google-apps.folder',
+        category: 'folder', isFolder: true, childCount: 0,
+        parentFolder: null, parentFolderId: null,
+        modifiedTime: null, lastModified: null, webViewLink: null,
+        isSharedDrive: true,
+      }));
+    } catch (err) {
+      // A user with no Shared Drives, or a personal account, is not an error.
+      console.warn('[GoogleDrive] Could not list shared drives:', err.message);
+      return [];
+    }
   }
 
   async searchFiles(userId, query) {
@@ -70,9 +111,11 @@ class GoogleDriveProvider extends StorageProviderBase {
       headers: { Authorization: `Bearer ${accessToken}` },
       params: {
         q: `fullText contains '${query.replace(/'/g, "\\'")}' and trashed = false`,
-        fields: 'files(id,name,size,modifiedTime,mimeType,parents,webViewLink)',
+        fields: 'files(id,name,size,modifiedTime,mimeType,parents,webViewLink,driveId)',
         orderBy: 'modifiedTime desc',
         pageSize: 50,
+        ...SHARED_DRIVE_PARAMS,
+        corpora: 'allDrives',
       },
     });
     return response.data.files
@@ -84,7 +127,8 @@ class GoogleDriveProvider extends StorageProviderBase {
     const accessToken = await this._getAccessToken(userId);
     const response = await axios.get(`${DRIVE_BASE}/files/${fileId}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
-      params: { fields: 'id,name,size,modifiedTime,mimeType,parents,webViewLink' },
+      params: { fields: 'id,name,size,modifiedTime,mimeType,parents,webViewLink,driveId',
+                ...SHARED_DRIVE_PARAMS },
     });
     return this._normalize(response.data);
   }
@@ -103,6 +147,7 @@ class GoogleDriveProvider extends StorageProviderBase {
 
     const downloadResponse = await axios.get(downloadUrl, {
       headers: { Authorization: `Bearer ${accessToken}` },
+      params: SHARED_DRIVE_PARAMS,
       responseType: 'arraybuffer',
     });
 
@@ -140,7 +185,10 @@ class GoogleDriveProvider extends StorageProviderBase {
     try {
       const res = await axios.get(`${DRIVE_BASE}/files/${itemId}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
-        params: { fields: 'parents' },
+        // Without supportsAllDrives this 404s on a Shared Drive item, the walk
+        // stops, folder_path stays null, and folder mapping silently never
+        // matches. A quiet failure, which is why it is called out here.
+        params: { fields: 'parents', ...SHARED_DRIVE_PARAMS },
       });
       return (res.data && res.data.parents && res.data.parents[0]) || null;
     } catch (err) {
@@ -187,6 +235,8 @@ class GoogleDriveProvider extends StorageProviderBase {
       id: item.id, name: item.name, size: parseInt(item.size, 10) || 0,
       lastModified: item.modifiedTime, mimeType: isFolder ? null : item.mimeType,
       isFolder, childCount: 0, parentFolder: null,
+      // Present when the item lives in a Shared Drive rather than My Drive.
+      driveId: item.driveId || null,
       // Drive already returns `parents` in every fields= list below; it was
       // being discarded here. Surfacing it populates storage_files.folder_id at
       // import with no extra API call.
