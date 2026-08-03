@@ -76,6 +76,20 @@ router.get('/handovers/:handoverId/targets', async (req, res) => {
 });
 
 // Approved WhatsApp templates for this org (live from Meta), for the composer.
+// Attach a conversation to a project by hand — for a sender the inference
+// could not identify, or one that matched more than one project.
+router.post('/threads/:threadId/link', async (req, res) => {
+  try {
+    const { handoverId, force } = req.body || {};
+    if (!handoverId) return res.status(400).json({ error: { message: 'handoverId is required' } });
+    res.json(await whatsapp.linkThreadToProject(
+      parseInt(req.params.threadId, 10), req.orgId, parseInt(handoverId, 10), { force: !!force }
+    ));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: { message: err.message, code: err.status === 409 ? 'ALREADY_LINKED' : undefined } });
+  }
+});
+
 router.get('/templates', async (req, res) => {
   try {
     const out = await whatsapp.listApprovedTemplates(req.orgId);

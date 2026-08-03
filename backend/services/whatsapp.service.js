@@ -181,8 +181,86 @@ async function getThreadById(threadId, orgId, handoverId) {
     [threadId, orgId]
   );
   if (!t) return null;
+
+  // Belongs to a DIFFERENT project — refuse rather than steal it.
   if (handoverId != null && t.handover_id != null && t.handover_id !== handoverId) return null;
+
+  // Belongs to NO project — adopt it, exactly as resolveDirectThreadByPhone
+  // does. Without this, sending to an existing thread by id left it orphaned:
+  // the message went out, but the conversation stayed invisible in the
+  // project's Communications tab, which reads by handover_id.
+  if (handoverId != null && t.handover_id == null) {
+    await pool.query(
+      `UPDATE whatsapp_threads SET handover_id = $1, updated_at = now() WHERE id = $2`,
+      [handoverId, t.id]
+    );
+    t.handover_id = handoverId;
+  }
   return t;
+}
+
+/**
+ * Which single active project does this phone number belong to?
+ *
+ * Used to link an INBOUND conversation on arrival. Matches BOTH sides of a
+ * project: contacts (customers, vendors, partners) and members (the internal
+ * team) — the members half matters because on an internal project there are no
+ * contacts at all, which is how a colleague's message became an orphan.
+ *
+ * Returns null unless there is EXACTLY ONE match. A number on two projects is
+ * ambiguous, and guessing would put a customer's messages on the wrong project
+ * — worse than leaving it unlinked, because unlinked is visible and fixable
+ * while wrong is neither.
+ */
+/**
+ * Attach a conversation to a project by hand.
+ *
+ * The backstop for what inference deliberately will not guess: an unknown
+ * number, or one that matches two projects. Refuses to move a thread that
+ * already belongs elsewhere unless asked explicitly, so a mis-click cannot
+ * silently relocate a customer's history.
+ */
+async function linkThreadToProject(threadId, orgId, handoverId, { force = false } = {}) {
+  const { rows: [t] } = await pool.query(
+    `SELECT id, handover_id FROM whatsapp_threads WHERE id = $1 AND org_id = $2`,
+    [threadId, orgId]
+  );
+  if (!t) throw Object.assign(new Error('Conversation not found'), { status: 404 });
+  if (t.handover_id != null && t.handover_id !== handoverId && !force) {
+    throw Object.assign(
+      new Error('That conversation is already on another project. Move it explicitly if that is what you want.'),
+      { status: 409, currentHandoverId: t.handover_id });
+  }
+  const { rows: [updated] } = await pool.query(
+    `UPDATE whatsapp_threads SET handover_id = $1, updated_at = now()
+      WHERE id = $2 AND org_id = $3 RETURNING id, handover_id, wa_phone`,
+    [handoverId, threadId, orgId]
+  );
+  return { thread: updated };
+}
+
+async function projectForPhone(orgId, waPhone) {
+  const digits = normalizePhone(waPhone);
+  if (!digits) return null;
+
+  const { rows } = await pool.query(
+    `SELECT DISTINCT h.id
+       FROM sales_handovers h
+       LEFT JOIN project_contacts pc
+              ON pc.context_type = 'handover' AND pc.context_id = h.id AND pc.org_id = h.org_id
+       LEFT JOIN contacts c ON c.id = pc.contact_id
+       LEFT JOIN project_members pm
+              ON pm.context_type = 'handover' AND pm.context_id = h.id
+             AND pm.org_id = h.org_id AND pm.status = 'approved'
+       LEFT JOIN users u ON u.id = pm.user_id
+      WHERE h.org_id = $1
+        AND h.status NOT IN ('completed', 'cancelled')
+        AND ( regexp_replace(COALESCE(c.phone, ''), '[^0-9]', '', 'g') = $2
+           OR regexp_replace(COALESCE(u.whatsapp_phone, u.phone, ''), '[^0-9]', '', 'g') = $2 )
+      LIMIT 2`,
+    [orgId, digits]
+  );
+  return rows.length === 1 ? rows[0].id : null;
 }
 
 /**
@@ -783,20 +861,39 @@ function contactNameFromValue(value, fromPhone) {
 /** Find (or open) the direct thread an inbound message belongs to. */
 async function threadForInbound(orgId, fromPhone, value) {
   const waPhone = normalizePhone(fromPhone);
+  // An inbound conversation used to be created with no project at all, so it
+  // never appeared in any Communications tab — that reads by handover_id. Only
+  // an OUTBOUND send from a project ever linked a thread, which meant anyone
+  // who messaged in first was invisible.
+  const inferredHandoverId = await projectForPhone(orgId, waPhone);
   const { rows: [existing] } = await pool.query(
     `SELECT * FROM whatsapp_threads WHERE org_id = $1 AND kind = 'direct' AND wa_phone = $2 LIMIT 1`,
     [orgId, waPhone]
   );
-  if (existing) return existing;
+  if (existing) {
+    // Adopt an orphan we can now identify — e.g. the number was added to a
+    // project after this conversation started. Never overwrite an existing
+    // link: the thread already belongs somewhere.
+    if (existing.handover_id == null && inferredHandoverId) {
+      await pool.query(
+        `UPDATE whatsapp_threads SET handover_id = $1, updated_at = now() WHERE id = $2`,
+        [inferredHandoverId, existing.id]
+      );
+      existing.handover_id = inferredHandoverId;
+    }
+    return existing;
+  }
 
-  // Unknown sender — open an unlinked thread so nothing is dropped; it can be
-  // attached to a handover later from the UI.
+  // Genuinely unknown sender — open an UNLINKED thread rather than dropping the
+  // message. It can be attached to a project from the UI later.
   const { rows: [thread] } = await pool.query(
-    `INSERT INTO whatsapp_threads (org_id, kind, wa_phone, status, opt_in_source)
-     VALUES ($1, 'direct', $2, 'active', 'inbound')
-     ON CONFLICT (org_id, wa_phone) WHERE kind = 'direct' DO UPDATE SET updated_at = now()
+    `INSERT INTO whatsapp_threads (org_id, kind, wa_phone, status, opt_in_source, handover_id)
+     VALUES ($1, 'direct', $2, 'active', 'inbound', $3)
+     ON CONFLICT (org_id, wa_phone) WHERE kind = 'direct'
+       DO UPDATE SET updated_at = now(),
+                     handover_id = COALESCE(whatsapp_threads.handover_id, EXCLUDED.handover_id)
      RETURNING *`,
-    [orgId, waPhone]
+    [orgId, waPhone, inferredHandoverId]
   );
   return thread;
 }
@@ -901,6 +998,11 @@ module.exports = {
   getStatus,
   getThreadForHandover,
   listSendTargets,
+  projectForPhone,
+  linkThreadToProject,
+  // Exported for diagnostics and back-fill: it is the one place that decides
+  // which project an inbound conversation belongs to.
+  threadForInbound,
   listApprovedTemplates,
   sendToHandover,
   listMessages,
