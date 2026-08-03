@@ -51,10 +51,19 @@ function collapseLinks(rows) {
     const key = `${r.provider}::${r.provider_file_id}`;
     const seen = byFile.get(key);
     if (!seen) {
-      byFile.set(key, { ...r, deal_names: r.deal_name ? [r.deal_name] : [], project_names: r.project_name ? [r.project_name] : [] });
+      byFile.set(key, {
+        ...r,
+        deal_names:    r.deal_name    ? [r.deal_name]    : [],
+        project_names: r.project_name ? [r.project_name] : [],
+        // Every deal this document is linked to. Collapsing to a single row
+        // must not collapse the LINKS — filtering by deal reads this, not
+        // deal_id, or a file attached to two deals disappears from one of them.
+        deal_ids:      r.deal_id      ? [String(r.deal_id)] : [],
+      });
       continue;
     }
     if (r.deal_name && !seen.deal_names.includes(r.deal_name)) seen.deal_names.push(r.deal_name);
+    if (r.deal_id && !seen.deal_ids.includes(String(r.deal_id))) seen.deal_ids.push(String(r.deal_id));
     if (r.project_name && !seen.project_names.includes(r.project_name)) seen.project_names.push(r.project_name);
     // Keep the richest row: a processed one carries the AI fields.
     if (!seen.deal_id && r.deal_id) { seen.deal_id = r.deal_id; seen.deal_name = r.deal_name; }
@@ -269,7 +278,10 @@ export default function FilesView({ pendingDealId, onDealOpened } = {}) {
   // ── Derived: filtered + sorted files ──────────────────────────────────────
   const filteredFiles = importedFiles
     .filter(f => {
-      if (filterDeal !== 'all' && String(f.deal_id) !== String(filterDeal)) return false;
+      if (filterDeal !== 'all') {
+        const ids = f.deal_ids || (f.deal_id ? [String(f.deal_id)] : []);
+        if (!ids.includes(String(filterDeal))) return false;
+      }
       if (filterCategory !== 'all' && f.category !== filterCategory) return false;
       if (filterProvider !== 'all' && f.provider !== filterProvider) return false;
       if (searchQuery.trim()) {
@@ -290,7 +302,9 @@ export default function FilesView({ pendingDealId, onDealOpened } = {}) {
 
   // ── Stats ──────────────────────────────────────────────────────────────────
   const totalSize = importedFiles.reduce((sum, f) => sum + (parseInt(f.file_size, 10) || 0), 0);
-  const dealCount = new Set(importedFiles.map(f => f.deal_id).filter(Boolean)).size;
+  const dealCount = new Set(
+    importedFiles.flatMap(f => f.deal_ids || (f.deal_id ? [String(f.deal_id)] : []))
+  ).size;
 
   // ── Render ─────────────────────────────────────────────────────────────────
   if (loading) {
@@ -434,7 +448,13 @@ export default function FilesView({ pendingDealId, onDealOpened } = {}) {
             </thead>
             <tbody>
               {filteredFiles.map(file => {
-                const deal = deals.find(d => String(d.id) === String(file.deal_id));
+                // A document can be linked to more than one deal, and to a
+                // project. Rows are collapsed to one line per file, so the cell
+                // has to show every link — otherwise the extra ones look lost.
+                const dealIds  = file.deal_ids || (file.deal_id ? [String(file.deal_id)] : []);
+                const linkedDeals = dealIds
+                  .map(id => deals.find(d => String(d.id) === String(id)))
+                  .filter(Boolean);
                 const catColor = CATEGORY_COLORS[file.category] || '#6b7280';
                 const catIcon  = CATEGORY_ICONS[file.category]  || '📄';
                 const openLabel = PROVIDER_OPEN_LABELS[file.provider] || 'Open in cloud storage';
@@ -460,17 +480,22 @@ export default function FilesView({ pendingDealId, onDealOpened } = {}) {
                     </td>
 
                     <td className="files-cell files-cell--deal">
-                      {deal ? (
+                      {linkedDeals.map(d => (
                         <button
+                          key={d.id}
                           className="files-deal-tag files-deal-tag--link"
-                          onClick={() => {
-                            if (onDealOpened) onDealOpened(deal.id);
-                          }}
-                          title={`Open deal: ${deal.name}`}
+                          onClick={() => { if (onDealOpened) onDealOpened(d.id); }}
+                          title={`Open deal: ${d.name}`}
                         >
-                          💼 {deal.name}
+                          💼 {d.name}
                         </button>
-                      ) : (
+                      ))}
+                      {file.project_name && (
+                        <span className="files-deal-tag" title="On a project">
+                          🤝 {file.project_name}
+                        </span>
+                      )}
+                      {!linkedDeals.length && !file.project_name && (
                         <span className="files-no-deal">—</span>
                       )}
                     </td>
