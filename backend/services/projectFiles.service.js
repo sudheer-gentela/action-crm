@@ -274,10 +274,18 @@ async function listForProject(handoverId, orgId, { includeHidden = false } = {})
             (tu.first_name || ' ' || tu.last_name) AS tagged_by_name,
             (hu.first_name || ' ' || hu.last_name) AS hidden_by_name,
             pf.folder_name AS via_folder_name,
-            pf.folder_id   AS via_folder_id
+            pf.folder_id   AS via_folder_id,
+            -- Who actually sent it. For a WhatsApp capture the meaningful
+            -- attribution is the person in the group who shared it, not the
+            -- GoWarm account whose credential performed the upload — that is
+            -- the storage service account and tells a reader nothing.
+            wm.from_name   AS wa_from_name,
+            wm.from_phone  AS wa_from_phone,
+            wm.sent_at     AS wa_sent_at
        FROM storage_files sf
        LEFT JOIN users tu ON tu.id = sf.tagged_by
        LEFT JOIN users hu ON hu.id = sf.hidden_by
+       LEFT JOIN whatsapp_messages wm ON wm.storage_file_id = sf.id
        LEFT JOIN project_folders pf
               ON sf.tag_source = 'folder'
              AND pf.org_id = sf.org_id

@@ -233,14 +233,14 @@ async function captureMessage(orgId, messageId) {
       `INSERT INTO storage_files (
          org_id, user_id, provider, provider_file_id, web_url, file_name,
          file_size, mime_type, category, source_label, folder_id,
-         handover_id, tag_source, tagged_at, processing_status
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'manual',now(),'pending')
+         handover_id, tag_source, tagged_by, tagged_at, processing_status
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'manual',$2,now(),'pending')
        RETURNING id`,
       [orgId, owner.user_id, target.provider, uploaded.id,
        uploaded.webViewLink || uploaded.webUrl || null, fileName,
        buffer.length, mimeType || msg.media_mime_type || null,
        categoryFor(msg, mimeType),
-       `WhatsApp · ${target.folderName || 'project folder'}`,
+       `WhatsApp · from ${msg.from_name || msg.from_phone || 'unknown sender'}`,
        target.folderId, msg.handover_id]
     );
 

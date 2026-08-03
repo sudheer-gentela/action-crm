@@ -56,6 +56,36 @@ async function apiUpload(path, formData) {
   return body;
 }
 
+/**
+ * Copy text to the clipboard.
+ *
+ * navigator.clipboard only exists in a secure context, and it also rejects when
+ * the document is not focused — which happens if the user clicks away while a
+ * request is in flight. The textarea fallback works in both cases, so a copy
+ * never silently does nothing.
+ */
+async function copyToClipboard(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* fall through */ }
+
+  try {
+    const el = document.createElement('textarea');
+    el.value = text;
+    el.setAttribute('readonly', '');
+    el.style.position = 'fixed';
+    el.style.opacity = '0';
+    document.body.appendChild(el);
+    el.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(el);
+    return ok;
+  } catch { return false; }
+}
+
 const PROVIDER_LABELS = { onedrive: 'OneDrive', googledrive: 'Google Drive' };
 
 const CATEGORY_ICONS = {
@@ -310,6 +340,7 @@ export default function ProjectFilesPanel({ handoverId }) {
   const [loading,   setLoading]   = useState(true);
   const [error,     setError]     = useState('');
   const [notice,    setNotice]    = useState('');
+  const [copiedId,  setCopiedId]  = useState(null);
 
   const load = useCallback(async () => {
     if (!handoverId) return;
@@ -378,6 +409,27 @@ export default function ProjectFilesPanel({ handoverId }) {
     } finally { setUploading(false); }
   }
 
+  /**
+   * Copy the file's link.
+   *
+   * Goes through the SAME permission-checked endpoint as Open rather than
+   * copying f.web_url straight from the row: someone who cannot open the file
+   * should not be handing its link around, and if they lack provider access
+   * they get the same honest message instead of a link that fails for them.
+   */
+  async function copyLink(file) {
+    setError('');
+    try {
+      const { url } = await apiFetch(`/project-files/${handoverId}/files/${file.id}/open-url`, { method: 'POST' });
+      const ok = await copyToClipboard(url);
+      if (!ok) throw new Error('Your browser blocked the copy. Use Open and copy from the address bar.');
+      setCopiedId(file.id);
+      setTimeout(() => setCopiedId((cur) => (cur === file.id ? null : cur)), 2000);
+    } catch (e) {
+      setError(e.code === 'PROVIDER_ACCESS_DENIED' ? e.message : `Could not copy the link: ${e.message}`);
+    }
+  }
+
   async function openFile(file) {
     setError('');
     try {
@@ -438,13 +490,23 @@ export default function ProjectFilesPanel({ handoverId }) {
               <div style={S.meta}>
                 <span>{PROVIDER_LABELS[f.provider] || f.provider}</span>
                 <span>· {formatFileSize(f.file_size)}</span>
-                {f.tag_source === 'folder'
-                  ? <span>· via folder {f.via_folder_name || f.folder_id}</span>
-                  : <span>· added by {f.tagged_by_name || 'someone'}</span>}
+                {/* Attribution, most informative first. A WhatsApp capture is
+                    credited to the person who SHARED it, not to the storage
+                    account whose token performed the upload — that account is
+                    the same for every file and tells a reader nothing. */}
+                {f.wa_from_name || f.wa_from_phone
+                  ? <span>· shared by {f.wa_from_name || f.wa_from_phone} on WhatsApp</span>
+                  : f.tag_source === 'folder'
+                    ? <span>· via folder {f.via_folder_name || f.folder_id}</span>
+                    : <span>· added by {f.tagged_by_name || 'someone'}</span>}
                 {f.deal_id && <span>· also on a deal</span>}
               </div>
             </div>
             <button style={S.btn} onClick={() => openFile(f)}>Open ↗</button>
+            <button style={S.btn} onClick={() => copyLink(f)}
+              title="Copy a link to this file. Whoever you send it to still needs access in the provider.">
+              {copiedId === f.id ? '✓ Copied' : '🔗 Copy link'}
+            </button>
             {canFile && f.tag_source === 'manual' && (
               <button style={S.btn} title="Remove the direct link"
                 onClick={() => act(`/project-files/${handoverId}/files/${f.id}`, 'DELETE')}>Untag</button>
