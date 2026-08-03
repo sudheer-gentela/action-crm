@@ -246,6 +246,66 @@ async function notifyBrokenOnce(orgId, account, reason) {
   }
 }
 
+/**
+ * A usable access token for the org's storage account, refreshed if stale.
+ *
+ * The capture worker runs from a webhook, so there is nobody to re-authenticate
+ * interactively — the refresh has to be automatic, and a failure has to be
+ * recorded rather than thrown into a queue that will retry it forever.
+ *
+ * A refresh failure calls markBroken: the account deactivates, capture stops,
+ * and the org is notified. Retrying a revoked credential cannot succeed, and
+ * burning the retry budget on it means the attachment expires before anyone
+ * hears about the real problem.
+ */
+async function getFreshAccessToken(orgId, provider) {
+  const cred = await getCredential(orgId, provider);
+  if (!cred) return null;
+
+  const stale = cred.expires_at && new Date(cred.expires_at).getTime() < Date.now() + 5 * 60 * 1000;
+  if (!stale) return cred.access_token;
+  if (!cred.refresh_token) {
+    await markBroken(orgId, provider, 'no refresh token — reconnect required');
+    return null;
+  }
+
+  const axios = require('axios');
+  try {
+    let accessToken, expiresIn, newRefresh;
+
+    if (provider === 'onedrive') {
+      const { refreshMicrosoftToken } = require('../config/microsoftScopes');
+      const { data } = await refreshMicrosoftToken(axios, cred.refresh_token);
+      accessToken = data.access_token; expiresIn = data.expires_in; newRefresh = data.refresh_token;
+    } else {
+      const { data } = await axios.post('https://oauth2.googleapis.com/token',
+        new URLSearchParams({
+          client_id:     process.env.GOOGLE_CLIENT_ID,
+          client_secret: process.env.GOOGLE_CLIENT_SECRET,
+          refresh_token: cred.refresh_token,
+          grant_type:    'refresh_token',
+        }).toString(),
+        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+      accessToken = data.access_token; expiresIn = data.expires_in; newRefresh = data.refresh_token;
+    }
+
+    await pool.query(
+      `UPDATE org_storage_accounts
+          SET access_token = $3,
+              refresh_token = COALESCE($4, refresh_token),
+              expires_at = now() + ($5 || ' seconds')::interval,
+              updated_at = now()
+        WHERE org_id = $1 AND provider = $2`,
+      [orgId, provider, accessToken, newRefresh || null, String(expiresIn || 3600)]
+    );
+    return accessToken;
+  } catch (err) {
+    const detail = err.response?.data?.error_description || err.response?.data?.error || err.message;
+    await markBroken(orgId, provider, `refresh failed: ${detail}`);
+    return null;
+  }
+}
+
 // ── Upload target ────────────────────────────────────────────────────────────
 
 /**
@@ -285,5 +345,5 @@ async function resolveUploadTarget(orgId, handoverId) {
 module.exports = {
   PROVIDERS,
   get, list, getCredential, connect, disconnect,
-  markUsed, markBroken, notifyBrokenOnce, resolveUploadTarget,
+  markUsed, markBroken, notifyBrokenOnce, resolveUploadTarget, getFreshAccessToken,
 };

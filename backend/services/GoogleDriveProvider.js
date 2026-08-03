@@ -188,7 +188,19 @@ class GoogleDriveProvider extends StorageProviderBase {
    * do not.
    */
   async uploadFile(userId, folderId, fileName, mimeType, buffer) {
-    const accessToken = await this._getAccessToken(userId);
+    return this.uploadFileWithToken(
+      await this._getAccessToken(userId), folderId, fileName, mimeType, buffer);
+  }
+
+  /**
+   * Upload using a caller-supplied token.
+   *
+   * WhatsApp capture runs from a webhook with no signed-in user, and its
+   * credential lives in org_storage_accounts rather than oauth_tokens — so
+   * _getAccessToken(userId) cannot reach it. Splitting the token out lets both
+   * paths share one upload implementation instead of growing a second copy.
+   */
+  async uploadFileWithToken(accessToken, folderId, fileName, mimeType, buffer) {
     const boundary = `gw${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
     const metadata = JSON.stringify({ name: fileName, parents: [folderId] });
 
@@ -221,7 +233,10 @@ class GoogleDriveProvider extends StorageProviderBase {
 
   /** Delete a file this app created — the undo behind "Remove". */
   async deleteFile(userId, fileId) {
-    const accessToken = await this._getAccessToken(userId);
+    return this.deleteFileWithToken(await this._getAccessToken(userId), fileId);
+  }
+
+  async deleteFileWithToken(accessToken, fileId) {
     await axios.delete(`${DRIVE_BASE}/files/${fileId}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
       params: SHARED_DRIVE_PARAMS,

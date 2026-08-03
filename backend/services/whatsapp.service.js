@@ -595,13 +595,26 @@ async function ingestWebhook(payload) {
                    -- text messages are not swept looking for attachments.
                    CASE WHEN $9::text IS NULL THEN NULL ELSE 'pending' END,
                    CASE WHEN $9::text IS NULL THEN NULL ELSE now() + interval '30 days' END)
-           ON CONFLICT (org_id, wa_message_id) WHERE wa_message_id IS NOT NULL DO NOTHING`,
+           ON CONFLICT (org_id, wa_message_id) WHERE wa_message_id IS NOT NULL DO NOTHING
+           RETURNING id`,
           [org, thread.id, m.id, m.type || 'text', bodyText, m.from,
            contactNameFromValue(value, m.from), Number(m.timestamp) || (Date.now() / 1000),
            media?.id || null, media?.mime_type || null, media?.sha256 || null,
            media?.filename || null, media?.caption || null]
         );
-        if (res.rowCount > 0) inbound++;   // window opens via the touch trigger
+        if (res.rowCount > 0) {
+          inbound++;   // window opens via the touch trigger
+
+          // Queue the attachment immediately. Meta's download URL lives
+          // minutes, so this cannot wait for the next sweep — the sweep exists
+          // only to catch what the queue drops. Lazy require avoids a
+          // load-time cycle, and enqueue never throws: a queueing failure must
+          // not roll back the webhook and make Meta redeliver.
+          if (media?.id) {
+            const { enqueue } = require('../jobs/whatsappMediaJob');
+            await enqueue(org, res.rows?.[0]?.id ?? null);
+          }
+        }
       }
 
       for (const s of value.statuses || []) {

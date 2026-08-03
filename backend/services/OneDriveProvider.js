@@ -152,7 +152,12 @@ class OneDriveProvider extends StorageProviderBase {
    * case that needs .All, and this deliberately does not do that.
    */
   async uploadFile(userId, folderId, fileName, mimeType, buffer) {
-    const accessToken = await this._getAccessToken(userId);
+    return this.uploadFileWithToken(
+      await this._getAccessToken(userId), folderId, fileName, mimeType, buffer);
+  }
+
+  /** Upload with a caller-supplied token. See GoogleDriveProvider. */
+  async uploadFileWithToken(accessToken, folderId, fileName, mimeType, buffer) {
     const safeName = encodeURIComponent(fileName);
 
     if (buffer.length <= OneDriveProvider.SIMPLE_UPLOAD_LIMIT) {
@@ -202,7 +207,10 @@ class OneDriveProvider extends StorageProviderBase {
 
   /** Delete a file this app created — the undo behind "Remove". */
   async deleteFile(userId, fileId) {
-    const accessToken = await this._getAccessToken(userId);
+    return this.deleteFileWithToken(await this._getAccessToken(userId), fileId);
+  }
+
+  async deleteFileWithToken(accessToken, fileId) {
     await axios.delete(`${GRAPH_BASE}/me/drive/items/${fileId}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });

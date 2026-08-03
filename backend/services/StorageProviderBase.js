@@ -60,6 +60,19 @@ class StorageProviderBase {
   async uploadFile(userId, folderId, fileName, mimeType, buffer) {
     throw new Error(`${this.constructor.name} must implement uploadFile()`);
   }
+
+  /**
+   * Same, with a token supplied by the caller rather than resolved from a user.
+   * Needed because WhatsApp capture runs from a webhook with no signed-in user
+   * and its credential lives in org_storage_accounts.
+   */
+  async uploadFileWithToken(accessToken, folderId, fileName, mimeType, buffer) {
+    throw new Error(`${this.constructor.name} must implement uploadFileWithToken()`);
+  }
+
+  async deleteFileWithToken(accessToken, fileId) {
+    throw new Error(`${this.constructor.name} must implement deleteFileWithToken()`);
+  }
 }
 
 module.exports = StorageProviderBase;
