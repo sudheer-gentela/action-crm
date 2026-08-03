@@ -516,18 +516,19 @@ async function storeEmailRow(client, {
   // whereas 'auto' records that the matcher guessed a deal. deal_id and
   // handover_id are separate columns, so an auto-matched deal link survives
   // alongside the project link — only the provenance label is overwritten.
+  // Delegates to emailThreads.projectForConversation rather than repeating the
+  // query. This used to be a second inline copy of the same rule — and a rule
+  // living in two places is how the Microsoft scope list ended up changed in
+  // one and silently reverted by the other.
   let handoverId = null;
   if (email.conversationId) {
-    const { rows: mapped } = await client.query(
-      `SELECT handover_id, tagged_by FROM email_threads
-        WHERE org_id = $1 AND conversation_id = $2`,
-      [orgId, email.conversationId]
-    );
-    if (mapped.length) {
-      handoverId = mapped[0].handover_id;
+    const { projectForConversation } = require('../services/emailThreads.service');
+    const mapped = await projectForConversation(orgId, email.conversationId);
+    if (mapped) {
+      handoverId = mapped.handover_id;
       tagSource  = 'thread';
       taggedAt   = taggedAt || new Date();
-      taggedBy   = taggedBy || mapped[0].tagged_by;
+      taggedBy   = taggedBy || mapped.tagged_by;
     }
   }
 

@@ -2276,7 +2276,12 @@ async function getCommunications(handoverId, orgId) {
        JOIN whatsapp_threads t ON t.id = m.thread_id
        LEFT JOIN contacts ct ON ct.id = t.contact_id
        LEFT JOIN users su ON su.id = m.sent_by_user_id
-      WHERE t.org_id = $1 AND t.handover_id = $2`,
+      -- Thread OR message. One person has exactly ONE direct thread, so a
+      -- message sent to them from a second project lands on the thread the
+      -- first project owns. Matching only the thread hid it from the project it
+      -- was actually sent for. Same shape as the email read above.
+      WHERE t.org_id = $1
+        AND (t.handover_id = $2 OR m.handover_id = $2)`,
     [orgId, handoverId]
   );
 

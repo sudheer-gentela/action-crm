@@ -539,11 +539,15 @@ async function sendToHandover(handoverId, orgId, userId, body) {
   const { rows: [msg] } = await pool.query(
     `INSERT INTO whatsapp_messages
        (org_id, thread_id, wa_message_id, direction, message_type, body,
-        template_id, sent_by_user_id, is_automated, status, sent_at)
-     VALUES ($1, $2, $3, 'outbound', $4, $5, NULL, $6, false, 'sent', now())
+        template_id, sent_by_user_id, is_automated, status, sent_at, handover_id)
+     VALUES ($1, $2, $3, 'outbound', $4, $5, NULL, $6, false, 'sent', now(), $7)
      RETURNING id, status, created_at`,
+    // handoverId, not thread.handover_id. One person has ONE direct thread, so
+    // messaging them from a second project necessarily reuses the thread the
+    // first project owns. Stamping the thread's project would file this message
+    // under the wrong one — which is exactly the bug this fixes.
     [orgId, thread.id, result.wamid || null, template ? 'template' : 'text',
-     template ? `[template:${template.name}]` : text.body, userId]
+     template ? `[template:${template.name}]` : text.body, userId, handoverId ?? null]
   );
 
   return { ok: true, wamid: result.wamid || null, message: msg, threadId: thread.id };
@@ -696,19 +700,22 @@ async function ingestWebhook(payload) {
              (org_id, thread_id, wa_message_id, direction, message_type, body,
               from_phone, from_name, status, sent_at,
               wa_media_id, media_mime_type, media_sha256, media_filename, media_caption,
-              media_status, media_expires_at)
+              media_status, media_expires_at, handover_id)
            VALUES ($1,$2,$3,'inbound',$4,$5,$6,$7,'received', to_timestamp($8),
                    $9,$10,$11,$12,$13,
                    -- 'pending' only when there is something to fetch, so plain
                    -- text messages are not swept looking for attachments.
                    CASE WHEN $9::text IS NULL THEN NULL ELSE 'pending' END,
-                   CASE WHEN $9::text IS NULL THEN NULL ELSE now() + interval '30 days' END)
+                   CASE WHEN $9::text IS NULL THEN NULL ELSE now() + interval '30 days' END,
+                   -- Inbound has no project of its own: it belongs to whichever
+                   -- project owns the conversation.
+                   $14)
            ON CONFLICT (org_id, wa_message_id) WHERE wa_message_id IS NOT NULL DO NOTHING
            RETURNING id`,
           [org, thread.id, m.id, m.type || 'text', bodyText, m.from,
            contactNameFromValue(value, m.from), Number(m.timestamp) || (Date.now() / 1000),
            media?.id || null, media?.mime_type || null, media?.sha256 || null,
-           media?.filename || null, media?.caption || null]
+           media?.filename || null, media?.caption || null, thread.handover_id ?? null]
         );
         if (res.rowCount > 0) {
           inbound++;   // window opens via the touch trigger
