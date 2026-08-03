@@ -6,6 +6,7 @@ import { apiService } from '../../apiService';
 import { ModuleSubTabs, OAModuleGeneral, OAModuleSeedPanel } from '../shared';
 import OAProjectAccess from './OAProjectAccess';
 import OAContactRoles from './OAContactRoles';
+import OAStorage from './OAStorage';
 
 export default function OAHandoverModule() {
   const API    = process.env.REACT_APP_API_URL;
@@ -52,7 +53,7 @@ export default function OAHandoverModule() {
         </div>
       </div>
       <ModuleSubTabs
-        tabs={[['general', 'General'], ['access', 'Access'], ['roles', 'Roles & sign-off'], ['playbook', 'Playbook']]}
+        tabs={[['general', 'General'], ['access', 'Access'], ['roles', 'Roles & sign-off'], ['storage', 'File storage'], ['playbook', 'Playbook']]}
         active={subTab}
         onChange={setSubTab}
       />
@@ -70,6 +71,9 @@ export default function OAHandoverModule() {
           internal customer's sign-off blocks completion. Separate from the
           internal role list (org_roles), which playbooks can route work to. */}
       {subTab === 'roles'  && <OAContactRoles />}
+      {/* Where WhatsApp attachments are written. Without it they are not saved
+          at all, and Meta drops them after ~30 days. */}
+      {subTab === 'storage' && <OAStorage />}
       {subTab === 'playbook' && (
         <OAModuleSeedPanel
           seedDone={seedDone}

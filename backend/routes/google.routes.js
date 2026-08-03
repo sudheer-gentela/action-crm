@@ -31,8 +31,13 @@ router.get('/connect', async (req, res) => {
       return res.status(400).json({ success: false, error: 'userId is required' });
     }
 
+    // mode=org_storage connects the ORG'S storage account rather than the
+    // signed-in user's Drive. Same branching the callback already does for
+    // mode=prospecting.
     const state = Buffer.from(JSON.stringify({
       userId: parseInt(userId),
+      mode:   req.query.mode || undefined,
+      orgId:  req.query.orgId ? parseInt(req.query.orgId) : undefined,
       timestamp: Date.now(),
     })).toString('base64');
 
@@ -89,6 +94,50 @@ router.get('/callback', async (req, res) => {
     console.log('✅ Google token exchange successful');
 
     // ── Prospecting mode ───────────────────────────────────────────────────────
+    // ── Org storage mode ──────────────────────────────────────────────────────
+    // NOTE for Google specifically: a Shared Drive already owns its files, so an
+    // org using one does not strictly need this. It matters when project
+    // folders live in somebody's My Drive, where the UPLOADER owns the file and
+    // it leaves with them.
+    if (stateData.mode === 'org_storage') {
+      const orgId = stateData.orgId;
+      if (!orgId) return res.redirect(`${frontendUrl}/?error=missing_org_id`);
+
+      try {
+        const accessToken  = tokenResponse.accessToken;
+        const refreshToken = tokenResponse.refreshToken || null;
+        const expiresAt    = tokenResponse.expiresOn ? new Date(tokenResponse.expiresOn) : null;
+        if (!accessToken) return res.redirect(`${frontendUrl}/?error=no_access_token`);
+
+        // Profile from the token just issued, not from userId — the admin is
+        // signed in as themselves while authorising a different Google account.
+        const axios = require('axios');
+        let email = null, name = null;
+        try {
+          const { data } = await axios.get('https://www.googleapis.com/oauth2/v2/userinfo', {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+          email = data.email || null; name = data.name || null;
+        } catch (e) {
+          console.warn('[google] could not read storage account profile:', e.message);
+        }
+
+        const storage = require('../services/orgStorageAccounts.service');
+        await storage.connect(orgId, userId, 'googledrive', {
+          email, label: name,
+          accessToken, refreshToken, expiresAt,
+          accountData: { displayName: name },
+        });
+
+        return res.redirect(
+          `${frontendUrl}/?storage_connected=googledrive&account=${encodeURIComponent(email || '')}`
+        );
+      } catch (e) {
+        console.error('❌ org storage connect failed:', e.message);
+        return res.redirect(`${frontendUrl}/?error=storage_connect_failed`);
+      }
+    }
+
     if (stateData.mode === 'prospecting') {
       const orgId = stateData.orgId;
       if (!orgId) {

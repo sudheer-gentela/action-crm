@@ -736,6 +736,26 @@ twilio: {
       api.get(`/emails/untagged${accountId ? `?accountId=${accountId}` : ''}`),
   },
 
+  // The org's cloud storage account — where WhatsApp attachments are written.
+  orgStorage: {
+    list:       ()                 => api.get('/org-storage'),
+    disconnect: (provider)         => api.delete(`/org-storage/${provider}`),
+    target:     (handoverId)       => api.get(`/org-storage/projects/${handoverId}/target`),
+    // Connect runs through the SAME OAuth routes as mailbox connect, with
+    // mode=org_storage in the state — so there is one callback per provider,
+    // not two.
+    connectUrl: (provider, userId, orgId) =>
+      api.get(`/${provider === 'onedrive' ? 'outlook' : 'google'}/connect`
+        + `?userId=${userId}&mode=org_storage&orgId=${orgId}`),
+  },
+
+  whatsappMedia: {
+    forProject: (handoverId)  => api.get(`/whatsapp-media/projects/${handoverId}`),
+    keep:       (messageId)   => api.post(`/whatsapp-media/messages/${messageId}/keep`),
+    remove:     (messageId)   => api.post(`/whatsapp-media/messages/${messageId}/remove`),
+    retry:      (messageId)   => api.post(`/whatsapp-media/messages/${messageId}/retry`),
+  },
+
   handovers: {
     list:      (scope = 'mine', status, kind) => {
       const qs = new URLSearchParams({

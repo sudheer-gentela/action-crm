@@ -38,8 +38,14 @@ router.get('/connect', async (req, res) => {
 
     console.log('✅ Starting OAuth flow for user:', userId);
 
+    // mode=org_storage connects the ORG'S storage account (a service account,
+    // or an admin account that will not be deleted) rather than the signed-in
+    // user's mailbox. The callback branches on it, exactly as it already does
+    // for mode=prospecting.
     const state = Buffer.from(JSON.stringify({
       userId: parseInt(userId),
+      mode:   req.query.mode || undefined,
+      orgId:  req.query.orgId ? parseInt(req.query.orgId) : undefined,
       timestamp: Date.now()
     })).toString('base64');
 
@@ -117,6 +123,40 @@ router.get('/callback', async (req, res) => {
 
     const tokenResponse = await getTokenFromCode(code);
     console.log('✅ Token exchange successful');
+
+    // ── Org storage mode ──────────────────────────────────────────────────────
+    // The connecting admin is normally signed in as THEMSELVES in GoWarm while
+    // authorising a DIFFERENT Microsoft account, so the profile has to come
+    // from the token we just received — not from userId.
+    if (stateData.mode === 'org_storage') {
+      const orgId = stateData.orgId;
+      if (!orgId) return res.redirect(`${frontendUrl}/?error=missing_org_id`);
+
+      try {
+        const profile = await getProfileWithAccessToken(tokenResponse.accessToken);
+        const email = profile?.mail || profile?.userPrincipalName || null;
+
+        const storage = require('../services/orgStorageAccounts.service');
+        await storage.connect(orgId, userId, 'onedrive', {
+          email,
+          label: profile?.displayName || null,
+          accessToken:  tokenResponse.accessToken,
+          refreshToken: tokenResponse.refreshToken || null,
+          expiresAt:    tokenResponse.expiresOn || null,
+          accountData:  { displayName: profile?.displayName || null },
+        });
+
+        // The email is carried back so the UI can show WHICH account was
+        // connected. The common mistake is authorising while still signed in as
+        // yourself, and the only way that is visible is by naming the account.
+        return res.redirect(
+          `${frontendUrl}/?storage_connected=onedrive&account=${encodeURIComponent(email || '')}`
+        );
+      } catch (e) {
+        console.error('❌ org storage connect failed:', e.message);
+        return res.redirect(`${frontendUrl}/?error=storage_connect_failed`);
+      }
+    }
 
     // ── Prospecting mode ───────────────────────────────────────────────────────
     if (stateData.mode === 'prospecting') {

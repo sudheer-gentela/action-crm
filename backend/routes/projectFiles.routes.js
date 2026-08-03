@@ -71,6 +71,15 @@ router.post('/:handoverId/folders', async (req, res) => {
   } catch (err) { fail(res, err, 'mapFolder'); }
 });
 
+// Which mapped folder receives inbound WhatsApp attachments. One per project.
+router.post('/:handoverId/folders/:mappingId/upload-target', async (req, res) => {
+  try {
+    res.json(await projectFiles.setUploadTarget(
+      idOf(req.params.handoverId), req.orgId, req.user.userId, idOf(req.params.mappingId)
+    ));
+  } catch (err) { fail(res, err, 'setUploadTarget'); }
+});
+
 router.delete('/:handoverId/folders/:mappingId', async (req, res) => {
   try {
     res.json(await projectFiles.unmapFolder(

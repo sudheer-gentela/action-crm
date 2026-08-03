@@ -72,7 +72,7 @@ const S = {
 
 // ── Folder mappings ──────────────────────────────────────────────────────────
 
-function FolderMappings({ folders, canManage, onUnmap }) {
+function FolderMappings({ folders, canManage, onUnmap, onSetTarget }) {
   if (!folders.length) {
     return (
       <p style={S.empty}>
@@ -95,6 +95,21 @@ function FolderMappings({ folders, canManage, onUnmap }) {
               {f.created_by_name && <span>· mapped by {f.created_by_name}</span>}
             </div>
           </div>
+          {/* Inbound WhatsApp attachments are written here. Exactly one folder
+              per project can be the target, so this is a radio, not a toggle —
+              and the file inherits this folder's existing sharing, which is why
+              the project team can see it without GoWarm managing permissions. */}
+          {canManage && (
+            <button
+              style={{ ...S.btn, ...(f.is_upload_target
+                ? { background: '#0369a1', color: '#fff', border: 'none' } : {}) }}
+              title={f.is_upload_target
+                ? 'WhatsApp attachments for this project are saved here'
+                : 'Save inbound WhatsApp attachments to this folder'}
+              onClick={() => onSetTarget(f)}>
+              {f.is_upload_target ? '📥 Attachment folder' : 'Use for attachments'}
+            </button>
+          )}
           {canManage && (
             <button style={S.btn} onClick={() => onUnmap(f)} title="Stop filing this folder under the project">
               Unmap
@@ -304,6 +319,16 @@ export default function ProjectFilesPanel({ handoverId }) {
     } catch (e) { setError(e.message); }
   }
 
+  // One target per project — the backend's partial unique index enforces it, so
+  // setting a new one clears the old rather than erroring.
+  async function setUploadTarget(folder) {
+    setError('');
+    try {
+      await apiFetch(`/project-files/${handoverId}/folders/${folder.id}/upload-target`, { method: 'POST' });
+      await load();
+    } catch (e) { setError(`Could not set the attachment folder: ${e.message}`); }
+  }
+
   async function openFile(file) {
     setError('');
     try {
@@ -383,7 +408,7 @@ export default function ProjectFilesPanel({ handoverId }) {
               {showHidden ? 'Hide hidden files' : `Show hidden files${hidden.length ? ` (${hidden.length})` : ''}`}
             </button>
           </div>
-          <FolderMappings folders={folders} canManage={canManage}
+          <FolderMappings folders={folders} canManage={canManage} onSetTarget={setUploadTarget}
             onUnmap={f => act(`/project-files/${handoverId}/folders/${f.id}`, 'DELETE',
               `Stop filing "${f.folder_name || f.folder_id}" under this project?\n\nFiles added by hand stay. Nothing is deleted from ${PROVIDER_LABELS[f.provider] || f.provider}.`)} />
         </div>

@@ -85,6 +85,7 @@ async function assertProjectExists(handoverId, orgId) {
 async function listFolders(handoverId, orgId) {
   const { rows } = await pool.query(
     `SELECT pf.id, pf.provider, pf.folder_id, pf.folder_name, pf.created_at,
+            pf.is_upload_target,
             pf.created_by, (u.first_name || ' ' || u.last_name) AS created_by_name,
             (SELECT count(*) FROM storage_files sf
               WHERE sf.org_id = pf.org_id AND sf.handover_id = pf.handover_id
@@ -210,6 +211,46 @@ async function resolveFolderMembership(orgId, { handoverId = null, recordId = nu
     [orgId, handoverId, recordId]
   );
   return { linked: rowCount };
+}
+
+/**
+ * Choose which mapped folder receives inbound WhatsApp attachments.
+ *
+ * Exactly one per project — uq_project_folders_upload_target enforces it — so
+ * the previous target is cleared in the same transaction rather than letting
+ * the insert collide.
+ *
+ * Manage authority: this decides where the customer's files are written.
+ */
+async function setUploadTarget(handoverId, orgId, userId, mappingId) {
+  await assertCanManage(handoverId, orgId, userId);
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `UPDATE project_folders SET is_upload_target = FALSE
+        WHERE org_id = $1 AND handover_id = $2 AND is_upload_target`,
+      [orgId, handoverId]
+    );
+    const { rows } = await client.query(
+      `UPDATE project_folders SET is_upload_target = TRUE
+        WHERE id = $1 AND org_id = $2 AND handover_id = $3
+        RETURNING id, folder_name`,
+      [mappingId, orgId, handoverId]
+    );
+    if (!rows.length) {
+      await client.query('ROLLBACK');
+      throw Object.assign(new Error('Folder mapping not found'), { status: 404 });
+    }
+    await client.query('COMMIT');
+    return { uploadTarget: rows[0] };
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* already rolled back */ }
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 // ── Reads ────────────────────────────────────────────────────────────────────
@@ -382,7 +423,7 @@ async function unhideFile(handoverId, orgId, userId, recordId) {
 
 module.exports = {
   canManageFiles, canFile,
-  listFolders, mapFolder, unmapFolder, resolveFolderMembership,
+  listFolders, mapFolder, unmapFolder, resolveFolderMembership, setUploadTarget,
   listForProject, linkStatus,
   tagFile, untagFile, hideFile, unhideFile,
 };
