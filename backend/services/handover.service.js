@@ -821,6 +821,10 @@ async function _getDealTeam(dealId, orgId) {
     `SELECT dtm.user_id,
             u.first_name || ' ' || u.last_name AS name,
             u.email,
+            -- The person drawer edits these. Without them it opened with empty
+            -- boxes over a number that already existed, and the first blur
+            -- wrote NULL over it.
+            u.phone, u.whatsapp_phone,
             r.name AS role_name, r.key AS role_key,
             dtm.custom_role, r.sort_order
        FROM deal_team_members dtm
@@ -836,6 +840,10 @@ async function _getDealTeam(dealId, orgId) {
     email:   row.email,
     role:    row.role_name || row.custom_role || 'Team member',
     roleKey: row.role_key || null,
+    // Same keys the project-members list uses, so the person drawer reads one
+    // shape regardless of which list opened it.
+    phone:         row.phone || null,
+    whatsappPhone: row.whatsapp_phone || null,
   }));
 }
 

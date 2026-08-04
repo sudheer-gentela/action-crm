@@ -452,6 +452,22 @@ async function listSendTargets(handoverId, orgId) {
   );
   for (const mb of members) addIndividual(mb.phone, mb.full_name, null, 'internal');
 
+  // On a project derived from a deal, the internal team is deal_team_members —
+  // a different table from project_members, and previously invisible here. Same
+  // 'internal' side: selectable, labelled, never an implicit default.
+  const { rows: dealTeam } = await pool.query(
+    `SELECT COALESCE(NULLIF(u.whatsapp_phone, ''), u.phone) AS phone,
+            (u.first_name || ' ' || u.last_name) AS full_name
+       FROM sales_handovers h
+       JOIN deal_team_members dtm ON dtm.deal_id = h.deal_id AND dtm.org_id = h.org_id
+       JOIN users u ON u.id = dtm.user_id
+      WHERE h.id = $1 AND h.org_id = $2
+        AND COALESCE(NULLIF(u.whatsapp_phone, ''), u.phone) IS NOT NULL
+      ORDER BY full_name`,
+    [handoverId, orgId]
+  );
+  for (const dt of dealTeam) addIndividual(dt.phone, dt.full_name, null, 'internal');
+
   for (const dt of directThreads) addIndividual(dt.wa_phone, null, dt.contact_id);
 
   return { targets };

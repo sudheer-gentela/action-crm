@@ -845,6 +845,10 @@ twilio: {
     // Phone only. Email is the login identity and is read-only by design.
     updateMemberContact: (id, mid, data) =>
       api.patch(`/project-members/handovers/${id}/members/${mid}/contact`, data),
+    // Keyed on the USER — reaches deal-team members, who have no
+    // project_members row.
+    updateUserContact: (id, userId, data) =>
+      api.patch(`/project-members/handovers/${id}/users/${userId}/contact`, data),
     reviewMember:   (id, mid, b)  => api.post(`/project-members/handovers/${id}/members/${mid}/review`, b),
     removeMember:   (id, mid)     => api.delete(`/project-members/handovers/${id}/members/${mid}`),
     orgDomains:     ()            => api.get('/project-members/domains'),

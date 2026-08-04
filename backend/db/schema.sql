@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict LLUMpnerpf6cMQqy4reAvu2cheP7ZyXeecLDCzZaL0uSBa9WNvIQlgyN3iM5f8L
+\restrict nDrH3F20ACimIXFu5YKQmGgnk29smoWrLeJZqBeeBXvou2lHqDu1yQQRC88KLHg
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -3998,9 +3998,11 @@ CREATE TABLE public.sales_handovers (
     signed_off_by integer,
     signed_off_at timestamp with time zone,
     signoff_note text,
+    media_capture_mode text DEFAULT 'always'::text NOT NULL,
     CONSTRAINT sales_handovers_budget_internal_chk CHECK (((budget IS NULL) OR (project_kind = 'internal'::text))),
     CONSTRAINT sales_handovers_kind_shape_chk CHECK ((((project_kind = 'internal'::text) AND (account_id IS NULL) AND (deal_id IS NULL)) OR ((project_kind = 'customer'::text) AND ((account_id IS NOT NULL) OR (deal_id IS NOT NULL))))),
     CONSTRAINT sales_handovers_manager_label_chk CHECK (((manager_label IS NULL) OR (btrim(manager_label) <> ''::text))),
+    CONSTRAINT sales_handovers_media_capture_mode_chk CHECK ((media_capture_mode = ANY (ARRAY['ask'::text, 'always'::text, 'never'::text]))),
     CONSTRAINT sales_handovers_name_required_chk CHECK (((deal_id IS NOT NULL) OR ((name IS NOT NULL) AND (btrim(name) <> ''::text)))),
     CONSTRAINT sales_handovers_project_kind_chk CHECK ((project_kind = ANY (ARRAY['customer'::text, 'internal'::text]))),
     CONSTRAINT sales_handovers_signoff_shape_chk CHECK ((((signed_off_at IS NULL) AND (signed_off_by IS NULL)) OR ((signed_off_at IS NOT NULL) AND (signed_off_by IS NOT NULL)))),
@@ -4069,6 +4071,13 @@ COMMENT ON COLUMN public.sales_handovers.previous_playbook_id IS 'The playbook r
 --
 
 COMMENT ON COLUMN public.sales_handovers.signed_off_by IS 'The internal customer who accepted the project as done. Distinct from completed_by, which is whoever moved the record to completed. Whether sign-off BLOCKS completion is per-org config: settings->project_access->closure_signoff_mode (soft|hard).';
+
+
+--
+-- Name: COLUMN sales_handovers.media_capture_mode; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sales_handovers.media_capture_mode IS 'always (default) = capture on arrival, no prompt; the team can still Remove. ask = capture, then prompt to Keep/Remove. never = do not capture; the message is marked skipped and stays visible so nothing is lost quietly. Capture is automatic by default because a Cloud API number has no app inbox ΓÇö an attachment GoWarm does not fetch is unreachable by anyone.';
 
 
 --
@@ -5160,6 +5169,65 @@ ALTER SEQUENCE public.org_status_labels_id_seq OWNED BY public.org_status_labels
 
 
 --
+-- Name: org_storage_accounts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.org_storage_accounts (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    provider character varying(50) NOT NULL,
+    email character varying(255),
+    label text,
+    access_token text NOT NULL,
+    refresh_token text,
+    expires_at timestamp with time zone,
+    account_data jsonb DEFAULT '{}'::jsonb NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    last_error text,
+    last_error_at timestamp with time zone,
+    last_used_at timestamp with time zone,
+    connected_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT org_storage_accounts_provider_chk CHECK (((provider)::text = ANY ((ARRAY['googledrive'::character varying, 'onedrive'::character varying])::text[])))
+);
+
+
+--
+-- Name: TABLE org_storage_accounts; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.org_storage_accounts IS 'An org-level cloud storage credential used to write WhatsApp attachments into the customer''s own storage. Not a per-user token: the webhook has no signed-in user, and a personal token would stop capture the day that person left. Optional ΓÇö Google orgs using a Shared Drive do not need one, because a Shared Drive already owns its files.';
+
+
+--
+-- Name: COLUMN org_storage_accounts.email; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.org_storage_accounts.email IS 'The connected account, shown in Settings so an admin can see WHICH account is wired up. The common mistake is connecting while signed in as yourself instead of the service account.';
+
+
+--
+-- Name: org_storage_accounts_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.org_storage_accounts_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: org_storage_accounts_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.org_storage_accounts_id_seq OWNED BY public.org_storage_accounts.id;
+
+
+--
 -- Name: org_twilio_accounts; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -5913,7 +5981,8 @@ CREATE TABLE public.project_folders (
     folder_id text NOT NULL,
     folder_name text,
     created_by integer,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    is_upload_target boolean DEFAULT false NOT NULL
 );
 
 
@@ -5922,6 +5991,13 @@ CREATE TABLE public.project_folders (
 --
 
 COMMENT ON TABLE public.project_folders IS 'Maps a cloud storage folder to a project. Covers subfolders: resolution matches the folder id anywhere in storage_files.folder_path. Mapping a folder does not import its contents ΓÇö it decides which project a file lands in when someone adds it.';
+
+
+--
+-- Name: COLUMN project_folders.is_upload_target; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.project_folders.is_upload_target IS 'Inbound attachments for this project are written here. Files inherit this folder''s existing sharing, which is what makes the project team able to see them without GoWarm managing permissions.';
 
 
 --
@@ -8575,9 +8651,55 @@ CREATE TABLE public.whatsapp_messages (
     read_at timestamp with time zone,
     failed_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    storage_file_id integer,
+    media_status text,
+    media_error text,
+    media_reviewed_by integer,
+    media_reviewed_at timestamp with time zone,
+    wa_media_id text,
+    media_filename text,
+    media_caption text,
+    media_expires_at timestamp with time zone,
+    handover_id integer,
     CONSTRAINT wa_messages_direction_chk CHECK ((direction = ANY (ARRAY['inbound'::text, 'outbound'::text]))),
-    CONSTRAINT wa_messages_status_chk CHECK ((status = ANY (ARRAY['queued'::text, 'sent'::text, 'delivered'::text, 'read'::text, 'failed'::text, 'received'::text])))
+    CONSTRAINT wa_messages_status_chk CHECK ((status = ANY (ARRAY['queued'::text, 'sent'::text, 'delivered'::text, 'read'::text, 'failed'::text, 'received'::text]))),
+    CONSTRAINT whatsapp_messages_media_status_chk CHECK (((media_status IS NULL) OR (media_status = ANY (ARRAY['pending'::text, 'stored'::text, 'failed'::text, 'expired'::text, 'skipped'::text, 'removed'::text]))))
 );
+
+
+--
+-- Name: COLUMN whatsapp_messages.media_status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_messages.media_status IS 'pending = accepted, not yet fetched. stored = in the customer''s storage, see storage_file_id. failed = retryable. expired = Meta no longer has it, permanent loss. skipped = no storage configured, or capture is off. removed = stored, then deliberately deleted from the customer''s storage by a project member.';
+
+
+--
+-- Name: COLUMN whatsapp_messages.media_reviewed_by; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_messages.media_reviewed_by IS 'Who answered the Keep/Remove prompt. Absent while the answer is still outstanding, which is how the UI knows to keep asking.';
+
+
+--
+-- Name: COLUMN whatsapp_messages.wa_media_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_messages.wa_media_id IS 'Meta media id from the inbound webhook. Exchange for a short-lived download URL. Valid for roughly 30 days, which is the whole retry window ΓÇö after that the file is gone from Meta and cannot be recovered.';
+
+
+--
+-- Name: COLUMN whatsapp_messages.media_expires_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_messages.media_expires_at IS 'Best-effort estimate of when Meta will drop the media, set at ingest. Drives the "expiring soon, still not stored" sweep so a stuck upload surfaces before the file is unrecoverable rather than after.';
+
+
+--
+-- Name: COLUMN whatsapp_messages.handover_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_messages.handover_id IS 'The project THIS message belongs to. Set from the project it was sent from (outbound) or inherited from the thread (inbound). Distinct from whatsapp_threads.handover_id, which is the project that owns the conversation as a whole ΓÇö one person has exactly one direct thread, but can be on several projects.';
 
 
 --
@@ -9664,6 +9786,13 @@ ALTER TABLE ONLY public.org_skill_installs ALTER COLUMN id SET DEFAULT nextval('
 --
 
 ALTER TABLE ONLY public.org_status_labels ALTER COLUMN id SET DEFAULT nextval('public.org_status_labels_id_seq'::regclass);
+
+
+--
+-- Name: org_storage_accounts id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_storage_accounts ALTER COLUMN id SET DEFAULT nextval('public.org_storage_accounts_id_seq'::regclass);
 
 
 --
@@ -11116,6 +11245,14 @@ ALTER TABLE ONLY public.org_status_labels
 
 
 --
+-- Name: org_storage_accounts org_storage_accounts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_storage_accounts
+    ADD CONSTRAINT org_storage_accounts_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: org_twilio_accounts org_twilio_accounts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -11825,6 +11962,14 @@ ALTER TABLE ONLY public.email_threads
 
 ALTER TABLE ONLY public.org_skill_installs
     ADD CONSTRAINT uq_org_skill_installs UNIQUE (org_id, skill_name);
+
+
+--
+-- Name: org_storage_accounts uq_org_storage_accounts; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_storage_accounts
+    ADD CONSTRAINT uq_org_storage_accounts UNIQUE (org_id, provider);
 
 
 --
@@ -14243,6 +14388,13 @@ CREATE INDEX idx_org_status_labels_lookup ON public.org_status_labels USING btre
 
 
 --
+-- Name: idx_org_storage_accounts_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_org_storage_accounts_active ON public.org_storage_accounts USING btree (org_id, provider) WHERE is_active;
+
+
+--
 -- Name: idx_org_twilio_accounts_subaccount_sid; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -15615,6 +15767,34 @@ CREATE INDEX idx_wa_threads_handover ON public.whatsapp_threads USING btree (han
 
 
 --
+-- Name: idx_whatsapp_messages_handover; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_whatsapp_messages_handover ON public.whatsapp_messages USING btree (handover_id) WHERE (handover_id IS NOT NULL);
+
+
+--
+-- Name: idx_whatsapp_messages_media_pending; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_whatsapp_messages_media_pending ON public.whatsapp_messages USING btree (org_id, media_status) WHERE (media_status = ANY (ARRAY['pending'::text, 'failed'::text]));
+
+
+--
+-- Name: idx_whatsapp_messages_media_recoverable; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_whatsapp_messages_media_recoverable ON public.whatsapp_messages USING btree (media_expires_at) WHERE ((wa_media_id IS NOT NULL) AND (media_status = ANY (ARRAY['pending'::text, 'failed'::text])));
+
+
+--
+-- Name: idx_whatsapp_messages_media_unreviewed; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_whatsapp_messages_media_unreviewed ON public.whatsapp_messages USING btree (org_id, media_status) WHERE ((media_status = 'stored'::text) AND (media_reviewed_at IS NULL));
+
+
+--
 -- Name: idx_workflow_branches_step; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -15976,6 +16156,13 @@ CREATE UNIQUE INDEX uq_play_roles_one_owner ON public.playbook_play_roles USING 
 --
 
 CREATE UNIQUE INDEX uq_pmd_grain ON public.prospecting_metric_daily USING btree (org_id, metric_date, campaign_id, sequence_id, sequence_step_id, channel, sender_account_id, owner_id, fit_band, variant_key);
+
+
+--
+-- Name: uq_project_folders_upload_target; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_project_folders_upload_target ON public.project_folders USING btree (handover_id) WHERE is_upload_target;
 
 
 --
@@ -18497,6 +18684,22 @@ ALTER TABLE ONLY public.org_slack_installs
 
 
 --
+-- Name: org_storage_accounts org_storage_accounts_connected_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_storage_accounts
+    ADD CONSTRAINT org_storage_accounts_connected_by_fkey FOREIGN KEY (connected_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: org_storage_accounts org_storage_accounts_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_storage_accounts
+    ADD CONSTRAINT org_storage_accounts_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
 -- Name: org_twilio_accounts org_twilio_accounts_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -19736,11 +19939,35 @@ ALTER TABLE ONLY public.user_prompts
 
 
 --
+-- Name: whatsapp_messages whatsapp_messages_handover_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_messages
+    ADD CONSTRAINT whatsapp_messages_handover_id_fkey FOREIGN KEY (handover_id) REFERENCES public.sales_handovers(id) ON DELETE SET NULL;
+
+
+--
+-- Name: whatsapp_messages whatsapp_messages_media_reviewed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_messages
+    ADD CONSTRAINT whatsapp_messages_media_reviewed_by_fkey FOREIGN KEY (media_reviewed_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
 -- Name: whatsapp_messages whatsapp_messages_sent_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.whatsapp_messages
     ADD CONSTRAINT whatsapp_messages_sent_by_user_id_fkey FOREIGN KEY (sent_by_user_id) REFERENCES public.users(id);
+
+
+--
+-- Name: whatsapp_messages whatsapp_messages_storage_file_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_messages
+    ADD CONSTRAINT whatsapp_messages_storage_file_id_fkey FOREIGN KEY (storage_file_id) REFERENCES public.storage_files(id) ON DELETE SET NULL;
 
 
 --
@@ -20427,5 +20654,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict LLUMpnerpf6cMQqy4reAvu2cheP7ZyXeecLDCzZaL0uSBa9WNvIQlgyN3iM5f8L
+\unrestrict nDrH3F20ACimIXFu5YKQmGgnk29smoWrLeJZqBeeBXvou2lHqDu1yQQRC88KLHg
 

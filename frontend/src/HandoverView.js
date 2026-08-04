@@ -32,6 +32,7 @@ import { hashParts, hashSegment, writeHash } from './hashNav';
 import ProjectFilesPanel from './ProjectFilesPanel';
 import ProjectPeoplePanel from './ProjectPeoplePanel';
 import ProjectEmailThreads from './ProjectEmailThreads';
+import ProjectAttachments from './ProjectAttachments';
 
 // ── Deep-link parsing ─────────────────────────────────────────────────────────
 // #/handovers                         → My Handovers list
@@ -622,7 +623,7 @@ function AddPlayForm({ users, onAdd }) {
 
 // ── StakeholderSection ────────────────────────────────────────────────────────
 
-function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRefresh,
+function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRefresh, onOpenMember,
                                 serviceOwnerId = null, managerLabel = 'Project Manager' }) {
   // The stored custom_role for the accountable person is the literal string
   // 'Project owner'. That string is an internal marker — the demote query keys
@@ -718,7 +719,12 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
         <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '5px 0',
           opacity: m.status === 'approved' ? 1 : 0.7 }}>
           <div style={{ flex: 1, fontSize: 13 }}>
-            <span style={{ fontWeight: 600 }}>{m.name}</span>
+            {/* Opens the same person drawer as the avatar grid above, so both
+                team lists behave alike. */}
+            <button onClick={() => onOpenMember && m.userId && onOpenMember(m)}
+              style={{ fontWeight: 600, background: 'none', border: 'none', padding: 0,
+                       cursor: onOpenMember && m.userId ? 'pointer' : 'default',
+                       color: '#111827', fontSize: 13 }}>{m.name}</button>
             {isAdmin ? (
               <button
                 onClick={() => setEditing(x => (x === m.id ? null : m.id))}
@@ -1845,12 +1851,28 @@ function Modal({ title, onClose, children }) {
   );
 }
 
-function PersonPanel({ member, onClose, onOpenProject }) {
+function PersonPanel({ member, onClose, onOpenProject, handoverId, canManage }) {
   const [data, setData] = useState(null);
   const [panelTab, setPanelTab] = useState('projects'); // 'projects' | 'tasks' | 'comms'
   const [commFilter, setCommFilter] = useState('all');  // account name filter for the comms tab
   const [openComm, setOpenComm] = useState(null);       // clicked communication → detail overlay
   const [openContact, setOpenContact] = useState(null); // "see all from this contact" → customer panel
+  // Phone lives on the USER, so editing it here serves both team lists — the
+  // deal team (avatar grid) and project members (rows below it). Email is the
+  // login identity and stays read-only.
+  const [phone, setPhone]           = useState(member.phone || '');
+  const [waPhone, setWaPhone]       = useState(member.whatsappPhone || '');
+  const [contactMsg, setContactMsg] = useState('');
+
+  const saveContact = async (patch) => {
+    setContactMsg('');
+    try {
+      await apiService.handovers.updateUserContact(handoverId, member.userId, patch);
+      setContactMsg('Saved.');
+    } catch (e) {
+      setContactMsg(e?.response?.data?.error?.message || 'Could not save that number.');
+    }
+  };
   useEffect(() => {
     apiService.handovers.personDashboard(member.userId)
       .then(res => setData(res.data))
@@ -1885,6 +1907,30 @@ function PersonPanel({ member, onClose, onOpenProject }) {
             <div>
               <div style={{ fontSize: 15, fontWeight: 600, color: '#111827' }}>{member.name}</div>
               <div style={{ fontSize: 12, color: '#6b7280' }}>{member.role}{data?.person?.email ? ` · ${data.person.email}` : ''}</div>
+
+              {/* Contact details. Editable by an org admin or the Project
+                  Manager; everyone else sees them read-only. Email is the login
+                  identity — changed in account settings, never here. */}
+              {canManage ? (
+                <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <input value={phone} onChange={e => setPhone(e.target.value)}
+                    onBlur={() => { if (phone !== (member.phone || '')) saveContact({ phone }); }}
+                    placeholder="+91 7207583441"
+                    title="Phone — include the country code, or WhatsApp cannot match it"
+                    style={{ fontSize: 12, padding: '4px 7px', borderRadius: 5, border: '1px solid #d1d5db', width: 150 }} />
+                  <input value={waPhone} onChange={e => setWaPhone(e.target.value)}
+                    onBlur={() => { if (waPhone !== (member.whatsappPhone || '')) saveContact({ whatsappPhone: waPhone }); }}
+                    placeholder="WhatsApp (if different)"
+                    style={{ fontSize: 12, padding: '4px 7px', borderRadius: 5, border: '1px solid #d1d5db', width: 165 }} />
+                  {contactMsg && <span style={{ fontSize: 11, color: /Saved/.test(contactMsg) ? '#065f46' : '#991b1b' }}>{contactMsg}</span>}
+                </div>
+              ) : (
+                (member.phone || member.whatsappPhone) && (
+                  <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
+                    {member.phone}{member.whatsappPhone && member.whatsappPhone !== member.phone ? ` · WhatsApp ${member.whatsappPhone}` : ''}
+                  </div>
+                )
+              )}
             </div>
           </div>
           <button onClick={onClose} style={{ border: 'none', background: 'none', fontSize: 22, color: '#9ca3af', cursor: 'pointer', lineHeight: 1 }}>×</button>
@@ -2329,6 +2375,7 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onG
               <ProjectMembersSection
                 handoverId={detail.id}
                 members={detail.projectMembers || []}
+                onOpenMember={setOpenMember}
                 isAdmin={detail.isProjectAdmin}
                 canRequest={detail.canRequestMember}
                 onRefresh={onRefresh}
@@ -2479,7 +2526,8 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onG
 
       </div>
 
-      {openMember && <PersonPanel member={openMember} onClose={() => setOpenMember(null)} onOpenProject={onOpenProject} />}
+      {openMember && <PersonPanel member={openMember} onClose={() => setOpenMember(null)}
+        onOpenProject={onOpenProject} handoverId={detail.id} canManage={!!detail.isProjectAdmin} />}
       {openCommitment && <DeliverableModal commitmentId={openCommitment} onClose={() => setOpenCommitment(null)} />}
       {openContact && <CustomerContactPanel stakeholder={openContact} onClose={() => setOpenContact(null)} />}
     </>
@@ -2753,6 +2801,11 @@ function CommunicationsPanel({ handoverId, accountId }) {
           the messages; this decides what is on it. Filing is thread-level, so
           every colleague's mailbox copy and every future reply come with it. */}
       <ProjectEmailThreads handoverId={handoverId} accountId={accountId} onChanged={load} />
+
+      {/* Files shared in this project's WhatsApp groups, and what happened to
+          them. Renders nothing when there are none, and by default shows only
+          what needs a person — a saved file is not news. */}
+      <ProjectAttachments handoverId={handoverId} />
 
       {/* Channel filter — All / Email / WhatsApp (Phone later) */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>

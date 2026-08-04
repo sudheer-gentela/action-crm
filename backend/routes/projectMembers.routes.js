@@ -100,6 +100,12 @@ router.patch('/handovers/:id/members/:mid/contact', canManage, (req, res) =>
   send(res, svc.updateMemberContact(parseInt(req.params.id, 10), req.orgId, req.user.userId,
     parseInt(req.params.mid, 10), req.body || {})));
 
+// Keyed on the USER, so it reaches deal-team members too — they have no
+// project_members row. Phone belongs to the person, not to a membership.
+router.patch('/handovers/:id/users/:userId/contact', canManage, (req, res) =>
+  send(res, svc.updateUserContact(parseInt(req.params.id, 10), req.orgId, req.user.userId,
+    parseInt(req.params.userId, 10), req.body || {})));
+
 router.delete('/handovers/:id/members/:mid', canManage, (req, res) =>
   send(res, svc.removeMember(parseInt(req.params.id, 10), req.orgId, parseInt(req.params.mid, 10))));
 

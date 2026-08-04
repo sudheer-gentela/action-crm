@@ -323,6 +323,69 @@ async function changeRole(handoverId, orgId, memberId, patch = {}) {
  * Gated on canManageProject: org admin/owner, the assigned Project Manager, or
  * the creator.
  */
+/**
+ * Set a project person's phone numbers, keyed on the USER rather than a
+ * project_members row.
+ *
+ * WHY BOTH EXIST: a project has two kinds of internal people. On a project
+ * derived from a deal the team comes from deal_team_members, which has no
+ * project_members row at all — so the member-id version could not reach them,
+ * and their numbers were uneditable. Phone is a property of the PERSON, not of
+ * a particular membership, so keying on user_id is the honest shape.
+ *
+ * The target must be on THIS project by one route or the other. Without that
+ * check, canManageProject on any project would let someone edit the contact
+ * details of anyone in the org.
+ */
+async function updateUserContact(handoverId, orgId, actorId, targetUserId, patch = {}) {
+  if (!(await canManageProject(handoverId, orgId, actorId))) {
+    throw Object.assign(
+      new Error('Only an org admin or the Project Manager can edit a member\'s details'),
+      { status: 403 });
+  }
+
+  const { rows: [onProject] } = await pool.query(
+    `SELECT 1 AS ok
+       FROM sales_handovers h
+      WHERE h.id = $1 AND h.org_id = $2
+        AND ( EXISTS (SELECT 1 FROM project_members pm
+                       WHERE pm.context_type = 'handover' AND pm.context_id = h.id
+                         AND pm.org_id = h.org_id AND pm.user_id = $3)
+           OR EXISTS (SELECT 1 FROM deal_team_members dtm
+                       WHERE dtm.deal_id = h.deal_id AND dtm.org_id = h.org_id
+                         AND dtm.user_id = $3) )`,
+    [handoverId, orgId, targetUserId]
+  );
+  if (!onProject) {
+    throw Object.assign(new Error('That person is not on this project'), { status: 404 });
+  }
+
+  return applyContactPatch(targetUserId, orgId, patch);
+}
+
+/** Shared write, so the two entry points cannot drift apart. */
+async function applyContactPatch(userId, orgId, patch) {
+  const sets = [];
+  const vals = [userId, orgId];
+
+  for (const [key, column] of [['phone', 'phone'], ['whatsappPhone', 'whatsapp_phone']]) {
+    if (patch[key] === undefined) continue;
+    const raw = patch[key];
+    if (raw === null || String(raw).trim() === '') { sets.push(`${column} = NULL`); continue; }
+    vals.push(normalisePhone(raw));
+    sets.push(`${column} = $${vals.length}`);
+  }
+  if (!sets.length) throw Object.assign(new Error('Nothing to update'), { status: 400 });
+
+  const { rows } = await pool.query(
+    `UPDATE users SET ${sets.join(', ')}, updated_at = NOW()
+      WHERE id = $1 AND org_id = $2
+      RETURNING id, email, phone, whatsapp_phone`,
+    vals);
+  if (!rows.length) throw Object.assign(new Error('User not found in this org'), { status: 404 });
+  return { user: rows[0] };
+}
+
 async function updateMemberContact(handoverId, orgId, actorId, memberId, patch = {}) {
   if (!(await canManageProject(handoverId, orgId, actorId))) {
     throw Object.assign(
@@ -336,28 +399,7 @@ async function updateMemberContact(handoverId, orgId, actorId, memberId, patch =
     [memberId, orgId, handoverId]);
   if (!pm) throw Object.assign(new Error('Member not found'), { status: 404 });
 
-  const sets = [];
-  const vals = [pm.user_id, orgId];
-
-  for (const [key, column] of [['phone', 'phone'], ['whatsappPhone', 'whatsapp_phone']]) {
-    if (patch[key] === undefined) continue;
-    const raw = patch[key];
-    if (raw === null || String(raw).trim() === '') {
-      sets.push(`${column} = NULL`);
-      continue;
-    }
-    vals.push(normalisePhone(raw));
-    sets.push(`${column} = $${vals.length}`);
-  }
-  if (!sets.length) throw Object.assign(new Error('Nothing to update'), { status: 400 });
-
-  const { rows } = await pool.query(
-    `UPDATE users SET ${sets.join(', ')}, updated_at = NOW()
-      WHERE id = $1 AND org_id = $2
-      RETURNING id, email, phone, whatsapp_phone`,
-    vals);
-  if (!rows.length) throw Object.assign(new Error('User not found in this org'), { status: 404 });
-  return { user: rows[0] };
+  return applyContactPatch(pm.user_id, orgId, patch);
 }
 
 /**
@@ -406,5 +448,6 @@ module.exports = {
   seatAvailable, shouldAutoApprove,
   listForHandover, requestMember, reviewMember, removeMember, changeRole,
   updateMemberContact,
+  updateUserContact,
   canManageProject, autoApproveDecision, selfExit,
 };
