@@ -44,6 +44,7 @@ async function getSession(orgId) {
     `SELECT id, org_id, label, wa_phone, push_name, status, status_detail,
             connected_at, last_seen_at, last_message_at, phone_last_seen_at,
             capture_enabled, capture_media, created_at,
+            media_max_bytes, media_retention_days,
             heartbeat_at, heartbeat_seconds, flush_interval_ms, batch_max,
             stale_socket_minutes, reconnect_max_seconds, reconnect_count,
             capture_mode
@@ -1359,12 +1360,41 @@ async function health(orgId) {
     [orgId]
   );
 
+  // Attachments that arrived and are not in the customer's storage. Surfaced
+  // on the health card because a silently-not-capturing session looks
+  // identical to a healthy one from every other number on this screen — the
+  // socket is up, messages are flowing, and the files are quietly going
+  // nowhere.
+  const { rows: [mediaCounts] } = await pool.query(
+    `SELECT count(*) FILTER (WHERE media_status = 'stored')  AS stored,
+            count(*) FILTER (WHERE media_status IN ('pending','failed')) AS in_flight,
+            count(*) FILTER (WHERE media_status = 'skipped') AS skipped,
+            count(*) FILTER (WHERE media_status = 'expired') AS expired
+       FROM whatsapp_messages
+      WHERE org_id = $1 AND media_source = 'session'`,
+    [orgId]
+  );
+
+  if (session.capture_media && Number(mediaCounts.skipped) > 0) {
+    warnings.push({
+      level: 'warning',
+      message: `${mediaCounts.skipped} attachment${Number(mediaCounts.skipped) === 1 ? ' is' : 's are'} captured but not saved to storage — usually a project with no attachment folder set.`,
+    });
+  }
+  if (Number(mediaCounts.expired) > 0) {
+    warnings.push({
+      level: 'warning',
+      message: `${mediaCounts.expired} attachment${Number(mediaCounts.expired) === 1 ? '' : 's'} passed WhatsApp's retention window and cannot be recovered.`,
+    });
+  }
+
   return {
     configured: true,
     status: session.status,
     statusDetail: session.status_detail,
     waPhone: session.wa_phone,
     captureEnabled: session.capture_enabled,
+    captureMedia: session.capture_media,
     captureMode: session.capture_mode,
     label: session.label,
     heartbeatStaleMins,
@@ -1378,6 +1408,15 @@ async function health(orgId) {
       batchMax:            session.batch_max,
       staleSocketMinutes:  session.stale_socket_minutes,
       reconnectMaxSeconds: session.reconnect_max_seconds,
+      captureMedia:        session.capture_media,
+      mediaMaxBytes:       Number(session.media_max_bytes) || 26214400,
+      mediaRetentionDays:  session.media_retention_days,
+    },
+    media: {
+      stored:   Number(mediaCounts.stored),
+      inFlight: Number(mediaCounts.in_flight),
+      skipped:  Number(mediaCounts.skipped),
+      expired:  Number(mediaCounts.expired),
     },
     groups: { unbound: Number(counts.unbound), bound: Number(counts.bound) },
     warnings,

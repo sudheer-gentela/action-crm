@@ -755,7 +755,10 @@ twilio: {
   whatsappMedia: {
     forProject: (handoverId)  => api.get(`/whatsapp-media/projects/${handoverId}`),
     keep:       (messageId)   => api.post(`/whatsapp-media/messages/${messageId}/keep`),
-    remove:     (messageId)   => api.post(`/whatsapp-media/messages/${messageId}/remove`),
+    // Body carries an optional { reason }. Removal is destructive and the audit
+    // row keeps it, so "wrong project" and "confidential, sent by mistake" stay
+    // distinguishable long after everyone has forgotten which was which.
+    remove:     (messageId, body = {}) => api.post(`/whatsapp-media/messages/${messageId}/remove`, body),
     retry:      (messageId)   => api.post(`/whatsapp-media/messages/${messageId}/retry`),
   },
 
@@ -902,6 +905,10 @@ twilio: {
     watchJid:       (body)      => api.post('/whatsapp-session/triage/watch-jid', body),
     bind:           (id, body)  => api.post(`/whatsapp-session/triage/${id}/bind`, body),
     ignore:         (id)        => api.post(`/whatsapp-session/triage/${id}/ignore`),
+    // Per-group attachment policy. Bulk, like the watch routes: a number in
+    // eighty groups is configured in sweeps, not one dialog at a time.
+    // policy: 'inherit' | 'all' | 'documents' | 'none'
+    mediaPolicy:    (body)      => api.post('/whatsapp-session/triage/media-policy', body),
   },
 
   whatsapp: {

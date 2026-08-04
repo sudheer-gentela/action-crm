@@ -28,6 +28,25 @@ const PRIMARY = { ...BTN, background: '#E8630A', color: '#fff' };
 const GHOST   = { ...BTN, background: '#fff', color: '#374151', border: '1px solid #d1d5db' };
 const INPUT   = { padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, boxSizing: 'border-box' };
 
+/**
+ * Per-group attachment policy.
+ *
+ * Watching a group is a decision about TEXT. Whether its attachments are also
+ * written into the customer's Drive is a second, larger decision — one group is
+ * a document-heavy implementation channel, the next is scheduling chatter where
+ * the photos are somebody's lunch.
+ *
+ * 'documents' is the setting most groups actually want and the reason this
+ * control is not a checkbox.
+ */
+const MEDIA_POLICY = {
+  inherit:   { label: 'Default',   hint: 'Follows the session switch and the project setting.', bg: '#f3f4f6', fg: '#6b7280' },
+  all:       { label: 'All files', hint: 'Every attachment is saved to the project folder.',    bg: '#ecfdf5', fg: '#065f46' },
+  documents: { label: 'Docs only', hint: 'Documents saved. Photos, video, audio and stickers are not.', bg: '#eff6ff', fg: '#1e40af' },
+  none:      { label: 'No files',  hint: 'No attachments from this group are saved.',           bg: '#fef2f2', fg: '#991b1b' },
+};
+const POLICY_ORDER = ['inherit', 'all', 'documents', 'none'];
+
 const FILTERS = [
   { key: 'all',      label: 'All groups' },
   { key: 'watched',  label: 'Watched' },
@@ -110,6 +129,21 @@ export default function WhatsAppSessionTriage() {
     (r) => `${r.data.updated} group${r.data.updated === 1 ? '' : 's'} ${watched ? 'now being captured' : 'no longer captured'}.`
   );
 
+  // Loosening a policy requeues what the old one skipped, so the count coming
+  // back is worth saying out loud — otherwise a PM has no way to know the
+  // change was retroactive rather than only forward-looking.
+  const bulkPolicy = (policy) => run(
+    () => apiService.whatsappSession.mediaPolicy({
+      groupIds: groups.filter(g => selected.has(g.group_jid) && g.id).map(g => g.id),
+      policy,
+    }),
+    (r) => {
+      const n = r.data?.requeued ?? 0;
+      return `Attachment policy set to "${MEDIA_POLICY[policy].label}" for ${r.data.updated} group${r.data.updated === 1 ? '' : 's'}`
+        + (n ? `, and ${n} earlier attachment${n === 1 ? '' : 's'} queued to be saved.` : '.');
+    }
+  );
+
   const doBind = () => {
     if (!handoverId) { setError('Pick a project first.'); return; }
     run(
@@ -180,6 +214,20 @@ export default function WhatsAppSessionTriage() {
           <span style={{ fontSize: 13, color: '#374151' }}>{selected.size} selected</span>
           <button style={PRIMARY} disabled={busy} onClick={() => bulkWatch(true)}>Start capturing</button>
           <button style={GHOST}   disabled={busy} onClick={() => bulkWatch(false)}>Stop capturing</button>
+
+          <span style={{ fontSize: 13, color: '#6b7280', marginLeft: 4 }}>Attachments:</span>
+          <select
+            style={{ ...INPUT, padding: '5px 8px', fontSize: 12 }}
+            value=""
+            disabled={busy}
+            onChange={e => { if (e.target.value) bulkPolicy(e.target.value); e.target.value = ''; }}
+          >
+            <option value="">Set policy…</option>
+            {POLICY_ORDER.map(k => (
+              <option key={k} value={k}>{MEDIA_POLICY[k].label}</option>
+            ))}
+          </select>
+
           <button style={{ ...GHOST, marginLeft: 'auto' }} onClick={() => setSelected(new Set())}>Clear</button>
         </div>
       )}
@@ -193,13 +241,14 @@ export default function WhatsAppSessionTriage() {
               </th>
               <th style={{ padding: '9px 12px' }}>Group</th>
               <th style={{ padding: '9px 12px', width: 110 }}>Capturing</th>
+              <th style={{ padding: '9px 12px', width: 130 }}>Attachments</th>
               <th style={{ padding: '9px 12px', width: 190 }}>Project</th>
               <th style={{ padding: '9px 12px', width: 120 }}>Last activity</th>
             </tr>
           </thead>
           <tbody>
             {groups.length === 0 && (
-              <tr><td colSpan={5} style={{ padding: 24, textAlign: 'center', color: '#9ca3af' }}>
+              <tr><td colSpan={6} style={{ padding: 24, textAlign: 'center', color: '#9ca3af' }}>
                 No groups match this filter.
               </td></tr>
             )}
@@ -235,6 +284,52 @@ export default function WhatsAppSessionTriage() {
                       g.is_watched ? 'Capture stopped for that group.' : 'Now capturing that group.'
                     )}
                   >{g.is_watched ? 'On' : 'Off'}</button>
+                </td>
+                <td style={{ padding: '10px 12px' }}>
+                  {/* Only meaningful once the group is persisted — an undecided
+                      group has no row to hang a policy on. */}
+                  {g.id ? (
+                    <>
+                      <select
+                        style={{
+                          ...INPUT, padding: '3px 6px', fontSize: 11, width: '100%',
+                          background: (MEDIA_POLICY[g.media_policy] || MEDIA_POLICY.inherit).bg,
+                          color:      (MEDIA_POLICY[g.media_policy] || MEDIA_POLICY.inherit).fg,
+                          fontWeight: g.media_policy && g.media_policy !== 'inherit' ? 600 : 400,
+                        }}
+                        disabled={busy}
+                        value={g.media_policy || 'inherit'}
+                        onChange={e => run(
+                          () => apiService.whatsappSession.mediaPolicy({ groupIds: [g.id], policy: e.target.value }),
+                          (r) => {
+                            const n = r.data?.requeued ?? 0;
+                            return `Attachments: ${MEDIA_POLICY[e.target.value].label}`
+                              + (n ? ` — ${n} earlier file${n === 1 ? '' : 's'} queued to be saved.` : '.');
+                          }
+                        )}
+                        title={(MEDIA_POLICY[g.media_policy] || MEDIA_POLICY.inherit).hint}
+                      >
+                        {POLICY_ORDER.map(k => (
+                          <option key={k} value={k}>{MEDIA_POLICY[k].label}</option>
+                        ))}
+                      </select>
+                      {/* Files that arrived and never reached storage. The
+                          number is the whole point: a group quietly dropping
+                          documents looks identical to a healthy one otherwise. */}
+                      {Number(g.media_unstored) > 0 && (
+                        <div style={{ fontSize: 10, color: '#92400e', marginTop: 3 }}>
+                          {g.media_unstored} not saved
+                        </div>
+                      )}
+                      {g.media_policy_by_name && g.media_policy !== 'inherit' && (
+                        <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>
+                          set by {g.media_policy_by_name}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <span style={{ fontSize: 11, color: '#c7c7c7' }}>—</span>
+                  )}
                 </td>
                 <td style={{ padding: '10px 12px' }}>
                   {g.handover_id

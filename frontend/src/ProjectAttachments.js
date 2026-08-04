@@ -94,6 +94,29 @@ const S = {
   empty:{ fontSize: 12, color: '#9ca3af', margin: '6px 0' },
 };
 
+/**
+ * The two transports have different clocks and different certainties, and
+ * flattening them into one "about 30 days" line was going to be wrong half the
+ * time.
+ *
+ *   cloud_api  Meta documents ~30 days. Reliable enough to state plainly.
+ *   session    WhatsApp publishes nothing about CDN retention for linked
+ *              devices. Roughly two weeks is what we assume, and the copy says
+ *              so rather than inventing a precision we do not have.
+ */
+const SOURCE_COPY = {
+  cloud_api: {
+    window: 'about 30 days',
+    detail: 'WhatsApp deletes shared files after about 30 days and this number has no app inbox, '
+          + 'so once that passes they cannot be recovered by anyone.',
+  },
+  session: {
+    window: 'around two weeks',
+    detail: 'WhatsApp does not say how long it keeps files shared in groups — around two weeks '
+          + 'is our estimate. After that they cannot be recovered from WhatsApp at all.',
+  },
+};
+
 function daysLeft(expiresAt) {
   if (!expiresAt) return null;
   const ms = new Date(expiresAt).getTime() - Date.now();
@@ -135,11 +158,29 @@ function AttachmentRow({ a, handoverId, busy, onKeep, onRemove, onRetry, onReloa
           {recoverable && left !== null && (
             <span style={{ color: left <= 5 ? '#991b1b' : '#6b7280' }}>
               · {left === 0 ? 'expires today' : `${left} day${left === 1 ? '' : 's'} left to recover`}
+              {a.media_source === 'session' && ' (estimated)'}
             </span>
           )}
         </div>
         {a.media_error && recoverable && (
           <div style={{ ...S.meta, color: '#991b1b' }}>{a.media_error}</div>
+        )}
+        {/* The audit trail. storage_file_id is nulled on removal, so without
+            these columns the row says only "a file was here and is gone". */}
+        {a.media_status === 'removed' && (
+          <div style={{ ...S.meta, color: '#6b7280' }}>
+            <span>
+              {a.media_removed_file_name ? `"${a.media_removed_file_name}" ` : ''}
+              removed{a.removed_by_name ? ` by ${a.removed_by_name}` : ''}
+              {a.media_removed_at ? ` on ${new Date(a.media_removed_at).toLocaleDateString()}` : ''}
+              {a.media_removed_reason ? ` — ${a.media_removed_reason}` : ''}
+            </span>
+            {a.media_removed_from_provider === false && (
+              <span style={{ color: '#92400e' }}>
+                · could not be deleted from storage — it may still be in your Drive
+              </span>
+            )}
+          </div>
         )}
       </div>
 
@@ -212,13 +253,37 @@ export default function ProjectAttachments({ handoverId }) {
   };
 
   const keep   = (id) => act(() => apiService.whatsappMedia.keep(id));
-  const retry  = (id) => act(() => apiService.whatsappMedia.retry(id), 'Tried again.');
+  // The two transports retry differently and the message should say which
+  // happened. Cloud API files are fetched by this server within seconds; a
+  // session file is fetched by the linked phone's worker on its next check-in,
+  // which is up to a minute. "Tried again" for something that has not happened
+  // yet reads as a failure when the file does not appear immediately.
+  const retry = (id) => act(async () => {
+    const r = await apiService.whatsappMedia.retry(id);
+    setNotice(r?.data?.queuedForWorker
+      ? 'Queued. The linked phone fetches this one on its next check-in, usually within a minute.'
+      : 'Tried again.');
+  });
   const remove = (a) => {
-    if (!window.confirm(
+    // A note, not a required field. Prompt rather than a modal because the
+    // audit row is the point, not the ceremony — and window.prompt returning
+    // null (Cancel) has to abort the whole removal, which '' does not.
+    const reason = window.prompt(
       `Remove "${a.file_name || 'this attachment'}" from your cloud storage?\n\n`
-      + 'The file is deleted from the project folder. WhatsApp will still have it '
-      + 'for a while, so it can be recovered until then.')) return;
-    return act(() => apiService.whatsappMedia.remove(a.id), 'Removed from storage.');
+      + 'The file is deleted from the project folder. WhatsApp may still have it '
+      + 'for a while, so it can be recovered until then.\n\n'
+      + 'Why is it being removed? (optional — recorded against the file)',
+      ''
+    );
+    if (reason === null) return;
+    return act(async () => {
+      const r = await apiService.whatsappMedia.remove(a.id, { reason: reason || null });
+      // The team asked for this to be deleted and it was not. Saying so now is
+      // the difference between a known gap and a nasty surprise in an audit.
+      setNotice(r?.data?.warning
+        ? `⚠️ ${r.data.warning}`
+        : 'Removed from storage.');
+    });
   };
 
   if (loading) return null;                 // nothing to say yet
@@ -249,9 +314,12 @@ export default function ProjectAttachments({ handoverId }) {
       {needsAction.length > 0 && (
         <div style={S.warn}>
           {needsAction.length} file{needsAction.length === 1 ? '' : 's'} not saved to your storage.
-          WhatsApp deletes shared files after about 30 days and this number has no app inbox, so
-          once that passes they cannot be recovered by anyone — but somebody in the group still
-          has them until then.
+          {' '}
+          {/* Pick the copy for whichever transport these actually came in on,
+              rather than asserting Meta's 30 days over files that arrived
+              through a linked phone on a shorter and vaguer clock. */}
+          {(SOURCE_COPY[needsAction.every(a => a.media_source === 'session') ? 'session' : 'cloud_api']).detail}
+          {' '}Somebody in the group still has them until then.
         </div>
       )}
 

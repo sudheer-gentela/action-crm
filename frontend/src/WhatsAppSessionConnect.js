@@ -45,6 +45,24 @@ const CONFIG_FIELDS = [
   { key: 'reconnectMaxSeconds', label: 'Reconnect backoff cap (s)',min: 10,  max: 3600,  hint: 'Ceiling on the exponential retry delay.' },
 ];
 
+/**
+ * Attachment settings, kept separate from the tuning knobs above.
+ *
+ * Those five are performance dials nobody needs to touch. These two change
+ * what does and does not get written into a customer's Drive, which is a
+ * different kind of decision and should not be buried in a list of millisecond
+ * intervals.
+ */
+const MEDIA_FIELDS = [
+  { key: 'mediaMaxBytes', label: 'Largest attachment (MB)', min: 1, max: 100,
+    toInput: (v) => Math.round((v || 26214400) / 1048576),
+    toApi:   (v) => Math.round(Number(v) * 1048576),
+    hint: 'Bigger files are skipped rather than downloaded. The worker holds the live WhatsApp connection, so a very large file is a risk to the session itself — not just a slow upload.' },
+  { key: 'mediaRetentionDays', label: 'Assumed WhatsApp retention (days)', min: 1, max: 30,
+    toInput: (v) => v ?? 14, toApi: (v) => Number(v),
+    hint: 'How long we assume WhatsApp keeps an attachment before it is unrecoverable. WhatsApp does not publish this for linked devices, so it is an estimate — after it passes, a file is marked gone rather than retried forever.' },
+];
+
 export default function WhatsAppSessionConnect() {
   const [health,  setHealth]  = useState(null);
   const [loading, setLoading] = useState(true);
@@ -64,7 +82,10 @@ export default function WhatsAppSessionConnect() {
     try {
       const res = await apiService.whatsappSession.status();
       setHealth(res.data);
-      if (res.data?.config) setCfg(c => c || res.data.config);
+      if (res.data?.config) setCfg(c => c || {
+        ...res.data.config,
+        ...Object.fromEntries(MEDIA_FIELDS.map(f => [f.key, f.toInput(res.data.config[f.key])])),
+      });
     } catch {
       setHealth({ configured: false });
     } finally {
@@ -133,8 +154,33 @@ export default function WhatsAppSessionConnect() {
   };
 
   const handleSaveCfg = () => run(
-    async () => { await apiService.whatsappSession.updateSettings(cfg); },
+    async () => {
+      // The size field is shown in MB because nobody thinks in bytes; the API
+      // and the CHECK constraint both want bytes. Convert at the boundary
+      // rather than storing a half-converted value in component state.
+      const payload = { ...cfg };
+      for (const f of MEDIA_FIELDS) {
+        if (payload[f.key] !== undefined && payload[f.key] !== '') {
+          payload[f.key] = f.toApi(payload[f.key]);
+        }
+      }
+      await apiService.whatsappSession.updateSettings(payload);
+    },
     'Settings saved. The worker picks these up on its next heartbeat — no restart needed.'
+  );
+
+  /**
+   * Attachment capture on or off for the whole session.
+   *
+   * Saved on its own rather than with the rest: it is a one-click switch and
+   * making somebody press "Save settings" afterwards is how a toggle gets
+   * flipped and silently not applied.
+   */
+  const toggleCaptureMedia = () => run(
+    async () => { await apiService.whatsappSession.updateSettings({ captureMedia: !health?.captureMedia }); },
+    health?.captureMedia
+      ? 'Attachment capture off. Messages are still captured; files are not saved.'
+      : 'Attachment capture on. New attachments are saved to each project\u2019s folder.'
   );
 
   if (loading) return <div style={{ padding: 16, color: '#6b7280', fontSize: 13 }}>Loading capture settings…</div>;
@@ -240,6 +286,51 @@ export default function WhatsAppSessionConnect() {
             </button>
           </div>
 
+          {/* ── Attachments ──────────────────────────────────────────────
+              Its own card, above the tuning dials. This is the setting that
+              decides whether customer files are written into customer storage,
+              and it should not read as one more millisecond interval. */}
+          <div style={CARD}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+              <h4 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: '#1a202c' }}>
+                📎 Attachments
+              </h4>
+              <button
+                style={{
+                  ...BTN, fontSize: 12, padding: '4px 12px', marginLeft: 'auto',
+                  background: health.captureMedia ? '#ecfdf5' : '#f3f4f6',
+                  color:      health.captureMedia ? '#065f46' : '#6b7280',
+                  border: `1px solid ${health.captureMedia ? '#a7f3d0' : '#e5e7eb'}`,
+                }}
+                disabled={busy}
+                onClick={toggleCaptureMedia}
+              >{health.captureMedia ? 'On' : 'Off'}</button>
+            </div>
+
+            <p style={{ fontSize: 12, color: '#6b7280', margin: '0 0 10px', lineHeight: 1.5 }}>
+              When on, files shared in a captured group are saved to that project&rsquo;s
+              attachment folder in your own Drive or OneDrive. Each group can override this
+              on the Groups screen — and a project with no attachment folder set will hold
+              its files until one is chosen.
+            </p>
+
+            {health.media && (
+              <div style={{ display: 'flex', gap: 20, fontSize: 12, marginBottom: 4 }}>
+                <Stat label="Saved"     value={health.media.stored} />
+                <Stat label="In flight" value={health.media.inFlight} />
+                <Stat label="Not saved" value={health.media.skipped} warn={health.media.skipped > 0} />
+                <Stat label="Gone"      value={health.media.expired} warn={health.media.expired > 0} />
+              </div>
+            )}
+            {health.media?.skipped > 0 && (
+              <p style={{ fontSize: 11, color: '#92400e', margin: '6px 0 0' }}>
+                Files captured but not saved are almost always a project with no attachment
+                folder chosen. Set one on the project&rsquo;s Files tab and they are saved
+                automatically — no need to ask anyone to resend.
+              </p>
+            )}
+          </div>
+
           <div style={CARD}>
             <button
               style={{ ...GHOST, marginBottom: showCfg ? 14 : 0 }}
@@ -251,6 +342,22 @@ export default function WhatsAppSessionConnect() {
             {showCfg && cfg && (
               <>
                 {CONFIG_FIELDS.map(f => (
+                  <div key={f.key} style={{ marginBottom: 12 }}>
+                    <label style={LABEL}>{f.label}</label>
+                    <input
+                      type="number"
+                      style={{ ...INPUT, maxWidth: 200 }}
+                      min={f.min}
+                      max={f.max}
+                      value={cfg[f.key] ?? ''}
+                      onChange={e => setCfg(c => ({ ...c, [f.key]: e.target.value }))}
+                    />
+                    <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 3 }}>
+                      {f.hint} Range {f.min}–{f.max}.
+                    </div>
+                  </div>
+                ))}
+                {MEDIA_FIELDS.map(f => (
                   <div key={f.key} style={{ marginBottom: 12 }}>
                     <label style={LABEL}>{f.label}</label>
                     <input
@@ -310,11 +417,13 @@ export default function WhatsAppSessionConnect() {
   );
 }
 
-function Stat({ label, value }) {
+// `warn` tints a count that needs a person to do something. Amber rather than
+// red: an unsaved attachment is recoverable, not an incident.
+function Stat({ label, value, warn }) {
   return (
     <div>
       <div style={{ color: '#9ca3af', marginBottom: 2 }}>{label}</div>
-      <div style={{ fontSize: 15, fontWeight: 600, color: '#1a202c' }}>{value}</div>
+      <div style={{ fontSize: 15, fontWeight: 600, color: warn ? '#92400e' : '#1a202c' }}>{value}</div>
     </div>
   );
 }
