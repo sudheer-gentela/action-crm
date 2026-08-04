@@ -864,6 +864,27 @@ twilio: {
   // WhatsApp channel
   // ══════════════════════════════════════════════════════════
 
+  // Communication -> Messages. Authorisation is per-message and server-side:
+  // scoped by WhatsApp group participation plus project membership.
+  whatsappMessages: {
+    search:         (params={}) => api.get(`/whatsapp-messages/search?${new URLSearchParams(params).toString()}`),
+    diagnose:       (body)      => api.post('/whatsapp-messages/diagnose', body),
+    file:           (id, body)  => api.post(`/whatsapp-messages/${id}/file`, body),
+    exclude:        (id, body)  => api.post(`/whatsapp-messages/${id}/exclude`, body),
+    audit:          (limit)     => api.get(`/whatsapp-messages/audit${limit ? `?limit=${limit}` : ''}`),
+
+    identity:       ()          => api.get('/whatsapp-messages/identity/me'),
+    setIdentity:    (userId, body) => api.put(`/whatsapp-messages/identity/${userId}`, body),
+
+    requestCapture: (body)      => api.post('/whatsapp-messages/capture-requests', body),
+    captureRequests:(status)    => api.get(`/whatsapp-messages/capture-requests${status ? `?status=${status}` : ''}`),
+    decideRequest:  (id, body)  => api.post(`/whatsapp-messages/capture-requests/${id}/decide`, body),
+
+    stewards:       ()          => api.get('/whatsapp-messages/stewards'),
+    grantSteward:   (body)      => api.post('/whatsapp-messages/stewards', body),
+    revokeSteward:  (userId)    => api.delete(`/whatsapp-messages/stewards/${userId}`),
+  },
+
   // Session capture (companion-device client). Separate transport from the
   // Cloud API block below — different number, read-only, sees phone-created groups.
   whatsappSession: {
