@@ -99,6 +99,46 @@ router.post('/internal/qr', workerAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Auth key relay ───────────────────────────────────────────────────────────
+//
+// This is what lets the worker run with no database connection at all. It sends
+// opaque serialised strings; encryption, key management and persistence stay on
+// this service, which already holds AI_CREDS_KEY and the Postgres credentials.
+
+router.post('/internal/auth/get', workerAuth, async (req, res) => {
+  try {
+    const { sessionId, keyIds } = req.body || {};
+    if (!sessionId) return res.status(400).json({ error: { message: 'sessionId required' } });
+    res.json({ values: await session.authGet(sessionId, keyIds || []) });
+  } catch (e) {
+    res.status(500).json({ error: { message: e.message } });
+  }
+});
+
+router.post('/internal/auth/set', workerAuth, async (req, res) => {
+  try {
+    const { sessionId, upserts, deletes } = req.body || {};
+    if (!sessionId) return res.status(400).json({ error: { message: 'sessionId required' } });
+    const out = await session.authSet(sessionId, upserts || [], deletes || []);
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    // Must be a hard failure the worker can see: silently losing ratchet state
+    // produces a session that connects once and then cannot decrypt anything.
+    console.error(`[wa-session] auth set failed: ${e.message}`);
+    res.status(500).json({ error: { message: e.message } });
+  }
+});
+
+router.post('/internal/auth/clear', workerAuth, async (req, res) => {
+  try {
+    const { sessionId } = req.body || {};
+    if (!sessionId) return res.status(400).json({ error: { message: 'sessionId required' } });
+    res.json({ ok: true, ...(await session.authClear(sessionId)) });
+  } catch (e) {
+    res.status(500).json({ error: { message: e.message } });
+  }
+});
+
 router.post('/internal/messages', workerAuth, async (req, res) => {
   try {
     const { sessionId, messages } = req.body || {};

@@ -109,6 +109,97 @@ async function disableSession(orgId, userId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Auth key storage (server side of the worker's AuthenticationState)
+//
+// The worker holds no database connection. It sends already-serialised JSON
+// strings (Baileys' BufferJSON form, which encodes Buffers losslessly) and we
+// do the encryption and persistence here. That keeps AI_CREDS_KEY and the
+// Postgres credentials on exactly one service, and means the worker needs
+// nothing but an HTTPS route to the API.
+//
+// Deliberately opaque: we never parse these values. They are Signal ratchet
+// state and only Baileys knows their shape.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const encryption = require('./credentials/encryption');
+
+async function authGet(sessionId, keyIds) {
+  if (!Array.isArray(keyIds) || !keyIds.length) return {};
+  const { rows } = await pool.query(
+    `SELECT key_id, value_ciphertext, value_iv, value_tag
+       FROM whatsapp_session_auth
+      WHERE session_id = $1 AND key_id = ANY($2::text[])`,
+    [sessionId, keyIds]
+  );
+  const out = {};
+  for (const r of rows) {
+    try {
+      out[r.key_id] = encryption.decrypt(r.value_ciphertext, r.value_iv, r.value_tag);
+    } catch (err) {
+      // A key we cannot decrypt is worse than one we do not have: Baileys will
+      // re-request a missing key, but a throw here aborts the connection.
+      console.error(`[wa-session] undecryptable auth key ${r.key_id} (session ${sessionId}): ${err.message}`);
+    }
+  }
+  return out;
+}
+
+/**
+ * @param {Array<[string,string]>} upserts  [keyId, serialisedJson]
+ * @param {string[]} deletes
+ *
+ * One transaction: Baileys treats each batch as atomic, and a partial apply
+ * leaves the ratchet inconsistent, surfacing later as "Bad MAC" decryption
+ * failures that look like a library bug.
+ */
+async function authSet(sessionId, upserts = [], deletes = []) {
+  if (!upserts.length && !deletes.length) return { written: 0, deleted: 0 };
+  if (!encryption.isConfigured()) {
+    throw new Error('AI_CREDS_KEY is not configured — refusing to store WhatsApp session keys in plaintext');
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const [keyId, value] of upserts) {
+      const enc = encryption.encrypt(String(value));
+      await client.query(
+        `INSERT INTO whatsapp_session_auth
+           (session_id, key_id, value_ciphertext, value_iv, value_tag, updated_at)
+         VALUES ($1,$2,$3,$4,$5, now())
+         ON CONFLICT (session_id, key_id) DO UPDATE SET
+           value_ciphertext = EXCLUDED.value_ciphertext,
+           value_iv         = EXCLUDED.value_iv,
+           value_tag        = EXCLUDED.value_tag,
+           updated_at       = now()`,
+        [sessionId, keyId, enc.ciphertext, enc.iv, enc.tag]
+      );
+    }
+    if (deletes.length) {
+      await client.query(
+        `DELETE FROM whatsapp_session_auth WHERE session_id = $1 AND key_id = ANY($2::text[])`,
+        [sessionId, deletes]
+      );
+    }
+    await client.query('COMMIT');
+    return { written: upserts.length, deleted: deletes.length };
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* already failed */ }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/** Wipe key material — called when WhatsApp reports loggedOut. */
+async function authClear(sessionId) {
+  const { rowCount } = await pool.query(
+    `DELETE FROM whatsapp_session_auth WHERE session_id = $1`, [sessionId]
+  );
+  return { cleared: rowCount };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Normalisation
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -560,6 +651,9 @@ async function health(orgId) {
 }
 
 module.exports = {
+  authGet,
+  authSet,
+  authClear,
   getSession,
   getSessionById,
   createSession,

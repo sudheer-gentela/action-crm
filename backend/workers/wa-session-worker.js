@@ -15,8 +15,8 @@
  *   Railway service config:
  *     Start command : node workers/wa-session-worker.js
  *     Replicas      : 1                       ← not negotiable
- *     Env           : WA_SESSION_API_URL, WA_SESSION_WORKER_SECRET,
- *                     DATABASE_URL, AI_CREDS_KEY
+ *     Env           : WA_SESSION_API_URL, WA_SESSION_WORKER_SECRET
+ *                     (that is the complete list — no DB, no crypto key)
  *
  * READ-ONLY CONTRACT — the three settings below are load-bearing:
  *
@@ -37,26 +37,13 @@
 
 'use strict';
 
-// ── Railway private networking ───────────────────────────────────────────────
-//
-// *.railway.internal resolves over IPv6 ONLY. Node's default resolution order
-// tries A records first, so a lookup for the Postgres host fails with
-// ENOTFOUND even though the address exists. This must run before anything
-// opens a socket.
-require('dns').setDefaultResultOrder('ipv6first');
-
 require('dotenv').config();
 
-// The private network is not up the instant the container starts — DNS for
-// *.railway.internal fails for the first couple of seconds. The API service
-// gets away with this because nothing queries the DB until a request arrives;
-// this worker connects immediately, so it has to wait for it.
-//
-// Retrying beats a fixed sleep: a fixed delay is a guess that is either too
-// short (and fails) or too long (and wastes every restart). This adapts, and
-// logs how long the private network actually took to come up so the number
-// stops being folklore.
-const DB_WAIT_MAX_MS = parseInt(process.env.WA_SESSION_DB_WAIT_MS || '120000', 10);
+// This worker holds NO database connection. Session key material moves over the
+// same HTTPS channel as everything else (see services/whatsapp/
+// sessionAuthStore.js), so there is no DATABASE_URL, no AI_CREDS_KEY, and no
+// private-network dependency here. One transport, one failure mode.
+const API_WAIT_MAX_MS = parseInt(process.env.WA_SESSION_API_WAIT_MS || '120000', 10);
 
 const API_URL       = process.env.WA_SESSION_API_URL || 'http://localhost:5000';
 const WORKER_SECRET = process.env.WA_SESSION_WORKER_SECRET;
@@ -69,7 +56,7 @@ if (!WORKER_SECRET) {
   process.exit(1);
 }
 
-const { usePostgresAuthState } = require('../services/whatsapp/sessionAuthStore');
+const { useRemoteAuthState } = require('../services/whatsapp/sessionAuthStore');
 
 // Active sockets keyed by session id, so the poller does not open a second
 // socket for a session it already runs.
@@ -179,7 +166,7 @@ async function startSession(sessionRow) {
 
   let auth;
   try {
-    auth = await usePostgresAuthState(sessionId);
+    auth = await useRemoteAuthState(sessionId, { apiUrl: API_URL, workerSecret: WORKER_SECRET });
   } catch (err) {
     console.error(`[wa-session:${sessionId}] auth store unavailable: ${err.message}`);
     sockets.delete(sessionId);
@@ -379,47 +366,49 @@ process.on('unhandledRejection', (err) => {
 });
 
 /**
- * Block until Postgres answers, or until DB_WAIT_MAX_MS elapses.
+ * Block until the API answers, or until API_WAIT_MAX_MS elapses.
  *
- * Distinguishes the two failure modes deliberately, because they need
- * different fixes: ENOTFOUND/EAI_AGAIN means private DNS is not up yet (wait,
- * it usually resolves within seconds), whereas an auth or TLS error means the
- * connection string itself is wrong and no amount of waiting will help.
+ * Distinguishes the failure modes, because they need different fixes: a
+ * network error means the API is not reachable yet (usually a deploy in
+ * progress — wait), whereas a 401 means the shared secret does not match and
+ * no amount of waiting will help.
  */
-async function waitForDatabase() {
-  const { pool } = require('../config/database');
+async function waitForApi() {
   const started = Date.now();
   let attempt = 0;
 
   for (;;) {
     attempt++;
     try {
-      await pool.query('SELECT 1');
-      console.log(`[wa-session] database reachable after ${Date.now() - started}ms (${attempt} attempt${attempt > 1 ? 's' : ''})`);
+      await api('/internal/claim', {});
+      console.log(`[wa-session] API reachable after ${Date.now() - started}ms (${attempt} attempt${attempt > 1 ? 's' : ''})`);
       return true;
     } catch (err) {
-      const dnsIssue = ['ENOTFOUND', 'EAI_AGAIN'].includes(err.code);
+      const msg = String(err.message || '');
       const elapsed = Date.now() - started;
 
-      if (!dnsIssue) {
-        // Credentials, TLS, refused connection — retrying forever would just
-        // hide a misconfiguration behind a quiet log.
-        console.error(`[wa-session] database error (${err.code || 'unknown'}): ${err.message}`);
-        console.error('[wa-session] this is not a DNS timing issue — check DATABASE_URL on this service');
+      if (msg.includes('-> 401')) {
+        console.error('[wa-session] API rejected the worker secret (401)');
+        console.error('[wa-session] WA_SESSION_WORKER_SECRET must be identical on this service and the API');
+        return false;
+      }
+      if (msg.includes('-> 503')) {
+        console.error('[wa-session] API has no WA_SESSION_WORKER_SECRET configured (503)');
+        return false;
+      }
+      if (msg.includes('-> 404')) {
+        console.error('[wa-session] API route not found (404) — is WA_SESSION_API_URL correct, and has the API deployed the session routes?');
         return false;
       }
 
-      if (elapsed > DB_WAIT_MAX_MS) {
-        console.error(`[wa-session] private network never came up after ${Math.round(elapsed / 1000)}s`);
-        console.error('[wa-session] check that this service is in the same Railway project/environment as Postgres,');
-        console.error('[wa-session] or set DATABASE_URL to the Postgres service\'s DATABASE_PUBLIC_URL as a fallback');
+      if (elapsed > API_WAIT_MAX_MS) {
+        console.error(`[wa-session] API unreachable after ${Math.round(elapsed / 1000)}s: ${msg}`);
+        console.error(`[wa-session] check WA_SESSION_API_URL (currently ${API_URL})`);
         return false;
       }
 
-      // 1s, 2s, 4s ... capped at 8s. Chatty for the first few attempts because
-      // that is exactly the window where someone is watching the logs.
       const delay = Math.min(1000 * 2 ** (attempt - 1), 8000);
-      console.log(`[wa-session] waiting for private network (attempt ${attempt}, ${err.code}); retry in ${delay}ms`);
+      console.log(`[wa-session] waiting for API (attempt ${attempt}); retry in ${delay}ms`);
       await new Promise(r => setTimeout(r, delay));
     }
   }
@@ -428,7 +417,7 @@ async function waitForDatabase() {
 (async () => {
   console.log(`[wa-session] worker starting; api=${API_URL} poll=${POLL_MS}ms`);
 
-  const ready = await waitForDatabase();
+  const ready = await waitForApi();
   if (!ready) {
     // Exit rather than poll uselessly. Railway's restart policy brings us back,
     // and a crash loop with a clear reason is easier to notice than a worker
