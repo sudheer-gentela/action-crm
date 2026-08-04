@@ -6,6 +6,7 @@ import AccountsView from './AccountsView';
 import DealsView from './DealsView';
 import ContactsView from './ContactsView';
 import EmailView from './EmailView';
+import CommunicationView from './CommunicationView';
 import ActionsView from './ActionsView';
 import CalendarView from './CalendarView';
 import FilesView from './FilesView';
@@ -94,7 +95,7 @@ const NAV_ITEMS_BY_ROLE = {
     // beside Accounts rather than being its own kind of record.
     { id: 'vendors',      label: 'Vendors',      icon: '🤝' },
     { id: 'contacts',     label: 'Contacts',     icon: '👥' },
-    { id: 'email',        label: 'Email',        icon: '✉️' },
+    { id: 'email',        label: 'Communication', icon: '💬' },
     { id: 'calendar',     label: 'Calendar',     icon: '📅' },
     { id: 'files',        label: 'Files',        icon: '📁' },
     { id: 'agent',        label: 'Agents',       icon: '🤖' },
@@ -1043,7 +1044,7 @@ function Dashboard({ user, onLogout }) {
             />
           )}
           {currentTab === 'email'       && (
-            <EmailView
+            <CommunicationView
               dealId={pendingEmailDealId}
               onDealFilterApplied={() => setPendingEmailDealId(null)}
             />

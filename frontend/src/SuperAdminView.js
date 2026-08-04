@@ -5,6 +5,7 @@ import './SuperAdminView.css';
 import WorkflowCanvas from './WorkflowCanvas';
 import ExecutionLog from './ExecutionLog';
 import SAAIPlatformSettings from './SAAIPlatformSettings';
+import SAWhatsAppSessions from './SAWhatsAppSessions';
 
 // ═══════════════════════════════════════════════════════════════════
 // SUPER ADMIN VIEW — GoWarmCRM Platform Administration
@@ -1858,6 +1859,7 @@ function SAPlatformSettings() {
           { id: 'email-filter', label: '📧 Email Filter Defaults' },
           { id: 'integrations', label: '🔌 CRM Integrations' },
           { id: 'ai',           label: '🧠 AI Providers' },
+          { id: 'wa-sessions',  label: '📥 WhatsApp Capture' },
         ].map(t => (
           <button
             key={t.id}
@@ -1885,6 +1887,7 @@ function SAPlatformSettings() {
       {subTab === 'email-filter' && <SAEmailFilterSettings />}
       {subTab === 'integrations' && <SAPlatformIntegrations />}
       {subTab === 'ai'           && <SAAIPlatformSettings />}
+      {subTab === 'wa-sessions'  && <SAWhatsAppSessions />}
     </div>
   );
 }

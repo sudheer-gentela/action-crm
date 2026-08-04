@@ -5,6 +5,9 @@ import React, { useState, useEffect } from 'react';
 import OAMeetingSettings from '../../OAMeetingSettings';
 import SlackConnect from '../../SlackConnect';
 import WhatsAppConnect from '../../WhatsAppConnect';
+import WhatsAppSessionConnect from '../../WhatsAppSessionConnect';
+import WhatsAppSessionTriage from '../../WhatsAppSessionTriage';
+import WhatsAppAccessAdmin from '../../WhatsAppAccessAdmin';
 import { apiService } from '../../apiService';
 
 export default function OAIntegrations({ orgId }) {
@@ -110,6 +113,13 @@ export default function OAIntegrations({ orgId }) {
     { id: 'meeting',        label: '🎙️ Meeting & Transcripts' },
     { id: 'slack',          label: '💬 Slack Notifications' },
     { id: 'whatsapp',       label: '💚 WhatsApp Business' },
+    // Session capture is a SEPARATE transport on a separate number: unofficial,
+    // read-only, and able to see groups created on a phone. Kept as its own
+    // sub-tab rather than folded into WhatsApp Business so nobody confuses the
+    // two — they have different numbers, different risks and different setup.
+    { id: 'wa-capture',     label: '📥 Group Capture' },
+    { id: 'wa-groups',      label: '📋 Captured Groups' },
+    { id: 'wa-access',      label: '🔑 WhatsApp Access' },
   ];
 
   const subTabStyle = (id) => ({
@@ -314,6 +324,10 @@ export default function OAIntegrations({ orgId }) {
 
       {/* ── WhatsApp Business tab ───────────────────────────────────── */}
       {subTab === 'whatsapp' && <WhatsAppConnect />}
+
+      {subTab === 'wa-capture' && <WhatsAppSessionConnect />}
+      {subTab === 'wa-groups'  && <WhatsAppSessionTriage />}
+      {subTab === 'wa-access'  && <WhatsAppAccessAdmin />}
     </div>
   );
 }

@@ -15,9 +15,14 @@
  *   Replace the "Email" item under WORKFLOW in the left nav with this. The
  *   Emails tab renders the existing EmailView unchanged, so nothing about the
  *   email experience changes.
+ *
+ *   PROPS ARE PASS-THROUGH. App.js deep-links into email from a deal via
+ *   dealId / onDealFilterApplied. Those must reach EmailView or "view emails
+ *   for this deal" silently stops filtering — the page still renders, just
+ *   with the wrong contents, which is worse than an error.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import EmailView from './EmailView';
 import CommunicationMessages from './CommunicationMessages';
 
@@ -27,8 +32,13 @@ const TABS = [
   { key: 'calls',    label: 'Calls' },
 ];
 
-export default function CommunicationView() {
+export default function CommunicationView({ dealId, onDealFilterApplied }) {
+  // Deep links from a deal ("show me the email for this deal") arrive as a
+  // dealId prop. Land on Emails when one is present, or the user follows the
+  // link and sees an unrelated tab.
   const [tab, setTab] = useState('emails');
+
+  useEffect(() => { if (dealId) setTab('emails'); }, [dealId]);
 
   return (
     <div>
@@ -52,7 +62,7 @@ export default function CommunicationView() {
         ))}
       </div>
 
-      {tab === 'emails'   && <EmailView />}
+      {tab === 'emails'   && <EmailView dealId={dealId} onDealFilterApplied={onDealFilterApplied} />}
       {tab === 'messages' && <CommunicationMessages />}
       {tab === 'calls'    && <CallsPlaceholder />}
     </div>
