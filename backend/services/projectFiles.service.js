@@ -244,7 +244,47 @@ async function setUploadTarget(handoverId, orgId, userId, mappingId) {
       throw Object.assign(new Error('Folder mapping not found'), { status: 404 });
     }
     await client.query('COMMIT');
-    return { uploadTarget: rows[0] };
+
+    // THE STRANDING FIX.
+    //
+    // Every attachment that arrived before this moment was marked 'skipped'
+    // with "no upload folder or storage account configured for this project".
+    // That sentence has just stopped being true — but nothing was watching for
+    // it. The Bull job completes a 'skipped' capture as a SUCCESS, and Bull
+    // never retries a successful job, so those attachments stayed skipped
+    // forever with no error anywhere. Message 226 is the live instance.
+    //
+    // Done here, immediately, rather than left to the 15-minute sweep: the
+    // person who just chose this folder is still looking at the screen, and
+    // "nothing appears to have happened" is the wrong feedback for an action
+    // that did, in fact, recover their files.
+    //
+    // After COMMIT and in its own try: this is recovery, and a media hiccup
+    // must not roll back the folder choice.
+    let requeued = 0;
+    try {
+      const media = require('./whatsappMedia.service');
+      // ONE call. Calling requeueForProject twice would return zero rows the
+      // second time — it only matches 'skipped', and the first call already
+      // flipped them to 'pending' — so the enqueue loop would silently do
+      // nothing and the Cloud API attachments would wait for the sweep.
+      const result = await media.requeueForProject(
+        orgId, handoverId, 'attachment folder configured'
+      );
+      requeued = result.requeued;
+
+      // The Cloud API ones need a Bull job. The session ones need nothing here
+      // — the worker collects them on its next heartbeat, because 'pending' is
+      // exactly what listPendingSessionMedia looks for.
+      const { enqueue } = require('../jobs/whatsappMediaJob');
+      for (const m of result.messages) {
+        if (m.media_source !== 'session') await enqueue(m.org_id, m.id);
+      }
+    } catch (err) {
+      console.warn(`[projectFiles] media requeue after upload-target change failed (project ${handoverId}): ${err.message}`);
+    }
+
+    return { uploadTarget: rows[0], mediaRequeued: requeued };
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch { /* already rolled back */ }
     throw err;

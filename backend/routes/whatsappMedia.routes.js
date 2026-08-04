@@ -61,13 +61,23 @@ router.get('/projects/:handoverId', async (req, res) => {
       `SELECT m.id, m.message_type, m.body, m.sent_at, m.from_name, m.from_phone,
               m.media_filename, m.media_mime_type, m.media_status, m.media_error,
               m.media_expires_at, m.storage_file_id, m.media_reviewed_at,
+              m.media_source, m.media_file_size,
+              m.media_removed_at, m.media_removed_reason,
+              m.media_removed_file_name, m.media_removed_from_provider,
               (ru.first_name || ' ' || ru.last_name) AS reviewed_by_name,
+              (du.first_name || ' ' || du.last_name) AS removed_by_name,
               f.file_name, f.web_url, f.file_size
          FROM whatsapp_messages m
          JOIN whatsapp_threads t ON t.id = m.thread_id
          LEFT JOIN storage_files f ON f.id = m.storage_file_id
          LEFT JOIN users ru ON ru.id = m.media_reviewed_by
-        WHERE m.org_id = $1 AND m.wa_media_id IS NOT NULL
+         LEFT JOIN users du ON du.id = m.media_removed_by
+        WHERE m.org_id = $1
+          -- media_source, not wa_media_id. Filtering on the Meta media id
+          -- excluded every session-captured attachment from this list — they
+          -- have no media id and never will — so a group document could store
+          -- correctly and still be invisible on the project.
+          AND (m.wa_media_id IS NOT NULL OR m.media_source IS NOT NULL)
           AND ( m.handover_id = $2
              OR (m.handover_id IS NULL AND t.handover_id = $2) )
         ORDER BY m.sent_at DESC NULLS LAST`,
@@ -89,7 +99,12 @@ router.post('/messages/:messageId/remove', async (req, res) => {
   try {
     const id = idOf(req.params.messageId);
     await assertMember(req, id);
-    res.json(await media.removeStoredMedia(req.orgId, id, req.user.userId));
+    // An optional note. Removal is destructive and the audit row keeps it, so
+    // "wrong project" and "confidential, sent by mistake" stay distinguishable
+    // long after everyone has forgotten which was which.
+    res.json(await media.removeStoredMedia(req.orgId, id, req.user.userId, {
+      reason: req.body?.reason || null,
+    }));
   } catch (err) { fail(res, err, 'remove'); }
 });
 

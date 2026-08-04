@@ -19,12 +19,16 @@
  *   GET    /triage                 — captured groups awaiting binding
  *   POST   /triage/:groupId/bind   — attach a group to a handover project
  *   POST   /triage/:groupId/ignore — dismiss a group permanently
+ *   POST   /triage/media-policy    — per-group attachment policy (bulk)
  *
  *   POST   /internal/claim         — worker asks for a session to run
  *   POST   /internal/status        — worker reports connection.update
  *   POST   /internal/qr            — worker publishes a pairing QR
  *   POST   /internal/messages      — worker delivers a batch of group messages
  *   POST   /internal/group-meta    — worker delivers group metadata / roster
+ *   POST   /internal/media/:messageId         — worker streams a decrypted
+ *                                    attachment (multipart, NOT json/base64)
+ *   POST   /internal/media/:messageId/failed  — worker could not fetch it
  */
 
 'use strict';
@@ -35,6 +39,7 @@ const router  = express.Router();
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext, requireRole } = require('../middleware/orgContext.middleware');
 const session = require('../services/whatsappSession.service');
+const media   = require('../services/whatsappMedia.service');
 const groupCache = require('../services/whatsapp/groupCache');
 const QRCode = require('qrcode');
 
@@ -205,6 +210,123 @@ router.post('/internal/messages', workerAuth, async (req, res) => {
       }
     }
     res.json({ ok: true, stored: results.filter(r => r.stored).length, results });
+  } catch (e) {
+    res.status(500).json({ error: { message: e.message } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Media relay
+//
+// The worker decrypts a session attachment and streams it here as
+// multipart/form-data. Not base64 in a JSON body: that is a 33% inflation on
+// top of a payload the worker must otherwise hold entire in a heap that also
+// holds a live Signal socket, and express.json's 5 MB limit would reject
+// anything interesting anyway.
+//
+// The bytes are in memory on this process for the duration of one upload and
+// are never written to disk here. Their destination is the customer's own
+// Drive or OneDrive; this service is a pipe, and the only durable record it
+// keeps is the storage_files row pointing at the customer's copy.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const multer = require('multer');
+
+// The ceiling on the ceiling. media_max_bytes is constrained to 100 MB in the
+// database, so nothing legitimate exceeds this; it exists so a malformed or
+// hostile request cannot make this process allocate without bound before the
+// per-session limit is even known.
+const HARD_MAX_BYTES = parseInt(process.env.WA_SESSION_MEDIA_HARD_MAX || String(100 * 1024 * 1024), 10);
+
+/**
+ * Build the upload parser with THIS session's limit, so multer aborts the
+ * stream at the cap instead of buffering the whole thing and rejecting it
+ * afterwards. The session id arrives as a header because it has to be readable
+ * before the body is touched.
+ */
+async function mediaUpload(req, res, next) {
+  const sessionId = parseInt(req.get('x-wa-session-id') || '', 10);
+  if (!Number.isInteger(sessionId)) {
+    return res.status(400).json({ error: { message: 'x-wa-session-id header required' } });
+  }
+  req.waSessionId = sessionId;
+
+  let limit = HARD_MAX_BYTES;
+  try {
+    limit = Math.min(await media.sessionMediaLimit(sessionId), HARD_MAX_BYTES);
+  } catch (err) {
+    console.warn(`[wa-session] could not read media limit for session ${sessionId}: ${err.message}`);
+  }
+  req.waMediaLimit = limit;
+
+  const handler = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: limit, files: 1, fields: 8 },
+  }).single('file');
+
+  handler(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      // Over the cap is 'skipped', not 'failed': retrying cannot help, but
+      // raising the limit can, and the message must stay visible so somebody
+      // can decide whether this file was worth the higher limit.
+      const messageId = parseInt(req.params.messageId, 10);
+      const reason = `attachment exceeds this session's ${Math.round(limit / 1048576)} MB limit`;
+      media.recordSessionFetchFailure(null, messageId, { reason, skipped: true })
+        .catch(e => console.error(`[wa-session] could not mark ${messageId} skipped: ${e.message}`));
+      return res.status(413).json({ error: { message: reason }, status: 'skipped' });
+    }
+    return res.status(400).json({ error: { message: err.message } });
+  });
+}
+
+router.post('/internal/media/:messageId', workerAuth, mediaUpload, async (req, res) => {
+  try {
+    const messageId = parseInt(req.params.messageId, 10);
+    if (!Number.isInteger(messageId)) {
+      return res.status(400).json({ error: { message: 'messageId must be an integer' } });
+    }
+    if (!req.file?.buffer?.length) {
+      return res.status(400).json({ error: { message: 'file part required' } });
+    }
+
+    // The worker authenticates with a shared secret, not an org identity.
+    // Without this check any worker could upload arbitrary bytes against any
+    // message id in any org — the secret would be an org-crossing capability.
+    const owned = await session.sessionOwnsMessage(req.waSessionId, messageId);
+    if (!owned) {
+      return res.status(404).json({ error: { message: 'message not found for this session' } });
+    }
+
+    const result = await media.storeSessionMedia(
+      owned.org_id, messageId, req.file.buffer,
+      req.body?.mimeType || req.file.mimetype || null,
+      { sessionId: req.waSessionId }
+    );
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error(`[wa-session] media store failed for ${req.params.messageId}: ${e.message}`);
+    res.status(500).json({ error: { message: e.message } });
+  }
+});
+
+/**
+ * The worker could not fetch it. Reported separately so the reason recorded is
+ * the CDN's rather than a store failure we did not have.
+ */
+router.post('/internal/media/:messageId/failed', workerAuth, async (req, res) => {
+  try {
+    const messageId = parseInt(req.params.messageId, 10);
+    const { sessionId, reason, expired, skipped } = req.body || {};
+    if (!Number.isInteger(messageId) || !sessionId) {
+      return res.status(400).json({ error: { message: 'messageId and sessionId required' } });
+    }
+    const owned = await session.sessionOwnsMessage(sessionId, messageId);
+    if (!owned) return res.status(404).json({ error: { message: 'message not found for this session' } });
+
+    res.json({ ok: true, ...await media.recordSessionFetchFailure(owned.org_id, messageId, {
+      reason, expired: !!expired, skipped: !!skipped,
+    }) });
   } catch (e) {
     res.status(500).json({ error: { message: e.message } });
   }
@@ -395,6 +517,27 @@ router.post('/triage/watch', async (req, res) => {
     const { groupIds, watched } = req.body || {};
     const result = await session.setWatch(req.orgId, req.userId, groupIds, watched);
     if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: { message: e.message } });
+  }
+});
+
+/**
+ * Per-group attachment policy, set by whoever runs the project.
+ *
+ * Bulk like the watch routes, for the same reason: a number in eighty groups
+ * is configured in sweeps, not one dialog at a time.
+ *
+ * Loosening a policy requeues what the old one skipped — `requeued` in the
+ * response is how the UI can say "and 6 earlier attachments are being fetched"
+ * instead of leaving someone to wonder whether the change was retroactive.
+ */
+router.post('/triage/media-policy', async (req, res) => {
+  try {
+    const { groupIds, policy } = req.body || {};
+    const result = await session.setGroupMediaPolicy(req.orgId, req.userId, groupIds, policy);
+    if (!result.ok) return res.status(result.code === 'NOT_FOUND' ? 404 : 400).json(result);
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: { message: e.message } });

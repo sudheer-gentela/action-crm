@@ -98,18 +98,28 @@ async function enqueue(orgId, messageId) {
 }
 
 /**
- * Reap what Meta has already dropped, then queue whatever is still recoverable.
- * Reaping first keeps expired media out of the batch.
+ * Reap what the source has already dropped, then queue whatever is still
+ * recoverable. Reaping first keeps expired media out of the batch.
+ *
+ * TWO TRANSPORTS, ONE SWEEP
+ *   Cloud API rows go through Bull as they always have. SESSION rows are not
+ *   fetchable from this process at all — the key is in the worker's copy of
+ *   the message and the CDN is not Graph — so captureMessage() puts them back
+ *   into 'pending' and the worker collects them on its next heartbeat. That is
+ *   a cheap UPDATE, so it is fine for it to go through the same queue, and
+ *   routing it here rather than branching keeps one code path for "this
+ *   attachment is overdue".
  */
 async function runSweep() {
   try {
     const { expired } = await media.reapExpired();
-    if (expired) console.log(`[whatsapp-media] ${expired} attachment(s) passed Meta's retention and are unrecoverable`);
+    if (expired) console.log(`[whatsapp-media] ${expired} attachment(s) passed their retention window and are unrecoverable`);
 
     const due = await media.listRecoverable(BATCH_SIZE);
     if (!due.length) return;
 
-    console.log(`[whatsapp-media] sweeping ${due.length} attachment(s)`);
+    const session = due.filter(m => m.media_source === 'session').length;
+    console.log(`[whatsapp-media] sweeping ${due.length} attachment(s)${session ? ` (${session} via the session worker)` : ''}`);
     for (const m of due) await enqueue(m.org_id, m.id);
   } catch (err) {
     console.error('[whatsapp-media] sweep failed:', err.message);

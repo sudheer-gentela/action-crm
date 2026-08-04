@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict QNHgYFxXUSXY5hQk2wYyrXhYzsJZOhd0r2p4HUU70MC73MGrafBfoYtnPcOQh9p
+\restrict 16o78ygmXbZEKvu8MM2NZN2qn75YrlBHEZfZOz4O3uscTcbsIlfC4bLCrQjLh2H
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -8958,7 +8958,7 @@ CREATE TABLE public.whatsapp_session_group_members (
 -- Name: TABLE whatsapp_session_group_members; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.whatsapp_session_group_members IS 'Which GoWarmCRM users are in each catalogued group, including uncaptured ones. Deliberately holds ONLY users of this org ΓÇö non-user participants of uncaptured groups are matched in memory and discarded, never stored. Exists so a search that finds nothing can explain why.';
+COMMENT ON TABLE public.whatsapp_session_group_members IS 'Org users known to be in a DECIDED group. Rows for undecided groups are not written ΓÇö membership in someone''s family chat is not ours to record.';
 
 
 --
@@ -9008,8 +9008,16 @@ CREATE TABLE public.whatsapp_session_groups (
     watched_at timestamp with time zone,
     discovered_via text DEFAULT 'message'::text NOT NULL,
     CONSTRAINT wa_session_groups_binding_chk CHECK ((binding_status = ANY (ARRAY['unbound'::text, 'bound'::text, 'ignored'::text]))),
+    CONSTRAINT wa_session_groups_decided_chk CHECK (((is_watched = true) OR (binding_status = ANY (ARRAY['bound'::text, 'ignored'::text, 'unbound'::text])))),
     CONSTRAINT wa_session_groups_discovered_chk CHECK ((discovered_via = ANY (ARRAY['snapshot'::text, 'message'::text, 'metadata'::text])))
 );
+
+
+--
+-- Name: TABLE whatsapp_session_groups; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.whatsapp_session_groups IS 'Groups a human has DECIDED about ΓÇö watched, or bound to a project. NOT a catalogue of every group the number belongs to. The full list is fetched live from the worker and held in API memory with a short TTL; it is never persisted. Cataloguing everything created a 306-row table of one person''s alumni groups, residents'' associations and birthday threads, retained indefinitely, about people with no relationship to this product.';
 
 
 --
@@ -21524,5 +21532,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict QNHgYFxXUSXY5hQk2wYyrXhYzsJZOhd0r2p4HUU70MC73MGrafBfoYtnPcOQh9p
+\unrestrict 16o78ygmXbZEKvu8MM2NZN2qn75YrlBHEZfZOz4O3uscTcbsIlfC4bLCrQjLh2H
 

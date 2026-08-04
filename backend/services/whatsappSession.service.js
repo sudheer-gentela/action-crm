@@ -25,7 +25,15 @@ const { pool } = require('../config/database');
 const waService = require('./whatsapp.service');
 const groupCache = require('./whatsapp/groupCache');
 
-const WORKER_VERSION = '1.0.0';
+const WORKER_VERSION = '1.1.0';   // 1.1.0 adds session media capture
+
+// How many stranded attachments to offer the worker per heartbeat. Small on
+// purpose: the worker downloads these on the same process that holds the live
+// Signal socket, and a hundred-file backlog arriving at once is exactly the
+// memory and bandwidth spike that gets a socket dropped. A default 60s beat
+// drains 25 files a minute, which clears any realistic backlog well inside the
+// retention window.
+const MEDIA_PER_BEAT = parseInt(process.env.WA_SESSION_MEDIA_PER_BEAT || '25', 10);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Session lifecycle
@@ -224,7 +232,8 @@ const CONFIG_BOUNDS = {
 async function getRuntimeConfig(sessionId) {
   const { rows: [r] } = await pool.query(
     `SELECT heartbeat_seconds, flush_interval_ms, batch_max,
-            stale_socket_minutes, reconnect_max_seconds, capture_enabled
+            stale_socket_minutes, reconnect_max_seconds, capture_enabled,
+            capture_media, media_max_bytes
        FROM whatsapp_sessions WHERE id = $1`,
     [sessionId]
   );
@@ -236,6 +245,11 @@ async function getRuntimeConfig(sessionId) {
     staleSocketMinutes:  r.stale_socket_minutes,
     reconnectMaxSeconds: r.reconnect_max_seconds,
     captureEnabled:      r.capture_enabled,
+    // The worker enforces this before downloading. It is also re-checked on
+    // arrival at the API, because a size limit that only exists on the client
+    // is not a limit.
+    captureMedia:        r.capture_media,
+    mediaMaxBytes:       Number(r.media_max_bytes) || 26214400,
   };
 }
 
@@ -266,6 +280,29 @@ async function updateRuntimeConfig(orgId, patch = {}) {
     sets.push(`capture_enabled = $${i++}`);
     vals.push(!!patch.captureEnabled);
   }
+  if (patch.captureMedia !== undefined) {
+    sets.push(`capture_media = $${i++}`);
+    vals.push(!!patch.captureMedia);
+  }
+  // Bounds duplicated from whatsapp_sessions_media_chk. The constraint is the
+  // guarantee; this is so the admin gets a sentence instead of a 500 with a
+  // Postgres constraint name in it.
+  if (patch.mediaMaxBytes !== undefined) {
+    const n = parseInt(patch.mediaMaxBytes, 10);
+    if (!Number.isInteger(n) || n < 1048576 || n > 104857600) {
+      return { ok: false, code: 'OUT_OF_RANGE', error: 'mediaMaxBytes must be between 1 MB and 100 MB' };
+    }
+    sets.push(`media_max_bytes = $${i++}`);
+    vals.push(n);
+  }
+  if (patch.mediaRetentionDays !== undefined) {
+    const n = parseInt(patch.mediaRetentionDays, 10);
+    if (!Number.isInteger(n) || n < 1 || n > 30) {
+      return { ok: false, code: 'OUT_OF_RANGE', error: 'mediaRetentionDays must be between 1 and 30' };
+    }
+    sets.push(`media_retention_days = $${i++}`);
+    vals.push(n);
+  }
   if (patch.label !== undefined) {
     sets.push(`label = $${i++}`);
     vals.push(String(patch.label).slice(0, 200));
@@ -295,6 +332,23 @@ async function heartbeat(sessionId, { socketConnected = true } = {}) {
       WHERE id = $1`,
     [sessionId]
   );
+  // Attachments waiting on the worker. The fast path is the ack from
+  // /internal/messages, which fires seconds after the message arrives; this is
+  // the backstop that catches everything it misses — a worker restart between
+  // capture and upload, a storage folder configured after the fact, a retry
+  // pressed in the UI. Bounded per beat so a backlog drains steadily instead of
+  // arriving as one burst that competes with the live socket for bandwidth.
+  let pendingMedia = [];
+  try {
+    const media = require('./whatsappMedia.service');
+    pendingMedia = await media.listPendingSessionMedia(sessionId, MEDIA_PER_BEAT);
+  } catch (err) {
+    // Never fatal. A heartbeat that fails takes the config refresh and the
+    // liveness write down with it, and those matter more than a media batch
+    // that the next beat will offer again anyway.
+    console.error(`[wa-session] pending media lookup failed for session ${sessionId}: ${err.message}`);
+  }
+
   return {
     ok: true,
     config: await getRuntimeConfig(sessionId),
@@ -303,6 +357,14 @@ async function heartbeat(sessionId, { socketConnected = true } = {}) {
     // worker answers by POSTing a snapshot to /internal/group-snapshot, which
     // goes to memory, not Postgres.
     sendGroupSnapshot: groupCache.takeRefreshRequest(sessionId),
+    pendingMedia: pendingMedia.map(r => ({
+      messageId: r.message_id,
+      ref:       r.ref,
+      mimeType:  r.media_mime_type,
+      fileName:  r.media_filename,
+      fileSize:  r.media_file_size ? Number(r.media_file_size) : null,
+      expiresAt: r.media_expires_at,
+    })),
   };
 }
 
@@ -379,22 +441,26 @@ function normalizeContent(message, depth = 0) {
   if (message.extendedTextMessage) {
     return { type: 'text', body: message.extendedTextMessage.text || '' };
   }
+  // mediaType is Baileys' own vocabulary for downloadContentFromMessage, and
+  // it is NOT always our message_type: a sticker downloads as 'sticker' but
+  // files as an image, and a voice note downloads as 'audio' but reads as a
+  // voice note. Carrying both means the fetch and the UI can each be right.
   if (message.imageMessage) {
-    return { type: 'image', body: message.imageMessage.caption || '[image]', media: message.imageMessage };
+    return { type: 'image', body: message.imageMessage.caption || '[image]', media: message.imageMessage, mediaType: 'image' };
   }
   if (message.videoMessage) {
-    return { type: 'video', body: message.videoMessage.caption || '[video]', media: message.videoMessage };
+    return { type: 'video', body: message.videoMessage.caption || '[video]', media: message.videoMessage, mediaType: 'video' };
   }
   if (message.documentMessage) {
     const fn = message.documentMessage.fileName;
-    return { type: 'document', body: fn ? `[document] ${fn}` : '[document]', media: message.documentMessage };
+    return { type: 'document', body: fn ? `[document] ${fn}` : '[document]', media: message.documentMessage, mediaType: 'document' };
   }
   if (message.audioMessage) {
     const ptt = message.audioMessage.ptt;
-    return { type: 'audio', body: ptt ? '[voice note]' : '[audio]', media: message.audioMessage };
+    return { type: 'audio', body: ptt ? '[voice note]' : '[audio]', media: message.audioMessage, mediaType: 'audio' };
   }
   if (message.stickerMessage) {
-    return { type: 'sticker', body: '[sticker]', media: message.stickerMessage };
+    return { type: 'sticker', body: '[sticker]', media: message.stickerMessage, mediaType: 'sticker' };
   }
   if (message.locationMessage) {
     const l = message.locationMessage;
@@ -426,6 +492,140 @@ function normalizeContent(message, depth = 0) {
   const key = Object.keys(message)[0] || 'unknown';
   console.warn(`[wa-session] unhandled message type: ${key}`);
   return { type: 'unknown', body: `[${key}]` };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Media descriptors
+//
+// A session attachment has no Meta media id. What it has is a mediaKey, a
+// directPath on WhatsApp's CDN and two SHA-256 digests — enough for the worker
+// to fetch the ciphertext and decrypt it, and useless to anyone without all
+// four. Those go into whatsapp_messages.session_media_ref (migration 2026_107)
+// so a fetch survives a worker restart.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Bytes → base64, whatever shape they arrived in.
+ *
+ * Necessary because these fields cross a JSON boundary. Baileys usually holds
+ * them as Buffer, which JSON.stringify renders as {"type":"Buffer","data":[…]}
+ * and Buffer.from reads back correctly — so the common case is fine. But a
+ * Uint8Array (which some proto paths and some Baileys versions produce)
+ * stringifies to an object with NUMERIC STRING KEYS — {"0":143,"1":22,…} — and
+ * Buffer.from throws ERR_INVALID_ARG_TYPE on that. Loud rather than silent,
+ * which is the good news; it would still take down the whole ingest batch for
+ * one attachment.
+ *
+ * The worker now base64-encodes before sending, so the string branch is the
+ * normal path. The rest are here because the worker and the API are separate
+ * Railway services that deploy independently: an API running ahead of an old
+ * worker must still understand what that worker sends.
+ *
+ * Verified against all six shapes: base64 string, Buffer, Uint8Array, plain
+ * array, {type:'Buffer',data}, and the numeric-keyed object.
+ */
+function toB64(v) {
+  if (v == null) return null;
+  if (typeof v === 'string') return v;                       // already base64
+  if (Buffer.isBuffer(v)) return v.toString('base64');
+  if (v instanceof Uint8Array) return Buffer.from(v).toString('base64');
+  if (Array.isArray(v)) return Buffer.from(v).toString('base64');
+  if (typeof v === 'object') {
+    // { type: 'Buffer', data: [...] } — Buffer's own toJSON output.
+    if (v.type === 'Buffer' && Array.isArray(v.data)) return Buffer.from(v.data).toString('base64');
+    // Numeric-keyed object from a stringified Uint8Array.
+    const keys = Object.keys(v);
+    if (keys.length && keys.every(k => /^\d+$/.test(k))) {
+      const arr = new Uint8Array(keys.length);
+      for (const k of keys) arr[Number(k)] = v[k];
+      return Buffer.from(arr).toString('base64');
+    }
+  }
+  return null;
+}
+
+/**
+ * The fetch handle for one session attachment, or null if this message has no
+ * attachment or is missing the fields that make it fetchable.
+ *
+ * Returning null for an incomplete descriptor is deliberate: a half-populated
+ * ref would sit in the worker's queue failing forever. Better to record no
+ * attachment than an unfetchable one.
+ */
+function buildSessionMediaRef(content, evt) {
+  // Preferred: the worker built this explicitly, with the bytes already base64.
+  const supplied = evt?.media;
+  const proto    = content?.media;
+  if (!supplied && !proto) return null;
+
+  const mediaType = supplied?.mediaType || content?.mediaType || null;
+  const mediaKey  = toB64(supplied?.mediaKey  ?? proto?.mediaKey);
+  const directPath = supplied?.directPath ?? proto?.directPath ?? null;
+
+  if (!mediaType || !mediaKey || !directPath) return null;
+
+  const fileLength = Number(supplied?.fileLength ?? proto?.fileLength ?? 0) || null;
+
+  return {
+    mediaType,
+    mediaKey,
+    directPath,
+    fileEncSha256: toB64(supplied?.fileEncSha256 ?? proto?.fileEncSha256),
+    fileSha256:    toB64(supplied?.fileSha256    ?? proto?.fileSha256),
+    // url is a convenience only. directPath is authoritative — Baileys rebuilds
+    // the URL from it, and a stored absolute URL goes stale when WhatsApp moves
+    // hosts.
+    url:        supplied?.url        ?? proto?.url        ?? null,
+    mimetype:   supplied?.mimetype   ?? proto?.mimetype   ?? null,
+    fileName:   supplied?.fileName   ?? proto?.fileName   ?? null,
+    fileLength,
+    capturedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Should this group's attachments be written into the customer's storage?
+ *
+ * Three switches, most specific first. Each can only say no — none of them
+ * grants capture on its own, because writing into somebody's Drive should take
+ * agreement from every level that has an opinion.
+ *
+ *   group.media_policy   the PM's per-group override. 'documents' is the
+ *                        useful middle setting: an implementation channel
+ *                        where the spreadsheets matter and the site photos and
+ *                        birthday stickers do not.
+ *   session.capture_media  the org-wide switch for this linked number.
+ *   the project's media_capture_mode is checked later, inside
+ *                        resolveUploadTarget — not duplicated here.
+ *
+ * Returns { capture: boolean, reason?: string }. A refusal always carries a
+ * reason, because the message row keeps it in media_error and the whole point
+ * of 'skipped' is that a person can see what stopped it.
+ */
+function mediaPolicyFor(session, group, content) {
+  const policy = group?.media_policy || 'inherit';
+
+  if (policy === 'none') {
+    return { capture: false, reason: 'attachment capture is off for this group' };
+  }
+  if (policy === 'documents' && content.type !== 'document') {
+    return { capture: false, reason: `this group captures documents only — ${content.type} not stored` };
+  }
+  if (policy === 'inherit' && !session.capture_media) {
+    return { capture: false, reason: 'attachment capture is off for this WhatsApp session' };
+  }
+  // 'all' and 'documents' are explicit per-group decisions by a PM and stand on
+  // their own — they are the override, so the session switch does not veto
+  // them. That is what makes "capture documents from this one group" possible
+  // without turning media on for every group the number is in.
+  return { capture: true };
+}
+
+/** How long we assume WhatsApp's CDN will keep it. See migration 2026_107. */
+function sessionMediaExpiry(session, timestampSeconds) {
+  const days = Number(session?.media_retention_days) || 14;
+  const base = Number(timestampSeconds) ? Number(timestampSeconds) * 1000 : Date.now();
+  return new Date(base + days * 86400000);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -501,6 +701,29 @@ async function ingestGroupMessage(sessionId, evt) {
     timestamp: evt.timestamp,
   });
 
+  // ── Attachment ───────────────────────────────────────────────────────────
+  //
+  // Decided here rather than at fetch time because the descriptor is only
+  // available now: it lives in the message proto, which is not persisted. Get
+  // this wrong and the attachment is unreachable forever — there is no second
+  // delivery, and we will not ask the sender's device to re-upload.
+  const ref    = buildSessionMediaRef(content, evt);
+  const policy = ref ? mediaPolicyFor(session, group, content) : { capture: false };
+
+  // Refused by policy is still RECORDED: media_source and the descriptor are
+  // written, status 'skipped', reason attached. The bytes are not fetched, but
+  // the row stays fully recoverable if someone changes the policy inside the
+  // retention window. Dropping the descriptor here would make that decision
+  // irreversible, which is not a decision a default should be allowed to make.
+  const mediaSource   = ref ? 'session' : null;
+  const mediaStatus   = ref ? (policy.capture ? 'pending' : 'skipped') : null;
+  const mediaError    = ref && !policy.capture ? (policy.reason || null) : null;
+  const mediaExpires  = ref ? sessionMediaExpiry(session, evt.timestamp) : null;
+  const mediaMime     = ref ? (ref.mimetype || null) : null;
+  const mediaFileName = ref ? (ref.fileName || null) : null;
+  const mediaSize     = ref ? (ref.fileLength || null) : null;
+  const mediaCaption  = ref && content.media?.caption ? content.media.caption : null;
+
   const captureMeta = {
     sessionId,
     workerVersion: WORKER_VERSION,
@@ -510,6 +733,10 @@ async function ingestGroupMessage(sessionId, evt) {
     receivedAt: new Date().toISOString(),
     msgType: content.type,
     fromMe: !!evt.fromMe,
+    // Provenance for the attachment decision, so "why was this photo not
+    // stored" is answerable from the row six months later.
+    mediaType: ref?.mediaType || null,
+    mediaPolicy: ref ? (group.media_policy || 'inherit') : null,
   };
 
   // direction: a message the observed number itself sent is 'outbound' from the
@@ -522,9 +749,15 @@ async function ingestGroupMessage(sessionId, evt) {
        (org_id, thread_id, wa_message_id, direction, message_type, body,
         from_phone, from_name, status, sent_at,
         handover_id, handover_source, reply_to_wa_message_id,
-        capture_source, capture_meta, is_automated)
+        capture_source, capture_meta, is_automated,
+        media_source, media_status, media_error, media_expires_at,
+        media_mime_type, media_filename, media_caption, media_file_size,
+        session_media_ref)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, to_timestamp($10),
-             $11,$12,$13,'session',$14,false)
+             $11,$12,$13,'session',$14,false,
+             $15,$16,$17,$18,
+             $19,$20,$21,$22,
+             $23)
      ON CONFLICT (org_id, wa_message_id) WHERE wa_message_id IS NOT NULL
        DO NOTHING
      RETURNING id`,
@@ -535,6 +768,9 @@ async function ingestGroupMessage(sessionId, evt) {
       Number(evt.timestamp) || Date.now() / 1000,
       attribution.handoverId, attribution.source, attribution.replyToWamid,
       JSON.stringify(captureMeta),
+      mediaSource, mediaStatus, mediaError, mediaExpires,
+      mediaMime, mediaFileName, mediaCaption, mediaSize,
+      ref ? JSON.stringify(ref) : null,
     ]
   );
 
@@ -553,7 +789,22 @@ async function ingestGroupMessage(sessionId, evt) {
     [sessionId]
   );
 
-  return { stored: true, messageId: rows[0].id, threadId: thread.id, groupId: group.id };
+  // Tell the worker to fetch, and hand back the DATABASE id it must upload
+  // against. The worker still holds the decrypted message proto in memory at
+  // this moment, so this is the cheapest and freshest possible fetch — the CDN
+  // copy is seconds old. Everything else (heartbeat polling, the sweep) is a
+  // backstop for when this fast path is missed.
+  const fetchMedia = mediaStatus === 'pending'
+    ? { messageId: rows[0].id, mediaType: ref.mediaType, fileLength: ref.fileLength || null }
+    : null;
+
+  return {
+    stored: true, messageId: rows[0].id, threadId: thread.id, groupId: group.id,
+    fetchMedia,
+    // Present but not fetched, and why. The worker logs it; nobody has to guess
+    // whether an attachment was missed or declined.
+    mediaSkipped: mediaStatus === 'skipped' ? (mediaError || 'policy') : null,
+  };
 }
 
 /** Register or refresh a group we have been added to. */
@@ -773,6 +1024,16 @@ async function listTriage(orgId, { status = 'all', watched = null, q = null, lim
     `SELECT g.id, g.group_jid, g.subject, g.participant_count, g.message_count,
             g.last_message_at, g.first_seen_at, g.binding_status, g.is_watched,
             g.discovered_via, g.thread_id, t.handover_id,
+            g.media_policy, g.media_policy_at,
+            (pu.first_name || ' ' || pu.last_name) AS media_policy_by_name,
+            -- Attachments that arrived but are not in the customer's storage.
+            -- Surfaced next to the group because that is where the setting
+            -- that caused it lives; a count buried in a per-message list is a
+            -- count nobody reads.
+            (SELECT count(*) FROM whatsapp_messages mm
+              WHERE mm.thread_id = g.thread_id
+                AND mm.media_source = 'session'
+                AND mm.media_status IN ('skipped', 'failed', 'expired')) AS media_unstored,
             h.name AS project_name,
             (SELECT m.body FROM whatsapp_messages m
               WHERE m.thread_id = g.thread_id
@@ -780,6 +1041,7 @@ async function listTriage(orgId, { status = 'all', watched = null, q = null, lim
        FROM whatsapp_session_groups g
        LEFT JOIN whatsapp_threads   t ON t.id = g.thread_id
        LEFT JOIN sales_handovers    h ON h.id = t.handover_id
+       LEFT JOIN users              pu ON pu.id = g.media_policy_by
       WHERE ${where.join(' AND ')}
       ORDER BY g.is_watched DESC, g.last_message_at DESC NULLS LAST, g.subject
       LIMIT $${params.length}`,
@@ -804,6 +1066,85 @@ async function listTriage(orgId, { status = 'all', watched = null, q = null, lim
       needsBinding: Number(counts.needs_binding),
     },
   };
+}
+
+/**
+ * The PM's per-group attachment decision.
+ *
+ * Recorded with who and when, because "why are this group's documents not in
+ * the project folder" is a question somebody will ask months later, and
+ * "because a setting was off" is not an answer if nobody can say who set it.
+ *
+ * Loosening the policy immediately requeues everything the old policy skipped
+ * and that is still inside the retention window. Without that, switching a
+ * group from 'none' to 'all' would only affect FUTURE attachments — the ones
+ * already declined would stay declined, which is not what anyone means when
+ * they turn a setting on.
+ */
+async function setGroupMediaPolicy(orgId, userId, groupIds, policy) {
+  const allowed = ['inherit', 'all', 'documents', 'none'];
+  if (!allowed.includes(policy)) {
+    return { ok: false, code: 'BAD_POLICY', error: `policy must be one of ${allowed.join(', ')}` };
+  }
+  const ids = (groupIds || []).map(n => parseInt(n, 10)).filter(Number.isInteger);
+  if (!ids.length) return { ok: false, code: 'NO_IDS' };
+
+  const { rows } = await pool.query(
+    `UPDATE whatsapp_session_groups
+        SET media_policy    = $1,
+            media_policy_by = $2,
+            media_policy_at = now(),
+            updated_at      = now()
+      WHERE org_id = $3 AND id = ANY($4::int[])
+      RETURNING id, thread_id, subject`,
+    [policy, userId || null, orgId, ids]
+  );
+  if (!rows.length) return { ok: false, code: 'NOT_FOUND' };
+
+  let requeued = 0;
+  if (policy !== 'none') {
+    const threadIds = rows.map(r => r.thread_id).filter(Boolean);
+    if (threadIds.length) {
+      // 'documents' only revives documents; 'all' and 'inherit' revive
+      // everything. Reviving a photo into a documents-only group would be a
+      // setting quietly disagreeing with itself.
+      const { rowCount } = await pool.query(
+        `UPDATE whatsapp_messages
+            SET media_status = 'pending', media_error = 'requeued: group media policy changed'
+          WHERE thread_id = ANY($1::int[])
+            AND org_id = $2
+            AND media_source = 'session'
+            AND media_status = 'skipped'
+            AND session_media_ref IS NOT NULL
+            AND (media_expires_at IS NULL OR media_expires_at > now())
+            AND ($3::text <> 'documents' OR message_type = 'document')`,
+        [threadIds, orgId, policy]
+      );
+      requeued = rowCount;
+    }
+  }
+
+  return { ok: true, updated: rows.length, policy, requeued };
+}
+
+/**
+ * Does this session own this message? The authorisation check behind
+ * /internal/media/:messageId.
+ *
+ * The worker holds a shared secret, not an org identity, so without this any
+ * worker could upload bytes against any message id in any org. The link is
+ * message → thread → the session group that created that thread.
+ */
+async function sessionOwnsMessage(sessionId, messageId) {
+  const { rows } = await pool.query(
+    `SELECT m.id, m.org_id
+       FROM whatsapp_messages m
+       JOIN whatsapp_session_groups g ON g.thread_id = m.thread_id
+      WHERE m.id = $1 AND g.session_id = $2
+      LIMIT 1`,
+    [messageId, sessionId]
+  );
+  return rows[0] || null;
 }
 
 /**
@@ -880,7 +1221,27 @@ async function bindGroup(orgId, userId, groupId, handoverId) {
     );
 
     await client.query('COMMIT');
-    return { ok: true, threadId: group.thread_id, handoverId, backfilled };
+
+    // Binding is one of the two events that un-strands an attachment — the
+    // other is choosing an upload folder. Every message captured before this
+    // moment was skipped with "this WhatsApp thread is not linked to a
+    // project", and that sentence has just stopped being true. Backfilling the
+    // handover_id above without also requeueing the media would leave the
+    // messages on the project and their attachments permanently absent.
+    //
+    // After COMMIT and outside the transaction: this is recovery, not part of
+    // the binding, and a storage hiccup must not roll back the bind.
+    let mediaRequeued = 0;
+    try {
+      const media = require('./whatsappMedia.service');
+      ({ requeued: mediaRequeued } = await media.requeueForProject(
+        orgId, handoverId, 'group bound to project'
+      ));
+    } catch (err) {
+      console.warn(`[wa-session] media requeue after bind failed (group ${groupId}): ${err.message}`);
+    }
+
+    return { ok: true, threadId: group.thread_id, handoverId, backfilled, mediaRequeued };
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch { /* already failed */ }
     throw err;
@@ -1048,8 +1409,15 @@ module.exports = {
   bindGroup,
   ignoreGroup,
   health,
+  // media
+  setGroupMediaPolicy,
+  sessionOwnsMessage,
   // exported for tests
   normalizeContent,
   phoneFromJid,
   isGroupJid,
+  buildSessionMediaRef,
+  mediaPolicyFor,
+  sessionMediaExpiry,
+  toB64,
 };
