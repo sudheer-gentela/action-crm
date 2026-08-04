@@ -5,7 +5,6 @@ import './App.css';
 import AccountsView from './AccountsView';
 import DealsView from './DealsView';
 import ContactsView from './ContactsView';
-import EmailView from './EmailView';
 import CommunicationView from './CommunicationView';
 import ActionsView from './ActionsView';
 import CalendarView from './CalendarView';

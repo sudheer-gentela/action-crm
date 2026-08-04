@@ -77,7 +77,10 @@ export default function WhatsAppSessionTriage() {
       .catch(() => setHandovers([]));
   }, []);
 
-  const groups = data.groups || [];
+  // useMemo, not `data.groups || []`: the fallback creates a fresh array on
+  // every render, which would make the needsAttention memo below recompute
+  // every time regardless of whether anything changed.
+  const groups = useMemo(() => data.groups || [], [data.groups]);
   const allSelected = groups.length > 0 && groups.every(g => selected.has(g.id));
 
   const toggle = (id) => setSelected(s => {
