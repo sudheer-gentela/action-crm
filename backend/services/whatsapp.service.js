@@ -531,14 +531,18 @@ async function preferredDirectThreadForHandover(handoverId, orgId, userId) {
  */
 async function listSendTargets(handoverId, orgId) {
   const { rows: threads } = await pool.query(
-    `SELECT id, kind, wa_phone, wa_group_id, group_subject, opt_out_at, window_expires_at
+    `SELECT id, kind, source, wa_phone, wa_group_id, group_subject, opt_out_at, window_expires_at
        FROM whatsapp_threads
       WHERE org_id = $1 AND handover_id = $2 AND status = 'active'
       ORDER BY id`,
     [orgId, handoverId]
   );
 
-  const groupThreads  = threads.filter(t => t.kind === 'group');
+  // Session-captured groups are OBSERVED, not owned: wa_group_id holds a
+  // WhatsApp JID, not a Meta Groups API id, and there is no Cloud API path to
+  // send into them. Offering one here produces a confusing failure at send
+  // time instead of an honest absence at pick time.
+  const groupThreads  = threads.filter(t => t.kind === 'group' && t.source !== 'session');
   const directThreads = threads.filter(t => t.kind === 'direct');
 
   const targets = [];

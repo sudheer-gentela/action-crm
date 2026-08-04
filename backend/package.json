@@ -9,7 +9,8 @@
     "db:setup": "psql -U postgres -f database-schema.sql",
     "test": "jest",
     "worker": "node jobs/worker.js",
-    "migrate": "node db/migrate.js"
+    "migrate": "node db/migrate.js",
+    "wa-session": "node workers/wa-session-worker.js"
   },
   "keywords": [
     "crm",
@@ -25,6 +26,7 @@
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@slack/web-api": "^7.17.0",
+    "@whiskeysockets/baileys": "6.7.24",
     "axios": "^1.13.5",
     "bcryptjs": "^3.0.2",
     "body-parser": "^1.20.2",
@@ -48,6 +50,7 @@
     "openai": "^4.71.0",
     "pdf-parse": "^1.1.1",
     "pg": "^8.11.3",
+    "qrcode": "^1.5.4",
     "redis": "^4.6.12",
     "twilio": "^5.3.5",
     "web-push": "^3.6.7",

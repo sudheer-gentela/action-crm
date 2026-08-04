@@ -1,2 +1,3 @@
 web: node server.js
 worker: node jobs/worker.js
+wa-session: node workers/wa-session-worker.js
