@@ -170,7 +170,7 @@ async function search(orgId, userId, opts = {}) {
     channels,
     // True when the caller supplied no filters — the UI says "recent messages"
     // rather than "search results", which are different claims.
-    isDefaultView: !opts.q && !opts.from && !opts.dateFrom && !opts.dateTo,
+    isDefaultView: !opts.q && !opts.from && !opts.dateFrom && !opts.dateTo && !opts.messageId,
   };
 }
 

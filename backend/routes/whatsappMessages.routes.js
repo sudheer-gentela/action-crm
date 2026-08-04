@@ -62,6 +62,7 @@ router.get('/search', async (req, res) => {
       dateTo:     req.query.dateTo,
       groupJid:   req.query.groupJid,
       handoverId: req.query.handoverId,
+      messageId:  req.query.messageId,
       scope:      req.query.scope || 'all',
       limit:      req.query.limit,
       offset:     req.query.offset,

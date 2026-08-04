@@ -23,6 +23,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
+import { hashSegment, writeHash } from './hashNav';
 import EmailView from './EmailView';
 import CommunicationMessages from './CommunicationMessages';
 
@@ -36,9 +37,31 @@ export default function CommunicationView({ dealId, onDealFilterApplied }) {
   // Deep links from a deal ("show me the email for this deal") arrive as a
   // dealId prop. Land on Emails when one is present, or the user follows the
   // link and sees an unrelated tab.
-  const [tab, setTab] = useState('emails');
+  // Segment 1 is ours (App owns segment 0 — see hashNav.js). Reading it on
+  // mount is what makes #/email/messages a shareable link rather than something
+  // that always lands on Emails.
+  const [tab, setTab] = useState(() => {
+    const seg = hashSegment(1);
+    return TABS.some(t => t.key === seg) ? seg : 'emails';
+  });
 
   useEffect(() => { if (dealId) setTab('emails'); }, [dealId]);
+
+  // Write our segment and TRUNCATE below it: the channel and message segments
+  // belong to the Messages tab and are meaningless once you leave it.
+  useEffect(() => {
+    if (hashSegment(1) !== tab) writeHash(['email', tab]);
+  }, [tab]);
+
+  // Someone editing the URL, or following a link while already in the app.
+  useEffect(() => {
+    const onHash = () => {
+      const seg = hashSegment(1);
+      if (TABS.some(t => t.key === seg) && seg !== tab) setTab(seg);
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, [tab]);
 
   return (
     <div>

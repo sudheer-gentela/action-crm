@@ -24,6 +24,7 @@
 
 import React, { useState, useCallback, useEffect } from 'react';
 import { apiService } from './apiService';
+import { hashSegment, writeHash } from './hashNav';
 
 const CARD    = { border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff' };
 const BTN     = { padding: '6px 12px', borderRadius: 6, fontSize: 13, fontWeight: 500, cursor: 'pointer', border: '1px solid transparent' };
@@ -44,7 +45,10 @@ export default function CommunicationMessages() {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo,   setDateTo]   = useState('');
   const [scope,    setScope]    = useState('all');
-  const [channel,  setChannel]  = useState('all');
+  // Segments 2 and 3 are ours: #/email/messages/<channel>/<messageId>.
+  // CommunicationView owns segment 1 and truncates below it on tab change.
+  const [channel,  setChannel]  = useState(() => hashSegment(2) || 'all');
+  const [pinnedId, setPinnedId] = useState(() => hashSegment(3) || null);
   const [channels, setChannels] = useState([]);
   const [isDefault,setIsDefault]= useState(true);
 
@@ -73,6 +77,8 @@ export default function CommunicationMessages() {
       .catch(() => setChannels([]));
   }, []);
 
+  const clearPin = () => { setPinnedId(null); };
+
   const runSearch = useCallback(async () => {
     setLoading(true); setError(''); setNotice(''); setDiagnosis(null);
     try {
@@ -80,6 +86,7 @@ export default function CommunicationMessages() {
         ...(q && { q }), ...(from && { from }),
         ...(dateFrom && { dateFrom }), ...(dateTo && { dateTo }),
         scope, channel,
+        ...(pinnedId && { messageId: pinnedId }),
       });
       const found = res.data?.messages || [];
       setMessages(found);
@@ -99,11 +106,15 @@ export default function CommunicationMessages() {
     } finally {
       setLoading(false);
     }
-  }, [q, from, dateFrom, dateTo, scope, channel]);
+  }, [q, from, dateFrom, dateTo, scope, channel, pinnedId]);
 
   // Open with recent traffic rather than an empty page. Someone arriving here
   // usually wants to see what came in, not to compose a query first.
-  useEffect(() => { runSearch(); }, [channel]);   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { runSearch(); }, [channel, pinnedId]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    writeHash(['email', 'messages', channel, pinnedId]);
+  }, [channel, pinnedId]);
 
   const act = async (fn, ok) => {
     setError(''); setNotice('');
@@ -213,6 +224,22 @@ export default function CommunicationMessages() {
         </div>
       </div>
 
+      {pinnedId && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, padding: '8px 12px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, fontSize: 13, color: '#1e40af' }}>
+          <span>Showing one linked message.</span>
+          <button style={{ ...GHOST, fontSize: 12, padding: '3px 9px', marginLeft: 'auto' }} onClick={clearPin}>
+            Show all messages
+          </button>
+        </div>
+      )}
+
+      {pinnedId && searched && messages.length === 0 && (
+        <Banner tone="warn">
+          That message either no longer exists, or it is in a group you were not part of.
+          A link does not grant access — you see the same messages here as you would have found by searching.
+        </Banner>
+      )}
+
       {searched && messages.length === 0 && diagnosis && (
         <Diagnosis diagnosis={diagnosis} onRequestCapture={requestCapture} />
       )}
@@ -258,6 +285,14 @@ export default function CommunicationMessages() {
                 <button style={{ ...GHOST, fontSize: 12, padding: '4px 10px', color: '#991b1b', borderColor: '#fecaca' }}
                   onClick={() => doExclude(m)}>
                   Not CRM material
+                </button>
+                <button style={{ ...GHOST, fontSize: 12, padding: '4px 10px' }}
+                  onClick={() => {
+                    const url = `${window.location.origin}${window.location.pathname}#/email/messages/${m.channel}/${m.nativeId}`;
+                    navigator.clipboard?.writeText(url);
+                    setNotice('Link copied. Anyone you send it to still needs their own access to that group.');
+                  }}>
+                  Copy link
                 </button>
               </div>
             </div>

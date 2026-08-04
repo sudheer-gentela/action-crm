@@ -57,6 +57,7 @@ async function searchMessages(orgId, userId, opts = {}) {
   const {
     q = null, from = null, dateFrom = null, dateTo = null,
     groupJid = null, handoverId = null, scope = 'all',
+    messageId = null,
     limit = 50, offset = 0,
   } = opts;
 
@@ -81,6 +82,12 @@ async function searchMessages(orgId, userId, opts = {}) {
   if (dateTo)     where.push(`m.created_at <= ${p(dateTo)}`);
   if (groupJid)   where.push(`t.wa_group_id = ${p(groupJid)}`);
   if (handoverId) where.push(`m.handover_id = ${p(parseInt(handoverId, 10))}`);
+
+  // Shared-link lookup. Deliberately routed through the SAME visibility clause
+  // as every other search: a link someone pastes into Slack must not become a
+  // way to read a message the recipient was never entitled to. They get an
+  // empty result and the normal "why" explanation, not the message.
+  if (messageId) where.push(`m.id = ${p(parseInt(messageId, 10))}`);
 
   const lim = p(Math.min(parseInt(limit, 10) || 50, MAX_LIMIT));
   const off = p(Math.max(parseInt(offset, 10) || 0, 0));
