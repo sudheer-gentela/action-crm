@@ -178,6 +178,14 @@ router.delete('/stewards/:userId', requireRole('admin'), async (req, res) => {
  * groups a user can read; if people could set their own, anyone could enter a
  * colleague's number and inherit their group access.
  */
+// Org members plus their WhatsApp identity state. Admin-only: it exposes who
+// holds which number, which is the map of who can read which groups.
+router.get('/identity', requireRole('admin'), async (req, res) => {
+  try {
+    res.json({ users: await access.listIdentities(req.orgId) });
+  } catch (e) { fail(res, e); }
+});
+
 router.put('/identity/:userId', requireRole('admin'), async (req, res) => {
   try {
     const result = await access.setUserWhatsAppPhone(

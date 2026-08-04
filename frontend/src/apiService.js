@@ -874,6 +874,7 @@ twilio: {
     audit:          (limit)     => api.get(`/whatsapp-messages/audit${limit ? `?limit=${limit}` : ''}`),
 
     identity:       ()          => api.get('/whatsapp-messages/identity/me'),
+    identities:     ()          => api.get('/whatsapp-messages/identity'),
     setIdentity:    (userId, body) => api.put(`/whatsapp-messages/identity/${userId}`, body),
 
     requestCapture: (body)      => api.post('/whatsapp-messages/capture-requests', body),

@@ -351,6 +351,36 @@ async function canMoveMessage(orgId, userId, messageId, targetHandoverId) {
 // Steward grants
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Org members with their WhatsApp identity state, for the admin screen.
+ *
+ * Its own query rather than extending orgAdmin's /members: that endpoint feeds
+ * several screens and does not need to carry a security-relevant column around
+ * for all of them. group_count is included because "confirmed but in no groups"
+ * and "not confirmed" look identical to an admin otherwise, and have completely
+ * different fixes.
+ */
+async function listIdentities(orgId) {
+  const { rows } = await pool.query(
+    `SELECT u.id, u.first_name, u.last_name, u.email, u.role,
+            u.whatsapp_phone, u.whatsapp_phone_verified_at, u.whatsapp_phone_source,
+            (SELECT count(*) FROM whatsapp_thread_participants p
+              WHERE p.org_id = u.org_id AND p.user_id = u.id AND p.left_at IS NULL) AS captured_group_count,
+            (SELECT count(*) FROM whatsapp_session_group_members gm
+              WHERE gm.org_id = u.org_id AND gm.user_id = u.id AND gm.left_at IS NULL) AS known_group_count
+       FROM users u
+      WHERE u.org_id = $1
+      ORDER BY u.first_name, u.last_name`,
+    [orgId]
+  );
+  return rows.map(r => ({
+    ...r,
+    captured_group_count: Number(r.captured_group_count),
+    known_group_count:    Number(r.known_group_count),
+    verified: !!r.whatsapp_phone_verified_at,
+  }));
+}
+
 async function listStewards(orgId) {
   const { rows } = await pool.query(
     `SELECT s.id, s.user_id, s.granted_at, s.note,
@@ -408,6 +438,7 @@ async function revokeSteward(orgId, actorUserId, userId) {
 }
 
 module.exports = {
+  listIdentities,
   verifiedPhoneForUser,
   setUserWhatsAppPhone,
   linkParticipantIfKnown,
