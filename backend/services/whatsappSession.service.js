@@ -602,6 +602,15 @@ async function upsertParticipant(orgId, threadId, waPhone, displayName, isSelf) 
        joined_at    = COALESCE(whatsapp_thread_participants.joined_at, EXCLUDED.joined_at)`,
     [threadId, orgId, waPhone, displayName || null, isSelf ? 'internal' : 'customer']
   );
+
+  // Link to a GoWarmCRM user when the number is a verified one. This is what
+  // grants that user self-service search over this group, so it must only ever
+  // match a VERIFIED number — see whatsappAccess.linkParticipantIfKnown.
+  try {
+    await require('./whatsappAccess.service').linkParticipantIfKnown(orgId, threadId, waPhone);
+  } catch (err) {
+    console.warn(`[wa-session] user link failed for ${waPhone}: ${err.message}`);
+  }
 }
 
 /** Roster refresh from a groups.update / group-participants.update event. */
@@ -613,7 +622,22 @@ async function syncGroupMetadata(sessionId, { jid, subject, participants = [], o
     jid, subject, participantCount: participants.length || null, createdAt: creation,
     via: opts.via || 'metadata',
   });
-  if (!group.thread_id) return { ok: true, thread: null };
+
+  // Record which GoWarmCRM USERS are in this group — for EVERY catalogued
+  // group, captured or not. This is what lets a search that finds nothing say
+  // "that group isn't being captured" instead of a useless empty result.
+  //
+  // Only the intersection with verified org users is stored. Non-user
+  // participants are matched in memory and discarded: the roster of an
+  // uncaptured group is somebody's family chat, and we have no business
+  // retaining those numbers.
+  try {
+    await syncOrgMembersForGroup(session.org_id, group.id, participants);
+  } catch (err) {
+    console.warn(`[wa-session] org member sync failed for ${jid}: ${err.message}`);
+  }
+
+  if (!group.thread_id) return { ok: true, thread: null, groupId: group.id };
 
   const selfPhone = session.wa_phone;
   for (const p of participants) {
@@ -632,6 +656,53 @@ async function syncGroupMetadata(sessionId, { jid, subject, participants = [], o
     );
   }
   return { ok: true, groupId: group.id };
+}
+
+/**
+ * Store the intersection of a group's participants with VERIFIED users of this
+ * org, and nothing else. Marks anyone previously recorded but now absent as
+ * having left, so search stays time-bounded.
+ */
+async function syncOrgMembersForGroup(orgId, sessionGroupId, participants = []) {
+  const phones = participants
+    .map(p => phoneFromJid(p.id || p.jid))
+    .filter(Boolean);
+
+  // One query resolves the whole roster against org users; unmatched numbers
+  // never leave this function.
+  const { rows: users } = phones.length
+    ? await pool.query(
+        `SELECT id FROM users
+          WHERE org_id = $1 AND whatsapp_phone = ANY($2::text[])
+            AND whatsapp_phone_verified_at IS NOT NULL`,
+        [orgId, phones]
+      )
+    : { rows: [] };
+
+  const userIds = users.map(u => u.id);
+
+  if (userIds.length) {
+    await pool.query(
+      `INSERT INTO whatsapp_session_group_members (session_group_id, org_id, user_id)
+       SELECT $1, $2, unnest($3::int[])
+       ON CONFLICT (session_group_id, user_id)
+         DO UPDATE SET last_seen_at = now(), left_at = NULL`,
+      [sessionGroupId, orgId, userIds]
+    );
+  }
+
+  // Anyone we previously recorded who is no longer in the roster has left.
+  // Their access to prior messages is preserved by the time window; what stops
+  // is access to anything sent after this point.
+  await pool.query(
+    `UPDATE whatsapp_session_group_members
+        SET left_at = now()
+      WHERE session_group_id = $1 AND org_id = $2 AND left_at IS NULL
+        AND NOT (user_id = ANY($3::int[]))`,
+    [sessionGroupId, orgId, userIds]
+  );
+
+  return { linked: userIds.length };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -868,6 +939,7 @@ async function health(orgId) {
 }
 
 module.exports = {
+  syncOrgMembersForGroup,
   setWatch,
   getRuntimeConfig,
   updateRuntimeConfig,

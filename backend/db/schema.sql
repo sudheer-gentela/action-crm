@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict pQweEM7HisE7z0JI3QEHyPsLbT5PTg9NqlVN25hhmbMeNaN9nGDiR7bL1aOvYKu
+\restrict QNHgYFxXUSXY5hQk2wYyrXhYzsJZOhd0r2p4HUU70MC73MGrafBfoYtnPcOQh9p
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -1685,6 +1685,49 @@ CREATE SEQUENCE public.clients_id_seq
 --
 
 ALTER SEQUENCE public.clients_id_seq OWNED BY public.clients.id;
+
+
+--
+-- Name: communication_stewards; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.communication_stewards (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    user_id integer NOT NULL,
+    granted_by integer,
+    granted_at timestamp with time zone DEFAULT now() NOT NULL,
+    revoked_by integer,
+    revoked_at timestamp with time zone,
+    note text
+);
+
+
+--
+-- Name: TABLE communication_stewards; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.communication_stewards IS 'Explicit grant to triage unassigned captured messages org-wide. NOT inherited from project membership ΓÇö being on Project A says nothing about whether someone should see the org-wide unassigned pool. Org admins and the user who connected the session hold it implicitly and are not listed here.';
+
+
+--
+-- Name: communication_stewards_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.communication_stewards_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: communication_stewards_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.communication_stewards_id_seq OWNED BY public.communication_stewards.id;
 
 
 --
@@ -8509,7 +8552,11 @@ CREATE TABLE public.users (
     slack_lookup_at timestamp with time zone,
     slack_email text,
     whatsapp_phone text,
-    whatsapp_opt_in_at timestamp with time zone
+    whatsapp_opt_in_at timestamp with time zone,
+    whatsapp_phone_verified_at timestamp with time zone,
+    whatsapp_phone_set_by integer,
+    whatsapp_phone_source text,
+    CONSTRAINT users_whatsapp_phone_source_chk CHECK (((whatsapp_phone_source IS NULL) OR (whatsapp_phone_source = ANY (ARRAY['admin'::text, 'otp'::text, 'self_claimed'::text]))))
 );
 
 
@@ -8535,10 +8582,24 @@ COMMENT ON COLUMN public.users.department IS 'Functional department: sales | leg
 
 
 --
+-- Name: COLUMN users.whatsapp_phone; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.users.whatsapp_phone IS 'E.164 digits, no +. SECURITY BOUNDARY: this is what links a user to whatsapp_thread_participants rows and therefore decides which captured groups they may search. Must never be self-editable without verification ΓÇö see whatsapp_phone_source.';
+
+
+--
 -- Name: COLUMN users.whatsapp_opt_in_at; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.users.whatsapp_opt_in_at IS 'Explicit consent timestamp. Meta requires demonstrable opt-in before business-initiated messaging; NULL means we must not template-message this user.';
+
+
+--
+-- Name: COLUMN users.whatsapp_phone_source; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.users.whatsapp_phone_source IS 'admin = assigned by an org admin who knows the person. otp = proven by a code sent to the number. self_claimed = entered by the user and NOT yet verified; must not grant search access.';
 
 
 --
@@ -8575,6 +8636,53 @@ CREATE TABLE public.whatsapp_billing_config (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT whatsapp_billing_mode_chk CHECK ((billing_mode = ANY (ARRAY['customer_direct'::text, 'provider_rebill'::text])))
 );
+
+
+--
+-- Name: whatsapp_capture_requests; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.whatsapp_capture_requests (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    session_group_id integer NOT NULL,
+    requested_by integer NOT NULL,
+    reason text,
+    suggested_handover_id integer,
+    status text DEFAULT 'pending'::text NOT NULL,
+    decided_by integer,
+    decided_at timestamp with time zone,
+    decision_note text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT wa_capture_requests_status_chk CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'declined'::text])))
+);
+
+
+--
+-- Name: TABLE whatsapp_capture_requests; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.whatsapp_capture_requests IS 'A user asking for a group they are in to start being captured. Approval stays with an admin because switching capture on is a data-retention decision, not a convenience one.';
+
+
+--
+-- Name: whatsapp_capture_requests_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.whatsapp_capture_requests_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: whatsapp_capture_requests_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.whatsapp_capture_requests_id_seq OWNED BY public.whatsapp_capture_requests.id;
 
 
 --
@@ -8667,6 +8775,9 @@ CREATE TABLE public.whatsapp_messages (
     handover_tagged_at timestamp with time zone,
     capture_source text DEFAULT 'cloud_api'::text NOT NULL,
     capture_meta jsonb,
+    excluded_at timestamp with time zone,
+    excluded_by integer,
+    exclude_reason text,
     CONSTRAINT wa_messages_direction_chk CHECK ((direction = ANY (ARRAY['inbound'::text, 'outbound'::text]))),
     CONSTRAINT wa_messages_handover_source_chk CHECK (((handover_source IS NULL) OR (handover_source = ANY (ARRAY['send'::text, 'reply_context'::text, 'recent_outbound'::text, 'manual_recent'::text, 'thread'::text, 'manual'::text])))),
     CONSTRAINT wa_messages_status_chk CHECK ((status = ANY (ARRAY['queued'::text, 'sent'::text, 'delivered'::text, 'read'::text, 'failed'::text, 'received'::text]))),
@@ -8746,6 +8857,13 @@ COMMENT ON COLUMN public.whatsapp_messages.capture_meta IS 'Session-capture prov
 
 
 --
+-- Name: COLUMN whatsapp_messages.excluded_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_messages.excluded_at IS 'Marked as not CRM material. Hidden from project views and from search, retained for audit. Distinct from deletion: a mis-filed message was still SEEN by whoever had access, and erasing the row would erase the evidence of that.';
+
+
+--
 -- Name: whatsapp_messages_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -8819,6 +8937,48 @@ CREATE TABLE public.whatsapp_session_auth (
 --
 
 COMMENT ON TABLE public.whatsapp_session_auth IS 'Baileys AuthenticationState persisted per session. Rows are written on nearly every message (Signal ratchet advance), so keep this table out of any broad audit trigger.';
+
+
+--
+-- Name: whatsapp_session_group_members; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.whatsapp_session_group_members (
+    id integer NOT NULL,
+    session_group_id integer NOT NULL,
+    org_id integer NOT NULL,
+    user_id integer NOT NULL,
+    first_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    left_at timestamp with time zone
+);
+
+
+--
+-- Name: TABLE whatsapp_session_group_members; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.whatsapp_session_group_members IS 'Which GoWarmCRM users are in each catalogued group, including uncaptured ones. Deliberately holds ONLY users of this org ΓÇö non-user participants of uncaptured groups are matched in memory and discarded, never stored. Exists so a search that finds nothing can explain why.';
+
+
+--
+-- Name: whatsapp_session_group_members_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.whatsapp_session_group_members_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: whatsapp_session_group_members_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.whatsapp_session_group_members_id_seq OWNED BY public.whatsapp_session_group_members.id;
 
 
 --
@@ -9582,6 +9742,13 @@ ALTER TABLE ONLY public.client_team_members ALTER COLUMN id SET DEFAULT nextval(
 --
 
 ALTER TABLE ONLY public.clients ALTER COLUMN id SET DEFAULT nextval('public.clients_id_seq'::regclass);
+
+
+--
+-- Name: communication_stewards id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.communication_stewards ALTER COLUMN id SET DEFAULT nextval('public.communication_stewards_id_seq'::regclass);
 
 
 --
@@ -10460,6 +10627,13 @@ ALTER TABLE ONLY public.users ALTER COLUMN id SET DEFAULT nextval('public.users_
 
 
 --
+-- Name: whatsapp_capture_requests id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_capture_requests ALTER COLUMN id SET DEFAULT nextval('public.whatsapp_capture_requests_id_seq'::regclass);
+
+
+--
 -- Name: whatsapp_message_costs id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -10478,6 +10652,13 @@ ALTER TABLE ONLY public.whatsapp_messages ALTER COLUMN id SET DEFAULT nextval('p
 --
 
 ALTER TABLE ONLY public.whatsapp_rates ALTER COLUMN id SET DEFAULT nextval('public.whatsapp_rates_id_seq'::regclass);
+
+
+--
+-- Name: whatsapp_session_group_members id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_session_group_members ALTER COLUMN id SET DEFAULT nextval('public.whatsapp_session_group_members_id_seq'::regclass);
 
 
 --
@@ -10843,6 +11024,14 @@ ALTER TABLE ONLY public.clients
 
 ALTER TABLE ONLY public.clients
     ADD CONSTRAINT clients_report_token_key UNIQUE (report_token);
+
+
+--
+-- Name: communication_stewards communication_stewards_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.communication_stewards
+    ADD CONSTRAINT communication_stewards_pkey PRIMARY KEY (id);
 
 
 --
@@ -12342,6 +12531,14 @@ ALTER TABLE ONLY public.whatsapp_billing_config
 
 
 --
+-- Name: whatsapp_capture_requests whatsapp_capture_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_capture_requests
+    ADD CONSTRAINT whatsapp_capture_requests_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: whatsapp_message_costs whatsapp_message_costs_org_id_wa_message_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -12387,6 +12584,14 @@ ALTER TABLE ONLY public.whatsapp_rates
 
 ALTER TABLE ONLY public.whatsapp_session_auth
     ADD CONSTRAINT whatsapp_session_auth_pkey PRIMARY KEY (session_id, key_id);
+
+
+--
+-- Name: whatsapp_session_group_members whatsapp_session_group_members_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_session_group_members
+    ADD CONSTRAINT whatsapp_session_group_members_pkey PRIMARY KEY (id);
 
 
 --
@@ -13400,6 +13605,13 @@ CREATE INDEX idx_clients_org_id ON public.clients USING btree (org_id);
 --
 
 CREATE INDEX idx_clients_report_token ON public.clients USING btree (report_token) WHERE (report_token IS NOT NULL);
+
+
+--
+-- Name: idx_comm_stewards_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_comm_stewards_org ON public.communication_stewards USING btree (org_id) WHERE (revoked_at IS NULL);
 
 
 --
@@ -15993,6 +16205,13 @@ CREATE INDEX idx_value_history_deal ON public.deal_value_history USING btree (de
 
 
 --
+-- Name: idx_wa_capture_requests_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_wa_capture_requests_org ON public.whatsapp_capture_requests USING btree (org_id, status, created_at DESC);
+
+
+--
 -- Name: idx_wa_costs_org_category; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -16004,6 +16223,13 @@ CREATE INDEX idx_wa_costs_org_category ON public.whatsapp_message_costs USING bt
 --
 
 CREATE INDEX idx_wa_costs_org_time ON public.whatsapp_message_costs USING btree (org_id, created_at);
+
+
+--
+-- Name: idx_wa_group_members_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_wa_group_members_user ON public.whatsapp_session_group_members USING btree (org_id, user_id) WHERE (left_at IS NULL);
 
 
 --
@@ -16032,6 +16258,27 @@ CREATE INDEX idx_wa_messages_thread_outbound ON public.whatsapp_messages USING b
 --
 
 CREATE INDEX idx_wa_messages_thread_time ON public.whatsapp_messages USING btree (thread_id, created_at DESC);
+
+
+--
+-- Name: idx_wa_messages_unassigned; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_wa_messages_unassigned ON public.whatsapp_messages USING btree (org_id, created_at DESC) WHERE ((handover_id IS NULL) AND (excluded_at IS NULL));
+
+
+--
+-- Name: idx_wa_participants_phone; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_wa_participants_phone ON public.whatsapp_thread_participants USING btree (org_id, wa_phone);
+
+
+--
+-- Name: idx_wa_participants_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_wa_participants_user ON public.whatsapp_thread_participants USING btree (org_id, user_id) WHERE (user_id IS NOT NULL);
 
 
 --
@@ -16329,6 +16576,13 @@ CREATE UNIQUE INDEX uq_cfd_org_target_key ON public.custom_field_defs USING btre
 
 
 --
+-- Name: uq_comm_stewards_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_comm_stewards_active ON public.communication_stewards USING btree (org_id, user_id) WHERE (revoked_at IS NULL);
+
+
+--
 -- Name: uq_connection_job_events_dedup; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -16599,6 +16853,27 @@ CREATE UNIQUE INDEX uq_user_prompts_user_org_type ON public.user_prompts USING b
 --
 
 CREATE UNIQUE INDEX uq_users_email_lower ON public.users USING btree (lower((email)::text));
+
+
+--
+-- Name: uq_users_whatsapp_phone_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_users_whatsapp_phone_org ON public.users USING btree (org_id, whatsapp_phone) WHERE (whatsapp_phone IS NOT NULL);
+
+
+--
+-- Name: uq_wa_capture_requests_open; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_wa_capture_requests_open ON public.whatsapp_capture_requests USING btree (session_group_id) WHERE (status = 'pending'::text);
+
+
+--
+-- Name: uq_wa_group_members; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_wa_group_members ON public.whatsapp_session_group_members USING btree (session_group_id, user_id);
 
 
 --
@@ -17619,6 +17894,38 @@ ALTER TABLE ONLY public.clients
 
 ALTER TABLE ONLY public.clients
     ADD CONSTRAINT clients_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: communication_stewards communication_stewards_granted_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.communication_stewards
+    ADD CONSTRAINT communication_stewards_granted_by_fkey FOREIGN KEY (granted_by) REFERENCES public.users(id);
+
+
+--
+-- Name: communication_stewards communication_stewards_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.communication_stewards
+    ADD CONSTRAINT communication_stewards_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: communication_stewards communication_stewards_revoked_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.communication_stewards
+    ADD CONSTRAINT communication_stewards_revoked_by_fkey FOREIGN KEY (revoked_by) REFERENCES public.users(id);
+
+
+--
+-- Name: communication_stewards communication_stewards_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.communication_stewards
+    ADD CONSTRAINT communication_stewards_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 
 
 --
@@ -20277,6 +20584,62 @@ ALTER TABLE ONLY public.user_prompts
 
 
 --
+-- Name: users users_whatsapp_phone_set_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_whatsapp_phone_set_by_fkey FOREIGN KEY (whatsapp_phone_set_by) REFERENCES public.users(id);
+
+
+--
+-- Name: whatsapp_capture_requests whatsapp_capture_requests_decided_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_capture_requests
+    ADD CONSTRAINT whatsapp_capture_requests_decided_by_fkey FOREIGN KEY (decided_by) REFERENCES public.users(id);
+
+
+--
+-- Name: whatsapp_capture_requests whatsapp_capture_requests_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_capture_requests
+    ADD CONSTRAINT whatsapp_capture_requests_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: whatsapp_capture_requests whatsapp_capture_requests_requested_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_capture_requests
+    ADD CONSTRAINT whatsapp_capture_requests_requested_by_fkey FOREIGN KEY (requested_by) REFERENCES public.users(id);
+
+
+--
+-- Name: whatsapp_capture_requests whatsapp_capture_requests_session_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_capture_requests
+    ADD CONSTRAINT whatsapp_capture_requests_session_group_id_fkey FOREIGN KEY (session_group_id) REFERENCES public.whatsapp_session_groups(id) ON DELETE CASCADE;
+
+
+--
+-- Name: whatsapp_capture_requests whatsapp_capture_requests_suggested_handover_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_capture_requests
+    ADD CONSTRAINT whatsapp_capture_requests_suggested_handover_id_fkey FOREIGN KEY (suggested_handover_id) REFERENCES public.sales_handovers(id) ON DELETE SET NULL;
+
+
+--
+-- Name: whatsapp_messages whatsapp_messages_excluded_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_messages
+    ADD CONSTRAINT whatsapp_messages_excluded_by_fkey FOREIGN KEY (excluded_by) REFERENCES public.users(id);
+
+
+--
 -- Name: whatsapp_messages whatsapp_messages_handover_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -20338,6 +20701,30 @@ ALTER TABLE ONLY public.whatsapp_messages
 
 ALTER TABLE ONLY public.whatsapp_session_auth
     ADD CONSTRAINT whatsapp_session_auth_session_id_fkey FOREIGN KEY (session_id) REFERENCES public.whatsapp_sessions(id) ON DELETE CASCADE;
+
+
+--
+-- Name: whatsapp_session_group_members whatsapp_session_group_members_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_session_group_members
+    ADD CONSTRAINT whatsapp_session_group_members_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: whatsapp_session_group_members whatsapp_session_group_members_session_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_session_group_members
+    ADD CONSTRAINT whatsapp_session_group_members_session_group_id_fkey FOREIGN KEY (session_group_id) REFERENCES public.whatsapp_session_groups(id) ON DELETE CASCADE;
+
+
+--
+-- Name: whatsapp_session_group_members whatsapp_session_group_members_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_session_group_members
+    ADD CONSTRAINT whatsapp_session_group_members_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 
 
 --
@@ -20697,6 +21084,19 @@ ALTER TABLE public.cases ENABLE ROW LEVEL SECURITY;
 --
 
 CREATE POLICY cases_org_isolation ON public.cases USING ((org_id = (NULLIF(current_setting('app.current_org_id'::text, true), ''::text))::integer));
+
+
+--
+-- Name: communication_stewards; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.communication_stewards ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: communication_stewards communication_stewards_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY communication_stewards_org_isolation ON public.communication_stewards USING ((org_id = (current_setting('app.current_org_id'::text, true))::integer));
 
 
 --
@@ -21069,6 +21469,32 @@ ALTER TABLE public.straps ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: whatsapp_capture_requests wa_capture_requests_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY wa_capture_requests_org_isolation ON public.whatsapp_capture_requests USING ((org_id = (current_setting('app.current_org_id'::text, true))::integer));
+
+
+--
+-- Name: whatsapp_session_group_members wa_group_members_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY wa_group_members_org_isolation ON public.whatsapp_session_group_members USING ((org_id = (current_setting('app.current_org_id'::text, true))::integer));
+
+
+--
+-- Name: whatsapp_capture_requests; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.whatsapp_capture_requests ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: whatsapp_session_group_members; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.whatsapp_session_group_members ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: whatsapp_session_groups; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -21098,5 +21524,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict pQweEM7HisE7z0JI3QEHyPsLbT5PTg9NqlVN25hhmbMeNaN9nGDiR7bL1aOvYKu
+\unrestrict QNHgYFxXUSXY5hQk2wYyrXhYzsJZOhd0r2p4HUU70MC73MGrafBfoYtnPcOQh9p
 

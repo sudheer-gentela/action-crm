@@ -253,6 +253,7 @@ app.use('/api/project-emails',  require('./routes/projectEmails.routes'));
 app.use('/api/org-storage',     require('./routes/orgStorageAccounts.routes'));
 app.use('/api/whatsapp-media',  require('./routes/whatsappMedia.routes'));
 app.use('/api/whatsapp-session', require('./routes/whatsappSession.routes'));  // session capture (Baileys worker)
+app.use('/api/whatsapp-messages', require('./routes/whatsappMessages.routes'));  // Communication → Messages
 app.use('/api/contact-roles',   require('./routes/contact-roles.routes'));
 app.use('/api/account-relationships', require('./routes/accountRelationships.routes'));
 app.use('/api/invitations', require('./routes/invitations.routes'));  // PUBLIC (token-based)
