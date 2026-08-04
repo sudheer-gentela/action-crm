@@ -34,7 +34,10 @@ async function getSession(orgId) {
   const { rows } = await pool.query(
     `SELECT id, org_id, label, wa_phone, push_name, status, status_detail,
             connected_at, last_seen_at, last_message_at, phone_last_seen_at,
-            capture_enabled, capture_media, created_at
+            capture_enabled, capture_media, created_at,
+            heartbeat_at, heartbeat_seconds, flush_interval_ms, batch_max,
+            stale_socket_minutes, reconnect_max_seconds, reconnect_count,
+            capture_mode
        FROM whatsapp_sessions
       WHERE org_id = $1 AND status <> 'disabled'
       LIMIT 1`,
@@ -200,6 +203,128 @@ async function authClear(sessionId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Runtime config & liveness
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CONFIG_BOUNDS = {
+  heartbeat_seconds:     [15,  3600],
+  flush_interval_ms:     [250, 60000],
+  batch_max:             [1,   500],
+  stale_socket_minutes:  [5,   1440],
+  reconnect_max_seconds: [10,  3600],
+};
+
+/**
+ * The knobs the worker reads on connect and re-reads on every heartbeat, so a
+ * tuning change takes effect WITHOUT a redeploy — a redeploy would tear down
+ * the WhatsApp socket, which is the thing we are trying to keep alive.
+ */
+async function getRuntimeConfig(sessionId) {
+  const { rows: [r] } = await pool.query(
+    `SELECT heartbeat_seconds, flush_interval_ms, batch_max,
+            stale_socket_minutes, reconnect_max_seconds, capture_enabled
+       FROM whatsapp_sessions WHERE id = $1`,
+    [sessionId]
+  );
+  if (!r) return null;
+  return {
+    heartbeatSeconds:    r.heartbeat_seconds,
+    flushIntervalMs:     r.flush_interval_ms,
+    batchMax:            r.batch_max,
+    staleSocketMinutes:  r.stale_socket_minutes,
+    reconnectMaxSeconds: r.reconnect_max_seconds,
+    captureEnabled:      r.capture_enabled,
+  };
+}
+
+/** Validate and persist config changes from the admin UI. */
+async function updateRuntimeConfig(orgId, patch = {}) {
+  const sets = ['updated_at = now()'];
+  const vals = [];
+  let i = 1;
+
+  for (const [col, [min, max]] of Object.entries(CONFIG_BOUNDS)) {
+    const camel = col.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+    if (patch[camel] === undefined) continue;
+    const n = parseInt(patch[camel], 10);
+    if (!Number.isInteger(n) || n < min || n > max) {
+      return { ok: false, code: 'OUT_OF_RANGE', error: `${camel} must be between ${min} and ${max}` };
+    }
+    sets.push(`${col} = $${i++}`);
+    vals.push(n);
+  }
+  if (patch.captureMode !== undefined) {
+    if (!['allowlist', 'all'].includes(patch.captureMode)) {
+      return { ok: false, code: 'BAD_MODE', error: "captureMode must be 'allowlist' or 'all'" };
+    }
+    sets.push(`capture_mode = $${i++}`);
+    vals.push(patch.captureMode);
+  }
+  if (patch.captureEnabled !== undefined) {
+    sets.push(`capture_enabled = $${i++}`);
+    vals.push(!!patch.captureEnabled);
+  }
+  if (patch.label !== undefined) {
+    sets.push(`label = $${i++}`);
+    vals.push(String(patch.label).slice(0, 200));
+  }
+  if (sets.length === 1) return { ok: false, code: 'NO_CHANGES' };
+
+  vals.push(orgId);
+  const { rows } = await pool.query(
+    `UPDATE whatsapp_sessions SET ${sets.join(', ')}
+      WHERE org_id = $${i} AND status <> 'disabled' RETURNING *`,
+    vals
+  );
+  if (!rows.length) return { ok: false, code: 'NOT_FOUND' };
+  return { ok: true, session: rows[0] };
+}
+
+/**
+ * Worker liveness ping. Returns the current config so the worker picks up
+ * changes on its normal cadence rather than needing to be told.
+ */
+async function heartbeat(sessionId, { socketConnected = true } = {}) {
+  await pool.query(
+    `UPDATE whatsapp_sessions
+        SET heartbeat_at = now(),
+            last_seen_at = now(),
+            updated_at   = now()
+      WHERE id = $1`,
+    [sessionId]
+  );
+  return { ok: true, config: await getRuntimeConfig(sessionId), socketConnected };
+}
+
+/** Count a reconnect, so a session that flaps constantly is visible. */
+async function recordReconnect(sessionId) {
+  await pool.query(
+    `UPDATE whatsapp_sessions
+        SET reconnect_count = reconnect_count + 1,
+            last_reconnect_at = now(),
+            updated_at = now()
+      WHERE id = $1`,
+    [sessionId]
+  );
+}
+
+/**
+ * A human confirms the primary handset was opened. Nothing in the protocol
+ * reports this, and WhatsApp unlinks every companion device after 14 days of
+ * handset inactivity — so the only honest source is someone saying so.
+ */
+async function confirmPhoneSeen(orgId, userId) {
+  const { rows } = await pool.query(
+    `UPDATE whatsapp_sessions
+        SET phone_last_seen_at = now(), phone_confirmed_by = $1, updated_at = now()
+      WHERE org_id = $2 AND status <> 'disabled' RETURNING phone_last_seen_at`,
+    [userId || null, orgId]
+  );
+  if (!rows.length) return { ok: false, code: 'NOT_FOUND' };
+  return { ok: true, phoneLastSeenAt: rows[0].phone_last_seen_at };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Normalisation
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -320,9 +445,20 @@ async function ingestGroupMessage(sessionId, evt) {
   const group = await upsertSessionGroup(sessionId, orgId, {
     jid: evt.jid,
     subject: evt.subject || null,
+    via: 'message',
   });
 
-  if (group.binding_status === 'ignored') {
+  // ── the capture gate ────────────────────────────────────────────────────
+  //
+  // Discovery already happened above: the group is catalogued and will appear
+  // in triage regardless. This decides only whether we retain what was SAID.
+  //
+  // allowlist mode fails closed. That is deliberate — forgetting to watch a
+  // group loses some history, whereas forgetting to ignore one puts a family
+  // conversation in a customer's CRM.
+  if (session.capture_mode === 'allowlist') {
+    if (!group.is_watched) return { stored: false, reason: 'NOT_WATCHED' };
+  } else if (group.binding_status === 'ignored') {
     return { stored: false, reason: 'GROUP_IGNORED' };
   }
 
@@ -407,18 +543,18 @@ async function ingestGroupMessage(sessionId, evt) {
 }
 
 /** Register or refresh a group we have been added to. */
-async function upsertSessionGroup(sessionId, orgId, { jid, subject, participantCount = null, createdAt = null }) {
+async function upsertSessionGroup(sessionId, orgId, { jid, subject, participantCount = null, createdAt = null, via = 'message' }) {
   const { rows: [group] } = await pool.query(
     `INSERT INTO whatsapp_session_groups
-       (session_id, org_id, group_jid, subject, participant_count, group_created_at)
-     VALUES ($1,$2,$3,$4,$5,$6)
+       (session_id, org_id, group_jid, subject, participant_count, group_created_at, discovered_via)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)
      ON CONFLICT (session_id, group_jid) DO UPDATE SET
        subject           = COALESCE(EXCLUDED.subject, whatsapp_session_groups.subject),
        participant_count = COALESCE(EXCLUDED.participant_count, whatsapp_session_groups.participant_count),
        updated_at        = now()
      RETURNING *`,
     [sessionId, orgId, jid, subject, participantCount,
-     createdAt ? new Date(createdAt * 1000) : null]
+     createdAt ? new Date(createdAt * 1000) : null, via]
   );
   return group;
 }
@@ -469,12 +605,13 @@ async function upsertParticipant(orgId, threadId, waPhone, displayName, isSelf) 
 }
 
 /** Roster refresh from a groups.update / group-participants.update event. */
-async function syncGroupMetadata(sessionId, { jid, subject, participants = [], owner = null, creation = null }) {
+async function syncGroupMetadata(sessionId, { jid, subject, participants = [], owner = null, creation = null, ...opts }) {
   const session = await getSessionById(sessionId);
   if (!session) return { ok: false };
 
   const group = await upsertSessionGroup(session.id, session.org_id, {
     jid, subject, participantCount: participants.length || null, createdAt: creation,
+    via: opts.via || 'metadata',
   });
   if (!group.thread_id) return { ok: true, thread: null };
 
@@ -506,78 +643,72 @@ async function syncGroupMetadata(sessionId, { jid, subject, participants = [], o
  * that turns raw capture into CRM data — without it the messages land in
  * threads nobody can find.
  */
-async function listTriage(orgId, { status = 'unbound', limit = 50 } = {}) {
+async function listTriage(orgId, { status = 'all', watched = null, q = null, limit = 200 } = {}) {
+  const params = [orgId];
+  const where = ['g.org_id = $1'];
+
+  if (status && status !== 'all') { params.push(status); where.push(`g.binding_status = $${params.length}`); }
+  if (watched === true  || watched === 'true')  where.push('g.is_watched = true');
+  if (watched === false || watched === 'false') where.push('g.is_watched = false');
+  if (q) { params.push(`%${String(q).toLowerCase()}%`); where.push(`lower(coalesce(g.subject,'')) LIKE $${params.length}`); }
+
+  params.push(Math.min(parseInt(limit, 10) || 200, 500));
+
   const { rows } = await pool.query(
     `SELECT g.id, g.group_jid, g.subject, g.participant_count, g.message_count,
-            g.last_message_at, g.first_seen_at, g.binding_status,
-            g.thread_id, t.handover_id,
+            g.last_message_at, g.first_seen_at, g.binding_status, g.is_watched,
+            g.discovered_via, g.thread_id, t.handover_id,
             h.name AS project_name,
-            (SELECT body FROM whatsapp_messages m
+            (SELECT m.body FROM whatsapp_messages m
               WHERE m.thread_id = g.thread_id
               ORDER BY m.created_at DESC LIMIT 1) AS last_message_preview
        FROM whatsapp_session_groups g
        LEFT JOIN whatsapp_threads   t ON t.id = g.thread_id
        LEFT JOIN sales_handovers    h ON h.id = t.handover_id
-      WHERE g.org_id = $1 AND g.binding_status = $2
-      ORDER BY g.last_message_at DESC NULLS LAST
-      LIMIT $3`,
-    [orgId, status, Math.min(parseInt(limit, 10) || 50, 200)]
+      WHERE ${where.join(' AND ')}
+      ORDER BY g.is_watched DESC, g.last_message_at DESC NULLS LAST, g.subject
+      LIMIT $${params.length}`,
+    params
   );
-  return rows;
+
+  const { rows: [counts] } = await pool.query(
+    `SELECT count(*)                                        AS total,
+            count(*) FILTER (WHERE is_watched)              AS watched,
+            count(*) FILTER (WHERE binding_status='bound')  AS bound,
+            count(*) FILTER (WHERE binding_status='unbound' AND is_watched) AS needs_binding
+       FROM whatsapp_session_groups WHERE org_id = $1`,
+    [orgId]
+  );
+
+  return {
+    groups: rows,
+    counts: {
+      total:        Number(counts.total),
+      watched:      Number(counts.watched),
+      bound:        Number(counts.bound),
+      needsBinding: Number(counts.needs_binding),
+    },
+  };
 }
 
 /**
- * Attach a captured group to a project. Writes the link onto the THREAD (which
- * is what Communications reads) and back-fills every message already captured
- * from this group that has no project of its own — otherwise binding on Friday
- * loses Monday-to-Thursday.
+ * Turn message retention on or off for specific groups. Bulk by design: with
+ * hundreds of catalogued groups, one-at-a-time is not a workable interaction.
  */
-async function bindGroup(orgId, userId, groupId, handoverId) {
-  const { rows: [group] } = await pool.query(
-    `SELECT * FROM whatsapp_session_groups WHERE id = $1 AND org_id = $2`,
-    [groupId, orgId]
+async function setWatch(orgId, userId, groupIds, watched) {
+  const ids = (groupIds || []).map(n => parseInt(n, 10)).filter(Number.isInteger);
+  if (!ids.length) return { ok: false, code: 'NO_IDS' };
+
+  const { rowCount } = await pool.query(
+    `UPDATE whatsapp_session_groups
+        SET is_watched = $1,
+            watched_by = CASE WHEN $1 THEN $2 ELSE watched_by END,
+            watched_at = CASE WHEN $1 THEN now() ELSE watched_at END,
+            updated_at = now()
+      WHERE org_id = $3 AND id = ANY($4::int[])`,
+    [!!watched, userId || null, orgId, ids]
   );
-  if (!group) return { ok: false, code: 'NOT_FOUND' };
-  if (!group.thread_id) return { ok: false, code: 'NO_THREAD', error: 'No messages captured yet' };
-
-  const { rows: [handover] } = await pool.query(
-    `SELECT id FROM sales_handovers WHERE id = $1 AND org_id = $2`,
-    [handoverId, orgId]
-  );
-  if (!handover) return { ok: false, code: 'INVALID_HANDOVER' };
-
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`SET LOCAL app.current_org_id = '${parseInt(orgId, 10)}'`);
-
-    await client.query(
-      `UPDATE whatsapp_threads SET handover_id = $1, updated_at = now() WHERE id = $2 AND org_id = $3`,
-      [handoverId, group.thread_id, orgId]
-    );
-
-    const { rowCount: backfilled } = await client.query(
-      `UPDATE whatsapp_messages
-          SET handover_id = $1, handover_source = 'thread'
-        WHERE org_id = $2 AND thread_id = $3 AND handover_id IS NULL`,
-      [handoverId, orgId, group.thread_id]
-    );
-
-    await client.query(
-      `UPDATE whatsapp_session_groups
-          SET binding_status = 'bound', bound_by = $1, bound_at = now(), updated_at = now()
-        WHERE id = $2`,
-      [userId || null, groupId]
-    );
-
-    await client.query('COMMIT');
-    return { ok: true, threadId: group.thread_id, handoverId, backfilled };
-  } catch (err) {
-    try { await client.query('ROLLBACK'); } catch { /* already failed */ }
-    throw err;
-  } finally {
-    client.release();
-  }
+  return { ok: true, updated: rowCount, watched: !!watched };
 }
 
 /** Dismiss a group permanently. Capture stops; existing messages are kept. */
@@ -612,15 +743,26 @@ async function health(orgId) {
   const minsSince = (t) => (t ? Math.round((now - new Date(t).getTime()) / 60000) : null);
   const daysSince = (t) => (t ? Math.floor((now - new Date(t).getTime()) / 86400000) : null);
 
-  const socketStaleMins = minsSince(session.last_seen_at);
-  const phoneStaleDays  = daysSince(session.phone_last_seen_at);
+  // Liveness is measured on the HEARTBEAT, not on message arrival. A silent
+  // group and a dead worker look identical by traffic; only a timer-driven
+  // ping tells them apart.
+  const heartbeatStaleMins = minsSince(session.heartbeat_at);
+  const socketStaleMins    = minsSince(session.last_seen_at);
+  const phoneStaleDays     = daysSince(session.phone_last_seen_at);
+  const heartbeatBudget    = Math.ceil(((session.heartbeat_seconds || 60) * 3) / 60);
 
   const warnings = [];
   if (session.status === 'logged_out') {
     warnings.push({ level: 'critical', message: 'Session logged out — a human must rescan the QR from the handset.' });
   }
-  if (session.status === 'connected' && socketStaleMins != null && socketStaleMins > 15) {
-    warnings.push({ level: 'critical', message: `No socket activity for ${socketStaleMins} minutes — capture is probably dead.` });
+  if (session.status === 'connected' && heartbeatStaleMins == null) {
+    warnings.push({ level: 'warning', message: 'Connected but no heartbeat received yet.' });
+  }
+  if (session.status === 'connected' && heartbeatStaleMins != null && heartbeatStaleMins > heartbeatBudget) {
+    warnings.push({ level: 'critical', message: `No heartbeat for ${heartbeatStaleMins} minutes — the worker is not running.` });
+  }
+  if (session.reconnect_count >= 10) {
+    warnings.push({ level: 'warning', message: `${session.reconnect_count} reconnects — the number may be contested or rate-limited.` });
   }
   if (phoneStaleDays != null && phoneStaleDays >= 10) {
     warnings.push({
@@ -642,8 +784,20 @@ async function health(orgId) {
     statusDetail: session.status_detail,
     waPhone: session.wa_phone,
     captureEnabled: session.capture_enabled,
+    captureMode: session.capture_mode,
+    label: session.label,
+    heartbeatStaleMins,
     socketStaleMins,
     phoneStaleDays,
+    lastMessageAt: session.last_message_at,
+    reconnectCount: session.reconnect_count,
+    config: {
+      heartbeatSeconds:    session.heartbeat_seconds,
+      flushIntervalMs:     session.flush_interval_ms,
+      batchMax:            session.batch_max,
+      staleSocketMinutes:  session.stale_socket_minutes,
+      reconnectMaxSeconds: session.reconnect_max_seconds,
+    },
     groups: { unbound: Number(counts.unbound), bound: Number(counts.bound) },
     warnings,
     healthy: warnings.every(w => w.level !== 'critical'),
@@ -651,6 +805,12 @@ async function health(orgId) {
 }
 
 module.exports = {
+  setWatch,
+  getRuntimeConfig,
+  updateRuntimeConfig,
+  heartbeat,
+  recordReconnect,
+  confirmPhoneSeen,
   authGet,
   authSet,
   authClear,

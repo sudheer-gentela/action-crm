@@ -99,6 +99,29 @@ router.post('/internal/qr', workerAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+router.post('/internal/heartbeat', workerAuth, async (req, res) => {
+  try {
+    const { sessionId, socketConnected } = req.body || {};
+    if (!sessionId) return res.status(400).json({ error: { message: 'sessionId required' } });
+    // Returns the live config, so tuning changes reach the worker on its normal
+    // cadence rather than requiring a redeploy that would kill the socket.
+    res.json(await session.heartbeat(sessionId, { socketConnected }));
+  } catch (e) {
+    res.status(500).json({ error: { message: e.message } });
+  }
+});
+
+router.post('/internal/reconnect', workerAuth, async (req, res) => {
+  try {
+    const { sessionId } = req.body || {};
+    if (!sessionId) return res.status(400).json({ error: { message: 'sessionId required' } });
+    await session.recordReconnect(sessionId);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: { message: e.message } });
+  }
+});
+
 // ── Auth key relay ───────────────────────────────────────────────────────────
 //
 // This is what lets the worker run with no database connection at all. It sends
@@ -241,14 +264,50 @@ router.get('/qr', requireRole('admin'), async (req, res) => {
   }
 });
 
+router.put('/settings', requireRole('admin'), async (req, res) => {
+  try {
+    const result = await session.updateRuntimeConfig(req.orgId, req.body || {});
+    if (!result.ok) return res.status(result.code === 'NOT_FOUND' ? 404 : 400).json(result);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: { message: e.message } });
+  }
+});
+
+// "Someone opened WhatsApp on the handset today." Not detectable from the
+// protocol, and WhatsApp unlinks every companion device after 14 days of
+// handset inactivity — so a human asserting it is the only honest source.
+router.post('/phone-seen', async (req, res) => {
+  try {
+    const result = await session.confirmPhoneSeen(req.orgId, req.userId);
+    if (!result.ok) return res.status(404).json(result);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: { message: e.message } });
+  }
+});
+
 router.get('/triage', async (req, res) => {
   try {
-    res.json({
-      groups: await session.listTriage(req.orgId, {
-        status: req.query.status || 'unbound',
-        limit: req.query.limit,
-      }),
-    });
+    res.json(await session.listTriage(req.orgId, {
+      status:  req.query.status,
+      watched: req.query.watched,
+      q:       req.query.q,
+      limit:   req.query.limit,
+    }));
+  } catch (e) {
+    res.status(500).json({ error: { message: e.message } });
+  }
+});
+
+// Bulk by design: with hundreds of catalogued groups, one request per group is
+// not a workable interaction.
+router.post('/triage/watch', async (req, res) => {
+  try {
+    const { groupIds, watched } = req.body || {};
+    const result = await session.setWatch(req.orgId, req.userId, groupIds, watched);
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
   } catch (e) {
     res.status(500).json({ error: { message: e.message } });
   }

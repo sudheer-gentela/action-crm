@@ -375,6 +375,7 @@ app.use('/api/portal',          require('./routes/client-portal.routes'));
 
 // ── Workflow ──────────────────────────────────────────────────────────────
 app.use('/api/super',     require('./routes/workflow.superAdmin.routes'));
+app.use('/api/super',     require('./routes/whatsappSession.superAdmin.routes'));  // session capture fleet health
 app.use('/api/org/admin', require('./routes/workflow.orgAdmin.routes'));
 
 // ── External webhooks (Zoom transcripts, etc.) ────────────────────────────

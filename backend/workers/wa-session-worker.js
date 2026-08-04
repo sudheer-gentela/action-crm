@@ -48,8 +48,18 @@ const API_WAIT_MAX_MS = parseInt(process.env.WA_SESSION_API_WAIT_MS || '120000',
 const API_URL       = process.env.WA_SESSION_API_URL || 'http://localhost:5000';
 const WORKER_SECRET = process.env.WA_SESSION_WORKER_SECRET;
 const POLL_MS       = parseInt(process.env.WA_SESSION_POLL_MS || '30000', 10);
-const FLUSH_MS      = parseInt(process.env.WA_SESSION_FLUSH_MS || '2000', 10);
-const BATCH_MAX     = parseInt(process.env.WA_SESSION_BATCH_MAX || '50', 10);
+
+// Per-session tuning lives in the DATABASE, not here — see migration 102. These
+// are only the values used before the first heartbeat returns real ones, and on
+// the fallback path if the API is briefly unreachable.
+const DEFAULTS = {
+  heartbeatSeconds:    60,
+  flushIntervalMs:     2000,
+  batchMax:            50,
+  staleSocketMinutes:  20,
+  reconnectMaxSeconds: 300,
+  captureEnabled:      true,
+};
 
 if (!WORKER_SECRET) {
   console.error('[wa-session] WA_SESSION_WORKER_SECRET is required');
@@ -97,7 +107,7 @@ async function safeApi(path, body) {
 // size or time, and preserve order within a flush.
 // ─────────────────────────────────────────────────────────────────────────────
 
-function makeBuffer(sessionId) {
+function makeBuffer(sessionId, getConfig) {
   let queue = [];
   let timer = null;
 
@@ -120,13 +130,13 @@ function makeBuffer(sessionId) {
   };
 
   const schedule = () => {
-    if (!timer) timer = setTimeout(() => { flush().catch(() => {}); }, FLUSH_MS);
+    if (!timer) timer = setTimeout(() => { flush().catch(() => {}); }, getConfig().flushIntervalMs);
   };
 
   return {
     push(evt) {
       queue.push(evt);
-      if (queue.length >= BATCH_MAX) flush().catch(() => {});
+      if (queue.length >= getConfig().batchMax) flush().catch(() => {});
       else schedule();
     },
     flush,
@@ -139,12 +149,12 @@ function makeBuffer(sessionId) {
 
 const backoff = new Map();   // sessionId -> attempt count
 
-function nextDelay(sessionId) {
+function nextDelay(sessionId, maxSeconds) {
   const n = (backoff.get(sessionId) || 0) + 1;
   backoff.set(sessionId, n);
-  // 5s, 10s, 20s, 40s ... capped at 5 min. Jittered so a mass reconnect after
-  // an outage does not arrive as a thundering herd.
-  const base = Math.min(5000 * 2 ** (n - 1), 300000);
+  // 5s, 10s, 20s, 40s ... capped at the configured ceiling. Jittered so a mass
+  // reconnect after an outage does not arrive as a thundering herd.
+  const base = Math.min(5000 * 2 ** (n - 1), (maxSeconds || 300) * 1000);
   return base + Math.floor(Math.random() * 3000);
 }
 
@@ -175,7 +185,21 @@ async function startSession(sessionRow) {
   }
 
   const { version } = await fetchLatestBaileysVersion();
-  const buffer = makeBuffer(sessionId);
+
+  // Live, server-driven config. Refreshed on every heartbeat so an admin can
+  // retune from the UI without a redeploy — a redeploy kills the socket, which
+  // is precisely the thing we are protecting.
+  let config = { ...DEFAULTS };
+  const getConfig = () => config;
+
+  let heartbeatTimer = null;
+  let watchdogTimer  = null;
+
+  // Last time this socket produced ANY event. The watchdog below keys on it.
+  let lastEventAt = Date.now();
+  const touch = () => { lastEventAt = Date.now(); };
+
+  const buffer = makeBuffer(sessionId, getConfig);
 
   const sock = makeWASocket({
     version,
@@ -193,7 +217,7 @@ async function startSession(sessionRow) {
     generateHighQualityLinkPreview: false,
   });
 
-  sockets.set(sessionId, { sock, buffer });
+  sockets.set(sessionId, { sock, buffer, stopTimers: () => stopTimers() });
 
   sock.ev.on('creds.update', auth.saveCreds);
 
@@ -207,6 +231,8 @@ async function startSession(sessionRow) {
 
     if (connection === 'open') {
       backoff.delete(sessionId);
+      touch();
+      startTimers();
       const me = sock.user?.id ? jidNormalizedUser(sock.user.id) : null;
       const phone = me ? me.split('@')[0].split(':')[0] : null;
       console.log(`[wa-session:${sessionId}] connected as ${phone}`);
@@ -224,10 +250,13 @@ async function startSession(sessionRow) {
           owner: g.owner || null,
           creation: g.creation || null,
           participants: (g.participants || []).map(p => ({ id: p.id, name: p.notify || null })),
+          via: 'snapshot',
         }));
         if (groups.length) {
+          // Discovery only — names, JIDs and rosters. Whether any given group's
+          // MESSAGES are retained is decided server-side by the watchlist.
           await safeApi('/internal/group-meta', { sessionId, groups });
-          console.log(`[wa-session:${sessionId}] snapshotted ${groups.length} groups`);
+          console.log(`[wa-session:${sessionId}] catalogued ${groups.length} groups (capture is per-group, see triage)`);
         }
       } catch (err) {
         console.error(`[wa-session:${sessionId}] group snapshot failed: ${err.message}`);
@@ -236,6 +265,7 @@ async function startSession(sessionRow) {
 
     if (connection === 'close') {
       const status = lastDisconnect?.error?.output?.statusCode;
+      stopTimers();
       sockets.delete(sessionId);
       await buffer.flush().catch(() => {});
 
@@ -252,8 +282,9 @@ async function startSession(sessionRow) {
         return;
       }
 
-      const delay = nextDelay(sessionId);
+      const delay = nextDelay(sessionId, config.reconnectMaxSeconds);
       console.warn(`[wa-session:${sessionId}] closed (${status}); reconnecting in ${Math.round(delay / 1000)}s`);
+      await safeApi('/internal/reconnect', { sessionId });
       await safeApi('/internal/status', {
         sessionId, status: 'disconnected', statusDetail: `closed (${status ?? 'unknown'})`,
       });
@@ -263,7 +294,56 @@ async function startSession(sessionRow) {
 
   // ── the actual capture ────────────────────────────────────────────────────
 
+  // ── heartbeat + watchdog ─────────────────────────────────────────────────
+  //
+  // The heartbeat is what makes a dead worker distinguishable from a quiet
+  // weekend: it writes on a timer regardless of traffic. The watchdog handles
+  // the nastier failure — Baileys holding a TCP connection that WhatsApp has
+  // actually abandoned, where connection.update never fires, no messages
+  // arrive, and status stays 'connected' forever while capturing nothing.
+
+  // Function declarations, not const arrows: these are referenced by the
+  // connection.update handler registered further up the file, and hoisting
+  // removes any temporal-dead-zone risk if an event ever arrives early.
+  function stopTimers() {
+    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+    if (watchdogTimer)  { clearInterval(watchdogTimer);  watchdogTimer  = null; }
+  }
+
+  async function beat() {
+    const out = await safeApi('/internal/heartbeat', { sessionId, socketConnected: true });
+    if (out?.config) {
+      const before = JSON.stringify(config);
+      config = { ...DEFAULTS, ...out.config };
+      if (JSON.stringify(config) !== before) {
+        console.log(`[wa-session:${sessionId}] config updated: ${JSON.stringify(config)}`);
+      }
+    }
+  }
+
+  function startTimers() {
+    stopTimers();
+    beat().catch(() => {});
+    heartbeatTimer = setInterval(() => { beat().catch(() => {}); }, config.heartbeatSeconds * 1000);
+    watchdogTimer = setInterval(() => {
+      const idleMin = (Date.now() - lastEventAt) / 60000;
+      if (idleMin < config.staleSocketMinutes) return;
+      console.warn(`[wa-session:${sessionId}] no socket events for ${Math.round(idleMin)}min — forcing reconnect`);
+      stopTimers();
+      // end() emits connection.close, which runs the normal reconnect path —
+      // no separate restart logic to keep in sync.
+      try { sock.end(new Error('watchdog: stale socket')); } catch { /* already gone */ }
+    }, 60000);
+  }
+
+  // Any event at all counts as proof of life, including ones we ignore.
+  sock.ev.on('creds.update', touch);
+  sock.ev.on('messaging-history.set', touch);
+  sock.ev.on('chats.upsert', touch);
+  sock.ev.on('presence.update', touch);
+
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    touch();
     // 'notify' = live traffic. 'append' is history/backfill replay, which we
     // deliberately ignore: it is the pre-existing 1:1 conversation of whoever
     // owns this number, and storing it would be capturing material nobody in
@@ -338,6 +418,7 @@ async function poll() {
     for (const [id, entry] of sockets) {
       if (!live.has(id)) {
         console.log(`[wa-session] session ${id} no longer active; closing socket`);
+        try { entry.stopTimers?.(); } catch { /* nothing to stop */ }
         try { entry.sock?.end(); } catch { /* already gone */ }
         sockets.delete(id);
       }

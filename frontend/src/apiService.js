@@ -274,6 +274,9 @@ twilio: {
   },
 
   superAdmin: {
+    // WhatsApp session capture — platform-wide health (no message content)
+    whatsappSessions:        ()   => api.get('/super/whatsapp-sessions'),
+    disableWhatsappSession:  (id) => api.post(`/super/whatsapp-sessions/${id}/disable`),
     getStats: () => api.get('/super/stats'),
     getOrgs: (params = {}) => api.get('/super/orgs', { params }),
     getOrg: (orgId) => api.get(`/super/orgs/${orgId}`),
@@ -860,6 +863,22 @@ twilio: {
   // ══════════════════════════════════════════════════════════
   // WhatsApp channel
   // ══════════════════════════════════════════════════════════
+
+  // Session capture (companion-device client). Separate transport from the
+  // Cloud API block below — different number, read-only, sees phone-created groups.
+  whatsappSession: {
+    status:         ()          => api.get('/whatsapp-session'),
+    create:         (data)      => api.post('/whatsapp-session', data),
+    disable:        ()          => api.delete('/whatsapp-session'),
+    qr:             ()          => api.get('/whatsapp-session/qr'),
+    updateSettings: (data)      => api.put('/whatsapp-session/settings', data),
+    phoneSeen:      ()          => api.post('/whatsapp-session/phone-seen'),
+    triage:         (status)    => api.get(`/whatsapp-session/triage${status ? `?status=${status}` : ''}`),
+    triageQuery:    (params={})  => api.get(`/whatsapp-session/triage?${new URLSearchParams(params).toString()}`),
+    watch:          (body)      => api.post('/whatsapp-session/triage/watch', body),
+    bind:           (id, body)  => api.post(`/whatsapp-session/triage/${id}/bind`, body),
+    ignore:         (id)        => api.post(`/whatsapp-session/triage/${id}/ignore`),
+  },
 
   whatsapp: {
     account:        ()         => api.get('/whatsapp/account'),
