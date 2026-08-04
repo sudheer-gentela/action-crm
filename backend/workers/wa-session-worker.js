@@ -37,7 +37,26 @@
 
 'use strict';
 
+// ── Railway private networking ───────────────────────────────────────────────
+//
+// *.railway.internal resolves over IPv6 ONLY. Node's default resolution order
+// tries A records first, so a lookup for the Postgres host fails with
+// ENOTFOUND even though the address exists. This must run before anything
+// opens a socket.
+require('dns').setDefaultResultOrder('ipv6first');
+
 require('dotenv').config();
+
+// The private network is not up the instant the container starts — DNS for
+// *.railway.internal fails for the first couple of seconds. The API service
+// gets away with this because nothing queries the DB until a request arrives;
+// this worker connects immediately, so it has to wait for it.
+//
+// Retrying beats a fixed sleep: a fixed delay is a guess that is either too
+// short (and fails) or too long (and wastes every restart). This adapts, and
+// logs how long the private network actually took to come up so the number
+// stops being folklore.
+const DB_WAIT_MAX_MS = parseInt(process.env.WA_SESSION_DB_WAIT_MS || '120000', 10);
 
 const API_URL       = process.env.WA_SESSION_API_URL || 'http://localhost:5000';
 const WORKER_SECRET = process.env.WA_SESSION_WORKER_SECRET;
@@ -359,6 +378,64 @@ process.on('unhandledRejection', (err) => {
   console.error('[wa-session] unhandled rejection:', err?.message || err);
 });
 
-console.log(`[wa-session] worker starting; api=${API_URL} poll=${POLL_MS}ms`);
-poll();
-setInterval(poll, POLL_MS);
+/**
+ * Block until Postgres answers, or until DB_WAIT_MAX_MS elapses.
+ *
+ * Distinguishes the two failure modes deliberately, because they need
+ * different fixes: ENOTFOUND/EAI_AGAIN means private DNS is not up yet (wait,
+ * it usually resolves within seconds), whereas an auth or TLS error means the
+ * connection string itself is wrong and no amount of waiting will help.
+ */
+async function waitForDatabase() {
+  const { pool } = require('../config/database');
+  const started = Date.now();
+  let attempt = 0;
+
+  for (;;) {
+    attempt++;
+    try {
+      await pool.query('SELECT 1');
+      console.log(`[wa-session] database reachable after ${Date.now() - started}ms (${attempt} attempt${attempt > 1 ? 's' : ''})`);
+      return true;
+    } catch (err) {
+      const dnsIssue = ['ENOTFOUND', 'EAI_AGAIN'].includes(err.code);
+      const elapsed = Date.now() - started;
+
+      if (!dnsIssue) {
+        // Credentials, TLS, refused connection — retrying forever would just
+        // hide a misconfiguration behind a quiet log.
+        console.error(`[wa-session] database error (${err.code || 'unknown'}): ${err.message}`);
+        console.error('[wa-session] this is not a DNS timing issue — check DATABASE_URL on this service');
+        return false;
+      }
+
+      if (elapsed > DB_WAIT_MAX_MS) {
+        console.error(`[wa-session] private network never came up after ${Math.round(elapsed / 1000)}s`);
+        console.error('[wa-session] check that this service is in the same Railway project/environment as Postgres,');
+        console.error('[wa-session] or set DATABASE_URL to the Postgres service\'s DATABASE_PUBLIC_URL as a fallback');
+        return false;
+      }
+
+      // 1s, 2s, 4s ... capped at 8s. Chatty for the first few attempts because
+      // that is exactly the window where someone is watching the logs.
+      const delay = Math.min(1000 * 2 ** (attempt - 1), 8000);
+      console.log(`[wa-session] waiting for private network (attempt ${attempt}, ${err.code}); retry in ${delay}ms`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+}
+
+(async () => {
+  console.log(`[wa-session] worker starting; api=${API_URL} poll=${POLL_MS}ms`);
+
+  const ready = await waitForDatabase();
+  if (!ready) {
+    // Exit rather than poll uselessly. Railway's restart policy brings us back,
+    // and a crash loop with a clear reason is easier to notice than a worker
+    // that appears healthy while capturing nothing.
+    process.exit(1);
+  }
+
+  poll();
+  setInterval(poll, POLL_MS);
+})();
