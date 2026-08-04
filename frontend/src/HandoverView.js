@@ -3304,7 +3304,8 @@ function PlaybookPicker({ detail, canEdit, onRefresh }) {
 // Projects that don't come from a won deal. Internal ones carry no account —
 // putting your own company in Accounts to satisfy a foreign key would pollute
 // pipeline, prospecting and every account-grouped report.
-function CreateProjectModal({ users = [], onClose, onCreated }) {
+function CreateProjectModal({ users = [], managerLabel = 'Project Manager',
+                             viewerRole = null, onClose, onCreated }) {
   const [kind, setKind]       = useState('internal');
   const [name, setName]       = useState('');
   const [budget, setBudget]   = useState('');
@@ -3315,6 +3316,29 @@ function CreateProjectModal({ users = [], onClose, onCreated }) {
   const [saving, setSaving]   = useState(false);
   const [err, setErr]         = useState('');
 
+  // ── Creating the missing thing without losing this form ────────────────────
+  //
+  // Both dead ends here — no account, no one to assign — used to mean cancel,
+  // go elsewhere, come back and retype. Everything typed so far is lost, and
+  // the second attempt is the one people abandon. So both are handled inline:
+  // the half-filled form stays on screen throughout.
+  const [showNewAccount, setShowNewAccount] = useState(false);
+  const [newAccName, setNewAccName]         = useState('');
+  const [newAccDomain, setNewAccDomain]     = useState('');
+  const [accBusy, setAccBusy]               = useState(false);
+  const [accErr, setAccErr]                 = useState('');
+
+  const [showInvite, setShowInvite]   = useState(false);
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteBusy, setInviteBusy]   = useState(false);
+  const [inviteErr, setInviteErr]     = useState('');
+  const [inviteOk, setInviteOk]       = useState('');
+
+  // Only an owner or admin can invite directly. Everyone else raises a request
+  // an admin approves — the same on-behalf-of flow used elsewhere. Showing an
+  // admin-only link to a member would be sending them to a locked door.
+  const canInviteDirectly = ['owner', 'admin'].includes(viewerRole);
+
   useEffect(() => {
     if (kind !== 'customer') return undefined;
     let alive = true;
@@ -3323,6 +3347,74 @@ function CreateProjectModal({ users = [], onClose, onCreated }) {
       .catch(() => { if (alive) setAccounts([]); });
     return () => { alive = false; };
   }, [kind]);
+
+  /**
+   * Create the account and select it, without leaving the form.
+   *
+   * The API rejects a duplicate name or domain with 409 and returns the id of
+   * the account that already exists. That is not an error worth showing as
+   * one — it is the account they were looking for. Select it and say so.
+   */
+  const createAccount = async () => {
+    const n = newAccName.trim();
+    if (!n) { setAccErr('Give the account a name.'); return; }
+    setAccBusy(true); setAccErr('');
+    try {
+      const r = await apiService.accounts.create({
+        name: n, ...(newAccDomain.trim() ? { domain: newAccDomain.trim() } : {}),
+      });
+      const created = r.data?.account || r.data;
+      if (created?.id) {
+        setAccounts(list => [...list, created].sort((a, b) => (a.name || '').localeCompare(b.name || '')));
+        setAccountId(String(created.id));
+      }
+      setShowNewAccount(false);
+      setNewAccName(''); setNewAccDomain('');
+    } catch (e) {
+      const body = e?.response?.data?.error;
+      if (body?.existingAccountId) {
+        setAccountId(String(body.existingAccountId));
+        setShowNewAccount(false);
+        setAccErr('');
+        setErr('');
+        // Pull the list again so the picker shows its real name rather than a
+        // selected id with no matching option.
+        apiService.accounts.getAll('org')
+          .then(res => setAccounts(res.data?.accounts || []))
+          .catch(() => {});
+        return;
+      }
+      setAccErr(body?.message || 'Could not create that account.');
+    } finally {
+      setAccBusy(false);
+    }
+  };
+
+  /**
+   * Get a new person into the org so they can be assigned.
+   *
+   * An admin is sent to the invitation screen. Anyone else raises a request an
+   * admin approves — nobody gets to add users to an org by typing an address
+   * into a project form.
+   *
+   * Either way the new person cannot be assigned to THIS project: they do not
+   * exist yet. Said plainly below rather than left to be discovered.
+   */
+  const requestUser = async () => {
+    const email = inviteEmail.trim().toLowerCase();
+    if (!email || !email.includes('@')) { setInviteErr('Enter a valid email address.'); return; }
+    setInviteBusy(true); setInviteErr(''); setInviteOk('');
+    try {
+      await apiService.handovers.requestNewUserModule(email, 'handovers');
+      setInviteOk(`Requested. An admin approves it, and ${email} is emailed an invitation. `
+                + 'They can be assigned once they have joined.');
+      setInviteEmail('');
+    } catch (e) {
+      setInviteErr(e?.response?.data?.error?.message || 'Could not send that request.');
+    } finally {
+      setInviteBusy(false);
+    }
+  };
 
   const submit = async () => {
     setErr('');
@@ -3349,6 +3441,18 @@ function CreateProjectModal({ users = [], onClose, onCreated }) {
   const label = { fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 };
   const input = { width: '100%', fontSize: 14, padding: '9px 10px', borderRadius: 8,
                   border: '1px solid #d1d5db', minHeight: 44, boxSizing: 'border-box' };
+  // A text button, not an anchor: this opens a panel in place rather than
+  // navigating, and an <a> would promise a page change that does not happen.
+  const linkBtn = { marginTop: 6, background: 'none', border: 'none', padding: 0,
+                    fontSize: 12, color: '#0369a1', cursor: 'pointer', fontWeight: 500 };
+  const inlinePanel = { marginTop: 8, padding: 12, borderRadius: 8,
+                        background: '#f9fafb', border: '1px solid #e5e7eb' };
+  const smallPrimary = { minHeight: 36, padding: '7px 14px', borderRadius: 7, fontSize: 12,
+                         fontWeight: 600, border: '1px solid #0369a1', background: '#0369a1',
+                         color: '#fff', cursor: 'pointer' };
+  const smallGhost = { minHeight: 36, padding: '7px 14px', borderRadius: 7, fontSize: 12,
+                       border: '1px solid #d1d5db', background: '#fff', color: '#4b5563',
+                       cursor: 'pointer' };
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 700,
@@ -3394,6 +3498,37 @@ function CreateProjectModal({ users = [], onClose, onCreated }) {
               <option value="">Select an account…</option>
               {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
+
+            {!showNewAccount ? (
+              <button type="button" onClick={() => { setShowNewAccount(true); setAccErr(''); }}
+                style={linkBtn}>
+                + Not there? Create an account
+              </button>
+            ) : (
+              <div style={inlinePanel}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 8 }}>
+                  New account
+                </div>
+                <input style={{ ...input, marginBottom: 8 }} value={newAccName}
+                       onChange={e => setNewAccName(e.target.value)}
+                       placeholder="Account name" autoFocus />
+                <input style={{ ...input, marginBottom: 8 }} value={newAccDomain}
+                       onChange={e => setNewAccDomain(e.target.value)}
+                       placeholder="Website domain (optional)" />
+                <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 8, lineHeight: 1.5 }}>
+                  Adding the domain is what lets duplicate detection work later. You can fill in
+                  the rest from the account itself.
+                </div>
+                {accErr && <div style={{ fontSize: 12, color: '#991b1b', marginBottom: 8 }}>{accErr}</div>}
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button type="button" onClick={createAccount} disabled={accBusy} style={smallPrimary}>
+                    {accBusy ? 'Creating…' : 'Create and select'}
+                  </button>
+                  <button type="button" onClick={() => { setShowNewAccount(false); setAccErr(''); }}
+                          disabled={accBusy} style={smallGhost}>Cancel</button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -3411,11 +3546,69 @@ function CreateProjectModal({ users = [], onClose, onCreated }) {
             <input style={input} type="date" value={goLive} onChange={e => setGoLive(e.target.value)} />
           </div>
           <div>
-            <label style={label}>Service owner <span style={{ fontWeight: 400, color: '#9ca3af' }}>(optional)</span></label>
+            {/* The label follows the org's own vocabulary — set once in
+                Settings and already used by the project list and detail header.
+                This form was the last screen still saying "Service owner"
+                regardless, which is the inconsistency 2026_90 set out to fix. */}
+            <label style={label}>{managerLabel} <span style={{ fontWeight: 400, color: '#9ca3af' }}>(optional)</span></label>
             <select style={input} value={ownerId} onChange={e => setOwnerId(e.target.value)}>
               <option value="">Unassigned</option>
               {users.map(u => <option key={u.id} value={u.id}>{u.name || u.email}</option>)}
             </select>
+
+            {!showInvite ? (
+              <button type="button" onClick={() => { setShowInvite(true); setInviteErr(''); setInviteOk(''); }}
+                style={linkBtn}>
+                + Not listed? Add someone
+              </button>
+            ) : (
+              <div style={inlinePanel}>
+                {canInviteDirectly ? (
+                  <>
+                    <div style={{ fontSize: 12, color: '#374151', lineHeight: 1.55, marginBottom: 10 }}>
+                      Invitations are managed in <strong>Settings → Invitations</strong>, where you
+                      can set the role and module access at the same time.
+                    </div>
+                    <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 10, lineHeight: 1.5 }}>
+                      Create the project first — leaving now loses what you have typed. The
+                      {' '}{managerLabel.toLowerCase()} can be assigned from the project once they
+                      have joined.
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button type="button" style={smallGhost}
+                        onClick={() => { window.location.hash = '#/org-admin'; }}>
+                        Go to Settings
+                      </button>
+                      <button type="button" style={smallGhost} onClick={() => setShowInvite(false)}>
+                        Close
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 6 }}>
+                      Ask an admin to add them
+                    </div>
+                    <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 8, lineHeight: 1.5 }}>
+                      Adding people to the organisation needs an admin. This sends the request;
+                      once they approve it, the invitation email goes out.
+                    </div>
+                    <input style={{ ...input, marginBottom: 8 }} type="email" value={inviteEmail}
+                           onChange={e => setInviteEmail(e.target.value)}
+                           placeholder="their@email.com" autoFocus />
+                    {inviteErr && <div style={{ fontSize: 12, color: '#991b1b', marginBottom: 8 }}>{inviteErr}</div>}
+                    {inviteOk  && <div style={{ fontSize: 12, color: '#065f46', marginBottom: 8, lineHeight: 1.5 }}>{inviteOk}</div>}
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button type="button" onClick={requestUser} disabled={inviteBusy} style={smallPrimary}>
+                        {inviteBusy ? 'Sending…' : 'Send request'}
+                      </button>
+                      <button type="button" onClick={() => setShowInvite(false)}
+                              disabled={inviteBusy} style={smallGhost}>Close</button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
@@ -3668,6 +3861,8 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
       {showCreate && (
         <CreateProjectModal
           users={users}
+          managerLabel={managerLabel}
+          viewerRole={access?.role || null}
           onClose={() => setShowCreate(false)}
           onCreated={() => { setShowCreate(false); loadList(); }}
         />
