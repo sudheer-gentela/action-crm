@@ -711,6 +711,69 @@ async function setWatch(orgId, userId, groupIds, watched) {
   return { ok: true, updated: rowCount, watched: !!watched };
 }
 
+/**
+ * Attach a captured group to a project. Writes the link onto the THREAD (which
+ * is what the Communications tab reads) and back-fills every message already
+ * captured from this group that has no project of its own — otherwise binding
+ * on Friday loses Monday to Thursday.
+ */
+async function bindGroup(orgId, userId, groupId, handoverId) {
+  const { rows: [group] } = await pool.query(
+    `SELECT * FROM whatsapp_session_groups WHERE id = $1 AND org_id = $2`,
+    [groupId, orgId]
+  );
+  if (!group) return { ok: false, code: 'NOT_FOUND' };
+  if (!group.thread_id) {
+    return { ok: false, code: 'NO_THREAD', error: 'Nothing captured from this group yet — switch capture on first.' };
+  }
+
+  const { rows: [handover] } = await pool.query(
+    `SELECT id FROM sales_handovers WHERE id = $1 AND org_id = $2`,
+    [handoverId, orgId]
+  );
+  if (!handover) return { ok: false, code: 'INVALID_HANDOVER' };
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL app.current_org_id = '${parseInt(orgId, 10)}'`);
+
+    await client.query(
+      `UPDATE whatsapp_threads SET handover_id = $1, updated_at = now()
+        WHERE id = $2 AND org_id = $3`,
+      [handoverId, group.thread_id, orgId]
+    );
+
+    const { rowCount: backfilled } = await client.query(
+      `UPDATE whatsapp_messages
+          SET handover_id = $1, handover_source = 'thread'
+        WHERE org_id = $2 AND thread_id = $3 AND handover_id IS NULL`,
+      [handoverId, orgId, group.thread_id]
+    );
+
+    await client.query(
+      `UPDATE whatsapp_session_groups
+          SET binding_status = 'bound', bound_by = $1, bound_at = now(),
+              -- Binding to a project is an unambiguous statement that this
+              -- group's contents belong in the CRM, so it implies watching.
+              is_watched = true,
+              watched_by = COALESCE(watched_by, $1),
+              watched_at = COALESCE(watched_at, now()),
+              updated_at = now()
+        WHERE id = $2`,
+      [userId || null, groupId]
+    );
+
+    await client.query('COMMIT');
+    return { ok: true, threadId: group.thread_id, handoverId, backfilled };
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* already failed */ }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 /** Dismiss a group permanently. Capture stops; existing messages are kept. */
 async function ignoreGroup(orgId, userId, groupId) {
   const { rowCount } = await pool.query(
