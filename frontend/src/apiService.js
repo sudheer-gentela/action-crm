@@ -867,6 +867,11 @@ twilio: {
     disconnect:     ()         => api.delete('/whatsapp/account'),
     handoverThread: (id)       => api.get(`/whatsapp/handovers/${id}/thread`),
     sendTargets:    (id)       => api.get(`/whatsapp/handovers/${id}/targets`),
+    // Moving a misfiled message. moveTargets is a short, permission-checked
+    // list of the projects this conversation actually touches — not every
+    // project in the org.
+    moveTargets:    (messageId)       => api.get(`/whatsapp/messages/${messageId}/move-targets`),
+    moveMessage:    (messageId, body) => api.post(`/whatsapp/messages/${messageId}/move`, body),
     templates:      ()         => api.get(`/whatsapp/templates`),
     // Org-authored template governance (Stage 2)
     tplMine:    ()          => api.get('/whatsapp-templates/mine'),

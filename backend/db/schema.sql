@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict Ia11l02pNqINvsymUNnHFRZeTaW0gvoJhbUchXt5rsXA5k5lx501DDjimGAofid
+\restrict zR3xIZ4ln61TfhknP2IIgMF5nTfyO60CkYyDgf8lDbkzLQRvUvpr1HcySGOE0NL
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -8661,7 +8661,12 @@ CREATE TABLE public.whatsapp_messages (
     media_caption text,
     media_expires_at timestamp with time zone,
     handover_id integer,
+    handover_source text,
+    reply_to_wa_message_id text,
+    handover_tagged_by integer,
+    handover_tagged_at timestamp with time zone,
     CONSTRAINT wa_messages_direction_chk CHECK ((direction = ANY (ARRAY['inbound'::text, 'outbound'::text]))),
+    CONSTRAINT wa_messages_handover_source_chk CHECK (((handover_source IS NULL) OR (handover_source = ANY (ARRAY['send'::text, 'reply_context'::text, 'recent_outbound'::text, 'manual_recent'::text, 'thread'::text, 'manual'::text])))),
     CONSTRAINT wa_messages_status_chk CHECK ((status = ANY (ARRAY['queued'::text, 'sent'::text, 'delivered'::text, 'read'::text, 'failed'::text, 'received'::text]))),
     CONSTRAINT whatsapp_messages_media_status_chk CHECK (((media_status IS NULL) OR (media_status = ANY (ARRAY['pending'::text, 'stored'::text, 'failed'::text, 'expired'::text, 'skipped'::text, 'removed'::text]))))
 );
@@ -8700,6 +8705,34 @@ COMMENT ON COLUMN public.whatsapp_messages.media_expires_at IS 'Best-effort esti
 --
 
 COMMENT ON COLUMN public.whatsapp_messages.handover_id IS 'The project THIS message belongs to. Set from the project it was sent from (outbound) or inherited from the thread (inbound). Distinct from whatsapp_threads.handover_id, which is the project that owns the conversation as a whole ΓÇö one person has exactly one direct thread, but can be on several projects.';
+
+
+--
+-- Name: COLUMN whatsapp_messages.handover_source; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_messages.handover_source IS 'How this message got its handover_id. send = stamped by the project it was sent from; reply_context = the customer replied to a specific message (Meta context.id); recent_outbound = inferred from the last outbound on this thread within 24h; thread = inherited from the conversation owner; manual = moved by a person.';
+
+
+--
+-- Name: COLUMN whatsapp_messages.reply_to_wa_message_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_messages.reply_to_wa_message_id IS 'wamid of the message this one replies to, from the webhook context object. Present only when the customer used Reply.';
+
+
+--
+-- Name: COLUMN whatsapp_messages.handover_tagged_by; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_messages.handover_tagged_by IS 'Who moved this message. NULL for every message whose project was inferred rather than chosen.';
+
+
+--
+-- Name: COLUMN whatsapp_messages.handover_tagged_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_messages.handover_tagged_at IS 'When a person last moved this message to a different project. Distinct from sent_at: moving yesterday''s reply is an action taken today, and inbound attribution compares this against the last outbound to decide which signal is fresher.';
 
 
 --
@@ -15725,6 +15758,20 @@ CREATE INDEX idx_wa_messages_org_time ON public.whatsapp_messages USING btree (o
 
 
 --
+-- Name: idx_wa_messages_thread_manual; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_wa_messages_thread_manual ON public.whatsapp_messages USING btree (thread_id, handover_tagged_at DESC) WHERE (handover_source = 'manual'::text);
+
+
+--
+-- Name: idx_wa_messages_thread_outbound; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_wa_messages_thread_outbound ON public.whatsapp_messages USING btree (thread_id, sent_at DESC) WHERE ((direction = 'outbound'::text) AND (handover_id IS NOT NULL));
+
+
+--
 -- Name: idx_wa_messages_thread_time; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -19947,6 +19994,14 @@ ALTER TABLE ONLY public.whatsapp_messages
 
 
 --
+-- Name: whatsapp_messages whatsapp_messages_handover_tagged_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_messages
+    ADD CONSTRAINT whatsapp_messages_handover_tagged_by_fkey FOREIGN KEY (handover_tagged_by) REFERENCES public.users(id);
+
+
+--
 -- Name: whatsapp_messages whatsapp_messages_media_reviewed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -20654,5 +20709,5 @@ ALTER TABLE public.user_prompts ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Ia11l02pNqINvsymUNnHFRZeTaW0gvoJhbUchXt5rsXA5k5lx501DDjimGAofid
+\unrestrict zR3xIZ4ln61TfhknP2IIgMF5nTfyO60CkYyDgf8lDbkzLQRvUvpr1HcySGOE0NL
 

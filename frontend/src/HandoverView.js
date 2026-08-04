@@ -2041,7 +2041,148 @@ function PersonPanel({ member, onClose, onOpenProject, handoverId, canManage }) 
 // Renders above the person side-panel (higher z-index). All fields come from the
 // person-dashboard payload, so no extra fetch is needed.
 
-function CommMessageModal({ message, onClose, onOpenContact }) {
+// ── MoveMessageControl: put a misfiled WhatsApp message on the right project ──
+//
+// One person has ONE WhatsApp conversation, but can be on several projects, so
+// which project a given message belongs to is partly inferred. WHY_FILED spells
+// out which rule fired, because "this is on the wrong project" is only
+// actionable if you can see what put it there.
+//
+// The target list comes from the server and is short by design: the projects
+// this conversation actually touches, filtered to ones the user can file on.
+
+const WHY_FILED = {
+  send:            'Sent from this project.',
+  reply_context:   'Filed here because the customer replied to a message on this project.',
+  recent_outbound: 'Filed here because this project messaged them within the previous 24 hours.',
+  manual_recent:   'Filed here following a manual correction on this conversation.',
+  thread:          'Filed here because this project owns the conversation.',
+  manual:          'Moved here by hand.',
+};
+
+function MoveMessageControl({ message, onMoved }) {
+  const [open,    setOpen]    = useState(false);
+  const [targets, setTargets] = useState(null);   // null = not loaded yet
+  const [dest,    setDest]    = useState('');
+  const [scope,   setScope]   = useState('message');
+  const [busy,    setBusy]    = useState(false);
+  const [err,     setErr]     = useState('');
+  const [done,    setDone]    = useState('');
+
+  useEffect(() => {
+    if (!open || targets !== null) return;
+    let cancelled = false;
+    apiService.whatsapp.moveTargets(message.waMessageId)
+      .then((res) => {
+        if (cancelled) return;
+        const list = res.data.targets || [];
+        setTargets(list);
+        const first = list.find(t => !t.isCurrent);
+        setDest(first ? String(first.handoverId) : '');
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setTargets([]);
+        setErr(e?.response?.data?.error?.message || 'Could not load projects.');
+      });
+    return () => { cancelled = true; };
+  }, [open, targets, message.waMessageId]);
+
+  const submit = async () => {
+    if (!dest) return;
+    setBusy(true); setErr(''); setDone('');
+    try {
+      const res = await apiService.whatsapp.moveMessage(message.waMessageId,
+        { handoverId: parseInt(dest, 10), scope });
+      const n = res.data.moved || 0;
+      setDone(scope === 'thread'
+        ? `Moved ${n} message${n === 1 ? '' : 's'} and the conversation.`
+        : 'Moved.');
+      if (onMoved) onMoved();
+    } catch (e) {
+      setErr(e?.response?.data?.error?.message || 'Could not move this message.');
+    } finally { setBusy(false); }
+  };
+
+  const why = WHY_FILED[message.handoverSource] || null;
+  const options = (targets || []).filter(t => !t.isCurrent);
+
+  return (
+    <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #f1f5f9' }}>
+      {why && <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 6 }}>{why}</div>}
+
+      {!open ? (
+        <button onClick={() => setOpen(true)}
+          style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+            color: '#0369a1', fontSize: 12, fontWeight: 600 }}>
+          Wrong project? Move this message →
+        </button>
+      ) : (
+        <div style={{ background: '#f8fafc', border: '1px solid #eef2f7', borderRadius: 6, padding: '10px 12px' }}>
+          {targets === null ? (
+            <div style={{ fontSize: 12, color: '#6b7280' }}>Loading projects…</div>
+          ) : options.length === 0 ? (
+            <div style={{ fontSize: 12, color: '#6b7280' }}>
+              No other project this conversation touches — and nowhere else you can file it.
+            </div>
+          ) : (
+            <>
+              <label style={{ display: 'block', fontSize: 11, color: '#6b7280', marginBottom: 4 }}>Move to</label>
+              <select value={dest} onChange={e => setDest(e.target.value)}
+                style={{ width: '100%', padding: '6px 8px', fontSize: 13, borderRadius: 5,
+                  border: '1px solid #d1d5db', marginBottom: 10 }}>
+                {options.map(t => (
+                  <option key={t.handoverId} value={t.handoverId}>
+                    {t.name}{t.account ? ` — ${t.account}` : ''}{t.ownsConversation ? ' (owns this conversation)' : ''}
+                  </option>
+                ))}
+              </select>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 10 }}>
+                {[
+                  { v: 'message', label: 'Just this message' },
+                  { v: 'thread',  label: 'This whole conversation' },
+                ].map(o => (
+                  <label key={o.v} style={{ fontSize: 12, color: '#374151', cursor: 'pointer' }}>
+                    <input type="radio" name={`wa-move-scope-${message.waMessageId}`} value={o.v}
+                      checked={scope === o.v} onChange={() => setScope(o.v)}
+                      style={{ marginRight: 6 }} />
+                    {o.label}
+                  </label>
+                ))}
+              </div>
+
+              <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 10, lineHeight: 1.5 }}>
+                {scope === 'thread'
+                  ? 'Moves every message filed alongside this one, and the conversation itself. Replies that follow land on the new project.'
+                  : message.direction === 'outbound'
+                    ? 'Replies to this message will follow it to the new project.'
+                    : 'Replies that follow will land on the new project too, until this project or another one sends again.'}
+              </div>
+
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <button onClick={submit} disabled={busy || !dest}
+                  style={{ background: '#E8630A', color: '#fff', border: 'none', borderRadius: 5,
+                    padding: '6px 12px', fontSize: 12, fontWeight: 600,
+                    cursor: busy || !dest ? 'default' : 'pointer', opacity: busy || !dest ? 0.6 : 1 }}>
+                  {busy ? 'Moving…' : 'Move'}
+                </button>
+                <button onClick={() => { setOpen(false); setErr(''); setDone(''); }}
+                  style={{ background: 'none', border: 'none', color: '#6b7280', fontSize: 12, cursor: 'pointer' }}>
+                  Cancel
+                </button>
+              </div>
+            </>
+          )}
+          {done && <div style={{ marginTop: 8, fontSize: 12, color: '#059669' }}>{done}</div>}
+          {err  && <div style={{ marginTop: 8, fontSize: 12, color: '#991b1b' }}>{err}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CommMessageModal({ message, onClose, onOpenContact, onMoved }) {
   const CH = {
     email:    { label: 'Email',    color: '#7c3aed', bg: '#f5f3ff' },
     whatsapp: { label: 'WhatsApp', color: '#059669', bg: '#ecfdf5' },
@@ -2103,6 +2244,12 @@ function CommMessageModal({ message, onClose, onOpenContact }) {
                 color: '#0369a1', fontSize: 12, fontWeight: 600 }}>
               See all messages from {message.contactName || 'this contact'} →
             </button>
+          )}
+
+          {/* Only WhatsApp, and only where the caller can refresh afterwards —
+              a move the list does not reflect looks like it failed. */}
+          {onMoved && message.channel === 'whatsapp' && message.waMessageId && (
+            <MoveMessageControl message={message} onMoved={onMoved} />
           )}
         </div>
       </div>
@@ -3027,7 +3174,8 @@ function CommunicationsPanel({ handoverId, accountId }) {
       {ok  && <div style={{ marginTop: 6, fontSize: 12, color: '#059669' }}>{ok}</div>}
       {err && <div style={{ marginTop: 6, fontSize: 12, color: '#991b1b' }}>{err}</div>}
       {openComm && <CommMessageModal message={openComm} onClose={() => setOpenComm(null)}
-        onOpenContact={(c) => { setOpenComm(null); setOpenContact(c); }} />}
+        onOpenContact={(c) => { setOpenComm(null); setOpenContact(c); }}
+        onMoved={() => { setOpenComm(null); load(); }} />}
       {openContact && <CustomerContactPanel stakeholder={openContact} onClose={() => setOpenContact(null)} />}
     </div>
   );

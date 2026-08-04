@@ -2274,6 +2274,7 @@ async function getCommunications(handoverId, orgId) {
   );
   const wa = await pool.query(
     `SELECT m.id, m.direction, m.body, m.from_name, m.is_automated, m.status,
+            m.handover_id, m.handover_source, m.thread_id,
             m.sent_by_user_id AS sender_user_id, su.first_name || ' ' || su.last_name AS sender_name,
             COALESCE(m.sent_at, m.created_at) AS at,
             t.group_subject, t.contact_id, ct.first_name || ' ' || ct.last_name AS contact_name,
@@ -2328,6 +2329,11 @@ async function getCommunications(handoverId, orgId) {
       groupSubject: m.group_subject || null, participants: m.participants || [],
       contactId: m.contact_id || null, contactName: m.contact_name || null,
       senderUserId: m.sender_user_id || null, senderName: m.sender_name || null,
+      // Needed by the UI to move a misfiled message. handoverSource says how it
+      // got here ('recent_outbound' is a guess; 'manual' is somebody's decision)
+      // so the panel can show whether it is worth second-guessing.
+      waMessageId: m.id, threadId: m.thread_id || null,
+      handoverId: m.handover_id || null, handoverSource: m.handover_source || null,
     })),
   ].sort((a, b) => new Date(a.at) - new Date(b.at));
 

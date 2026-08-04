@@ -90,6 +90,39 @@ router.post('/threads/:threadId/link', async (req, res) => {
   }
 });
 
+// ── Moving a message between projects ────────────────────────────────────────
+//
+// The counterpart to /threads/:threadId/link. That moves the CONVERSATION;
+// these move a MESSAGE — the correction for when inference put a reply on the
+// wrong project, which one person on two projects makes possible.
+
+// Where could this message go? A short, checked list, not every project.
+router.get('/messages/:messageId/move-targets', async (req, res) => {
+  try {
+    res.json(await whatsapp.listMoveTargets(
+      parseInt(req.params.messageId, 10), req.orgId, req.user.userId
+    ));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// Body: { handoverId, scope?: 'message' | 'thread' }
+// scope 'thread' also moves every sibling message filed the same way AND the
+// conversation's owner — "this whole exchange is on the wrong project".
+router.post('/messages/:messageId/move', async (req, res) => {
+  try {
+    const { handoverId, scope } = req.body || {};
+    if (!handoverId) return res.status(400).json({ error: { message: 'handoverId is required' } });
+    res.json(await whatsapp.moveMessage(
+      parseInt(req.params.messageId, 10), req.orgId, req.user.userId,
+      { handoverId: parseInt(handoverId, 10), scope: scope || 'message' }
+    ));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
 router.get('/templates', async (req, res) => {
   try {
     const out = await whatsapp.listApprovedTemplates(req.orgId);

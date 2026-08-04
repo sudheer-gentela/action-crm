@@ -246,6 +246,184 @@ async function linkThreadToProject(threadId, orgId, handoverId, { force = false 
   return { thread: updated };
 }
 
+/**
+ * Which projects could this message reasonably belong to?
+ *
+ * Deliberately NOT "every project in the org". The realistic mistakes are
+ * between the handful of projects this conversation actually touches, and a
+ * flat list of 200 projects is how a message ends up somewhere worse than
+ * where it started. Candidates are:
+ *   • the project the message is on now,
+ *   • the project that owns the conversation,
+ *   • every project any message on this thread has been filed under, and
+ *   • every open project this phone number is a contact or member on.
+ *
+ * Filtered to projects the caller can actually file on, so the picker cannot
+ * offer somewhere they are not allowed to put it.
+ */
+async function listMoveTargets(messageId, orgId, userId) {
+  const projectFiles = require('./projectFiles.service');
+
+  const { rows: [msg] } = await pool.query(
+    `SELECT m.id, m.handover_id, m.handover_source, m.direction, m.thread_id,
+            t.handover_id AS thread_handover_id, t.wa_phone
+       FROM whatsapp_messages m
+       JOIN whatsapp_threads t ON t.id = m.thread_id
+      WHERE m.id = $1 AND m.org_id = $2`,
+    [messageId, orgId]
+  );
+  if (!msg) throw Object.assign(new Error('Message not found'), { status: 404 });
+
+  const digits = normalizePhone(msg.wa_phone);
+  const { rows } = await pool.query(
+    `WITH candidates AS (
+       SELECT DISTINCT handover_id FROM whatsapp_messages
+        WHERE org_id = $1 AND thread_id = $2 AND handover_id IS NOT NULL
+       UNION
+       SELECT $3::int WHERE $3::int IS NOT NULL
+       UNION
+       SELECT h.id
+         FROM sales_handovers h
+         LEFT JOIN project_contacts pc
+                ON pc.context_type = 'handover' AND pc.context_id = h.id AND pc.org_id = h.org_id
+         LEFT JOIN contacts c ON c.id = pc.contact_id
+         LEFT JOIN project_members pm
+                ON pm.context_type = 'handover' AND pm.context_id = h.id
+               AND pm.org_id = h.org_id AND pm.status = 'approved'
+         LEFT JOIN users u ON u.id = pm.user_id
+        WHERE h.org_id = $1
+          AND h.status NOT IN ('completed', 'cancelled')
+          AND $4::text <> ''
+          AND ( regexp_replace(COALESCE(c.phone, ''), '[^0-9]', '', 'g') = $4
+             OR regexp_replace(COALESCE(u.whatsapp_phone, u.phone, ''), '[^0-9]', '', 'g') = $4 )
+     )
+     SELECT h.id AS handover_id, COALESCE(h.name, d.name) AS name,
+            a.name AS account, h.status
+       FROM candidates cd
+       JOIN sales_handovers h ON h.id = cd.handover_id AND h.org_id = $1
+       LEFT JOIN deals d ON d.id = h.deal_id
+       LEFT JOIN accounts a ON a.id = h.account_id
+      ORDER BY name NULLS LAST, h.id`,
+    [orgId, msg.thread_id, msg.thread_handover_id ?? null, digits || '']
+  );
+
+  const targets = [];
+  for (const r of rows) {
+    if (!(await projectFiles.canFile(r.handover_id, orgId, userId))) continue;
+    targets.push({
+      handoverId: r.handover_id,
+      name: r.name || `Project ${r.handover_id}`,
+      account: r.account || null,
+      status: r.status,
+      isCurrent: r.handover_id === msg.handover_id,
+      ownsConversation: r.handover_id === msg.thread_handover_id,
+    });
+  }
+
+  return {
+    message: {
+      id: msg.id,
+      direction: msg.direction,
+      handoverId: msg.handover_id ?? null,
+      handoverSource: msg.handover_source ?? null,
+      threadId: msg.thread_id,
+    },
+    targets,
+  };
+}
+
+/**
+ * Move one WhatsApp message to another project by hand.
+ *
+ * The backstop for what inference gets wrong, and the counterpart to
+ * linkThreadToProject — that moves the CONVERSATION, this moves a MESSAGE.
+ *
+ * scope:
+ *   'message' (default) — this row only.
+ *   'thread'            — this row plus every other message on the thread
+ *                         currently filed under the same project, and the
+ *                         conversation's owner. For "this whole exchange is on
+ *                         the wrong project", which is the usual case once a
+ *                         reply has already been misfiled.
+ *
+ * Authority: the caller must be able to file on the DESTINATION, and on the
+ * message's CURRENT project when it has one. Requiring both is the point —
+ * without the second check, anyone could pull a message out of a project they
+ * are not on and cannot see.
+ *
+ * The move is stamped handover_source='manual' with handover_tagged_at, which
+ * is what makes it outrank inference for the replies that follow. See
+ * resolveInboundHandover.
+ */
+async function moveMessage(messageId, orgId, userId, { handoverId, scope = 'message' } = {}) {
+  if (!handoverId) throw Object.assign(new Error('handoverId is required'), { status: 400 });
+  if (!['message', 'thread'].includes(scope)) {
+    throw Object.assign(new Error("scope must be 'message' or 'thread'"), { status: 400 });
+  }
+  const projectFiles = require('./projectFiles.service');
+
+  const { rows: [msg] } = await pool.query(
+    `SELECT m.id, m.handover_id, m.thread_id, t.handover_id AS thread_handover_id
+       FROM whatsapp_messages m
+       JOIN whatsapp_threads t ON t.id = m.thread_id
+      WHERE m.id = $1 AND m.org_id = $2`,
+    [messageId, orgId]
+  );
+  if (!msg) throw Object.assign(new Error('Message not found'), { status: 404 });
+
+  const { rows: [dest] } = await pool.query(
+    `SELECT id FROM sales_handovers WHERE id = $1 AND org_id = $2`, [handoverId, orgId]);
+  if (!dest) throw Object.assign(new Error('Destination project not found'), { status: 404 });
+
+  await projectFiles.assertCanFile(handoverId, orgId, userId);
+  if (msg.handover_id != null && msg.handover_id !== handoverId) {
+    await projectFiles.assertCanFile(msg.handover_id, orgId, userId);
+  }
+
+  if (msg.handover_id === handoverId && scope === 'message') {
+    return { moved: 0, alreadyThere: true, handoverId, scope };
+  }
+
+  // Which rows move. For 'thread', every message currently filed the same way
+  // as this one — including the ones with no project at all, which are the
+  // orphans this is most often used to rescue.
+  const { rows: moved } = await pool.query(
+    scope === 'thread'
+      ? `UPDATE whatsapp_messages
+            SET handover_id = $3, handover_source = 'manual',
+                handover_tagged_by = $4, handover_tagged_at = now()
+          WHERE org_id = $1 AND thread_id = $2
+            AND handover_id IS NOT DISTINCT FROM $5
+          RETURNING id`
+      : `UPDATE whatsapp_messages
+            SET handover_id = $3, handover_source = 'manual',
+                handover_tagged_by = $4, handover_tagged_at = now()
+          WHERE org_id = $1 AND thread_id = $2 AND id = $5
+          RETURNING id`,
+    scope === 'thread'
+      ? [orgId, msg.thread_id, handoverId, userId, msg.handover_id]
+      : [orgId, msg.thread_id, handoverId, userId, messageId]
+  );
+
+  let conversationMoved = false;
+  if (scope === 'thread') {
+    const { rowCount } = await pool.query(
+      `UPDATE whatsapp_threads SET handover_id = $1, updated_at = now()
+        WHERE id = $2 AND org_id = $3`,
+      [handoverId, msg.thread_id, orgId]
+    );
+    conversationMoved = rowCount > 0;
+  }
+
+  return {
+    moved: moved.length,
+    handoverId,
+    fromHandoverId: msg.handover_id ?? null,
+    scope,
+    conversationMoved,
+  };
+}
+
 async function projectForPhone(orgId, waPhone) {
   const digits = normalizePhone(waPhone);
   if (!digits) return null;
@@ -960,16 +1138,27 @@ function contactNameFromValue(value, fromPhone) {
  *
  * Precedence, most authoritative first:
  *   1. `context.id` — the customer tapped Reply on a specific message. Meta
- *      tells us exactly which one, so there is nothing to infer.
- *   2. The last outbound on this thread within the 24 hours before this message.
- *      A reply belongs to whatever prompted it, and 24h is the same window Meta
- *      uses to decide the conversation is still live.
+ *      tells us exactly which one, so there is nothing to infer. If a person
+ *      MOVED that message, the reply follows it: the move is already baked into
+ *      the message's handover_id.
+ *   2. The freshest steering signal on this thread in the last 24 hours,
+ *      whichever of these two happened later:
+ *        • an outbound send  (a project spoke; the reply answers it), or
+ *        • a manual move     (a person said this conversation is about X).
+ *      Compared on when each ACTION happened — sent_at vs handover_tagged_at —
+ *      because a correction made today must outrank the send that caused the
+ *      mistake yesterday. Without that, a rep would fix the same misfiling
+ *      after every single reply.
  *   3. The thread's own project — a cold message, months later, or a thread
  *      only ever used by one project. The old behaviour, now the fallback.
  *
+ * Note what is deliberately NOT here: moving an INBOUND message on its own is
+ * still a steering signal (rule 2), but moving an OUTBOUND one is stronger,
+ * because it also changes what rule 1 resolves to.
+ *
  * Returns { handoverId, source } where source is stored for provenance, so a
  * message that lands on the wrong project can be explained rather than guessed
- * at. Requires db/2026_99_whatsapp_message_attribution.sql.
+ * at. Requires db/2026_99 and db/2026_100.
  */
 async function resolveInboundHandover(orgId, thread, m) {
   const replyToWamid = m?.context?.id || null;
@@ -985,16 +1174,29 @@ async function resolveInboundHandover(orgId, thread, m) {
   }
 
   const ts = Number(m?.timestamp) || (Date.now() / 1000);
-  const { rows: [recent] } = await pool.query(
-    `SELECT handover_id FROM whatsapp_messages
-      WHERE org_id = $1 AND thread_id = $2 AND direction = 'outbound'
-        AND handover_id IS NOT NULL
-        AND COALESCE(sent_at, created_at) > to_timestamp($3) - interval '24 hours'
-      ORDER BY COALESCE(sent_at, created_at) DESC, id DESC
+  // One query, two candidate signals, ordered by when each ACT happened. A
+  // manual move is dated by handover_tagged_at; an outbound by when it was
+  // sent. Both are capped at the inbound's own timestamp so a redelivered
+  // webhook cannot be attributed by something that happened afterwards.
+  const { rows: [signal] } = await pool.query(
+    `SELECT handover_id,
+            CASE WHEN handover_source = 'manual' THEN 'manual_recent'
+                 ELSE 'recent_outbound' END AS source
+       FROM whatsapp_messages
+      WHERE org_id = $1 AND thread_id = $2 AND handover_id IS NOT NULL
+        AND ( direction = 'outbound' OR handover_source = 'manual' )
+        AND COALESCE(
+              CASE WHEN handover_source = 'manual' THEN handover_tagged_at END,
+              sent_at, created_at
+            ) BETWEEN to_timestamp($3) - interval '24 hours' AND to_timestamp($3)
+      ORDER BY COALESCE(
+                 CASE WHEN handover_source = 'manual' THEN handover_tagged_at END,
+                 sent_at, created_at
+               ) DESC, id DESC
       LIMIT 1`,
     [orgId, thread.id, ts]
   );
-  if (recent) return { handoverId: recent.handover_id, source: 'recent_outbound', replyToWamid };
+  if (signal) return { handoverId: signal.handover_id, source: signal.source, replyToWamid };
 
   return { handoverId: thread.handover_id ?? null, source: 'thread', replyToWamid };
 }
@@ -1141,6 +1343,8 @@ module.exports = {
   listSendTargets,
   projectForPhone,
   linkThreadToProject,
+  listMoveTargets,
+  moveMessage,
   // Exported for diagnostics and back-fill: it is the one place that decides
   // which project an inbound conversation belongs to.
   threadForInbound,
