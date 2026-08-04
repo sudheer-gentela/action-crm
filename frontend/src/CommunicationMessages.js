@@ -460,9 +460,10 @@ function Conversation({ message: m }) {
     );
   }
 
-  // Direct inbound: the conversation is the sender, already shown to the left.
-  // Repeating it would just be the same person twice.
-  return <span style={style}>direct message</span>;
+  // Direct inbound: the OTHER end is the sender, already shown to the left — so
+  // name the recipient instead. That is us, and it is the part the reader does
+  // not already have.
+  return <span style={style}>to {m.recipientName || 'your WhatsApp number'}</span>;
 }
 
 function Pill({ tone, children }) {

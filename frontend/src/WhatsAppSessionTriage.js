@@ -81,7 +81,7 @@ export default function WhatsAppSessionTriage() {
   // every render, which would make the needsAttention memo below recompute
   // every time regardless of whether anything changed.
   const groups = useMemo(() => data.groups || [], [data.groups]);
-  const allSelected = groups.length > 0 && groups.every(g => selected.has(g.id));
+  const allSelected = groups.length > 0 && groups.every(g => selected.has(g.group_jid));
 
   const toggle = (id) => setSelected(s => {
     const n = new Set(s);
@@ -89,7 +89,7 @@ export default function WhatsAppSessionTriage() {
     return n;
   });
 
-  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(groups.map(g => g.id)));
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(groups.map(g => g.group_jid)));
 
   const run = async (fn, okMsg) => {
     setError(''); setNotice(''); setBusy(true);
@@ -106,7 +106,7 @@ export default function WhatsAppSessionTriage() {
   };
 
   const bulkWatch = (watched) => run(
-    () => apiService.whatsappSession.watch({ groupIds: [...selected], watched }),
+    () => apiService.whatsappSession.watchJid({ jids: [...selected], watched }),
     (r) => `${r.data.updated} group${r.data.updated === 1 ? '' : 's'} ${watched ? 'now being captured' : 'no longer captured'}.`
   );
 
@@ -136,12 +136,13 @@ export default function WhatsAppSessionTriage() {
         WhatsApp groups
       </h3>
       <p style={{ margin: '0 0 14px', fontSize: 13, color: '#6b7280', lineHeight: 1.5 }}>
-        Every group this number belongs to is listed here. Messages are only stored for groups you
-        switch on — the rest are catalogued by name and left alone.
+        Every group this number belongs to is listed here, read live from WhatsApp. Nothing about
+        these groups is stored in GoWarmCRM until you switch one on — close this page and the rest
+        are forgotten.
       </p>
 
       <div style={{ display: 'flex', gap: 20, marginBottom: 14, fontSize: 12 }}>
-        <Stat label="Catalogued"  value={counts.total ?? 0} />
+        <Stat label="In this list" value={counts.inSnapshot ?? 0} />
         <Stat label="Capturing"   value={counts.watched ?? 0} />
         <Stat label="Bound"       value={counts.bound ?? 0} />
         <Stat label="Need a project" value={counts.needsBinding ?? 0} warn={needsAttention > 0} />
@@ -203,9 +204,9 @@ export default function WhatsAppSessionTriage() {
               </td></tr>
             )}
             {groups.map(g => (
-              <tr key={g.id} style={{ borderTop: '1px solid #f3f4f6' }}>
+              <tr key={g.group_jid} style={{ borderTop: '1px solid #f3f4f6' }}>
                 <td style={{ padding: '10px 12px' }}>
-                  <input type="checkbox" checked={selected.has(g.id)} onChange={() => toggle(g.id)} />
+                  <input type="checkbox" checked={selected.has(g.group_jid)} onChange={() => toggle(g.group_jid)} />
                 </td>
                 <td style={{ padding: '10px 12px' }}>
                   <div style={{ fontWeight: 500, color: '#1a202c' }}>{g.subject || '(no name)'}</div>
@@ -230,7 +231,7 @@ export default function WhatsAppSessionTriage() {
                     }}
                     disabled={busy}
                     onClick={() => run(
-                      () => apiService.whatsappSession.watch({ groupIds: [g.id], watched: !g.is_watched }),
+                      () => apiService.whatsappSession.watchJid({ jids: [g.group_jid], watched: !g.is_watched }),
                       g.is_watched ? 'Capture stopped for that group.' : 'Now capturing that group.'
                     )}
                   >{g.is_watched ? 'On' : 'Off'}</button>
@@ -238,10 +239,12 @@ export default function WhatsAppSessionTriage() {
                 <td style={{ padding: '10px 12px' }}>
                   {g.handover_id
                     ? <span style={{ color: '#374151' }}>{g.project_name || `#${g.handover_id}`}</span>
-                    : <button style={{ ...GHOST, fontSize: 12, padding: '4px 10px' }}
-                        onClick={() => { setBindFor(g); setHandoverId(''); setError(''); }}>
-                        Link to project
-                      </button>}
+                    : g.id
+                      ? <button style={{ ...GHOST, fontSize: 12, padding: '4px 10px' }}
+                          onClick={() => { setBindFor(g); setHandoverId(''); setError(''); }}>
+                          Link to project
+                        </button>
+                      : <span style={{ fontSize: 11, color: '#c7c7c7' }}>switch capture on first</span>}
                 </td>
                 <td style={{ padding: '10px 12px', color: '#6b7280', fontSize: 12 }}>
                   {g.last_message_at ? new Date(g.last_message_at).toLocaleDateString() : '—'}

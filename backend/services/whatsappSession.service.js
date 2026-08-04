@@ -23,6 +23,7 @@
 
 const { pool } = require('../config/database');
 const waService = require('./whatsapp.service');
+const groupCache = require('./whatsapp/groupCache');
 
 const WORKER_VERSION = '1.0.0';
 
@@ -108,6 +109,7 @@ async function disableSession(orgId, userId) {
   if (!rows.length) return { ok: false, code: 'NOT_FOUND' };
   // Key material is useless once disabled and is the most sensitive thing here.
   await pool.query(`DELETE FROM whatsapp_session_auth WHERE session_id = $1`, [rows[0].id]);
+  groupCache.drop(rows[0].id);
   return { ok: true, sessionId: rows[0].id };
 }
 
@@ -293,7 +295,15 @@ async function heartbeat(sessionId, { socketConnected = true } = {}) {
       WHERE id = $1`,
     [sessionId]
   );
-  return { ok: true, config: await getRuntimeConfig(sessionId), socketConnected };
+  return {
+    ok: true,
+    config: await getRuntimeConfig(sessionId),
+    socketConnected,
+    // Someone has the triage screen open and wants the live group list. The
+    // worker answers by POSTing a snapshot to /internal/group-snapshot, which
+    // goes to memory, not Postgres.
+    sendGroupSnapshot: groupCache.takeRefreshRequest(sessionId),
+  };
 }
 
 /** Count a reconnect, so a session that flaps constantly is visible. */
@@ -442,11 +452,15 @@ async function ingestGroupMessage(sessionId, evt) {
 
   // Group registry first: this is what makes an unseen group appear in triage
   // even if the message itself turns out to be a protocol no-op.
+  // No row means nobody has decided about this group. Under allowlist mode
+  // that is also a decision NOT to store its messages, so we stop here without
+  // creating a record of the group's existence.
   const group = await upsertSessionGroup(sessionId, orgId, {
     jid: evt.jid,
     subject: evt.subject || null,
     via: 'message',
   });
+  if (!group) return { stored: false, reason: 'NOT_WATCHED' };
 
   // ── the capture gate ────────────────────────────────────────────────────
   //
@@ -543,7 +557,39 @@ async function ingestGroupMessage(sessionId, evt) {
 }
 
 /** Register or refresh a group we have been added to. */
-async function upsertSessionGroup(sessionId, orgId, { jid, subject, participantCount = null, createdAt = null, via = 'message' }) {
+/**
+ * Persist a group ONLY when a human has already decided about it, or when the
+ * caller is explicitly recording a decision.
+ *
+ * Cataloguing every group the number belongs to is what produced a 306-row
+ * table of somebody's alumni groups and residents' associations. The live list
+ * lives in groupCache (memory, short TTL); this table holds DECISIONS.
+ *
+ * @param {boolean} opts.createIfMissing  true only from the watch/bind paths
+ * @returns the row, or null when the group is undecided and none exists
+ */
+async function upsertSessionGroup(sessionId, orgId, { jid, subject, participantCount = null, createdAt = null, via = 'message', createIfMissing = false }) {
+  const { rows: [existing] } = await pool.query(
+    `SELECT * FROM whatsapp_session_groups WHERE session_id = $1 AND group_jid = $2`,
+    [sessionId, jid]
+  );
+
+  if (existing) {
+    // Refresh what we already hold — a decided group's name may have changed.
+    const { rows: [updated] } = await pool.query(
+      `UPDATE whatsapp_session_groups
+          SET subject           = COALESCE($3, subject),
+              participant_count = COALESCE($4, participant_count),
+              updated_at        = now()
+        WHERE id = $1 AND org_id = $2
+        RETURNING *`,
+      [existing.id, orgId, subject, participantCount]
+    );
+    return updated;
+  }
+
+  if (!createIfMissing) return null;   // undecided: nothing is written
+
   const { rows: [group] } = await pool.query(
     `INSERT INTO whatsapp_session_groups
        (session_id, org_id, group_jid, subject, participant_count, group_created_at, discovered_via)
@@ -623,14 +669,12 @@ async function syncGroupMetadata(sessionId, { jid, subject, participants = [], o
     via: opts.via || 'metadata',
   });
 
-  // Record which GoWarmCRM USERS are in this group — for EVERY catalogued
-  // group, captured or not. This is what lets a search that finds nothing say
-  // "that group isn't being captured" instead of a useless empty result.
-  //
-  // Only the intersection with verified org users is stored. Non-user
-  // participants are matched in memory and discarded: the roster of an
-  // uncaptured group is somebody's family chat, and we have no business
-  // retaining those numbers.
+  // Undecided group: its name and roster stay in the in-memory snapshot only.
+  if (!group) return { ok: true, persisted: false };
+
+  // For a DECIDED group, record which GoWarmCRM users are in it — that is what
+  // scopes self-service search. Only the intersection with verified org users
+  // is stored; non-user participants are matched in memory and discarded.
   try {
     await syncOrgMembersForGroup(session.org_id, group.id, participants);
   } catch (err) {
@@ -845,6 +889,48 @@ async function bindGroup(orgId, userId, groupId, handoverId) {
   }
 }
 
+/**
+ * Switch capture on for groups identified by JID.
+ *
+ * This is the path the triage screen uses now, because an undecided group has
+ * no database id — it exists only in the in-memory snapshot. Switching capture
+ * on IS the decision, so this is the moment the row is created.
+ */
+async function watchByJid(orgId, sessionId, userId, jids = [], watched = true, snapshot = []) {
+  const list = (jids || []).filter(Boolean);
+  if (!list.length) return { ok: false, code: 'NO_JIDS' };
+
+  const byJid = new Map(snapshot.map(g => [g.jid, g]));
+  const results = [];
+
+  for (const jid of list) {
+    const meta = byJid.get(jid) || {};
+    const group = await upsertSessionGroup(sessionId, orgId, {
+      jid,
+      subject: meta.subject || null,
+      participantCount: meta.participants ?? null,
+      via: 'snapshot',
+      // Turning capture ON creates the row. Turning it OFF only updates an
+      // existing one — we never write a row to record a "no".
+      createIfMissing: !!watched,
+    });
+    if (!group) { results.push({ jid, ok: false, reason: 'NOT_DECIDED' }); continue; }
+
+    await pool.query(
+      `UPDATE whatsapp_session_groups
+          SET is_watched = $1,
+              watched_by = CASE WHEN $1 THEN $2 ELSE watched_by END,
+              watched_at = CASE WHEN $1 THEN now() ELSE watched_at END,
+              updated_at = now()
+        WHERE id = $3 AND org_id = $4`,
+      [!!watched, userId || null, group.id, orgId]
+    );
+    results.push({ jid, ok: true, groupId: group.id });
+  }
+
+  return { ok: true, updated: results.filter(r => r.ok).length, results, watched: !!watched };
+}
+
 /** Dismiss a group permanently. Capture stops; existing messages are kept. */
 async function ignoreGroup(orgId, userId, groupId) {
   const { rowCount } = await pool.query(
@@ -939,6 +1025,8 @@ async function health(orgId) {
 }
 
 module.exports = {
+  groupCache,
+  watchByJid,
   syncOrgMembersForGroup,
   setWatch,
   getRuntimeConfig,

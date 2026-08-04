@@ -35,6 +35,7 @@ const router  = express.Router();
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext, requireRole } = require('../middleware/orgContext.middleware');
 const session = require('../services/whatsappSession.service');
+const groupCache = require('../services/whatsapp/groupCache');
 const QRCode = require('qrcode');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -117,6 +118,30 @@ router.post('/internal/reconnect', workerAuth, async (req, res) => {
     if (!sessionId) return res.status(400).json({ error: { message: 'sessionId required' } });
     await session.recordReconnect(sessionId);
     res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: { message: e.message } });
+  }
+});
+
+/**
+ * The live group list. Goes to process memory with a short TTL and is NEVER
+ * written to Postgres — see services/whatsapp/groupCache.js for why.
+ */
+router.post('/internal/group-snapshot', workerAuth, async (req, res) => {
+  try {
+    const { sessionId, groups } = req.body || {};
+    if (!sessionId || !Array.isArray(groups)) {
+      return res.status(400).json({ error: { message: 'sessionId and groups[] required' } });
+    }
+    const entry = groupCache.put(sessionId, groups);
+    // Groups a human already decided about still get their stored row refreshed
+    // — a bound group whose name changed should not show a stale name.
+    for (const g of groups) {
+      try { await session.syncGroupMetadata(sessionId, { ...g, via: 'snapshot' }); }
+      catch (err) { console.warn(`[wa-session] decided-group refresh failed for ${g?.jid}: ${err.message}`); }
+    }
+    console.log(`[wa-session] snapshot cached: ${entry.groups.length} groups (not persisted)`);
+    res.json({ ok: true, cached: entry.groups.length });
   } catch (e) {
     res.status(500).json({ error: { message: e.message } });
   }
@@ -287,14 +312,77 @@ router.post('/phone-seen', async (req, res) => {
   }
 });
 
+/**
+ * The triage list = live snapshot (memory) + stored decisions (Postgres).
+ *
+ * Opening this screen asks the worker for a refresh, which arrives on its next
+ * heartbeat. The cached list renders immediately so the screen is never blank;
+ * `snapshotAgeMs` lets the UI say how fresh it is.
+ */
 router.get('/triage', async (req, res) => {
   try {
-    res.json(await session.listTriage(req.orgId, {
-      status:  req.query.status,
-      watched: req.query.watched,
-      q:       req.query.q,
-      limit:   req.query.limit,
-    }));
+    const s = await session.getSession(req.orgId);
+    if (!s) return res.json({ groups: [], counts: {}, connected: false });
+
+    groupCache.requestRefresh(s.id);
+    const snap = groupCache.get(s.id);
+    const stored = await session.listTriage(req.orgId, {
+      status: req.query.status, watched: req.query.watched,
+      q: req.query.q, limit: req.query.limit,
+    });
+
+    // Stored decisions win: they carry the project link, message counts and
+    // capture state that the snapshot knows nothing about.
+    const byJid = new Map((stored.groups || []).map(g => [g.group_jid, g]));
+    const merged = [];
+
+    for (const g of (snap?.groups || [])) {
+      const known = byJid.get(g.jid);
+      if (known) { merged.push({ ...known, participant_count: g.participants ?? known.participant_count, live: true }); byJid.delete(g.jid); }
+      else merged.push({
+        id: null, group_jid: g.jid, subject: g.subject,
+        participant_count: g.participants, message_count: 0,
+        is_watched: false, binding_status: 'unbound',
+        thread_id: null, handover_id: null, project_name: null,
+        last_message_at: null, live: true, persisted: false,
+      });
+    }
+    // Decided groups the snapshot did not mention — the number may have left
+    // them. Still shown, because their captured history is still ours to manage.
+    for (const g of byJid.values()) merged.push({ ...g, live: false, persisted: true });
+
+    const q = (req.query.q || '').toLowerCase();
+    const filtered = q ? merged.filter(g => (g.subject || '').toLowerCase().includes(q)) : merged;
+
+    res.json({
+      groups: filtered,
+      counts: {
+        ...stored.counts,
+        visible: filtered.length,
+        inSnapshot: snap?.groups?.length ?? 0,
+      },
+      connected: s.status === 'connected',
+      snapshotAgeMs: snap?.ageMs ?? null,
+      snapshotStale: snap?.stale ?? true,
+      // Say it plainly in the API too, not just the UI copy.
+      note: 'Group names are held in memory only. Nothing is stored until you switch capture on.',
+    });
+  } catch (e) {
+    res.status(500).json({ error: { message: e.message } });
+  }
+});
+
+// Watch by JID: an undecided group has no database id, because deciding is what
+// creates the row.
+router.post('/triage/watch-jid', async (req, res) => {
+  try {
+    const { jids, watched } = req.body || {};
+    const s = await session.getSession(req.orgId);
+    if (!s) return res.status(404).json({ error: { message: 'No session' } });
+    const snap = groupCache.get(s.id);
+    const result = await session.watchByJid(req.orgId, s.id, req.userId, jids, watched, snap?.groups || []);
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
   } catch (e) {
     res.status(500).json({ error: { message: e.message } });
   }

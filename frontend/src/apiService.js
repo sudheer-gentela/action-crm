@@ -899,6 +899,7 @@ twilio: {
     triage:         (status)    => api.get(`/whatsapp-session/triage${status ? `?status=${status}` : ''}`),
     triageQuery:    (params={})  => api.get(`/whatsapp-session/triage?${new URLSearchParams(params).toString()}`),
     watch:          (body)      => api.post('/whatsapp-session/triage/watch', body),
+    watchJid:       (body)      => api.post('/whatsapp-session/triage/watch-jid', body),
     bind:           (id, body)  => api.post(`/whatsapp-session/triage/${id}/bind`, body),
     ignore:         (id)        => api.post(`/whatsapp-session/triage/${id}/ignore`),
   },

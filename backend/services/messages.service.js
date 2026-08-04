@@ -125,6 +125,14 @@ function fromWhatsApp(m) {
       || (m.kind === 'group' ? m.wa_group_id : null),
     conversationId: m.wa_group_id || String(m.thread_id),
     conversationKind: m.kind,
+
+    // Who RECEIVED it. For inbound that is our own WhatsApp Business number,
+    // which is not redundant with the sender and is the thing the reader
+    // actually wants to know — "who did this come in to?". Saying nothing there
+    // left an inbound direct message reading as if it had no destination.
+    recipientName: m.direction === 'inbound'
+      ? (m.account_name || (m.account_phone ? `+${m.account_phone}` : null))
+      : null,
     // Linkable when the other end of a direct thread is a known contact, the
     // same way the sender is.
     conversationRef: m.thread_contact_id
