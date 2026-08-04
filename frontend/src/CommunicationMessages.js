@@ -254,9 +254,7 @@ export default function CommunicationMessages() {
           {messages.map(m => (
             <div key={m.id} style={{ padding: '12px 14px', borderBottom: '1px solid #f3f4f6' }}>
               <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
-                <span style={{ fontWeight: 500, fontSize: 13, color: '#1a202c' }}>
-                  {m.senderName || 'Unknown'}
-                </span>
+                <Sender message={m} />
                 <span style={{ fontSize: 12, color: '#9ca3af' }}>
                   {m.conversationName || m.conversationId || 'Direct'}
                 </span>
@@ -382,6 +380,49 @@ function Diagnosis({ diagnosis, onRequestCapture }) {
         {diagnosis.groups?.uncaptured === 1 ? ' is' : ' are'} not captured.
       </div>
     </div>
+  );
+}
+
+/*
+ * A sender is a link when the backend resolved them to a CRM entity, and plain
+ * text otherwise. Deliberately NOT a link-that-does-nothing: a name styled as
+ * clickable that ignores clicks is worse than plain text.
+ *
+ * The number is shown alongside an unresolved name because it is the only
+ * actionable thing left — you can search it, or use it to add the contact.
+ */
+function Sender({ message: m }) {
+  const go = () => {
+    if (!m.senderRef) return;
+    if (m.senderRef.type === 'contact') {
+      window.dispatchEvent(new CustomEvent('navigate', {
+        detail: { tab: 'contacts', contactId: m.senderRef.id },
+      }));
+    }
+  };
+
+  if (m.senderRef?.type === 'contact') {
+    return (
+      <button
+        onClick={go}
+        title={m.senderHandle ? `+${m.senderHandle}` : ''}
+        style={{
+          background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+          fontWeight: 500, fontSize: 13, color: '#1A3A5C', textDecoration: 'underline',
+        }}
+      >{m.senderName}</button>
+    );
+  }
+
+  return (
+    <span style={{ fontWeight: 500, fontSize: 13, color: '#1a202c' }}>
+      {m.senderName || 'Unknown'}
+      {!m.senderKnown && m.senderHandle && m.senderName !== `+${m.senderHandle}` && (
+        <span style={{ fontWeight: 400, color: '#9ca3af', marginLeft: 6, fontSize: 12 }}>
+          +{m.senderHandle}
+        </span>
+      )}
+    </span>
   );
 }
 

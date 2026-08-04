@@ -42,6 +42,54 @@ const DEFAULT_LIMIT = 50;
  * by which list it came from — the All tab interleaves channels, and a row that
  * cannot say where it came from is not renderable there.
  */
+/**
+ * Resolve who sent a message into a displayable — and where possible LINKABLE —
+ * identity.
+ *
+ * senderRef is what lets the UI hyperlink: { type:'contact'|'user', id }. Null
+ * means there is nobody to link to, which is a normal outcome for someone who
+ * has not been added to the CRM yet.
+ */
+function senderFor(m) {
+  if (m.direction === 'outbound') {
+    return {
+      senderName:   m.sent_by_name || m.account_name || (m.is_automated ? 'Automated' : 'You'),
+      senderHandle: m.account_phone || null,
+      senderRef:    m.sent_by_user_id ? { type: 'user', id: m.sent_by_user_id } : null,
+      senderKnown:  true,
+    };
+  }
+
+  const contactName = [m.sender_contact_first, m.sender_contact_last].filter(Boolean).join(' ');
+  if (m.sender_contact_id && contactName) {
+    return {
+      senderName:   contactName,
+      senderHandle: m.from_phone || null,
+      senderRef:    { type: 'contact', id: m.sender_contact_id },
+      senderKnown:  true,
+    };
+  }
+
+  if (m.sender_user_id && m.sender_user_name) {
+    return {
+      senderName:   m.sender_user_name,
+      senderHandle: m.from_phone || null,
+      senderRef:    { type: 'user', id: m.sender_user_id },
+      senderKnown:  true,
+    };
+  }
+
+  // WhatsApp's push name is whatever the sender set on their own phone. Worth
+  // showing — it is usually their actual name — but it is not a CRM entity, so
+  // nothing to link to, and the number stays visible alongside it.
+  return {
+    senderName:   m.from_name || (m.from_phone ? `+${m.from_phone}` : 'Unknown'),
+    senderHandle: m.from_phone || null,
+    senderRef:    null,
+    senderKnown:  false,
+  };
+}
+
 function fromWhatsApp(m) {
   return {
     id:            `whatsapp:${m.id}`,
@@ -53,11 +101,29 @@ function fromWhatsApp(m) {
     messageType:   m.message_type,
     direction:     m.direction,
 
-    senderName:    m.from_name || m.from_phone || null,
-    senderHandle:  m.from_phone || null,
+    // Inbound: whoever sent it. Outbound: us — from_name/from_phone are NULL
+    // on outbound rows by design, so falling through to them showed "Unknown"
+    // for every message the org itself sent.
+    //
+    // Inbound resolution order, best identity first:
+    //   1. a CRM contact matched on phone      → linkable
+    //   2. a GoWarmCRM user (internal sender)  → linkable
+    //   3. the WhatsApp push name              → a name, but not an entity
+    //   4. the bare number
+    // An unmatched sender shows their number rather than "Unknown": the number
+    // is actionable (you can search it, or add them as a contact) and "Unknown"
+    // is not.
+    ...senderFor(m),
 
-    conversationName: m.group_subject || (m.kind === 'group' ? m.wa_group_id : null),
-    conversationId:   m.wa_group_id || String(m.thread_id),
+    // A direct thread has no group subject; name it after the person on the
+    // other end rather than an internal thread id nobody can act on.
+    conversationName:
+      m.group_subject
+      || ([m.counterparty_first, m.counterparty_last].filter(Boolean).join(' ') || null)
+      || (m.thread_phone ? `+${m.thread_phone}` : null)
+      || (m.kind === 'group' ? m.wa_group_id : null),
+    conversationId: m.wa_group_id || String(m.thread_id),
+    conversationKind: m.kind,
 
     at:            m.sent_at || m.created_at,
 

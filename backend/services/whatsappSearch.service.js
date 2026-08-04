@@ -95,12 +95,55 @@ async function searchMessages(orgId, userId, opts = {}) {
   const { rows } = await pool.query(
     `SELECT m.id, m.body, m.message_type, m.direction, m.from_phone, m.from_name,
             m.created_at, m.sent_at, m.handover_id, m.handover_source,
-            m.capture_source, m.thread_id,
-            t.wa_group_id, t.group_subject, t.kind,
-            h.name AS project_name
+            m.capture_source, m.thread_id, m.is_automated, m.sent_by_user_id,
+            t.wa_group_id, t.group_subject, t.kind, t.wa_phone AS thread_phone,
+            h.name AS project_name,
+            -- Outbound rows carry NO from_phone/from_name: those columns
+            -- describe an inbound SENDER. The sender of an outbound message is
+            -- us, so resolve it from sent_by_user_id, falling back to the
+            -- account's verified name for automated sends.
+            (su.first_name || ' ' || su.last_name) AS sent_by_name,
+            acc.verified_name  AS account_name,
+            acc.display_phone_number AS account_phone,
+            -- Who the conversation is WITH, for direct threads that have no
+            -- group subject. Without this the UI shows a bare thread id.
+            c.first_name AS counterparty_first, c.last_name AS counterparty_last,
+            -- Resolve the INBOUND sender to a CRM contact so the UI can link to
+            -- them. Matched on the last 10 digits rather than the whole string:
+            -- contacts.phone is free text and holds '+91 98765 43210',
+            -- '098765 43210' and '9876543210' for the same person, while
+            -- from_phone is always bare E.164. Anchoring on the subscriber
+            -- number is what makes those agree.
+            sc.id         AS sender_contact_id,
+            sc.first_name AS sender_contact_first,
+            sc.last_name  AS sender_contact_last,
+            -- A participant row may name a colleague even when no contact
+            -- exists, which is the common case for internal senders.
+            pu.id         AS sender_user_id,
+            (pu.first_name || ' ' || pu.last_name) AS sender_user_name
        FROM whatsapp_messages m
        JOIN whatsapp_threads  t ON t.id = m.thread_id
        LEFT JOIN sales_handovers h ON h.id = m.handover_id
+       LEFT JOIN users su  ON su.id = m.sent_by_user_id
+       LEFT JOIN org_whatsapp_accounts acc ON acc.org_id = m.org_id
+       LEFT JOIN contacts c ON c.id = t.contact_id
+       LEFT JOIN LATERAL (
+         SELECT ct.id, ct.first_name, ct.last_name
+           FROM contacts ct
+          WHERE ct.org_id = m.org_id
+            AND m.from_phone IS NOT NULL
+            AND right(regexp_replace(ct.phone, '[^0-9]', '', 'g'), 10)
+              = right(m.from_phone, 10)
+          LIMIT 1
+       ) sc ON true
+       LEFT JOIN LATERAL (
+         SELECT u2.id, u2.first_name, u2.last_name
+           FROM whatsapp_thread_participants wp2
+           JOIN users u2 ON u2.id = wp2.user_id
+          WHERE wp2.thread_id = m.thread_id
+            AND wp2.wa_phone = m.from_phone
+          LIMIT 1
+       ) pu ON true
       WHERE ${where.join(' AND ')}
       ORDER BY m.created_at DESC
       LIMIT ${lim} OFFSET ${off}`,
