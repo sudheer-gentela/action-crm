@@ -255,9 +255,7 @@ export default function CommunicationMessages() {
             <div key={m.id} style={{ padding: '12px 14px', borderBottom: '1px solid #f3f4f6' }}>
               <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
                 <Sender message={m} />
-                <span style={{ fontSize: 12, color: '#9ca3af' }}>
-                  {m.conversationName || m.conversationId || 'Direct'}
-                </span>
+                <Conversation message={m} />
                 {channel === 'all' && (
                   <span style={{ fontSize: 10, color: '#6b7280', background: '#f3f4f6', padding: '1px 6px', borderRadius: 8 }}>
                     {m.channelLabel}
@@ -424,6 +422,47 @@ function Sender({ message: m }) {
       )}
     </span>
   );
+}
+
+/*
+ * Where a message happened — and crucially, LABELLED, so it cannot be misread
+ * as part of the sender's identity.
+ *
+ * Rendering "Sudheer Gentela  +12178980873" made the recipient's number look
+ * like the sender's own. Two identities sitting adjacent with no separator will
+ * be read as one. The preposition is what fixes it: "to +12178980873" is
+ * unambiguous, "+12178980873" is not.
+ */
+function Conversation({ message: m }) {
+  const style = { fontSize: 12, color: '#9ca3af' };
+  const name = m.conversationName || m.conversationId;
+
+  const link = (label) => (
+    <button
+      onClick={() => window.dispatchEvent(new CustomEvent('navigate', {
+        detail: { tab: 'contacts', contactId: m.conversationRef.id },
+      }))}
+      style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+               fontSize: 12, color: '#1A3A5C', textDecoration: 'underline' }}
+    >{label}</button>
+  );
+
+  if (m.conversationKind === 'group') {
+    return <span style={style}>in {name || 'a group'}</span>;
+  }
+
+  // Direct outbound: the conversation IS the recipient.
+  if (m.direction === 'outbound') {
+    return (
+      <span style={style}>
+        to {m.conversationRef ? link(name) : (name || 'unknown')}
+      </span>
+    );
+  }
+
+  // Direct inbound: the conversation is the sender, already shown to the left.
+  // Repeating it would just be the same person twice.
+  return <span style={style}>direct message</span>;
 }
 
 function Pill({ tone, children }) {

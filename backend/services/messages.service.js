@@ -120,10 +120,16 @@ function fromWhatsApp(m) {
     conversationName:
       m.group_subject
       || ([m.counterparty_first, m.counterparty_last].filter(Boolean).join(' ') || null)
+      || ([m.thread_contact_first, m.thread_contact_last].filter(Boolean).join(' ') || null)
       || (m.thread_phone ? `+${m.thread_phone}` : null)
       || (m.kind === 'group' ? m.wa_group_id : null),
     conversationId: m.wa_group_id || String(m.thread_id),
     conversationKind: m.kind,
+    // Linkable when the other end of a direct thread is a known contact, the
+    // same way the sender is.
+    conversationRef: m.thread_contact_id
+      ? { type: 'contact', id: m.thread_contact_id }
+      : (m.counterparty_contact_id ? { type: 'contact', id: m.counterparty_contact_id } : null),
 
     at:            m.sent_at || m.created_at,
 

@@ -107,7 +107,10 @@ async function searchMessages(orgId, userId, opts = {}) {
             acc.display_phone_number AS account_phone,
             -- Who the conversation is WITH, for direct threads that have no
             -- group subject. Without this the UI shows a bare thread id.
+            c.id AS counterparty_contact_id,
             c.first_name AS counterparty_first, c.last_name AS counterparty_last,
+            tc.id AS thread_contact_id,
+            tc.first_name AS thread_contact_first, tc.last_name AS thread_contact_last,
             -- Resolve the INBOUND sender to a CRM contact so the UI can link to
             -- them. Matched on the last 10 digits rather than the whole string:
             -- contacts.phone is free text and holds '+91 98765 43210',
@@ -127,6 +130,19 @@ async function searchMessages(orgId, userId, opts = {}) {
        LEFT JOIN users su  ON su.id = m.sent_by_user_id
        LEFT JOIN org_whatsapp_accounts acc ON acc.org_id = m.org_id
        LEFT JOIN contacts c ON c.id = t.contact_id
+       -- The other end of a DIRECT thread, matched on phone when the thread was
+       -- never explicitly linked to a contact. Same last-10-digits rule as the
+       -- sender match: contacts.phone is free text, thread.wa_phone is E.164.
+       LEFT JOIN LATERAL (
+         SELECT ct.id, ct.first_name, ct.last_name
+           FROM contacts ct
+          WHERE ct.org_id = m.org_id
+            AND t.kind = 'direct'
+            AND t.wa_phone IS NOT NULL
+            AND right(regexp_replace(ct.phone, '[^0-9]', '', 'g'), 10)
+              = right(t.wa_phone, 10)
+          LIMIT 1
+       ) tc ON true
        LEFT JOIN LATERAL (
          SELECT ct.id, ct.first_name, ct.last_name
            FROM contacts ct
