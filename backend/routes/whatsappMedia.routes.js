@@ -30,7 +30,11 @@ const fail = (res, err, tag) => {
 /** The project a message belongs to, so authority can be checked against it. */
 async function handoverForMessage(orgId, messageId) {
   const { rows } = await pool.query(
-    `SELECT t.handover_id FROM whatsapp_messages m
+    // COALESCE, not t.handover_id. A shared contact's conversation is owned by
+    // one project but carries messages belonging to several; authority must be
+    // checked against the project THIS message is on.
+    `SELECT COALESCE(m.handover_id, t.handover_id) AS handover_id
+       FROM whatsapp_messages m
        JOIN whatsapp_threads t ON t.id = m.thread_id
       WHERE m.id = $1 AND m.org_id = $2`,
     [messageId, orgId]
@@ -63,7 +67,9 @@ router.get('/projects/:handoverId', async (req, res) => {
          JOIN whatsapp_threads t ON t.id = m.thread_id
          LEFT JOIN storage_files f ON f.id = m.storage_file_id
          LEFT JOIN users ru ON ru.id = m.media_reviewed_by
-        WHERE m.org_id = $1 AND t.handover_id = $2 AND m.wa_media_id IS NOT NULL
+        WHERE m.org_id = $1 AND m.wa_media_id IS NOT NULL
+          AND ( m.handover_id = $2
+             OR (m.handover_id IS NULL AND t.handover_id = $2) )
         ORDER BY m.sent_at DESC NULLS LAST`,
       [req.orgId, handoverId]
     );

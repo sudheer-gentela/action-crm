@@ -182,8 +182,15 @@ async function getThreadById(threadId, orgId, handoverId) {
   );
   if (!t) return null;
 
-  // Belongs to a DIFFERENT project — refuse rather than steal it.
-  if (handoverId != null && t.handover_id != null && t.handover_id !== handoverId) return null;
+  // A GROUP belongs to one project — refuse rather than steal it.
+  //
+  // A DIRECT thread does not: one person has exactly one 1:1 chat, and they may
+  // be on several projects. Refusing here made a by-id send to a shared contact
+  // fail with THREAD_NOT_FOUND from the second project. The thread's own
+  // handover_id is left alone (it still records who owns the conversation); the
+  // MESSAGE carries the project it was sent for — see sendToHandover.
+  if (handoverId != null && t.kind === 'group' &&
+      t.handover_id != null && t.handover_id !== handoverId) return null;
 
   // Belongs to NO project — adopt it, exactly as resolveDirectThreadByPhone
   // does. Without this, sending to an existing thread by id left it orphaned:
@@ -355,7 +362,6 @@ async function listSendTargets(handoverId, orgId) {
 
   const groupThreads  = threads.filter(t => t.kind === 'group');
   const directThreads = threads.filter(t => t.kind === 'direct');
-  const directByPhone = new Map(directThreads.map(t => [t.wa_phone, t]));
 
   const targets = [];
 
@@ -378,12 +384,13 @@ async function listSendTargets(handoverId, orgId) {
     const p = normalizePhone(phone);
     if (!p || seen.has(p)) return;
     seen.add(p);
-    const dt = directByPhone.get(p);
     const v = toWaPhone(phone);
     targets.push({
       key: `phone:${p}`,
       type: 'individual',
-      threadId: dt ? dt.id : null,
+      // Conversation state (threadId, window, opt-out) is filled in below from
+      // the person's ONE direct thread, which may belong to another project.
+      threadId: null,
       name: name || p,
       phone: v.ok ? v.phone : p,
       contactId: contactId ?? null,
@@ -392,12 +399,14 @@ async function listSendTargets(handoverId, orgId) {
       // messaging a vendor deliberately is fine; having one selected for you
       // is not.
       side: side ?? null,
-      windowOpen: dt ? waChannel.isWindowOpen(dt) : false,
-      windowExpiresAt: dt ? dt.window_expires_at : null,
+      windowOpen: false,
+      windowExpiresAt: null,
       deliverable: v.ok,
       phoneValid: v.ok,
       phoneIssue: v.ok ? null : v.message,
-      optedOut: dt ? !!dt.opt_out_at : false,
+      optedOut: false,
+      conversationHandoverId: null,
+      windowFromOtherProject: false,
     });
   };
 
@@ -469,6 +478,50 @@ async function listSendTargets(handoverId, orgId) {
   for (const dt of dealTeam) addIndividual(dt.phone, dt.full_name, null, 'internal');
 
   for (const dt of directThreads) addIndividual(dt.wa_phone, null, dt.contact_id);
+
+  // ── Conversation state belongs to the PERSON, not to the project ──
+  //
+  // uq_wa_threads_direct means one direct thread per number per org, exactly as
+  // WhatsApp itself works: there is ONE chat with a given number. The 24-hour
+  // service window, the opt-out flag and the message history are properties of
+  // that chat.
+  //
+  // This used to be read from the threads WHERE handover_id = this project. A
+  // person on two projects has their single thread owned by whichever project
+  // touched it first, so from the SECOND project the lookup found nothing and
+  // reported windowOpen:false — the composer then demanded a template even
+  // though the window was wide open and a free-form send would have succeeded
+  // (the adapter checks the real thread, not this). Same bug hid an opt-out:
+  // someone who opted out via project A looked contactable from project B.
+  //
+  // So: resolve by phone, org-wide. `conversationHandoverId` lets the UI say
+  // where the conversation currently lives without changing who can send.
+  const phones = targets
+    .filter(t => t.type === 'individual' && t.phone)
+    .map(t => normalizePhone(t.phone))
+    .filter(Boolean);
+
+  if (phones.length) {
+    const { rows: convos } = await pool.query(
+      `SELECT id, wa_phone, opt_out_at, window_expires_at, handover_id
+         FROM whatsapp_threads
+        WHERE org_id = $1 AND kind = 'direct' AND wa_phone = ANY($2::text[])`,
+      [orgId, phones]
+    );
+    const byPhone = new Map(convos.map(c => [c.wa_phone, c]));
+    for (const t of targets) {
+      if (t.type !== 'individual') continue;
+      const c = byPhone.get(normalizePhone(t.phone));
+      if (!c) continue;
+      t.threadId               = c.id;
+      t.windowOpen             = waChannel.isWindowOpen(c);
+      t.windowExpiresAt        = c.window_expires_at;
+      t.optedOut               = !!c.opt_out_at;
+      t.conversationHandoverId = c.handover_id ?? null;
+      t.windowFromOtherProject =
+        t.windowOpen && c.handover_id != null && c.handover_id !== handoverId;
+    }
+  }
 
   return { targets };
 }
@@ -555,8 +608,9 @@ async function sendToHandover(handoverId, orgId, userId, body) {
   const { rows: [msg] } = await pool.query(
     `INSERT INTO whatsapp_messages
        (org_id, thread_id, wa_message_id, direction, message_type, body,
-        template_id, sent_by_user_id, is_automated, status, sent_at, handover_id)
-     VALUES ($1, $2, $3, 'outbound', $4, $5, NULL, $6, false, 'sent', now(), $7)
+        template_id, sent_by_user_id, is_automated, status, sent_at, handover_id,
+        handover_source)
+     VALUES ($1, $2, $3, 'outbound', $4, $5, NULL, $6, false, 'sent', now(), $7, 'send')
      RETURNING id, status, created_at`,
     // handoverId, not thread.handover_id. One person has ONE direct thread, so
     // messaging them from a second project necessarily reuses the thread the
@@ -571,16 +625,25 @@ async function sendToHandover(handoverId, orgId, userId, body) {
 
 async function listMessages(handoverId, orgId) {
   const thread = await getThreadForHandover(handoverId, orgId, { createIfMissing: false });
-  if (!thread) return { thread: null, windowOpen: false, messages: [] };
 
+  // Message-level attribution WINS; the thread's project is only the fallback
+  // for messages that never got one. Reading by thread alone showed a shared
+  // contact's whole history under the project that happens to own the
+  // conversation, and nothing at all under the other one.
   const { rows } = await pool.query(
-    `SELECT id, direction, message_type, body, status, from_name, is_automated,
-            sent_at, delivered_at, read_at, created_at
-       FROM whatsapp_messages
-      WHERE thread_id = $1 AND org_id = $2
-      ORDER BY created_at ASC`,
-    [thread.id, orgId]
+    `SELECT m.id, m.direction, m.message_type, m.body, m.status, m.from_name,
+            m.is_automated, m.sent_at, m.delivered_at, m.read_at, m.created_at,
+            m.thread_id, m.handover_source
+       FROM whatsapp_messages m
+       JOIN whatsapp_threads t ON t.id = m.thread_id
+      WHERE m.org_id = $2
+        AND ( m.handover_id = $1
+           OR (m.handover_id IS NULL AND t.handover_id = $1) )
+      ORDER BY m.created_at ASC`,
+    [handoverId, orgId]
   );
+
+  if (!thread) return { thread: null, windowOpen: false, messages: rows };
   return {
     thread: {
       id: thread.id,
@@ -711,27 +774,32 @@ async function ingestWebhook(payload) {
           ?? media?.caption
           ?? (media?.filename ? `[${m.type}] ${media.filename}` : `[${m.type}]`);
 
+        // Which project this reply is about — NOT simply the thread's project.
+        const attribution = await resolveInboundHandover(org, thread, m);
+
         const res = await pool.query(
           `INSERT INTO whatsapp_messages
              (org_id, thread_id, wa_message_id, direction, message_type, body,
               from_phone, from_name, status, sent_at,
               wa_media_id, media_mime_type, media_sha256, media_filename, media_caption,
-              media_status, media_expires_at, handover_id)
+              media_status, media_expires_at, handover_id,
+              handover_source, reply_to_wa_message_id)
            VALUES ($1,$2,$3,'inbound',$4,$5,$6,$7,'received', to_timestamp($8),
                    $9,$10,$11,$12,$13,
                    -- 'pending' only when there is something to fetch, so plain
                    -- text messages are not swept looking for attachments.
                    CASE WHEN $9::text IS NULL THEN NULL ELSE 'pending' END,
                    CASE WHEN $9::text IS NULL THEN NULL ELSE now() + interval '30 days' END,
-                   -- Inbound has no project of its own: it belongs to whichever
-                   -- project owns the conversation.
-                   $14)
+                   -- Inbound has no project of its own: it belongs to whatever
+                   -- prompted it. See resolveInboundHandover.
+                   $14, $15, $16)
            ON CONFLICT (org_id, wa_message_id) WHERE wa_message_id IS NOT NULL DO NOTHING
            RETURNING id`,
           [org, thread.id, m.id, m.type || 'text', bodyText, m.from,
            contactNameFromValue(value, m.from), Number(m.timestamp) || (Date.now() / 1000),
            media?.id || null, media?.mime_type || null, media?.sha256 || null,
-           media?.filename || null, media?.caption || null, thread.handover_id ?? null]
+           media?.filename || null, media?.caption || null,
+           attribution.handoverId, attribution.source, attribution.replyToWamid]
         );
         if (res.rowCount > 0) {
           inbound++;   // window opens via the touch trigger
@@ -881,6 +949,56 @@ function contactNameFromValue(value, fromPhone) {
   return c?.profile?.name || null;
 }
 
+/**
+ * Which PROJECT does this inbound message belong to?
+ *
+ * The thread says who owns the conversation; it does not say what a given reply
+ * is about. One person has one direct thread, so if they are on projects A and
+ * B, the thread is owned by whichever project spoke first — and inheriting the
+ * thread's project filed every reply under A, including the reply to a template
+ * that project B had just sent. That is the misfiling this resolves.
+ *
+ * Precedence, most authoritative first:
+ *   1. `context.id` — the customer tapped Reply on a specific message. Meta
+ *      tells us exactly which one, so there is nothing to infer.
+ *   2. The last outbound on this thread within the 24 hours before this message.
+ *      A reply belongs to whatever prompted it, and 24h is the same window Meta
+ *      uses to decide the conversation is still live.
+ *   3. The thread's own project — a cold message, months later, or a thread
+ *      only ever used by one project. The old behaviour, now the fallback.
+ *
+ * Returns { handoverId, source } where source is stored for provenance, so a
+ * message that lands on the wrong project can be explained rather than guessed
+ * at. Requires db/2026_99_whatsapp_message_attribution.sql.
+ */
+async function resolveInboundHandover(orgId, thread, m) {
+  const replyToWamid = m?.context?.id || null;
+
+  if (replyToWamid) {
+    const { rows: [ctx] } = await pool.query(
+      `SELECT handover_id FROM whatsapp_messages
+        WHERE org_id = $1 AND wa_message_id = $2 AND handover_id IS NOT NULL
+        LIMIT 1`,
+      [orgId, String(replyToWamid)]
+    );
+    if (ctx) return { handoverId: ctx.handover_id, source: 'reply_context', replyToWamid };
+  }
+
+  const ts = Number(m?.timestamp) || (Date.now() / 1000);
+  const { rows: [recent] } = await pool.query(
+    `SELECT handover_id FROM whatsapp_messages
+      WHERE org_id = $1 AND thread_id = $2 AND direction = 'outbound'
+        AND handover_id IS NOT NULL
+        AND COALESCE(sent_at, created_at) > to_timestamp($3) - interval '24 hours'
+      ORDER BY COALESCE(sent_at, created_at) DESC, id DESC
+      LIMIT 1`,
+    [orgId, thread.id, ts]
+  );
+  if (recent) return { handoverId: recent.handover_id, source: 'recent_outbound', replyToWamid };
+
+  return { handoverId: thread.handover_id ?? null, source: 'thread', replyToWamid };
+}
+
 /** Find (or open) the direct thread an inbound message belongs to. */
 async function threadForInbound(orgId, fromPhone, value) {
   const waPhone = normalizePhone(fromPhone);
@@ -1026,6 +1144,8 @@ module.exports = {
   // Exported for diagnostics and back-fill: it is the one place that decides
   // which project an inbound conversation belongs to.
   threadForInbound,
+  // The one place that decides which project an inbound MESSAGE belongs to.
+  resolveInboundHandover,
   listApprovedTemplates,
   sendToHandover,
   listMessages,

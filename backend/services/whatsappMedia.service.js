@@ -131,7 +131,10 @@ async function downloadFromMeta(accessToken, mediaId) {
 
 async function loadMessage(orgId, messageId) {
   const { rows } = await pool.query(
-    `SELECT m.*, t.handover_id
+    // The attachment follows the project the MESSAGE is on, not the project
+    // that owns the conversation — otherwise a document sent on project B is
+    // filed into project A's storage folder.
+    `SELECT m.*, COALESCE(m.handover_id, t.handover_id) AS handover_id
        FROM whatsapp_messages m
        JOIN whatsapp_threads t ON t.id = m.thread_id
       WHERE m.id = $1 AND m.org_id = $2`,
