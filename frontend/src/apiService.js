@@ -868,6 +868,7 @@ twilio: {
   // scoped by WhatsApp group participation plus project membership.
   whatsappMessages: {
     search:         (params={}) => api.get(`/whatsapp-messages/search?${new URLSearchParams(params).toString()}`),
+    channels:       ()          => api.get('/whatsapp-messages/channels'),
     diagnose:       (body)      => api.post('/whatsapp-messages/diagnose', body),
     file:           (id, body)  => api.post(`/whatsapp-messages/${id}/file`, body),
     exclude:        (id, body)  => api.post(`/whatsapp-messages/${id}/exclude`, body),

@@ -38,6 +38,7 @@ const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext, requireRole } = require('../middleware/orgContext.middleware');
 const search = require('../services/whatsappSearch.service');
 const access = require('../services/whatsappAccess.service');
+const messages = require('../services/messages.service');
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -46,7 +47,39 @@ const fail = (res, e) => res.status(e.status || 500).json({ error: { message: e.
 
 // ── Search ───────────────────────────────────────────────────────────────────
 
+/**
+ * Channel-agnostic search. With no filters this returns the most recent
+ * messages, which is the default view — opening Messages should show recent
+ * traffic, not an empty page demanding a search term first.
+ */
 router.get('/search', async (req, res) => {
+  try {
+    const result = await messages.search(req.orgId, req.userId, {
+      channel:    req.query.channel || 'all',
+      q:          req.query.q,
+      from:       req.query.from,
+      dateFrom:   req.query.dateFrom,
+      dateTo:     req.query.dateTo,
+      groupJid:   req.query.groupJid,
+      handoverId: req.query.handoverId,
+      scope:      req.query.scope || 'all',
+      limit:      req.query.limit,
+      offset:     req.query.offset,
+    });
+    if (!result.ok) return res.status(result.code === 'NOT_STEWARD' ? 403 : 400).json(result);
+    res.json(result);
+  } catch (e) { fail(res, e); }
+});
+
+router.get('/channels', async (req, res) => {
+  try {
+    res.json({ channels: await messages.listChannels(req.orgId) });
+  } catch (e) { fail(res, e); }
+});
+
+// The WhatsApp-only search, kept for callers that want the native row shape
+// (media ids, service-window state) rather than the normalised one.
+router.get('/search/whatsapp', async (req, res) => {
   try {
     const result = await search.searchMessages(req.orgId, req.userId, {
       q:          req.query.q,

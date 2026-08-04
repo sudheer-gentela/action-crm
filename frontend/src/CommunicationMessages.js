@@ -44,6 +44,9 @@ export default function CommunicationMessages() {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo,   setDateTo]   = useState('');
   const [scope,    setScope]    = useState('all');
+  const [channel,  setChannel]  = useState('all');
+  const [channels, setChannels] = useState([]);
+  const [isDefault,setIsDefault]= useState(true);
 
   const [messages,  setMessages]  = useState([]);
   const [diagnosis, setDiagnosis] = useState(null);
@@ -65,6 +68,9 @@ export default function CommunicationMessages() {
     apiService.handovers.list('all')
       .then(r => setHandovers(r.data?.handovers || r.data || []))
       .catch(() => setHandovers([]));
+    apiService.whatsappMessages.channels()
+      .then(r => setChannels(r.data?.channels || []))
+      .catch(() => setChannels([]));
   }, []);
 
   const runSearch = useCallback(async () => {
@@ -73,15 +79,17 @@ export default function CommunicationMessages() {
       const res = await apiService.whatsappMessages.search({
         ...(q && { q }), ...(from && { from }),
         ...(dateFrom && { dateFrom }), ...(dateTo && { dateTo }),
-        scope,
+        scope, channel,
       });
       const found = res.data?.messages || [];
       setMessages(found);
+      setIsDefault(!!res.data?.isDefaultView);
       setSearched(true);
 
       // Only pay for the diagnosis when it is needed — it costs several extra
-      // queries and most searches succeed.
-      if (found.length === 0) {
+      // queries and most searches succeed. Skip it on the default view: an
+      // empty inbox is not a failed search and does not need explaining.
+      if (found.length === 0 && !res.data?.isDefaultView) {
         const d = await apiService.whatsappMessages.diagnose({ q });
         setDiagnosis(d.data);
       }
@@ -91,7 +99,11 @@ export default function CommunicationMessages() {
     } finally {
       setLoading(false);
     }
-  }, [q, from, dateFrom, dateTo, scope]);
+  }, [q, from, dateFrom, dateTo, scope, channel]);
+
+  // Open with recent traffic rather than an empty page. Someone arriving here
+  // usually wants to see what came in, not to compose a query first.
+  useEffect(() => { runSearch(); }, [channel]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const act = async (fn, ok) => {
     setError(''); setNotice('');
@@ -108,7 +120,7 @@ export default function CommunicationMessages() {
   const doFile = () => {
     if (!target && target !== 'none') { setError('Choose a project, or "Unassigned".'); return; }
     act(
-      () => apiService.whatsappMessages.file(fileFor.id, {
+      () => apiService.whatsappMessages.file(fileFor.nativeId, {
         handoverId: target === 'none' ? null : Number(target),
         scope: fileScope,
       }),
@@ -120,7 +132,7 @@ export default function CommunicationMessages() {
     const reason = window.prompt('Why is this not CRM material? (optional)');
     if (reason === null) return;
     act(
-      () => apiService.whatsappMessages.exclude(m.id, { reason }),
+      () => apiService.whatsappMessages.exclude(m.nativeId, { reason }),
       'Message excluded. It stays out of all project views and search, but is kept for audit.'
     );
   };
@@ -148,6 +160,26 @@ export default function CommunicationMessages() {
       )}
       {error  && <Banner tone="error">{error}</Banner>}
       {notice && <Banner tone="ok">{notice}</Banner>}
+
+      <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+        {[{ channel: 'all', label: 'All', available: true }, ...channels].map(c => (
+          <button
+            key={c.channel}
+            onClick={() => c.available && setChannel(c.channel)}
+            disabled={!c.available}
+            title={c.available ? '' : 'Not connected yet'}
+            style={{
+              ...BTN,
+              background:  channel === c.channel ? '#1A3A5C' : '#fff',
+              color:       !c.available ? '#c7c7c7' : channel === c.channel ? '#fff' : '#374151',
+              border: `1px solid ${channel === c.channel ? '#1A3A5C' : '#d1d5db'}`,
+              cursor: c.available ? 'pointer' : 'not-allowed',
+            }}
+          >
+            {c.label}{!c.available && ' ·'}
+          </button>
+        ))}
+      </div>
 
       <div style={{ ...CARD, padding: 14, marginBottom: 14 }}>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
@@ -188,23 +220,30 @@ export default function CommunicationMessages() {
       {messages.length > 0 && (
         <div style={{ ...CARD, overflow: 'hidden' }}>
           <div style={{ padding: '8px 14px', background: '#f9fafb', fontSize: 12, color: '#6b7280', borderBottom: '1px solid #e5e7eb' }}>
-            {messages.length} message{messages.length === 1 ? '' : 's'}
+            {isDefault
+              ? `${messages.length} most recent message${messages.length === 1 ? '' : 's'}`
+              : `${messages.length} match${messages.length === 1 ? '' : 'es'}`}
           </div>
           {messages.map(m => (
             <div key={m.id} style={{ padding: '12px 14px', borderBottom: '1px solid #f3f4f6' }}>
               <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
                 <span style={{ fontWeight: 500, fontSize: 13, color: '#1a202c' }}>
-                  {m.from_name || m.from_phone || 'Unknown'}
+                  {m.senderName || 'Unknown'}
                 </span>
                 <span style={{ fontSize: 12, color: '#9ca3af' }}>
-                  {m.group_subject || m.wa_group_id || 'Direct'}
+                  {m.conversationName || m.conversationId || 'Direct'}
                 </span>
+                {channel === 'all' && (
+                  <span style={{ fontSize: 10, color: '#6b7280', background: '#f3f4f6', padding: '1px 6px', borderRadius: 8 }}>
+                    {m.channelLabel}
+                  </span>
+                )}
                 <span style={{ fontSize: 12, color: '#9ca3af' }}>
-                  {new Date(m.created_at).toLocaleString()}
+                  {new Date(m.at).toLocaleString()}
                 </span>
                 <span style={{ marginLeft: 'auto' }}>
-                  {m.handover_id
-                    ? <Pill tone="ok">{m.project_name || `Project #${m.handover_id}`}</Pill>
+                  {m.handoverId
+                    ? <Pill tone="ok">{m.projectName || `Project #${m.handoverId}`}</Pill>
                     : <Pill tone="warn">Unassigned</Pill>}
                 </span>
               </div>
@@ -214,7 +253,7 @@ export default function CommunicationMessages() {
               <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                 <button style={{ ...GHOST, fontSize: 12, padding: '4px 10px' }}
                   onClick={() => { setFileFor(m); setTarget(''); setFileScope('message'); setError(''); }}>
-                  {m.handover_id ? 'Move' : 'File to project'}
+                  {m.handoverId ? 'Move' : 'File to project'}
                 </button>
                 <button style={{ ...GHOST, fontSize: 12, padding: '4px 10px', color: '#991b1b', borderColor: '#fecaca' }}
                   onClick={() => doExclude(m)}>
@@ -229,11 +268,11 @@ export default function CommunicationMessages() {
       {fileFor && (
         <Modal onClose={() => setFileFor(null)}>
           <h4 style={{ margin: '0 0 4px', fontSize: 15, fontWeight: 600 }}>
-            {fileFor.handover_id ? 'Move this message' : 'File this message'}
+            {fileFor.handoverId ? 'Move this message' : 'File this message'}
           </h4>
           <p style={{ fontSize: 12, color: '#6b7280', margin: '0 0 14px', lineHeight: 1.5 }}>
-            From <strong>{fileFor.group_subject || 'this conversation'}</strong>
-            {fileFor.handover_id && <>, currently on <strong>{fileFor.project_name || `#${fileFor.handover_id}`}</strong></>}.
+            From <strong>{fileFor.conversationName || 'this conversation'}</strong>
+            {fileFor.handoverId && <>, currently on <strong>{fileFor.projectName || `#${fileFor.handoverId}`}</strong></>}.
           </p>
 
           <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 }}>Destination</label>
@@ -242,7 +281,7 @@ export default function CommunicationMessages() {
             {handovers.map(h => (
               <option key={h.id} value={h.id}>{h.name || h.project_name || `Project #${h.id}`}</option>
             ))}
-            {fileFor.handover_id && <option value="none">— Unassigned queue —</option>}
+            {fileFor.handoverId && <option value="none">— Unassigned queue —</option>}
           </select>
 
           <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', marginBottom: 4 }}>Apply to</label>
