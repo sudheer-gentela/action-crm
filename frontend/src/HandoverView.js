@@ -3907,7 +3907,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
               <div style={{ fontSize: 13 }}>
                 {tab === 'mine'
                   ? 'Projects are created automatically when a deal is marked Closed Won.'
-                  : 'Projects assigned to you as service owner will appear here.'}
+                  : `Projects assigned to you as ${managerLabel.toLowerCase()} will appear here.`}
               </div>
             </div>
           ) : (

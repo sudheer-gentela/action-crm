@@ -9,14 +9,21 @@
 //
 // onOpenProject(id) is optional — defaults to hash-navigating to the project.
 // ─────────────────────────────────────────────────────────────────────────────
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { apiService } from './apiService';
 
 const RYG = { red: '#dc2626', yellow: '#d97706', green: '#16a34a', neutral: '#9ca3af' };
 const RYG_LABEL = { red: 'Red', yellow: 'Yellow', green: 'Green', neutral: '—' };
+// The `service_owner` KEY is the API contract and does not change — the rollup
+// endpoint groups on it, and renaming it here would just break the request.
+// Only the label shown to a human is negotiable, and it follows the org's own
+// vocabulary (2026_90): project override → org default → 'Project Manager'.
+//
+// The literal below is the same default the database uses, so the label is
+// already correct before the lookup returns and does not flicker.
 const DEFAULT_LENSES = [
   { k: 'account',       label: 'Account' },
-  { k: 'service_owner', label: 'Service owner' },
+  { k: 'service_owner', label: 'Project Manager' },
   { k: 'status',        label: 'Status' },
   { k: 'none',          label: 'Overall' },
 ];
@@ -31,6 +38,29 @@ export default function PortfolioHealthReport({ onOpenProject, title = 'Portfoli
   const [data, setData]         = useState(null);
   const [expanded, setExpanded] = useState({});
   const [loading, setLoading]   = useState(true);
+  const [managerLabel, setManagerLabel] = useState(null);
+
+  // Only worth a request when a manager lens is actually on offer. The deals
+  // rollup passes its own lenses and has no such grouping, so it should not pay
+  // for a lookup it will never display.
+  const needsManagerLabel = lenses.some(l => l.k === 'service_owner');
+
+  useEffect(() => {
+    if (!needsManagerLabel) return undefined;
+    let live = true;
+    apiService.handovers.projectAccess()
+      .then(r => { if (live && r.data?.managerLabel) setManagerLabel(r.data.managerLabel); })
+      // Silent on failure: the hard-coded default is already the right answer
+      // for almost every org, and a grouping control is not worth an error
+      // banner over a label.
+      .catch(() => {});
+    return () => { live = false; };
+  }, [needsManagerLabel]);
+
+  const shownLenses = useMemo(
+    () => lenses.map(l => (l.k === 'service_owner' && managerLabel ? { ...l, label: managerLabel } : l)),
+    [lenses, managerLabel]
+  );
 
   useEffect(() => {
     let live = true;
@@ -66,7 +96,7 @@ export default function PortfolioHealthReport({ onOpenProject, title = 'Portfoli
           <span style={{ fontSize: 12, color: '#6b7280' }}>Group by</span>
           <select value={groupBy} onChange={e => { setGroupBy(e.target.value); setExpanded({}); }}
             style={{ fontSize: 12, padding: '4px 8px', borderRadius: 6, border: '1px solid #d1d5db' }}>
-            {lenses.map(l => <option key={l.k} value={l.k}>{l.label}</option>)}
+            {shownLenses.map(l => <option key={l.k} value={l.k}>{l.label}</option>)}
           </select>
         </div>
       </div>
