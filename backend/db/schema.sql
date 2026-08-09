@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 16o78ygmXbZEKvu8MM2NZN2qn75YrlBHEZfZOz4O3uscTcbsIlfC4bLCrQjLh2H
+\restrict l3Qc9YiaGlBoqAq2SJBR98s0yc1bcatFR9YiclUHnd8RBk6KlWF9Nsbq6uMcK3t
 
 -- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -31,6 +31,30 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;
 --
 
 COMMENT ON EXTENSION "uuid-ossp" IS 'generate universally unique identifiers (UUIDs)';
+
+
+--
+-- Name: clear_session_media_ref(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.clear_session_media_ref() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.session_media_ref IS NOT NULL
+     AND NEW.media_status IN ('stored', 'expired', 'removed') THEN
+    NEW.session_media_ref := NULL;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION clear_session_media_ref(); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.clear_session_media_ref() IS 'Drops the mediaKey once the attachment is stored, expired or removed. The key only needs to outlive the download; keeping it afterwards is a decryption key at rest with no remaining purpose.';
 
 
 --
@@ -8778,10 +8802,21 @@ CREATE TABLE public.whatsapp_messages (
     excluded_at timestamp with time zone,
     excluded_by integer,
     exclude_reason text,
+    media_source text,
+    session_media_ref jsonb,
+    media_file_size bigint,
+    media_removed_by integer,
+    media_removed_at timestamp with time zone,
+    media_removed_reason text,
+    media_removed_file_name text,
+    media_removed_provider text,
+    media_removed_file_ref text,
+    media_removed_from_provider boolean,
     CONSTRAINT wa_messages_direction_chk CHECK ((direction = ANY (ARRAY['inbound'::text, 'outbound'::text]))),
     CONSTRAINT wa_messages_handover_source_chk CHECK (((handover_source IS NULL) OR (handover_source = ANY (ARRAY['send'::text, 'reply_context'::text, 'recent_outbound'::text, 'manual_recent'::text, 'thread'::text, 'manual'::text])))),
     CONSTRAINT wa_messages_status_chk CHECK ((status = ANY (ARRAY['queued'::text, 'sent'::text, 'delivered'::text, 'read'::text, 'failed'::text, 'received'::text]))),
     CONSTRAINT whatsapp_messages_capture_source_chk CHECK ((capture_source = ANY (ARRAY['cloud_api'::text, 'session'::text]))),
+    CONSTRAINT whatsapp_messages_media_source_chk CHECK (((media_source IS NULL) OR (media_source = ANY (ARRAY['cloud_api'::text, 'session'::text])))),
     CONSTRAINT whatsapp_messages_media_status_chk CHECK (((media_status IS NULL) OR (media_status = ANY (ARRAY['pending'::text, 'stored'::text, 'failed'::text, 'expired'::text, 'skipped'::text, 'removed'::text]))))
 );
 
@@ -8861,6 +8896,41 @@ COMMENT ON COLUMN public.whatsapp_messages.capture_meta IS 'Session-capture prov
 --
 
 COMMENT ON COLUMN public.whatsapp_messages.excluded_at IS 'Marked as not CRM material. Hidden from project views and from search, retained for audit. Distinct from deletion: a mis-filed message was still SEEN by whoever had access, and erasing the row would erase the evidence of that.';
+
+
+--
+-- Name: COLUMN whatsapp_messages.media_source; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_messages.media_source IS 'cloud_api = fetch by wa_media_id from graph.facebook.com with the WABA token. session = fetch by mediaKey/directPath from the WhatsApp CDN, which only the Baileys worker can do. NULL = no attachment on this message.';
+
+
+--
+-- Name: COLUMN whatsapp_messages.session_media_ref; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_messages.session_media_ref IS 'Baileys media descriptor: mediaType, mediaKey (base64 ΓÇö a DECRYPTION KEY), directPath, fileEncSha256, fileSha256. Held only until the bytes reach the customer''s storage, then cleared. Never populated for Cloud API media.';
+
+
+--
+-- Name: COLUMN whatsapp_messages.media_file_size; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_messages.media_file_size IS 'Declared size from the sender, before download. Lets the size gate reject an oversized attachment without spending bandwidth on it.';
+
+
+--
+-- Name: COLUMN whatsapp_messages.media_removed_file_ref; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_messages.media_removed_file_ref IS 'The provider file id of the deleted file. Kept so a removal can be traced into the customer''s own recycle bin, where both Drive and OneDrive hold it for around 30 days. Without it an accidental removal is unrecoverable the moment the row is nulled.';
+
+
+--
+-- Name: COLUMN whatsapp_messages.media_removed_from_provider; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_messages.media_removed_from_provider IS 'true = we deleted it from the customer''s storage. false = we could not (already gone, permission lost, token revoked) and only the project link was dropped, so the file may still exist in their Drive. Two very different facts to report to whoever asks later.';
 
 
 --
@@ -9007,9 +9077,13 @@ CREATE TABLE public.whatsapp_session_groups (
     watched_by integer,
     watched_at timestamp with time zone,
     discovered_via text DEFAULT 'message'::text NOT NULL,
+    media_policy text DEFAULT 'inherit'::text NOT NULL,
+    media_policy_by integer,
+    media_policy_at timestamp with time zone,
     CONSTRAINT wa_session_groups_binding_chk CHECK ((binding_status = ANY (ARRAY['unbound'::text, 'bound'::text, 'ignored'::text]))),
     CONSTRAINT wa_session_groups_decided_chk CHECK (((is_watched = true) OR (binding_status = ANY (ARRAY['bound'::text, 'ignored'::text, 'unbound'::text])))),
-    CONSTRAINT wa_session_groups_discovered_chk CHECK ((discovered_via = ANY (ARRAY['snapshot'::text, 'message'::text, 'metadata'::text])))
+    CONSTRAINT wa_session_groups_discovered_chk CHECK ((discovered_via = ANY (ARRAY['snapshot'::text, 'message'::text, 'metadata'::text]))),
+    CONSTRAINT whatsapp_session_groups_media_policy_chk CHECK ((media_policy = ANY (ARRAY['inherit'::text, 'all'::text, 'documents'::text, 'none'::text])))
 );
 
 
@@ -9032,6 +9106,20 @@ COMMENT ON COLUMN public.whatsapp_session_groups.binding_status IS 'unbound = ca
 --
 
 COMMENT ON COLUMN public.whatsapp_session_groups.is_watched IS 'Explicit opt-in to storing message content from this group. In allowlist mode this is the ONLY thing that permits capture ΓÇö binding to a project does not imply it, because someone may want to review a group before its contents are retained.';
+
+
+--
+-- Name: COLUMN whatsapp_session_groups.media_policy; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_session_groups.media_policy IS 'inherit (default) = follow the session switch and the project''s media_capture_mode. all = capture every attachment. documents = capture documents only; photos, video, audio and stickers are marked skipped, not lost quietly. none = capture no attachments from this group.';
+
+
+--
+-- Name: COLUMN whatsapp_session_groups.media_policy_by; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_session_groups.media_policy_by IS 'Who set the override. A group whose attachments are not being captured should be answerable to a person, not to a default.';
 
 
 --
@@ -9085,8 +9173,11 @@ CREATE TABLE public.whatsapp_sessions (
     last_reconnect_at timestamp with time zone,
     phone_confirmed_by integer,
     capture_mode text DEFAULT 'allowlist'::text NOT NULL,
+    media_max_bytes bigint DEFAULT 26214400 NOT NULL,
+    media_retention_days integer DEFAULT 14 NOT NULL,
     CONSTRAINT whatsapp_sessions_capture_mode_chk CHECK ((capture_mode = ANY (ARRAY['allowlist'::text, 'all'::text]))),
     CONSTRAINT whatsapp_sessions_config_chk CHECK ((((heartbeat_seconds >= 15) AND (heartbeat_seconds <= 3600)) AND ((flush_interval_ms >= 250) AND (flush_interval_ms <= 60000)) AND ((batch_max >= 1) AND (batch_max <= 500)) AND ((stale_socket_minutes >= 5) AND (stale_socket_minutes <= 1440)) AND ((reconnect_max_seconds >= 10) AND (reconnect_max_seconds <= 3600)))),
+    CONSTRAINT whatsapp_sessions_media_chk CHECK ((((media_max_bytes >= 1048576) AND (media_max_bytes <= 104857600)) AND ((media_retention_days >= 1) AND (media_retention_days <= 30)))),
     CONSTRAINT whatsapp_sessions_status_chk CHECK ((status = ANY (ARRAY['pending_qr'::text, 'connecting'::text, 'connected'::text, 'disconnected'::text, 'logged_out'::text, 'disabled'::text])))
 );
 
@@ -9124,6 +9215,20 @@ COMMENT ON COLUMN public.whatsapp_sessions.stale_socket_minutes IS 'Watchdog thr
 --
 
 COMMENT ON COLUMN public.whatsapp_sessions.capture_mode IS 'allowlist = store messages only from is_watched groups (default; safe on a number with unrelated groups). all = store everything except binding_status=''ignored'' (only sane on a dedicated SIM).';
+
+
+--
+-- Name: COLUMN whatsapp_sessions.media_max_bytes; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_sessions.media_max_bytes IS 'Largest session attachment the worker will download. Default 25 MB. Above it the message is marked skipped with the size in the reason, so the loss is visible and a human can raise the cap and retry rather than wonder where the file went.';
+
+
+--
+-- Name: COLUMN whatsapp_sessions.media_retention_days; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_sessions.media_retention_days IS 'Assumed WhatsApp CDN retention for companion-device media, in days. Default 14. Only an estimate: WhatsApp does not document it, and updateMediaMessage ΓÇö the re-upload request that would remove the guesswork ΓÇö is deliberately never called, because it makes the session transmit.';
 
 
 --
@@ -16367,10 +16472,31 @@ CREATE INDEX idx_whatsapp_messages_media_recoverable ON public.whatsapp_messages
 
 
 --
+-- Name: idx_whatsapp_messages_media_removed; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_whatsapp_messages_media_removed ON public.whatsapp_messages USING btree (org_id, media_removed_at DESC) WHERE (media_removed_at IS NOT NULL);
+
+
+--
 -- Name: idx_whatsapp_messages_media_unreviewed; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_whatsapp_messages_media_unreviewed ON public.whatsapp_messages USING btree (org_id, media_status) WHERE ((media_status = 'stored'::text) AND (media_reviewed_at IS NULL));
+
+
+--
+-- Name: idx_whatsapp_messages_session_media_expiry; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_whatsapp_messages_session_media_expiry ON public.whatsapp_messages USING btree (media_expires_at) WHERE ((media_source = 'session'::text) AND (media_status = ANY (ARRAY['pending'::text, 'failed'::text])));
+
+
+--
+-- Name: idx_whatsapp_messages_session_media_pending; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_whatsapp_messages_session_media_pending ON public.whatsapp_messages USING btree (media_expires_at, id) WHERE ((media_source = 'session'::text) AND (media_status = ANY (ARRAY['pending'::text, 'failed'::text])));
 
 
 --
@@ -16966,6 +17092,13 @@ CREATE TRIGGER trg_baseline_snapshots_freeze BEFORE DELETE OR UPDATE ON public.b
 --
 
 CREATE TRIGGER trg_cfd_updated_at BEFORE UPDATE ON public.custom_field_defs FOR EACH ROW EXECUTE FUNCTION public.update_entity_custom_fields_updated_at();
+
+
+--
+-- Name: whatsapp_messages trg_clear_session_media_ref; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_clear_session_media_ref BEFORE INSERT OR UPDATE OF media_status ON public.whatsapp_messages FOR EACH ROW EXECUTE FUNCTION public.clear_session_media_ref();
 
 
 --
@@ -20664,6 +20797,14 @@ ALTER TABLE ONLY public.whatsapp_messages
 
 
 --
+-- Name: whatsapp_messages whatsapp_messages_media_removed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_messages
+    ADD CONSTRAINT whatsapp_messages_media_removed_by_fkey FOREIGN KEY (media_removed_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
 -- Name: whatsapp_messages whatsapp_messages_media_reviewed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -20741,6 +20882,14 @@ ALTER TABLE ONLY public.whatsapp_session_group_members
 
 ALTER TABLE ONLY public.whatsapp_session_groups
     ADD CONSTRAINT whatsapp_session_groups_bound_by_fkey FOREIGN KEY (bound_by) REFERENCES public.users(id);
+
+
+--
+-- Name: whatsapp_session_groups whatsapp_session_groups_media_policy_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.whatsapp_session_groups
+    ADD CONSTRAINT whatsapp_session_groups_media_policy_by_fkey FOREIGN KEY (media_policy_by) REFERENCES public.users(id) ON DELETE SET NULL;
 
 
 --
@@ -21532,5 +21681,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 16o78ygmXbZEKvu8MM2NZN2qn75YrlBHEZfZOz4O3uscTcbsIlfC4bLCrQjLh2H
+\unrestrict l3Qc9YiaGlBoqAq2SJBR98s0yc1bcatFR9YiclUHnd8RBk6KlWF9Nsbq6uMcK3t
 

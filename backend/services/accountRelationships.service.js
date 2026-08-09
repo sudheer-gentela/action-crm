@@ -18,7 +18,8 @@
 // approver list a side effect of the org chart.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const { pool } = require('../config/database');
+const { pool }       = require('../config/database');
+const projectSettings = require('./projectSettings.service');
 
 const KINDS = ['vendor', 'partner', 'reseller'];
 
@@ -226,6 +227,90 @@ async function end(orgId, userId, relationshipId) {
   return { id: rows[0].id, status: 'ended' };
 }
 
+/**
+ * The projects one vendor/partner account is involved in, with the SIDE they
+ * hold on each and the people who carry it.
+ *
+ * Deliberately NOT filtered by relationship kind. `side` is per project — the
+ * same firm is commonly a vendor on one engagement and a partner on the next,
+ * and the SI you subcontract to is often your customer elsewhere. Filtering to
+ * the tab you happened to be on would hide the one fact this panel exists to
+ * show.
+ *
+ * VISIBILITY IS SCOPED, matching the project list rather than the registry.
+ * The registry itself is org-wide and readable by anyone with the module — who
+ * we buy from is not a secret. Which engagements exist and who staffs them is,
+ * so this read mirrors handover.service's rule exactly: own the project, or
+ * hold an APPROVED membership on it. 'pending' never counts, or requesting
+ * access would grant it. Org-scope rights (admins, per org config) lift the
+ * restriction; team scope widens it to subordinates when the org enables it.
+ *
+ * Consequence worth knowing: two people can see different project counts for
+ * the same vendor. That is the intended trade — the alternative leaks project
+ * names to people deliberately left off them.
+ */
+async function listProjectsForAccount(orgId, userId, accountId, subordinateIds = []) {
+  const id = parseInt(accountId, 10);
+  if (!id) throw Object.assign(new Error('accountId is required'), { status: 400 });
+
+  const cfg  = await projectSettings.get(orgId);
+  const role = await projectSettings.resolveRole(orgId, userId);
+  const seesEverything = projectSettings.canUseOrgScope(cfg, role);
+
+  const params = [orgId, id];
+  let visibility = 'TRUE';
+
+  if (!seesEverything) {
+    const ids = cfg.team_scope_enabled
+      ? [...new Set([Number(userId), ...(subordinateIds || []).map(Number)])].filter(Boolean)
+      : [Number(userId)].filter(Boolean);
+    params.push(ids);
+    const p = `$${params.length}::int[]`;
+    visibility = `(
+         h.assigned_service_owner_id = ANY(${p})
+      OR EXISTS (SELECT 1 FROM project_members pm
+                  WHERE pm.context_type = 'handover'
+                    AND pm.context_id   = h.id
+                    AND pm.org_id       = h.org_id
+                    AND pm.user_id      = ANY(${p})
+                    AND pm.status       = 'approved')
+    )`;
+  }
+
+  const { rows } = await pool.query(
+    `SELECT h.id                       AS project_id,
+            COALESCE(h.name, d.name)   AS project_name,
+            h.status,
+            pc.side,
+            json_agg(
+              json_build_object(
+                'contactId', c.id,
+                'name',      c.first_name || ' ' || c.last_name,
+                'role',      COALESCE(cr.name, pc.role),
+                'isPrimary', pc.is_primary
+              ) ORDER BY pc.is_primary DESC, c.first_name
+            ) AS people
+       FROM project_contacts pc
+       JOIN contacts c          ON c.id = pc.contact_id AND c.org_id = pc.org_id
+       JOIN sales_handovers h   ON h.id = pc.context_id AND h.org_id = pc.org_id
+       LEFT JOIN deals d        ON d.id = h.deal_id
+       -- Role labels are per-side and per-org (contact_roles). Falling back to
+       -- the raw key keeps a project readable if a label was retired.
+       LEFT JOIN contact_roles cr ON cr.org_id = pc.org_id
+                                 AND cr.side   = pc.side
+                                 AND cr.key    = pc.role
+      WHERE pc.org_id = $1
+        AND pc.context_type = 'handover'
+        AND c.account_id = $2
+        AND ${visibility}
+      GROUP BY h.id, h.name, d.name, h.status, pc.side
+      ORDER BY project_name`,
+    params
+  );
+
+  return { projects: rows, scoped: !seesEverything };
+}
+
 /** Pending items, for the shared approvals queue. */
 async function listPending(orgId) {
   const { rows } = await pool.query(
@@ -243,6 +328,6 @@ async function listPending(orgId) {
 module.exports = {
   KINDS, APPROVAL_DEFAULTS,
   getApprovalPolicy, setApprovalPolicy, canApprove,
-  listAccounts, listForAccount,
+  listAccounts, listForAccount, listProjectsForAccount,
   request, review, end, listPending,
 };

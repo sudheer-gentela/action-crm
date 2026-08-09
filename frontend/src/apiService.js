@@ -719,6 +719,9 @@ twilio: {
     vendors:    (status = 'active') => api.get(`/account-relationships/vendors?status=${status}`),
     partners:   (status = 'active') => api.get(`/account-relationships/partners?status=${status}`),
     forAccount: (accountId)         => api.get(`/account-relationships/account/${accountId}`),
+    // Per-project involvement for one vendor/partner. Scoped server-side to the
+    // projects the caller may see, so the count differs between viewers.
+    projectsForAccount: (accountId)  => api.get(`/account-relationships/account/${accountId}/projects`),
     request:    (data)              => api.post('/account-relationships', data),
     review:     (id, body)          => api.post(`/account-relationships/${id}/review`, body),
     end:        (id)                => api.post(`/account-relationships/${id}/end`),

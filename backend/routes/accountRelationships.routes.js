@@ -8,6 +8,10 @@
 //   GET    /vendors                 vendor accounts  (?status=active|pending|all)
 //   GET    /partners                partner accounts
 //   GET    /account/:accountId      every relationship one account holds
+//   GET    /account/:accountId/projects
+//                                   projects this account is on, with the SIDE
+//                                   it holds per project — SCOPED to what the
+//                                   caller may see
 //   POST   /                        request  { accountId, relationship, notes }
 //   POST   /:id/review              approve / reject   (approver only)
 //   POST   /:id/end                 end an active relationship (approver only)
@@ -43,6 +47,19 @@ router.get('/partners', async (req, res) => {
 router.get('/account/:accountId', async (req, res) => {
   try { res.json(await svc.listForAccount(req.orgId, parseInt(req.params.accountId, 10))); }
   catch (err) { fail(res, err); }
+});
+
+// Scoped read: the registry is org-wide, but engagements are not. The service
+// applies the same visibility rule as the project list.
+router.get('/account/:accountId/projects', async (req, res) => {
+  try {
+    res.json(await svc.listProjectsForAccount(
+      req.orgId,
+      req.user.userId,
+      parseInt(req.params.accountId, 10),
+      req.subordinateIds || []
+    ));
+  } catch (err) { fail(res, err); }
 });
 
 router.post('/', async (req, res) => {

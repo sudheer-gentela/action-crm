@@ -9,7 +9,6 @@ import CommunicationView from './CommunicationView';
 import ActionsView from './ActionsView';
 import CalendarView from './CalendarView';
 import FilesView from './FilesView';
-import VendorsView from './VendorsView';
 import SettingsView from './SettingsView';
 import SuperAdminView from './SuperAdminView';
 import ImpersonationBanner from './ImpersonationBanner';
@@ -90,9 +89,11 @@ const NAV_ITEMS_BY_ROLE = {
     { id: 'actions',      label: 'Actions',      icon: '⚡' },
     { id: 'deals',        label: 'Deals',        icon: '💼' },
     { id: 'accounts',     label: 'Accounts',     icon: '🏢' },
-    // Vendors and partners are accounts carrying a relationship, so this sits
-    // beside Accounts rather than being its own kind of record.
-    { id: 'vendors',      label: 'Vendors',      icon: '🤝' },
+    // Vendors and partners moved INTO the Projects module (2026-08). They were
+    // never in MEMBER_NAV_SECTIONS, so this entry only ever answered #/vendors,
+    // and living here escaped module gating: NAV_ITEMS_BY_ROLE is not filtered
+    // by orgModules, so an org without Projects got a registry whose only
+    // consumer did not exist. Now a tab at #/handovers/vendors.
     { id: 'contacts',     label: 'Contacts',     icon: '👥' },
     { id: 'email',        label: 'Communication', icon: '💬' },
     { id: 'calendar',     label: 'Calendar',     icon: '📅' },
@@ -1035,7 +1036,6 @@ function Dashboard({ user, onLogout }) {
               onAccountOpened={() => setPendingAccountId(null)}
             />
           )}
-          {currentTab === 'vendors'     && <VendorsView />}
           {currentTab === 'contacts'    && (
             <ContactsView
               openContactId={pendingContactId}

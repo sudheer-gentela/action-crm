@@ -27,6 +27,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import DesktopOnlyNotice from './DesktopOnlyNotice';
 import { apiService } from './apiService';
+import VendorsView from './VendorsView';
 import PortfolioHealthReport from './PortfolioHealthReport';
 import { hashParts, hashSegment, writeHash } from './hashNav';
 import ProjectFilesPanel from './ProjectFilesPanel';
@@ -38,6 +39,7 @@ import ProjectAttachments from './ProjectAttachments';
 // #/handovers                         → My Handovers list
 // #/handovers/assigned                → Assigned-to-Me list
 // #/handovers/dashboard               → Dashboard tab
+// #/handovers/vendors                 → Vendors and partners tab
 // #/handovers/<id>[/<subtab>]         → open handover <id> (mine), subtab
 // #/handovers/assigned/<id>[/<subtab>]→ open handover <id> (assigned), subtab
 // subtab ∈ summary | details | files | communications  (summary omitted from the URL)
@@ -47,7 +49,7 @@ function parseHandoverHash() {
   let i = 1, scope = 'mine';
   // 'team' and 'org' were briefly tabs; they are scopes now. Map old links onto
   // My Work rather than leaving `tab` on a value that renders no button.
-  if (['assigned', 'team', 'org', 'dashboard'].includes(parts[i])) {
+  if (['assigned', 'team', 'org', 'dashboard', 'vendors'].includes(parts[i])) {
     scope = (parts[i] === 'team' || parts[i] === 'org') ? 'assigned' : parts[i];
     i += 1;
   }
@@ -3668,9 +3670,10 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
   const [detailSubTab,   setDetailSubTab]   = useState(() => parseHandoverHash().sub);
 
   const loadList = useCallback(async () => {
-    // The dashboard renders from /portfolio and 'dashboard' is not a scope the
-    // list endpoint accepts — calling it would 400.
-    if (tab === 'dashboard') { setHandovers([]); setLoading(false); return; }
+    // The dashboard renders from /portfolio and the vendors tab from
+    // /account-relationships. Neither is a scope the list endpoint accepts —
+    // calling it would 400.
+    if (tab === 'dashboard' || tab === 'vendors') { setHandovers([]); setLoading(false); return; }
     setLoading(true);
     try {
       // 'mine' on the From My Deals tab means created_by; 'mine' inside My Work
@@ -3726,8 +3729,8 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
     if (hashSegment(0) !== 'handovers') return;
     if (pendingHashId) return;
     let parts;
-    if (tab === 'dashboard') {
-      parts = ['handovers', 'dashboard'];
+    if (tab === 'dashboard' || tab === 'vendors') {
+      parts = ['handovers', tab];
     } else if (selected) {
       const sub = (detailSubTab && detailSubTab !== 'summary') ? detailSubTab : null;
       parts = tab === 'mine'
@@ -3778,6 +3781,11 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
 
   const handleOpenProject = (id) => { setTab('mine'); setPendingOpenId(id); };
 
+  // From the vendors panel the viewer is there because they hold a role on the
+  // project, so My Work is the tab that will actually contain it. 'mine' is
+  // created_by and is hidden for most people.
+  const handleOpenVendorProject = (id) => { setTab('assigned'); setScope('mine'); setPendingOpenId(id); };
+
   const filtered = handovers.filter(h => {
     const matchSearch = !searchTerm ||
       (h.projectName || h.dealName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -3797,6 +3805,10 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
           ...(fromMyDealsVisible ? [{ key: 'mine', label: '📤 From My Deals' }] : []),
           { key: 'assigned',  label: '🧭 My Work' },
           { key: 'dashboard', label: '📊 Dashboard' },
+          // Org-wide registry of who we buy from and build with. Lives here
+          // rather than beside Accounts so it is gated by the Projects module,
+          // which is its only consumer.
+          { key: 'vendors',   label: '🤝 Vendors and partners' },
         ].map(t => (
           <button key={t.key} onClick={() => setTab(t.key)} style={{
             padding: '12px 22px', background: 'none', border: 'none',
@@ -3832,7 +3844,10 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
         </div>
       )}
 
-      {tab !== 'dashboard' && (
+      {/* Project-kind filter and New project belong to the project LIST. The
+          dashboard and the vendors registry are not lists of projects, so the
+          controls would act on nothing. */}
+      {tab !== 'dashboard' && tab !== 'vendors' && (
         <div className="gw-scroll-x" style={{
           display: 'flex', gap: 6, alignItems: 'center',
           padding: '10px 20px 0', background: '#fff', flexShrink: 0,
@@ -3868,7 +3883,11 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
         />
       )}
 
-      {tab === 'dashboard' ? (
+      {tab === 'vendors' ? (
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          <VendorsView onOpenProject={handleOpenVendorProject} />
+        </div>
+      ) : tab === 'dashboard' ? (
         <div style={{ flex: 1, overflowY: 'auto' }}>
           <PortfolioDashboard onOpenProject={handleOpenProject} />
         </div>
