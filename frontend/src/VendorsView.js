@@ -155,18 +155,150 @@ function ProjectsPanel({ accountId, accountName, onOpenProject }) {
   );
 }
 
-function AddRelationship({ kind, onDone, onCancel }) {
+/**
+ * Account picker with inline creation.
+ *
+ * A plain <select> was the wrong control here for two reasons. It listed only
+ * accounts the viewer OWNS (getAll defaults to scope 'mine'), and a vendor is
+ * usually owned by somebody else — so the account frequently existed and simply
+ * was not offered. And when it genuinely did not exist there was no way out of
+ * the dialog: you had to leave, create the account, and come back.
+ *
+ * Scope is 'org' to match the project pickers in HandoverView. That makes the
+ * list long, hence the type-ahead rather than a dropdown.
+ */
+function AccountPicker({ value, onChange, disabled }) {
   const [accounts, setAccounts] = useState([]);
+  const [query,    setQuery]    = useState('');
+  const [open,     setOpen]     = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [newDomain, setNewDomain] = useState('');
+  const [busy,     setBusy]     = useState(false);
+  const [note,     setNote]     = useState('');
+
+  const reload = useCallback(async () => {
+    // 'org', not the 'mine' default: whose account it is has nothing to do with
+    // whether they are a vendor to us.
+    const r = await apiService.accounts.getAll('org');
+    const list = r.data.accounts || r.data || [];
+    setAccounts(list);
+    return list;
+  }, []);
+
+  useEffect(() => { reload().catch(() => setAccounts([])); }, [reload]);
+
+  const selected = accounts.find(a => String(a.id) === String(value));
+  const q = query.trim().toLowerCase();
+  const matches = !q ? accounts.slice(0, 50)
+    : accounts.filter(a => (a.name || '').toLowerCase().includes(q)
+                        || (a.domain || '').toLowerCase().includes(q)).slice(0, 50);
+  const exact = accounts.some(a => (a.name || '').toLowerCase() === q);
+
+  const pick = (a) => {
+    onChange(String(a.id));
+    setQuery(''); setOpen(false); setNote('');
+  };
+
+  const create = async () => {
+    const name = query.trim();
+    if (!name) return;
+    setBusy(true); setNote('');
+    try {
+      const r = await apiService.accounts.create({ name, domain: newDomain.trim() || undefined });
+      const created = r.data.account;
+      await reload();
+      onChange(String(created.id));
+      setCreating(false); setQuery(''); setNewDomain(''); setOpen(false);
+      setNote(`Created ${created.name}.`);
+    } catch (e) {
+      // The duplicate guard on POST /accounts is scoped to owner_id, so it only
+      // fires for accounts this user already owns. When it does, it hands back
+      // the existing id — use that rather than making them start over.
+      const err = e?.response?.data?.error;
+      if (err?.existingAccountId) {
+        const list = await reload().catch(() => accounts);
+        const hit = list.find(a => String(a.id) === String(err.existingAccountId));
+        onChange(String(err.existingAccountId));
+        setCreating(false); setQuery(''); setNewDomain(''); setOpen(false);
+        setNote(hit ? `${hit.name} already exists — selected it.` : 'That account already exists — selected it.');
+      } else {
+        setNote(errText(e, 'Could not create the account.'));
+      }
+    } finally { setBusy(false); }
+  };
+
+  if (creating) {
+    return (
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+        <input autoFocus value={query} onChange={e => setQuery(e.target.value)}
+          placeholder="Account name" style={{ ...S.inp, minWidth: 190 }} />
+        <input value={newDomain} onChange={e => setNewDomain(e.target.value)}
+          placeholder="Domain (optional)" style={{ ...S.inp, minWidth: 150 }} />
+        <button onClick={create} disabled={busy || !query.trim()} style={S.pri}>
+          {busy ? 'Creating…' : 'Create account'}
+        </button>
+        <button onClick={() => { setCreating(false); setNote(''); }} disabled={busy} style={S.btn}>Back</button>
+        {note && <span style={{ fontSize: 11, color: '#6b7280' }}>{note}</span>}
+        <div style={{ ...S.meta, flexBasis: '100%' }}>
+          Without a domain, emails and meetings from their people will not auto-link to this account.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ position: 'relative', minWidth: 260 }}>
+      <input
+        disabled={disabled}
+        value={open ? query : (selected ? selected.name : query)}
+        onChange={e => { setQuery(e.target.value); setOpen(true); }}
+        onFocus={() => { setOpen(true); setQuery(''); }}
+        placeholder="Search accounts…"
+        style={{ ...S.inp, width: '100%' }}
+      />
+      {note && <div style={{ fontSize: 11, color: '#6b7280', marginTop: 3 }}>{note}</div>}
+      {open && (
+        <div style={{
+          position: 'absolute', zIndex: 20, top: '100%', left: 0, right: 0, marginTop: 2,
+          background: '#fff', border: '1px solid #d1d5db', borderRadius: 6,
+          maxHeight: 240, overflowY: 'auto', boxShadow: '0 6px 16px rgba(0,0,0,0.08)',
+        }}>
+          {matches.map(a => (
+            <button key={a.id} onClick={() => pick(a)} style={{
+              display: 'block', width: '100%', textAlign: 'left', border: 'none',
+              background: 'none', padding: '6px 10px', fontSize: 12, cursor: 'pointer',
+            }}>
+              {a.name}{a.domain ? <span style={{ color: '#9ca3af' }}> · {a.domain}</span> : null}
+            </button>
+          ))}
+          {!matches.length && (
+            <div style={{ padding: '8px 10px', fontSize: 12, color: '#9ca3af' }}>No account matches.</div>
+          )}
+          {q && !exact && (
+            <button onClick={() => { setCreating(true); setOpen(false); }} style={{
+              display: 'block', width: '100%', textAlign: 'left', border: 'none',
+              borderTop: '1px solid #f3f4f6', background: '#f8fafc', padding: '7px 10px',
+              fontSize: 12, cursor: 'pointer', color: '#0369a1', fontWeight: 600,
+            }}>
+              ＋ Create “{query.trim()}” as a new account
+            </button>
+          )}
+          <button onClick={() => setOpen(false)} style={{
+            display: 'block', width: '100%', textAlign: 'left', border: 'none',
+            borderTop: '1px solid #f3f4f6', background: 'none', padding: '6px 10px',
+            fontSize: 11, cursor: 'pointer', color: '#6b7280',
+          }}>Close</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AddRelationship({ kind, onDone, onCancel }) {
   const [accountId, setAccountId] = useState('');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
-
-  useEffect(() => {
-    apiService.accounts.getAll()
-      .then(r => setAccounts(r.data.accounts || r.data || []))
-      .catch(() => setAccounts([]));
-  }, []);
 
   const save = async () => {
     if (!accountId) { setErr('Pick an account.'); return; }
@@ -180,11 +312,8 @@ function AddRelationship({ kind, onDone, onCancel }) {
 
   return (
     <div style={{ ...S.card, background: '#f8fafc' }}>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-        <select value={accountId} onChange={e => setAccountId(e.target.value)} style={{ ...S.inp, minWidth: 220 }}>
-          <option value="">Select an account…</option>
-          {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-        </select>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <AccountPicker value={accountId} onChange={setAccountId} disabled={saving} />
         <input value={notes} onChange={e => setNotes(e.target.value)}
           placeholder="What do we use them for? (optional)" style={{ ...S.inp, minWidth: 240 }} />
         <button onClick={save} disabled={saving} style={S.pri}>{saving ? 'Saving…' : `Add as ${kind}`}</button>
@@ -192,7 +321,7 @@ function AddRelationship({ kind, onDone, onCancel }) {
       </div>
       <div style={{ ...S.meta, marginTop: 8 }}>
         Any account can be a {kind} and stay a customer — this does not change its account type
-        or its place in the pipeline.
+        or its place in the pipeline. Not listed? Type the name and create it.
       </div>
       {err && <div style={{ ...S.err, marginTop: 8, marginBottom: 0 }}>{err}</div>}
     </div>
@@ -338,8 +467,15 @@ export default function VendorsView({ onOpenProject }) {
           {canApprove && (
             <>
               <button onClick={() => setPolicyOpen(o => !o)} style={S.btn}>Approvers…</button>
-              <button onClick={() => setAdding(a => !a)} style={S.pri}>
-                {adding ? 'Done' : `+ Add ${kind}`}
+              {/* One-way: the panel closes via its own Cancel. A header button
+                  that relabels to 'Done' reads as a save confirmation when it
+                  is really just a toggle, and nothing has been saved. */}
+              <button
+                onClick={() => setAdding(true)}
+                disabled={adding}
+                style={adding ? { ...S.pri, background: '#93c5fd', cursor: 'default' } : S.pri}
+              >
+                + Add {kind}
               </button>
             </>
           )}
