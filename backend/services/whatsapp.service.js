@@ -22,6 +22,7 @@ const { pool } = require('../config/database');
 const enc      = require('./credentials/encryption');
 const waChannel = require('./channels/whatsappChannel');
 const waTemplates = require('./whatsappTemplates.service');
+const bindings = require('./conversationBindings.service');
 
 // ── Connect / status ─────────────────────────────────────────────────────────
 
@@ -196,7 +197,12 @@ async function getThreadById(threadId, orgId, handoverId) {
   // does. Without this, sending to an existing thread by id left it orphaned:
   // the message went out, but the conversation stayed invisible in the
   // project's Communications tab, which reads by handover_id.
-  if (handoverId != null && t.handover_id == null) {
+  //
+  // UNLESS the thread is entity-scoped, where null is a decision rather than an
+  // orphan. Adopting a vendor group because somebody sent one message into it
+  // would restore exactly the stale thread project the bind removed. The send
+  // itself still goes out and the MESSAGE still carries its project.
+  if (handoverId != null && t.handover_id == null && !(await threadIsEntityBound(orgId, t))) {
     await pool.query(
       `UPDATE whatsapp_threads SET handover_id = $1, updated_at = now() WHERE id = $2`,
       [handoverId, t.id]
@@ -204,6 +210,36 @@ async function getThreadById(threadId, orgId, handoverId) {
     t.handover_id = handoverId;
   }
   return t;
+}
+
+/**
+ * Is this thread ENTITY-scoped — organised around who is in it rather than
+ * around a project?
+ *
+ * WHY EVERY THREAD-PROJECT WRITE HAS TO ASK
+ *   Phase 1 deliberately leaves whatsapp_threads.handover_id NULL on a vendor
+ *   or pool thread, and there are four code paths that treat a null thread
+ *   project as an orphan to be adopted: a send resolved by thread id, a manual
+ *   link, and the two "move the whole conversation" paths. Without this check
+ *   each of them silently reinstates the stale project the bind just removed,
+ *   and the group reappears on that project's Communications tab with its
+ *   attachments flowing into that project's folder.
+ *
+ *   Null on an entity thread is a DECISION, not a gap. This is the function
+ *   that lets the rest of the code tell the difference.
+ *
+ * Takes the thread row (needs kind + wa_group_id/wa_phone). Fails closed to
+ * `false` — a lookup error must not block a legitimate send.
+ */
+async function threadIsEntityBound(orgId, thread) {
+  const threadRef = thread?.kind === 'group' ? thread?.wa_group_id : thread?.wa_phone;
+  if (!threadRef) return false;
+  try {
+    return await bindings.isEntityBound(orgId, 'whatsapp', threadRef);
+  } catch (err) {
+    console.warn(`[whatsapp] binding lookup failed for thread ${thread?.id}: ${err.message}`);
+    return false;
+  }
 }
 
 /**
@@ -229,10 +265,24 @@ async function getThreadById(threadId, orgId, handoverId) {
  */
 async function linkThreadToProject(threadId, orgId, handoverId, { force = false } = {}) {
   const { rows: [t] } = await pool.query(
-    `SELECT id, handover_id FROM whatsapp_threads WHERE id = $1 AND org_id = $2`,
+    `SELECT id, kind, wa_group_id, wa_phone, handover_id
+       FROM whatsapp_threads WHERE id = $1 AND org_id = $2`,
     [threadId, orgId]
   );
   if (!t) throw Object.assign(new Error('Conversation not found'), { status: 404 });
+
+  // An entity-scoped conversation has no project ON PURPOSE. Linking it to one
+  // here would put every future message in it back on a single project via the
+  // thread fallback — the misfile the binding exists to prevent. `force` does
+  // not override this: the way to make a vendor group belong to one project is
+  // to rebind it as a project group, which is a decision with its own guard and
+  // its own audit trail.
+  if (await threadIsEntityBound(orgId, t)) {
+    throw Object.assign(
+      new Error('This conversation is organised around a vendor or a set of projects, not one project. Change how the group is bound if that is what you want, or file individual messages.'),
+      { status: 409, code: 'ENTITY_BOUND' });
+  }
+
   if (t.handover_id != null && t.handover_id !== handoverId && !force) {
     throw Object.assign(
       new Error('That conversation is already on another project. Move it explicitly if that is what you want.'),
@@ -363,13 +413,20 @@ async function moveMessage(messageId, orgId, userId, { handoverId, scope = 'mess
   const projectFiles = require('./projectFiles.service');
 
   const { rows: [msg] } = await pool.query(
-    `SELECT m.id, m.handover_id, m.thread_id, t.handover_id AS thread_handover_id
+    `SELECT m.id, m.handover_id, m.thread_id, t.handover_id AS thread_handover_id,
+            t.kind, t.wa_group_id, t.wa_phone
        FROM whatsapp_messages m
        JOIN whatsapp_threads t ON t.id = m.thread_id
       WHERE m.id = $1 AND m.org_id = $2`,
     [messageId, orgId]
   );
   if (!msg) throw Object.assign(new Error('Message not found'), { status: 404 });
+
+  // On an entity-scoped thread the MESSAGES still move — filing by hand is the
+  // whole fallback Phase 1 relies on — but the thread's own project is not
+  // written. Setting it would reinstate the stale project the bind removed and
+  // make every later message in the vendor group inherit it silently.
+  const entityScoped = await threadIsEntityBound(orgId, msg);
 
   const { rows: [dest] } = await pool.query(
     `SELECT id FROM sales_handovers WHERE id = $1 AND org_id = $2`, [handoverId, orgId]);
@@ -406,7 +463,7 @@ async function moveMessage(messageId, orgId, userId, { handoverId, scope = 'mess
   );
 
   let conversationMoved = false;
-  if (scope === 'thread') {
+  if (scope === 'thread' && !entityScoped) {
     const { rowCount } = await pool.query(
       `UPDATE whatsapp_threads SET handover_id = $1, updated_at = now()
         WHERE id = $2 AND org_id = $3`,
@@ -421,6 +478,10 @@ async function moveMessage(messageId, orgId, userId, { handoverId, scope = 'mess
     fromHandoverId: msg.handover_id ?? null,
     scope,
     conversationMoved,
+    // The messages moved; the conversation deliberately did not. Surfaced so
+    // the UI can say "filed 14 messages — the group itself still covers several
+    // projects" rather than implying the whole group was reassigned.
+    entityScoped,
   };
 }
 
@@ -1167,6 +1228,38 @@ function contactNameFromValue(value, fromPhone) {
 async function resolveInboundHandover(orgId, thread, m) {
   const replyToWamid = m?.context?.id || null;
 
+  // ── the fork (Phase 1) ──────────────────────────────────────────────────
+  //
+  // An ENTITY-scoped thread — a vendor group, an internal pool group — runs
+  // rule 1 and then stops. Both of the remaining rules are actively wrong there:
+  //
+  //   Rule 2's outbound leg is ALREADY DEAD for a captured group: nobody sends
+  //   from a project into a personal WhatsApp group. What survives is a bare
+  //   decaying pointer with nothing able to contradict it, which is exactly
+  //   what misfiles at every topic switch.
+  //
+  //   Rule 3's thread project is null by construction on an entity thread, or
+  //   stale if the group was previously bound to one project.
+  //
+  // So an entity-scoped message lands UNASSIGNED unless it is a quoted reply.
+  // That is the intended outcome, not a gap: a misfiled message is worse than
+  // an unfiled one, because nobody audits the project they did not expect it
+  // in. Phase 4 reduces the volume; Phase 1 makes it visible.
+  //
+  // No binding row means LEGACY — every group already in the system keeps
+  // today's behaviour exactly.
+  const threadRef = thread?.kind === 'group' ? thread?.wa_group_id : thread?.wa_phone;
+  let entityScoped = false;
+  if (threadRef) {
+    try {
+      entityScoped = await bindings.isEntityBound(orgId, 'whatsapp', threadRef);
+    } catch (err) {
+      // Fail OPEN to today's chain rather than dropping attribution entirely:
+      // a lookup failure must not silently unassign a project group's traffic.
+      console.warn(`[whatsapp] binding lookup failed for thread ${thread?.id}: ${err.message}`);
+    }
+  }
+
   if (replyToWamid) {
     const { rows: [ctx] } = await pool.query(
       `SELECT handover_id FROM whatsapp_messages
@@ -1176,6 +1269,10 @@ async function resolveInboundHandover(orgId, thread, m) {
     );
     if (ctx) return { handoverId: ctx.handover_id, source: 'reply_context', replyToWamid };
   }
+
+  // Rule 1 did not fire and this thread is organised around who is in it, not
+  // around a project. Stop rather than guess.
+  if (entityScoped) return { handoverId: null, source: null, replyToWamid };
 
   const ts = Number(m?.timestamp) || (Date.now() / 1000);
   // One query, two candidate signals, ordered by when each ACT happened. A

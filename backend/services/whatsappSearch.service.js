@@ -35,6 +35,7 @@
 
 const { pool } = require('../config/database');
 const access = require('./whatsappAccess.service');
+const bindings = require('./conversationBindings.service');
 
 const MAX_LIMIT = 100;
 
@@ -408,6 +409,32 @@ async function fileMessage(orgId, userId, messageId, { handoverId = null, scope 
   const auth = await access.canMoveMessage(orgId, userId, messageId, handoverId);
   if (!auth.ok) return auth;
 
+  // An ENTITY-scoped conversation — a vendor group, an internal pool group —
+  // has no project of its own by design. The MESSAGES below still move, which
+  // is the human fallback the conservative attribution chain depends on, but
+  // the thread's handover_id is not written: doing so would reinstate the stale
+  // project the binding removed, and every later message in the group would
+  // inherit it silently through the thread fallback.
+  const { rows: [t] } = await pool.query(
+    `SELECT id, kind, wa_group_id, wa_phone FROM whatsapp_threads
+      WHERE id = $1 AND org_id = $2`,
+    [auth.threadId, orgId]
+  );
+  const threadRef = t?.kind === 'group' ? t?.wa_group_id : t?.wa_phone;
+  let entityScoped = false;
+  if (threadRef) {
+    try {
+      entityScoped = await bindings.isEntityBound(orgId, 'whatsapp', threadRef);
+    } catch (err) {
+      // Fail closed on the THREAD write specifically: if we cannot tell, do not
+      // write the thread project. The messages still move either way, so the
+      // cost of being wrong here is one conversation that has to be re-linked
+      // by hand — against silently re-filing a whole vendor group.
+      console.warn(`[wa-search] binding lookup failed for thread ${auth.threadId}: ${err.message}`);
+      entityScoped = true;
+    }
+  }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -433,7 +460,7 @@ async function fileMessage(orgId, userId, messageId, { handoverId = null, scope 
         : [orgId, auth.threadId, handoverId, userId, messageId]
     );
 
-    if (scope === 'thread') {
+    if (scope === 'thread' && !entityScoped) {
       await client.query(
         `UPDATE whatsapp_threads SET handover_id = $1, updated_at = now()
           WHERE id = $2 AND org_id = $3`,
@@ -449,6 +476,8 @@ async function fileMessage(orgId, userId, messageId, { handoverId = null, scope 
       to: handoverId,
       scope,
       via: auth.sourceVia,
+      // The messages moved; the conversation itself deliberately did not.
+      entityScoped,
     };
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch { /* already failed */ }

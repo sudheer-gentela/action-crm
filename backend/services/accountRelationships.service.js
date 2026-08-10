@@ -311,6 +311,83 @@ async function listProjectsForAccount(orgId, userId, accountId, subordinateIds =
   return { projects: rows, scoped: !seesEverything };
 }
 
+/**
+ * The projects a vendor/partner account is ON, org-wide.
+ *
+ * DELIBERATELY NOT THE SAME FUNCTION as listProjectsForAccount above, and the
+ * difference is the whole point of it existing:
+ *
+ *   listProjectsForAccount  — a READ, for a human looking at the vendor panel.
+ *                             Scoped to what that viewer may see, so two people
+ *                             legitimately get different counts.
+ *   projectsForRelationship — a DERIVATION, for the candidate set of a bound
+ *                             conversation. Org-wide, because a candidate set
+ *                             is a property of the CONVERSATION, not of whoever
+ *                             happened to click Bind. Scoping it to the binder
+ *                             would produce a set that silently differs by who
+ *                             clicked, and an attribution six months later that
+ *                             cannot be explained.
+ *
+ * Anything that RENDERS the result must apply its own scoping. This returns
+ * rows; it does not decide who may look at them.
+ *
+ * THREE EXCLUSIONS, each one a decision:
+ *
+ *   side IN ('vendor','partner')  — the same firm can be your customer on one
+ *     project and your vendor on the next, with the same people. A Cloudsmith
+ *     vendor group is about the projects Cloudsmith is a VENDOR on. Including
+ *     the projects where they are the customer would widen the candidate set
+ *     with projects the vendor group has no reason to discuss, and a wider
+ *     candidate set is a worse one — narrowing is the entire mechanism.
+ *
+ *   the account is not the project's own customer — a project whose
+ *     sales_handovers.account_id IS this account is that account's own
+ *     engagement, not work they subcontract on. Excluded for the same reason.
+ *
+ *   status NOT IN ('draft','completed','cancelled')  — the established "active
+ *     project" idiom in handover.service. A completed project should not start
+ *     collecting new candidate matches; Phase 7's project-close nudge is the
+ *     mechanism for what is already filed on it.
+ *
+ * Returns [{ handoverId, projectName, status, side }]. No relationship check
+ * here — the caller validates that the account actually holds an active
+ * vendor/partner row before deciding to derive anything.
+ */
+async function projectsForRelationship(orgId, accountId) {
+  const id = parseInt(accountId, 10);
+  if (!id) throw Object.assign(new Error('accountId is required'), { status: 400 });
+
+  const { rows } = await pool.query(
+    `SELECT DISTINCT ON (h.id)
+            h.id                     AS handover_id,
+            COALESCE(h.name, d.name) AS project_name,
+            h.status,
+            pc.side
+       FROM project_contacts pc
+       JOIN contacts        c ON c.id = pc.contact_id AND c.org_id = pc.org_id
+       JOIN sales_handovers h ON h.id = pc.context_id AND h.org_id = pc.org_id
+       LEFT JOIN deals      d ON d.id = h.deal_id
+      WHERE pc.org_id        = $1
+        AND pc.context_type  = 'handover'
+        AND c.account_id     = $2
+        AND pc.side          IN ('vendor', 'partner')
+        AND h.status         NOT IN ('draft', 'completed', 'cancelled')
+        AND (h.account_id IS NULL OR h.account_id <> $2)
+      -- DISTINCT ON collapses the several contacts one vendor has on a project
+      -- into one candidate. listProjectsForAccount groups by side and can
+      -- legitimately return the same project twice; a candidate set cannot.
+      ORDER BY h.id, pc.side`,
+    [orgId, id]
+  );
+
+  return rows.map(r => ({
+    handoverId:  r.handover_id,
+    projectName: r.project_name,
+    status:      r.status,
+    side:        r.side,
+  }));
+}
+
 /** Pending items, for the shared approvals queue. */
 async function listPending(orgId) {
   const { rows } = await pool.query(
@@ -328,6 +405,6 @@ async function listPending(orgId) {
 module.exports = {
   KINDS, APPROVAL_DEFAULTS,
   getApprovalPolicy, setApprovalPolicy, canApprove,
-  listAccounts, listForAccount, listProjectsForAccount,
+  listAccounts, listForAccount, listProjectsForAccount, projectsForRelationship,
   request, review, end, listPending,
 };

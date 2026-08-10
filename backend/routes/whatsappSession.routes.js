@@ -17,7 +17,9 @@
  *   DELETE /                       — disable + wipe key material (admin)
  *   GET    /qr                     — current pairing QR, if pending
  *   GET    /triage                 — captured groups awaiting binding
- *   POST   /triage/:groupId/bind   — attach a group to a handover project
+ *   POST   /triage/:groupId/bind   — say how a group is organised (project |
+ *                                    account | pool)
+ *   POST   /triage/:groupId/unbind — remove the binding; back to legacy
  *   POST   /triage/:groupId/ignore — dismiss a group permanently
  *   POST   /triage/media-policy    — per-group attachment policy (bulk)
  *
@@ -544,12 +546,62 @@ router.post('/triage/media-policy', async (req, res) => {
   }
 });
 
+/**
+ * Say how a group is organised: around a project, around a vendor/partner
+ * account, or as a pool of declared projects.
+ *
+ * `mode` defaults to 'project' so a caller sending only { handoverId } — which
+ * is the entire pre-Phase-1 payload — behaves exactly as it did before.
+ *
+ * 409 rather than 400 for NEEDS_FORCE: the request was well formed and the
+ * caller is expected to re-send it with force:true after confirming, which
+ * mirrors the existing `force` flag on POST /threads/:threadId/link.
+ */
 router.post('/triage/:groupId/bind', async (req, res) => {
   try {
-    const { handoverId } = req.body || {};
-    if (!handoverId) return res.status(400).json({ error: { message: 'handoverId required' } });
+    const { mode = 'project', handoverId, accountId, candidateIds, force } = req.body || {};
+
+    if (mode === 'project' && !handoverId) {
+      return res.status(400).json({ error: { message: 'handoverId required' } });
+    }
+    if (mode === 'account' && !accountId) {
+      return res.status(400).json({ error: { message: 'accountId required' } });
+    }
+    if (mode === 'pool' && !(Array.isArray(candidateIds) && candidateIds.length)) {
+      return res.status(400).json({ error: { message: 'candidateIds required — name at least one project' } });
+    }
+
     const result = await session.bindGroup(
-      req.orgId, req.userId, parseInt(req.params.groupId, 10), parseInt(handoverId, 10)
+      req.orgId, req.userId, parseInt(req.params.groupId, 10),
+      { mode, handoverId, accountId, candidateIds, force: !!force }
+    );
+
+    if (!result.ok) {
+      const status = result.code === 'NOT_FOUND'   ? 404
+                   : result.code === 'NEEDS_FORCE' ? 409
+                   : 400;
+      return res.status(status).json({ ...result, error: { message: result.error || result.code } });
+    }
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: { message: e.message } });
+  }
+});
+
+/**
+ * Unbind — the group reverts to legacy behaviour: no binding row, and the
+ * attribution chain runs all three rules again against whatever the thread
+ * carries.
+ *
+ * Does NOT restore a thread project that a previous entity bind cleared, and
+ * does not retract anything already attributed. Both would be guesses about
+ * what the person meant, and this is the escape hatch from a wrong bind, not a
+ * time machine.
+ */
+router.post('/triage/:groupId/unbind', async (req, res) => {
+  try {
+    const result = await session.unbindGroup(
+      req.orgId, req.userId, parseInt(req.params.groupId, 10)
     );
     if (!result.ok) return res.status(result.code === 'NOT_FOUND' ? 404 : 400).json(result);
     res.json(result);

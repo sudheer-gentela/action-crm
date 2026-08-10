@@ -906,7 +906,16 @@ twilio: {
     triageQuery:    (params={})  => api.get(`/whatsapp-session/triage?${new URLSearchParams(params).toString()}`),
     watch:          (body)      => api.post('/whatsapp-session/triage/watch', body),
     watchJid:       (body)      => api.post('/whatsapp-session/triage/watch-jid', body),
+    // body: { mode: 'project'|'account'|'pool', handoverId?, accountId?,
+    //         candidateIds?: number[], force?: boolean }
+    // mode defaults to 'project' server-side, so { handoverId } alone still
+    // works exactly as it did before conversation bindings existed.
+    // A 409 with code NEEDS_FORCE means the change would break an existing
+    // decision: show the message it carries and re-send with force: true.
     bind:           (id, body)  => api.post(`/whatsapp-session/triage/${id}/bind`, body),
+    // Back to legacy behaviour. Does not restore a cleared project link and
+    // does not retract anything already filed.
+    unbind:         (id)        => api.post(`/whatsapp-session/triage/${id}/unbind`),
     ignore:         (id)        => api.post(`/whatsapp-session/triage/${id}/ignore`),
     // Per-group attachment policy. Bulk, like the watch routes: a number in
     // eighty groups is configured in sweeps, not one dialog at a time.

@@ -167,7 +167,20 @@ function ProjectsPanel({ accountId, accountName, onOpenProject }) {
  * Scope is 'org' to match the project pickers in HandoverView. That makes the
  * list long, hence the type-ahead rather than a dropdown.
  */
-function AccountPicker({ value, onChange, disabled }) {
+/**
+ * EXPORTED because the WhatsApp triage screen needs the same control when
+ * binding a group to a vendor. Exported rather than copied: a second type-ahead
+ * with its own create-inline behaviour and its own duplicate-account handling
+ * would drift from this one within a release.
+ *
+ * @param {boolean} props.onlyRelationships  when true, offer ONLY accounts that
+ *        already hold an APPROVED vendor or partner relationship, and drop the
+ *        create-inline affordance with it. Default false, which is what this
+ *        file's own use needs: the picker here is how a NEW vendor relationship
+ *        gets requested, so filtering to existing vendors would make it
+ *        impossible to add one.
+ */
+export function AccountPicker({ value, onChange, disabled, onlyRelationships = false }) {
   const [accounts, setAccounts] = useState([]);
   const [query,    setQuery]    = useState('');
   const [open,     setOpen]     = useState(false);
@@ -177,13 +190,26 @@ function AccountPicker({ value, onChange, disabled }) {
   const [note,     setNote]     = useState('');
 
   const reload = useCallback(async () => {
+    // Both relationship kinds, deduped: a firm can be approved as a vendor AND
+    // a partner, and either qualifies a group to be bound to it.
+    if (onlyRelationships) {
+      const [v, p] = await Promise.all([
+        apiService.accountRelationships.vendors('active'),
+        apiService.accountRelationships.partners('active'),
+      ]);
+      const rows = [...(v.data.accounts || v.data || []), ...(p.data.accounts || p.data || [])];
+      const list = [...new Map(rows.map(a => [a.id, a])).values()]
+        .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      setAccounts(list);
+      return list;
+    }
     // 'org', not the 'mine' default: whose account it is has nothing to do with
     // whether they are a vendor to us.
     const r = await apiService.accounts.getAll('org');
     const list = r.data.accounts || r.data || [];
     setAccounts(list);
     return list;
-  }, []);
+  }, [onlyRelationships]);
 
   useEffect(() => { reload().catch(() => setAccounts([])); }, [reload]);
 
@@ -272,9 +298,16 @@ function AccountPicker({ value, onChange, disabled }) {
             </button>
           ))}
           {!matches.length && (
-            <div style={{ padding: '8px 10px', fontSize: 12, color: '#9ca3af' }}>No account matches.</div>
+            <div style={{ padding: '8px 10px', fontSize: 12, color: '#9ca3af' }}>
+              {onlyRelationships
+                ? 'No approved vendor or partner matches. Add the relationship first.'
+                : 'No account matches.'}
+            </div>
           )}
-          {q && !exact && (
+          {/* Creating an account inline cannot help when the list is filtered to
+              APPROVED relationships — a brand new account holds none, so it
+              would vanish from the list the moment it was created. */}
+          {q && !exact && !onlyRelationships && (
             <button onClick={() => { setCreating(true); setOpen(false); }} style={{
               display: 'block', width: '100%', textAlign: 'left', border: 'none',
               borderTop: '1px solid #f3f4f6', background: '#f8fafc', padding: '7px 10px',

@@ -24,6 +24,8 @@
 const { pool } = require('../config/database');
 const waService = require('./whatsapp.service');
 const groupCache = require('./whatsapp/groupCache');
+const bindings = require('./conversationBindings.service');
+const accountRels = require('./accountRelationships.service');
 
 const WORKER_VERSION = '1.1.0';   // 1.1.0 adds session media capture
 
@@ -1027,6 +1029,17 @@ async function listTriage(orgId, { status = 'all', watched = null, q = null, lim
             g.discovered_via, g.thread_id, t.handover_id,
             g.media_policy, g.media_policy_at,
             (pu.first_name || ' ' || pu.last_name) AS media_policy_by_name,
+            -- How this group is organised. A row here is the authority; the
+            -- group's binding_status mirrors it for cheap filtering. project_name
+            -- below is NULL by construction for account and pool, so the UI must
+            -- read binding_mode rather than infer "unbound" from a missing
+            -- project.
+            cb.id           AS binding_id,
+            cb.binding_mode,
+            cb.bound_account_id,
+            ba.name         AS bound_account_name,
+            (SELECT count(*)::int FROM conversation_project_candidates cc
+              WHERE cc.binding_id = cb.id) AS candidate_count,
             -- Attachments that arrived but are not in the customer's storage.
             -- Surfaced next to the group because that is where the setting
             -- that caused it lives; a count buried in a per-message list is a
@@ -1043,6 +1056,12 @@ async function listTriage(orgId, { status = 'all', watched = null, q = null, lim
        LEFT JOIN whatsapp_threads   t ON t.id = g.thread_id
        LEFT JOIN sales_handovers    h ON h.id = t.handover_id
        LEFT JOIN users              pu ON pu.id = g.media_policy_by
+       -- Keyed on the thread's external id, not our integer id: that is the
+       -- key the bindings table uses for every channel.
+       LEFT JOIN conversation_bindings cb ON cb.org_id     = g.org_id
+                                         AND cb.channel    = 'whatsapp'
+                                         AND cb.thread_ref = t.wa_group_id
+       LEFT JOIN accounts ba ON ba.id = cb.bound_account_id AND ba.org_id = g.org_id
       WHERE ${where.join(' AND ')}
       ORDER BY g.is_watched DESC, g.last_message_at DESC NULLS LAST, g.subject
       LIMIT $${params.length}`,
@@ -1050,9 +1069,16 @@ async function listTriage(orgId, { status = 'all', watched = null, q = null, lim
   );
 
   const { rows: [counts] } = await pool.query(
-    `SELECT count(*)                                        AS total,
-            count(*) FILTER (WHERE is_watched)              AS watched,
-            count(*) FILTER (WHERE binding_status='bound')  AS bound,
+    // 'bound' still means bound to a project, exactly as it did before Phase 1.
+    // The two entity shapes are counted separately AND rolled into `decided`,
+    // so a screen that wants "how many has somebody made a call on" does not
+    // have to enumerate the vocabulary.
+    `SELECT count(*)                                                AS total,
+            count(*) FILTER (WHERE is_watched)                      AS watched,
+            count(*) FILTER (WHERE binding_status='bound')          AS bound,
+            count(*) FILTER (WHERE binding_status='bound_account')  AS bound_account,
+            count(*) FILTER (WHERE binding_status='bound_pool')     AS bound_pool,
+            count(*) FILTER (WHERE binding_status IN ('bound','bound_account','bound_pool')) AS decided,
             count(*) FILTER (WHERE binding_status='unbound' AND is_watched) AS needs_binding
        FROM whatsapp_session_groups WHERE org_id = $1`,
     [orgId]
@@ -1064,6 +1090,9 @@ async function listTriage(orgId, { status = 'all', watched = null, q = null, lim
       total:        Number(counts.total),
       watched:      Number(counts.watched),
       bound:        Number(counts.bound),
+      boundAccount: Number(counts.bound_account),
+      boundPool:    Number(counts.bound_pool),
+      decided:      Number(counts.decided),
       needsBinding: Number(counts.needs_binding),
     },
   };
@@ -1169,12 +1198,82 @@ async function setWatch(orgId, userId, groupIds, watched) {
 }
 
 /**
- * Attach a captured group to a project. Writes the link onto the THREAD (which
- * is what the Communications tab reads) and back-fills every message already
- * captured from this group that has no project of its own — otherwise binding
- * on Friday loses Monday to Thursday.
+ * Say how a captured group is ORGANISED.
+ *
+ * THREE SHAPES, not one:
+ *
+ *   project  a group whose organising principle IS a project — the Acme group,
+ *            the cutover crew. The link goes onto the THREAD (which is what the
+ *            Communications tab reads) and every already-captured message with
+ *            no project of its own is back-filled, because binding on Friday
+ *            must not lose Monday to Thursday. Unchanged from before Phase 1.
+ *
+ *   account  a group organised around WHO IS IN IT — the Cloudsmith vendor
+ *            group, which discusses several projects and belongs to none. The
+ *            thread carries NO project, nothing is back-filled, and the
+ *            candidate set is DERIVED from the account's vendor/partner
+ *            relationship.
+ *
+ *   pool     an internal group covering several projects, with no customer
+ *            present. Same as account, except a human DECLARES the candidates
+ *            because there is no relationship to derive them from.
+ *
+ * WHY account AND pool BACK-FILL NOTHING
+ *   The old statement was unconditional:
+ *     UPDATE whatsapp_messages SET handover_id = $1 WHERE handover_id IS NULL
+ *   Correct for project. For an entity group it is a mass misfile in a single
+ *   statement — every message ever captured in the vendor group, attributed to
+ *   whichever project happened to be named at bind time. A misfiled message is
+ *   worse than an unfiled one: unfiled can be resolved by a human, misfiled is
+ *   invisible, because nobody audits the project they did not expect it in.
+ *
+ *   So entity-scoped messages land UNASSIGNED and stay there until a human
+ *   files them. That is the intended Phase 1 outcome — it makes the real volume
+ *   visible before Phase 4 tries to reduce it.
+ *
+ * TWO TRANSITIONS NEED `force`, because both break a decision somebody made:
+ *
+ *   project → entity  clears whatsapp_threads.handover_id, or the thread's
+ *                     stale project keeps firing as the attribution fallback.
+ *                     Already-attributed messages KEEP their handover_id: past
+ *                     attributions were decisions and are not retracted.
+ *
+ *   entity → project  sets a thread project on a group that has been
+ *                     accumulating unassigned messages, possibly for months.
+ *                     The back-fill is SUPPRESSED on this transition — filing
+ *                     two thousand vendor-group messages into one project in a
+ *                     single statement is the exact misfile the entity modes
+ *                     exist to prevent, arriving through the front door.
+ *                     Those messages stay unassigned and are filed by a human,
+ *                     which from Phase 3 means confirming a suggested range tag
+ *                     rather than clicking two thousand times.
+ *
+ * @param {number|object} opts  Legacy callers pass a bare handoverId; treated
+ *        as { mode: 'project', handoverId }.
+ * @param {'project'|'account'|'pool'} opts.mode
+ * @param {number}   opts.handoverId    project mode
+ * @param {number}   opts.accountId     account mode
+ * @param {number[]} opts.candidateIds  pool mode
+ * @param {boolean}  opts.force
  */
-async function bindGroup(orgId, userId, groupId, handoverId) {
+async function bindGroup(orgId, userId, groupId, opts = {}) {
+  // A bare id is what every caller passed before Phase 1. Accepting it keeps
+  // this a drop-in for anything not yet updated, rather than a silent
+  // `undefined` mode.
+  const args = (opts === null || typeof opts !== 'object')
+    ? { mode: 'project', handoverId: opts }
+    : opts;
+
+  const mode         = args.mode || 'project';
+  const handoverId   = args.handoverId != null ? parseInt(args.handoverId, 10) : null;
+  const accountId    = args.accountId  != null ? parseInt(args.accountId, 10)  : null;
+  const candidateIds = Array.isArray(args.candidateIds) ? args.candidateIds : [];
+  const force        = !!args.force;
+
+  if (!bindings.MODES.includes(mode)) {
+    return { ok: false, code: 'BAD_MODE', error: `mode must be one of: ${bindings.MODES.join(', ')}` };
+  }
+
   const { rows: [group] } = await pool.query(
     `SELECT * FROM whatsapp_session_groups WHERE id = $1 AND org_id = $2`,
     [groupId, orgId]
@@ -1184,55 +1283,176 @@ async function bindGroup(orgId, userId, groupId, handoverId) {
     return { ok: false, code: 'NO_THREAD', error: 'Nothing captured from this group yet — switch capture on first.' };
   }
 
-  const { rows: [handover] } = await pool.query(
-    `SELECT id FROM sales_handovers WHERE id = $1 AND org_id = $2`,
-    [handoverId, orgId]
+  // thread_ref is the CHANNEL'S external id, not our integer thread id — see
+  // the header of conversationBindings.service.js.
+  const { rows: [thread] } = await pool.query(
+    `SELECT id, wa_group_id, handover_id FROM whatsapp_threads WHERE id = $1 AND org_id = $2`,
+    [group.thread_id, orgId]
   );
-  if (!handover) return { ok: false, code: 'INVALID_HANDOVER' };
+  if (!thread || !thread.wa_group_id) {
+    return { ok: false, code: 'NO_THREAD', error: 'This group has no captured conversation yet.' };
+  }
+  const threadRef = thread.wa_group_id;
+
+  const existing  = await bindings.forThread(orgId, 'whatsapp', threadRef);
+  const wasEntity = !!existing && bindings.isEntityMode(existing.binding_mode);
+  const isEntity  = bindings.isEntityMode(mode);
+
+  // ── validation, per mode ────────────────────────────────────────────────
+  let derived = [];
+
+  if (mode === 'project') {
+    if (!handoverId) return { ok: false, code: 'INVALID_HANDOVER', error: 'Pick a project.' };
+    const { rows: [handover] } = await pool.query(
+      `SELECT id FROM sales_handovers WHERE id = $1 AND org_id = $2`,
+      [handoverId, orgId]
+    );
+    if (!handover) return { ok: false, code: 'INVALID_HANDOVER' };
+
+  } else if (mode === 'account') {
+    if (!accountId) return { ok: false, code: 'INVALID_ACCOUNT', error: 'Pick a vendor or partner.' };
+    // An ACTIVE vendor/partner row, not merely an account. Binding a group to
+    // an account nobody has approved as a vendor would create a candidate set
+    // out of a relationship that does not exist.
+    const { rows: [rel] } = await pool.query(
+      `SELECT r.id, a.name
+         FROM account_relationships r
+         JOIN accounts a ON a.id = r.account_id AND a.org_id = r.org_id
+        WHERE r.org_id = $1 AND r.account_id = $2
+          AND r.relationship IN ('vendor', 'partner')
+          AND r.status = 'active'
+        LIMIT 1`,
+      [orgId, accountId]
+    );
+    if (!rel) {
+      return {
+        ok: false, code: 'NOT_A_VENDOR',
+        error: 'That account is not an approved vendor or partner. Add the relationship first.',
+      };
+    }
+    derived = await accountRels.projectsForRelationship(orgId, accountId);
+
+  } else { // pool
+    const ids = [...new Set(candidateIds.map(n => parseInt(n, 10)).filter(Number.isInteger))];
+    if (!ids.length) {
+      return {
+        ok: false, code: 'NO_CANDIDATES',
+        error: 'Name at least one project this group discusses.',
+      };
+    }
+    const { rows: found } = await pool.query(
+      `SELECT id FROM sales_handovers WHERE org_id = $1 AND id = ANY($2::int[])`,
+      [orgId, ids]
+    );
+    if (found.length !== ids.length) return { ok: false, code: 'INVALID_HANDOVER' };
+    derived = found.map(r => ({ handoverId: r.id }));
+  }
+
+  // ── the two transitions that need force ─────────────────────────────────
+  if (isEntity && thread.handover_id != null && !force) {
+    return {
+      ok: false, code: 'NEEDS_FORCE', currentHandoverId: thread.handover_id,
+      error: 'This group is already linked to a project. Confirm the change — the project link will be removed, though messages already filed to it stay where they are.',
+    };
+  }
+  if (mode === 'project' && wasEntity && !force) {
+    return {
+      ok: false, code: 'NEEDS_FORCE',
+      error: 'This group is currently organised around a vendor or a set of projects. Confirm the change — earlier messages will NOT be filed to the project automatically.',
+    };
+  }
+
+  // Suppressed on entity → project. See the block comment above.
+  const shouldBackfill = mode === 'project' && !wasEntity;
 
   const client = await pool.connect();
+  let backfilled = 0;
+  let bindingRow;
   try {
     await client.query('BEGIN');
     await client.query(`SET LOCAL app.current_org_id = '${parseInt(orgId, 10)}'`);
 
+    // The binding and the thread's project must commit together. A crash
+    // between them leaves a thread carrying a stale project alongside a
+    // binding that says it should have none — which is precisely the state
+    // rule 3 misfiles against.
+    bindingRow = await bindings.bind(orgId, userId, 'whatsapp', threadRef, {
+      mode, handoverId, accountId, client,
+    });
+
+    await bindings.setCandidates(
+      orgId, bindingRow.id,
+      mode === 'project' ? [] : derived.map(d => d.handoverId),
+      { source: mode === 'account' ? 'derived' : 'declared', declaredBy: userId, client }
+    );
+
+    // project sets it; account and pool CLEAR it. Only the thread default is
+    // touched — whatsapp_messages.handover_id values are left exactly as they
+    // are, because past attributions were decisions.
     await client.query(
       `UPDATE whatsapp_threads SET handover_id = $1, updated_at = now()
         WHERE id = $2 AND org_id = $3`,
-      [handoverId, group.thread_id, orgId]
+      [mode === 'project' ? handoverId : null, group.thread_id, orgId]
     );
 
-    const { rowCount: backfilled } = await client.query(
-      `UPDATE whatsapp_messages
-          SET handover_id = $1, handover_source = 'thread'
-        WHERE org_id = $2 AND thread_id = $3 AND handover_id IS NULL`,
-      [handoverId, orgId, group.thread_id]
-    );
+    if (shouldBackfill) {
+      ({ rowCount: backfilled } = await client.query(
+        `UPDATE whatsapp_messages
+            SET handover_id = $1, handover_source = 'thread'
+          WHERE org_id = $2 AND thread_id = $3 AND handover_id IS NULL`,
+        [handoverId, orgId, group.thread_id]
+      ));
+    }
+
+    const status = mode === 'project' ? 'bound'
+                 : mode === 'account' ? 'bound_account'
+                 : 'bound_pool';
 
     await client.query(
       `UPDATE whatsapp_session_groups
-          SET binding_status = 'bound', bound_by = $1, bound_at = now(),
-              -- Binding to a project is an unambiguous statement that this
-              -- group's contents belong in the CRM, so it implies watching.
+          SET binding_status = $3, bound_by = $1, bound_at = now(),
+              -- Any binding is an unambiguous statement that this group's
+              -- contents belong in the CRM, so all three modes imply watching.
               is_watched = true,
               watched_by = COALESCE(watched_by, $1),
               watched_at = COALESCE(watched_at, now()),
               updated_at = now()
         WHERE id = $2`,
-      [userId || null, groupId]
+      [userId || null, groupId, status]
     );
 
     await client.query('COMMIT');
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* already failed */ }
+    throw err;
+  } finally {
+    client.release();
+  }
 
-    // Binding is one of the two events that un-strands an attachment — the
-    // other is choosing an upload folder. Every message captured before this
-    // moment was skipped with "this WhatsApp thread is not linked to a
-    // project", and that sentence has just stopped being true. Backfilling the
-    // handover_id above without also requeueing the media would leave the
-    // messages on the project and their attachments permanently absent.
-    //
-    // After COMMIT and outside the transaction: this is recovery, not part of
-    // the binding, and a storage hiccup must not roll back the bind.
-    let mediaRequeued = 0;
+  // ── media, after COMMIT ─────────────────────────────────────────────────
+  //
+  // Binding to a project is one of the two events that un-strands an
+  // attachment — the other is choosing an upload folder. Every message
+  // captured before this moment was skipped with "this WhatsApp thread is not
+  // linked to a project", and for a project bind that sentence has just
+  // stopped being true.
+  //
+  // Outside the transaction on purpose: this is recovery, not part of the
+  // binding, and a storage hiccup must not roll back the bind.
+  //
+  // NOT run when the back-fill was suppressed. requeueForProject resolves on
+  // COALESCE(m.handover_id, t.handover_id), so on an entity → project rebind it
+  // would sweep every stranded vendor-group attachment into the new project's
+  // folder — the same misfile as the back-fill, in the storage layer.
+  //
+  // NOT run for account or pool at all: requeueForProject is keyed on a
+  // project and those threads have none. Attachments in vendor and pool groups
+  // stay stranded until their messages are filed, which is an ACCEPTED Phase 1
+  // limitation, resolved in Phase 3 when range tagging attributes a burst.
+  // Tell users plainly: a vendor group's files do not appear until its messages
+  // are filed.
+  let mediaRequeued = 0;
+  if (mode === 'project' && shouldBackfill) {
     try {
       const media = require('./whatsappMedia.service');
       ({ requeued: mediaRequeued } = await media.requeueForProject(
@@ -1241,14 +1461,35 @@ async function bindGroup(orgId, userId, groupId, handoverId) {
     } catch (err) {
       console.warn(`[wa-session] media requeue after bind failed (group ${groupId}): ${err.message}`);
     }
-
-    return { ok: true, threadId: group.thread_id, handoverId, backfilled, mediaRequeued };
-  } catch (err) {
-    try { await client.query('ROLLBACK'); } catch { /* already failed */ }
-    throw err;
-  } finally {
-    client.release();
   }
+
+  // Attachments mid-flight when a project link was just removed. They will fail
+  // to resolve a destination and land in 'skipped' with a reason. Counted so
+  // the UI can say so rather than leaving somebody to discover it.
+  let mediaStranded = 0;
+  if (isEntity && thread.handover_id != null) {
+    const { rows: [c] } = await pool.query(
+      `SELECT count(*)::int AS n FROM whatsapp_messages
+        WHERE org_id = $1 AND thread_id = $2 AND media_status = 'pending'`,
+      [orgId, group.thread_id]
+    );
+    mediaStranded = c?.n || 0;
+  }
+
+  return {
+    ok: true,
+    threadId: group.thread_id,
+    mode,
+    handoverId: mode === 'project' ? handoverId : null,
+    accountId:  mode === 'account' ? accountId  : null,
+    bindingId:  bindingRow.id,
+    candidates: mode === 'project' ? 0 : derived.length,
+    backfilled,
+    backfillSuppressed: mode === 'project' && wasEntity,
+    clearedProject: isEntity ? (thread.handover_id ?? null) : null,
+    mediaRequeued,
+    mediaStranded,
+  };
 }
 
 /**
@@ -1291,6 +1532,47 @@ async function watchByJid(orgId, sessionId, userId, jids = [], watched = true, s
   }
 
   return { ok: true, updated: results.filter(r => r.ok).length, results, watched: !!watched };
+}
+
+/**
+ * Remove a group's binding. The escape hatch from a wrong bind.
+ *
+ * Reverts the group to LEGACY behaviour — no binding row, and the attribution
+ * chain runs all three rules again. Three things it deliberately does not do:
+ *
+ *   • restore a thread project a previous entity bind cleared — we do not know
+ *     whether that project was right, and re-installing it would silently
+ *     resume the misfiling the bind was performed to stop;
+ *   • retract anything already attributed — past attributions were decisions;
+ *   • un-watch the group — capture and organisation are separate decisions, and
+ *     they were separate before Phase 1 too.
+ *
+ * Capture therefore continues, and new messages land unassigned unless the
+ * thread still carries a project. That is the safe direction.
+ */
+async function unbindGroup(orgId, userId, groupId) {
+  const { rows: [group] } = await pool.query(
+    `SELECT g.id, g.thread_id, t.wa_group_id
+       FROM whatsapp_session_groups g
+       LEFT JOIN whatsapp_threads t ON t.id = g.thread_id
+      WHERE g.id = $1 AND g.org_id = $2`,
+    [groupId, orgId]
+  );
+  if (!group) return { ok: false, code: 'NOT_FOUND' };
+
+  let removed = 0;
+  if (group.wa_group_id) {
+    ({ removed } = await bindings.unbind(orgId, 'whatsapp', group.wa_group_id));
+  }
+
+  await pool.query(
+    `UPDATE whatsapp_session_groups
+        SET binding_status = 'unbound', bound_by = $1, bound_at = now(), updated_at = now()
+      WHERE id = $2 AND org_id = $3`,
+    [userId || null, groupId, orgId]
+  );
+
+  return { ok: true, removed };
 }
 
 /** Dismiss a group permanently. Capture stops; existing messages are kept. */
@@ -1354,8 +1636,10 @@ async function health(orgId) {
   }
 
   const { rows: [counts] } = await pool.query(
+    // A vendor or pool group is DECIDED — it just has no project of its own.
+    // Counting only 'bound' here would show them as outstanding work forever.
     `SELECT count(*) FILTER (WHERE binding_status = 'unbound') AS unbound,
-            count(*) FILTER (WHERE binding_status = 'bound')   AS bound
+            count(*) FILTER (WHERE binding_status IN ('bound','bound_account','bound_pool')) AS bound
        FROM whatsapp_session_groups WHERE org_id = $1`,
     [orgId]
   );
@@ -1446,6 +1730,7 @@ module.exports = {
   syncGroupMetadata,
   listTriage,
   bindGroup,
+  unbindGroup,
   ignoreGroup,
   health,
   // media

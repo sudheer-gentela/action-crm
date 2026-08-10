@@ -56,8 +56,12 @@ router.get('/whatsapp-sessions', async (req, res) => {
                 WHERE g.session_id = s.id)                       AS groups_total,
               (SELECT count(*) FROM whatsapp_session_groups g
                 WHERE g.session_id = s.id AND g.is_watched)      AS groups_watched,
+              -- All three bound shapes. A vendor or multi-project group is
+              -- decided; counting only 'bound' would show a fully triaged
+              -- fleet as though half of it were outstanding.
               (SELECT count(*) FROM whatsapp_session_groups g
-                WHERE g.session_id = s.id AND g.binding_status = 'bound') AS groups_bound,
+                WHERE g.session_id = s.id
+                  AND g.binding_status IN ('bound','bound_account','bound_pool')) AS groups_bound,
               (SELECT count(*) FROM whatsapp_messages m
                 WHERE m.org_id = s.org_id AND m.capture_source = 'session'
                   AND m.created_at > now() - interval '24 hours') AS messages_24h

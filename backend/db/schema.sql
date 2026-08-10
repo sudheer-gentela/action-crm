@@ -2,9 +2,9 @@
 -- PostgreSQL database dump
 --
 
-\restrict l3Qc9YiaGlBoqAq2SJBR98s0yc1bcatFR9YiclUHnd8RBk6KlWF9Nsbq6uMcK3t
+\restrict RMZv7Tf0CaFX4ZqarLIizMNacxUSFsx8rtAahFwogvK2dnSIdEknXo92OjnuIyQ
 
--- Dumped from database version 17.7 (Debian 17.7-3.pgdg13+1)
+-- Dumped from database version 17.10 (Debian 17.10-1.pgdg13+1)
 -- Dumped by pg_dump version 18.1
 
 SET statement_timeout = 0;
@@ -21681,5 +21681,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict l3Qc9YiaGlBoqAq2SJBR98s0yc1bcatFR9YiclUHnd8RBk6KlWF9Nsbq6uMcK3t
+\unrestrict RMZv7Tf0CaFX4ZqarLIizMNacxUSFsx8rtAahFwogvK2dnSIdEknXo92OjnuIyQ
 
