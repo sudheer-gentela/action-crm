@@ -1,0 +1,34 @@
+-- =====================================================================
+-- COPY_COMMANDS.txt  —  run these in psql after 00_staging.sql
+-- Loads local NDJSON (Windows paths) into stg.* on Railway.
+-- The QUOTE/DELIMITER control chars stop Postgres mangling email bodies
+-- that contain quotes, commas, or newlines.
+-- =====================================================================
+-- Run each line inside psql connected to Railway. Adjust the dump\ path
+-- to wherever your export folders are on this machine.
+
+
+-- global (shared) pools
+\copy stg.contacts(doc)              FROM 'C:\Projects\MongoDB Backup\_global\contacts.ndjson'              WITH (FORMAT csv, QUOTE E'\x01', DELIMITER E'\x02')
+\copy stg.contact_organizations(doc) FROM 'C:\Projects\MongoDB Backup\_global\contact_organizations.ndjson' WITH (FORMAT csv, QUOTE E'\x01', DELIMITER E'\x02')
+\copy stg.users(doc)                 FROM 'C:\Projects\MongoDB Backup\_global\users.ndjson'                 WITH (FORMAT csv, QUOTE E'\x01', DELIMITER E'\x02')
+\copy stg.tenants(doc)               FROM 'C:\Projects\MongoDB Backup\_global\tenants.ndjson'               WITH (FORMAT csv, QUOTE E'\x01', DELIMITER E'\x02')
+
+-- Aquarient tenant-scoped
+\copy stg.emails(doc)                 FROM 'C:\Projects\MongoDB Backup\aquarient\emails.ndjson'                 WITH (FORMAT csv, QUOTE E'\x01', DELIMITER E'\x02')
+\copy stg.tenant_contact_records(doc) FROM 'C:\Projects\MongoDB Backup\aquarient\tenant_contact_records.ndjson' WITH (FORMAT csv, QUOTE E'\x01', DELIMITER E'\x02')
+\copy stg.tenant_user_contact_lists(doc) FROM 'C:\Projects\MongoDB Backup\aquarient\tenant_user_contact_lists.ndjson' WITH (FORMAT csv, QUOTE E'\x01', DELIMITER E'\x02')
+
+
+
+-- user-scoped activity (whole; filtered to Pavan later in SQL)
+\copy stg.contact_custom_attrs(doc)      FROM 'C:\Projects\MongoDB Backup\_user_scoped\contact_custom_attributes.ndjson' WITH (FORMAT csv, QUOTE E'\x01', DELIMITER E'\x02')
+\copy stg.user_linkedin_connections(doc) FROM 'C:\Projects\MongoDB Backup\_user_scoped\user_linkedin_connections.ndjson' WITH (FORMAT csv, QUOTE E'\x01', DELIMITER E'\x02')
+\copy stg.linkedin_messages(doc)         FROM 'C:\Projects\MongoDB Backup\_user_scoped\linkedin_messages.ndjson'         WITH (FORMAT csv, QUOTE E'\x01', DELIMITER E'\x02')
+\copy stg.linkedin_message_history(doc)  FROM 'C:\Projects\MongoDB Backup\_user_scoped\linkedin_message_history.ndjson'  WITH (FORMAT csv, QUOTE E'\x01', DELIMITER E'\x02')
+
+-- sanity: row counts landed
+-- SELECT 'contacts' t, count(*) FROM stg.contacts
+-- UNION ALL SELECT 'emails', count(*) FROM stg.emails
+-- UNION ALL SELECT 'ccustom', count(*) FROM stg.contact_custom_attrs
+-- UNION ALL SELECT 'tucl', count(*) FROM stg.tenant_user_contact_lists;

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict RMZv7Tf0CaFX4ZqarLIizMNacxUSFsx8rtAahFwogvK2dnSIdEknXo92OjnuIyQ
+\restrict s7BVVg1vcac94HJnTe4wIsUqqc8Axwt7vIlA4xgmjtl2hfhcIzywPrCm1x29TL5
 
 -- Dumped from database version 17.10 (Debian 17.10-1.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -2698,6 +2698,118 @@ CREATE SEQUENCE public.contracts_id_seq
 --
 
 ALTER SEQUENCE public.contracts_id_seq OWNED BY public.contracts.id;
+
+
+--
+-- Name: conversation_bindings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.conversation_bindings (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    channel text NOT NULL,
+    thread_ref text NOT NULL,
+    binding_mode text NOT NULL,
+    handover_id integer,
+    bound_account_id integer,
+    bound_by integer,
+    bound_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT conv_bindings_channel_chk CHECK ((channel = ANY (ARRAY['whatsapp'::text, 'slack'::text, 'teams'::text, 'gchat'::text, 'email'::text]))),
+    CONSTRAINT conv_bindings_mode_chk CHECK ((binding_mode = ANY (ARRAY['project'::text, 'account'::text, 'pool'::text]))),
+    CONSTRAINT conv_bindings_shape_chk CHECK ((((binding_mode = 'project'::text) AND (handover_id IS NOT NULL) AND (bound_account_id IS NULL)) OR ((binding_mode = 'account'::text) AND (bound_account_id IS NOT NULL) AND (handover_id IS NULL)) OR ((binding_mode = 'pool'::text) AND (handover_id IS NULL) AND (bound_account_id IS NULL))))
+);
+
+
+--
+-- Name: TABLE conversation_bindings; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.conversation_bindings IS 'How a conversation is organised: around a project, around an account (a vendor group), or as a pool of projects (an internal group). ABSENCE of a row means legacy behaviour ΓÇö the channel''s own thread project, if any ΓÇö NOT pool. Keyed on the channel''s external thread id so the same machinery serves WhatsApp, Slack, Teams and email.';
+
+
+--
+-- Name: COLUMN conversation_bindings.thread_ref; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.conversation_bindings.thread_ref IS 'The channel''s own external thread id as text: WhatsApp group JID (whatsapp_threads.wa_group_id) or phone for a direct thread, Slack channel id, Teams conversation id, email conversation_id. Never a local integer id.';
+
+
+--
+-- Name: COLUMN conversation_bindings.binding_mode; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.conversation_bindings.binding_mode IS 'project = fixed project, messages inherit it (today''s behaviour). account = organised around a vendor/partner account; the project is per message and the candidate set is DERIVED. pool = an internal group discussing several projects; candidates are DECLARED by a human at bind time. For account and pool the attribution chain runs reply-context only and then stops ΓÇö an entity-scoped message lands unassigned rather than guessed.';
+
+
+--
+-- Name: conversation_bindings_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.conversation_bindings_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: conversation_bindings_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.conversation_bindings_id_seq OWNED BY public.conversation_bindings.id;
+
+
+--
+-- Name: conversation_project_candidates; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.conversation_project_candidates (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    binding_id integer NOT NULL,
+    handover_id integer NOT NULL,
+    source text DEFAULT 'declared'::text NOT NULL,
+    declared_by integer,
+    declared_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT conv_candidates_source_chk CHECK ((source = ANY (ARRAY['declared'::text, 'derived'::text])))
+);
+
+
+--
+-- Name: TABLE conversation_project_candidates; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.conversation_project_candidates IS 'The two-to-five projects a message in an entity-scoped thread could plausibly be about. Narrowing from every active project in the org is what makes deterministic mention matching (Phase 4) a primary mechanism rather than a marginal precision play. Phase 1 WRITES this table and reads it nowhere ΓÇö nothing attributes off it until Phase 3.';
+
+
+--
+-- Name: COLUMN conversation_project_candidates.source; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.conversation_project_candidates.source IS 'derived = computed from the account''s vendor/partner relationship at bind time (account mode). declared = named by a human (pool mode). Kept because a stale derived set and a deliberate human one need different remedies.';
+
+
+--
+-- Name: conversation_project_candidates_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.conversation_project_candidates_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: conversation_project_candidates_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.conversation_project_candidates_id_seq OWNED BY public.conversation_project_candidates.id;
 
 
 --
@@ -9080,8 +9192,8 @@ CREATE TABLE public.whatsapp_session_groups (
     media_policy text DEFAULT 'inherit'::text NOT NULL,
     media_policy_by integer,
     media_policy_at timestamp with time zone,
-    CONSTRAINT wa_session_groups_binding_chk CHECK ((binding_status = ANY (ARRAY['unbound'::text, 'bound'::text, 'ignored'::text]))),
-    CONSTRAINT wa_session_groups_decided_chk CHECK (((is_watched = true) OR (binding_status = ANY (ARRAY['bound'::text, 'ignored'::text, 'unbound'::text])))),
+    CONSTRAINT wa_session_groups_binding_chk CHECK ((binding_status = ANY (ARRAY['unbound'::text, 'bound'::text, 'bound_account'::text, 'bound_pool'::text, 'ignored'::text]))),
+    CONSTRAINT wa_session_groups_decided_chk CHECK (((is_watched = true) OR (binding_status = ANY (ARRAY['unbound'::text, 'bound'::text, 'bound_account'::text, 'bound_pool'::text, 'ignored'::text])))),
     CONSTRAINT wa_session_groups_discovered_chk CHECK ((discovered_via = ANY (ARRAY['snapshot'::text, 'message'::text, 'metadata'::text]))),
     CONSTRAINT whatsapp_session_groups_media_policy_chk CHECK ((media_policy = ANY (ARRAY['inherit'::text, 'all'::text, 'documents'::text, 'none'::text])))
 );
@@ -9098,7 +9210,7 @@ COMMENT ON TABLE public.whatsapp_session_groups IS 'Groups a human has DECIDED a
 -- Name: COLUMN whatsapp_session_groups.binding_status; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.whatsapp_session_groups.binding_status IS 'unbound = captured but not yet attached to a project (shows in triage). bound = thread_id has a handover_id. ignored = a human said this group is not project traffic; keep capturing nothing further and stop surfacing it.';
+COMMENT ON COLUMN public.whatsapp_session_groups.binding_status IS 'unbound = captured but nobody has said how this group is organised (shows in triage). bound = bound to ONE project; the thread carries its handover_id and messages inherit it. bound_account = organised around a vendor/partner account; thread handover_id deliberately NULL. bound_pool = an internal group covering several declared projects; likewise NULL. ignored = a human said this group is not project traffic. The three bound_* shapes are spelled out in the column rather than left to be inferred from conversation_bindings, so retagging and reporting stay a status read.';
 
 
 --
@@ -9995,6 +10107,20 @@ ALTER TABLE ONLY public.contract_workflow_config ALTER COLUMN id SET DEFAULT nex
 --
 
 ALTER TABLE ONLY public.contracts ALTER COLUMN id SET DEFAULT nextval('public.contracts_id_seq'::regclass);
+
+
+--
+-- Name: conversation_bindings id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversation_bindings ALTER COLUMN id SET DEFAULT nextval('public.conversation_bindings_id_seq'::regclass);
+
+
+--
+-- Name: conversation_project_candidates id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversation_project_candidates ALTER COLUMN id SET DEFAULT nextval('public.conversation_project_candidates_id_seq'::regclass);
 
 
 --
@@ -11332,6 +11458,22 @@ ALTER TABLE ONLY public.contracts
 
 
 --
+-- Name: conversation_bindings conversation_bindings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversation_bindings
+    ADD CONSTRAINT conversation_bindings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: conversation_project_candidates conversation_project_candidates_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversation_project_candidates
+    ADD CONSTRAINT conversation_project_candidates_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: conversation_starters conversation_starters_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -12505,6 +12647,22 @@ ALTER TABLE ONLY public.account_relationships
 
 ALTER TABLE ONLY public.contact_roles
     ADD CONSTRAINT uq_contact_roles UNIQUE (org_id, side, key);
+
+
+--
+-- Name: conversation_bindings uq_conv_binding; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversation_bindings
+    ADD CONSTRAINT uq_conv_binding UNIQUE (org_id, channel, thread_ref);
+
+
+--
+-- Name: conversation_project_candidates uq_conv_candidate; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversation_project_candidates
+    ADD CONSTRAINT uq_conv_candidate UNIQUE (binding_id, handover_id);
 
 
 --
@@ -14019,6 +14177,34 @@ CREATE INDEX idx_contracts_playbook ON public.contracts USING btree (playbook_id
 --
 
 CREATE INDEX idx_contracts_status ON public.contracts USING btree (status);
+
+
+--
+-- Name: idx_conv_bindings_account; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_conv_bindings_account ON public.conversation_bindings USING btree (org_id, bound_account_id) WHERE (bound_account_id IS NOT NULL);
+
+
+--
+-- Name: idx_conv_bindings_handover; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_conv_bindings_handover ON public.conversation_bindings USING btree (org_id, handover_id) WHERE (handover_id IS NOT NULL);
+
+
+--
+-- Name: idx_conv_candidates_binding; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_conv_candidates_binding ON public.conversation_project_candidates USING btree (org_id, binding_id);
+
+
+--
+-- Name: idx_conv_candidates_handover; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_conv_candidates_handover ON public.conversation_project_candidates USING btree (org_id, handover_id);
 
 
 --
@@ -18430,6 +18616,70 @@ ALTER TABLE ONLY public.contracts
 
 
 --
+-- Name: conversation_bindings conversation_bindings_bound_account_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversation_bindings
+    ADD CONSTRAINT conversation_bindings_bound_account_id_fkey FOREIGN KEY (bound_account_id) REFERENCES public.accounts(id) ON DELETE SET NULL;
+
+
+--
+-- Name: conversation_bindings conversation_bindings_bound_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversation_bindings
+    ADD CONSTRAINT conversation_bindings_bound_by_fkey FOREIGN KEY (bound_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: conversation_bindings conversation_bindings_handover_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversation_bindings
+    ADD CONSTRAINT conversation_bindings_handover_id_fkey FOREIGN KEY (handover_id) REFERENCES public.sales_handovers(id) ON DELETE SET NULL;
+
+
+--
+-- Name: conversation_bindings conversation_bindings_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversation_bindings
+    ADD CONSTRAINT conversation_bindings_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: conversation_project_candidates conversation_project_candidates_binding_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversation_project_candidates
+    ADD CONSTRAINT conversation_project_candidates_binding_id_fkey FOREIGN KEY (binding_id) REFERENCES public.conversation_bindings(id) ON DELETE CASCADE;
+
+
+--
+-- Name: conversation_project_candidates conversation_project_candidates_declared_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversation_project_candidates
+    ADD CONSTRAINT conversation_project_candidates_declared_by_fkey FOREIGN KEY (declared_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: conversation_project_candidates conversation_project_candidates_handover_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversation_project_candidates
+    ADD CONSTRAINT conversation_project_candidates_handover_id_fkey FOREIGN KEY (handover_id) REFERENCES public.sales_handovers(id) ON DELETE CASCADE;
+
+
+--
+-- Name: conversation_project_candidates conversation_project_candidates_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversation_project_candidates
+    ADD CONSTRAINT conversation_project_candidates_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
 -- Name: conversation_starters conversation_starters_contact_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -21282,6 +21532,32 @@ CREATE POLICY contract_plays_org_isolation ON public.contract_plays USING ((org_
 
 
 --
+-- Name: conversation_bindings; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.conversation_bindings ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: conversation_bindings conversation_bindings_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY conversation_bindings_org_isolation ON public.conversation_bindings USING ((org_id = (current_setting('app.current_org_id'::text, true))::integer));
+
+
+--
+-- Name: conversation_project_candidates conversation_candidates_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY conversation_candidates_org_isolation ON public.conversation_project_candidates USING ((org_id = (current_setting('app.current_org_id'::text, true))::integer));
+
+
+--
+-- Name: conversation_project_candidates; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.conversation_project_candidates ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: crm_connections; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -21681,5 +21957,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict RMZv7Tf0CaFX4ZqarLIizMNacxUSFsx8rtAahFwogvK2dnSIdEknXo92OjnuIyQ
+\unrestrict s7BVVg1vcac94HJnTe4wIsUqqc8Axwt7vIlA4xgmjtl2hfhcIzywPrCm1x29TL5
 

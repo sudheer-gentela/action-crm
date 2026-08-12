@@ -261,6 +261,7 @@ app.use('/api/module-requests', require('./routes/moduleAccessRequests.routes'))
 app.use('/api/approvals', require('./routes/approvals.routes'));
 app.use('/api/crm-connections', require('./routes/crm-connections.routes'));
 app.use('/api/baseline',        require('./routes/baseline.routes'));
+app.use('/api/preview',         require('./routes/preview.routes'));  // Mongo migration preview (read-only)
 
 
 app.use('/api/org/admin/ai',    require('./routes/ai-admin.routes'));
