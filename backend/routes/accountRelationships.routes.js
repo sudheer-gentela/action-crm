@@ -62,6 +62,33 @@ router.get('/account/:accountId/projects', async (req, res) => {
   } catch (err) { fail(res, err); }
 });
 
+// Scoped read, same rule as /projects above: a group's SUBJECT LINE can name a
+// project the viewer was deliberately left off, so it gets the same visibility
+// treatment as the project list rather than the org-wide registry treatment.
+router.get('/account/:accountId/conversations', async (req, res) => {
+  try {
+    res.json(await svc.listConversationsForAccount(
+      req.orgId,
+      req.user.userId,
+      parseInt(req.params.accountId, 10),
+      req.subordinateIds || []
+    ));
+  } catch (err) { fail(res, err); }
+});
+
+// Conversations that could be bound to this vendor but are not yet. Groups are
+// scoped by the same rule as the triage screen — this picker must not become
+// the way around it.
+router.get('/account/:accountId/bindable', async (req, res) => {
+  try {
+    res.json(await svc.listBindableForAccount(
+      req.orgId, req.user.userId,
+      parseInt(req.params.accountId, 10),
+      req.subordinateIds || []
+    ));
+  } catch (err) { fail(res, err); }
+});
+
 router.post('/', async (req, res) => {
   try {
     const { accountId, relationship, notes } = req.body || {};

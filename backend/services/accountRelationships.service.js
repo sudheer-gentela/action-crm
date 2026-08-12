@@ -409,6 +409,295 @@ async function projectsForRelationship(orgId, accountId) {
   }));
 }
 
+/**
+ * The bound CONVERSATIONS for one vendor/partner account — the group chats
+ * organised around this firm.
+ *
+ * VISIBILITY: the same rule as listProjectsForAccount, deliberately. The
+ * registry is org-wide because who we buy from is not a secret, but a group's
+ * SUBJECT LINE routinely names a project — "Cloudsmith <> Meridian Cutover" —
+ * and leaking a project name through a group name is the same leak as leaking
+ * it through the project list. So a conversation is visible when the viewer
+ * can see AT LEAST ONE of that binding's candidate projects, or is a
+ * participant in the group, or holds org scope.
+ *
+ * PARTICIPANCY IS PART OF THE RULE, not a bolt-on: someone actually in the
+ * Cloudsmith group plainly knows it exists, and hiding a row from the person
+ * who is sitting in the room would be theatre.
+ *
+ * CONSEQUENCE, matching the projects panel: two people can legitimately see
+ * different conversation counts for the same vendor.
+ *
+ * THE UNASSIGNED COUNT is the number this whole design exists to surface — the
+ * messages in this group that nobody has filed. Binding a group as a vendor
+ * deliberately files nothing, and that trade is only defensible if the waiting
+ * pile is visible where a person can act on it.
+ *
+ * The count is for the whole thread, not per viewer. Reaching the unassigned
+ * pile is a steward decision taken at the filing screen, not a per-message
+ * visibility one, so there is no per-viewer figure to report. What keeps that
+ * honest is the row filter: the count only ever appears against a conversation
+ * the viewer can already see.
+ *
+ * Returns one row per bound conversation, each carrying the deep links the UI
+ * needs: `lastActivity` (to the message) and `resolveHref` (to the filing
+ * queue, pre-filtered to this thread).
+ */
+async function listConversationsForAccount(orgId, userId, accountId, subordinateIds = []) {
+  const id = parseInt(accountId, 10);
+  if (!id) throw Object.assign(new Error('accountId is required'), { status: 400 });
+
+  const cfg  = await projectSettings.get(orgId);
+  const role = await projectSettings.resolveRole(orgId, userId);
+  const seesEverything = projectSettings.canUseOrgScope(cfg, role);
+
+  const viewerIds = cfg.team_scope_enabled
+    ? [...new Set([Number(userId), ...(subordinateIds || []).map(Number)])].filter(Boolean)
+    : [Number(userId)].filter(Boolean);
+
+  // Which bindings this viewer may see at all.
+  // Only bind $3 when the visibility clause actually references it. Passing an
+  // unreferenced parameter makes Postgres raise 42P18 "could not determine data
+  // type of parameter $3" — it cannot infer a type for a parameter that appears
+  // nowhere, so an org-scope viewer would 500 on a query that is otherwise fine.
+  const params = seesEverything ? [orgId, id] : [orgId, id, viewerIds];
+  const visibility = seesEverything ? 'TRUE' : `(
+       EXISTS (SELECT 1 FROM conversation_project_candidates cc
+                 JOIN sales_handovers ch ON ch.id = cc.handover_id AND ch.org_id = cc.org_id
+                WHERE cc.binding_id = b.id
+                  AND (ch.assigned_service_owner_id = ANY($3::int[])
+                       OR EXISTS (SELECT 1 FROM project_members pm
+                                   WHERE pm.context_type = 'handover'
+                                     AND pm.context_id   = ch.id
+                                     AND pm.org_id       = ch.org_id
+                                     AND pm.user_id      = ANY($3::int[])
+                                     AND pm.status       = 'approved')))
+    OR EXISTS (SELECT 1 FROM whatsapp_thread_participants wp
+                WHERE wp.thread_id = t.id AND wp.org_id = t.org_id
+                  AND wp.user_id = ANY($3::int[]))
+  )`;
+
+  const { rows } = await pool.query(
+    `SELECT b.id                AS binding_id,
+            b.thread_ref,
+            b.bound_at,
+            t.id                AS thread_id,
+            COALESCE(t.group_subject, b.thread_ref) AS subject,
+            (SELECT count(*)::int FROM conversation_project_candidates cc
+              WHERE cc.binding_id = b.id)           AS candidate_count,
+            (SELECT count(*)::int FROM whatsapp_messages m
+              WHERE m.thread_id = t.id AND m.excluded_at IS NULL) AS message_count,
+            lm.id               AS last_message_id,
+            lm.sent_at          AS last_activity_at,
+            lm.body             AS last_message_preview
+       FROM conversation_bindings b
+       JOIN whatsapp_threads t ON t.org_id = b.org_id
+                              AND t.wa_group_id = b.thread_ref
+                              AND t.kind = 'group'
+       LEFT JOIN LATERAL (
+         SELECT m.id, m.sent_at, left(m.body, 140) AS body
+           FROM whatsapp_messages m
+          WHERE m.thread_id = t.id AND m.excluded_at IS NULL
+          ORDER BY m.sent_at DESC NULLS LAST, m.id DESC
+          LIMIT 1
+       ) lm ON true
+      WHERE b.org_id = $1
+        AND b.binding_mode = 'account'
+        AND b.bound_account_id = $2
+        AND ${visibility}
+      ORDER BY lm.sent_at DESC NULLS LAST`,
+    params
+  );
+
+  if (!rows.length) return { conversations: [] };
+
+  // Unassigned counts per thread.
+  //
+  // NOT routed through whatsappAccess.buildVisibilityClause. Its 'unassigned'
+  // scope is `m.handover_id IS NULL` and nothing else — it does not filter by
+  // viewer, because reaching the unassigned pile is a STEWARD decision taken at
+  // the filing screen, not a per-message visibility one. Passing it through
+  // here would imply a per-viewer count this product does not actually compute,
+  // and it also raises 42P18: the clause never references the userId parameter,
+  // so Postgres cannot infer a type for it.
+  //
+  // What makes this safe is the row filter above: the viewer only sees
+  // conversations they hold a project role on or sit in as a participant. The
+  // count belongs to a group they can already see, and whether they may act on
+  // it is decided at resolveHref by the same steward rule as everywhere else.
+  const threadIds = rows.map(r => r.thread_id);
+  const { rows: counts } = await pool.query(
+    `SELECT m.thread_id, count(*)::int AS n
+       FROM whatsapp_messages m
+      WHERE m.org_id = $1
+        AND m.thread_id = ANY($2::int[])
+        AND m.handover_id IS NULL
+        AND m.excluded_at IS NULL
+      GROUP BY m.thread_id`,
+    [orgId, threadIds]
+  );
+  const unassigned = Object.fromEntries(counts.map(c => [c.thread_id, c.n]));
+
+  return {
+    conversations: rows.map(r => ({
+      bindingId:      r.binding_id,
+      threadId:       r.thread_id,
+      threadRef:      r.thread_ref,
+      subject:        r.subject,
+      boundAt:        r.bound_at,
+      candidateCount: r.candidate_count,
+      messageCount:   r.message_count,
+      lastActivity: r.last_message_id ? {
+        messageId: r.last_message_id,
+        at:        r.last_activity_at,
+        preview:   r.last_message_preview,
+        // Deep link to the message itself in the Communications view.
+        href:      `#/communications?threadId=${r.thread_id}&messageId=${r.last_message_id}`,
+      } : null,
+      // The number, and the place to act on it. Counted through the viewer's own
+      // visibility, so it is never a figure they cannot resolve.
+      unassignedCount: unassigned[r.thread_id] || 0,
+      resolveHref:     `#/communications?threadId=${r.thread_id}&filter=unassigned`,
+    })),
+  };
+}
+
+/**
+ * Conversations that COULD be bound to this vendor but are not yet — what the
+ * "Bind a conversation" picker on the vendor panel offers.
+ *
+ * TWO SOURCES, because the two thread kinds are found differently:
+ *
+ *   DIRECT  a 1:1 with somebody at this account. Found by contact link first
+ *           (thread.contact_id → contacts.account_id), then by PHONE against
+ *           that account's contacts — the fallback matters because a thread
+ *           opened from an inbound message often has no contact_id at all
+ *           (threadForInbound sets it only when a project lookup succeeds), and
+ *           those are exactly the threads nobody has organised yet.
+ *
+ *   GROUP   captured session groups. There is no vendor signal on a group, so
+ *           these cannot be narrowed by account — a group is offered because a
+ *           human recognises the name. Only groups with a session row are
+ *           listed, since only those can be bound.
+ *
+ * SCOPING mirrors listConversationsForAccount and, for groups, the triage rule
+ * it has to agree with: a steward or org-scope viewer sees all captured groups;
+ * everyone else sees only groups they were a participant in. A group SUBJECT
+ * names projects, and this picker must not become the way around that.
+ *
+ * Already-bound conversations are excluded — they appear in the Conversations
+ * panel instead, which is where changing one belongs.
+ */
+async function listBindableForAccount(orgId, userId, accountId, subordinateIds = []) {
+  const id = parseInt(accountId, 10);
+  if (!id) throw Object.assign(new Error('accountId is required'), { status: 400 });
+
+  const cfg  = await projectSettings.get(orgId);
+  const role = await projectSettings.resolveRole(orgId, userId);
+  const orgScope = projectSettings.canUseOrgScope(cfg, role);
+
+  const access = require('./whatsappAccess.service');
+  const { steward } = await access.isSteward(orgId, userId);
+  const seesAllGroups = orgScope || steward;
+
+  const viewerIds = cfg.team_scope_enabled
+    ? [...new Set([Number(userId), ...(subordinateIds || []).map(Number)])].filter(Boolean)
+    : [Number(userId)].filter(Boolean);
+
+  // ── direct threads with this account's people ──────────────────────────
+  const { rows: direct } = await pool.query(
+    `SELECT t.id            AS thread_id,
+            t.wa_phone,
+            t.handover_id,
+            COALESCE(h.name, d.name)                     AS current_project,
+            COALESCE(c.first_name || ' ' || c.last_name,
+                     pc.first_name || ' ' || pc.last_name) AS person,
+            (SELECT count(*)::int FROM whatsapp_messages m
+              WHERE m.thread_id = t.id AND m.excluded_at IS NULL) AS message_count
+       FROM whatsapp_threads t
+       LEFT JOIN contacts c  ON c.id = t.contact_id AND c.org_id = t.org_id
+       LEFT JOIN sales_handovers h ON h.id = t.handover_id
+       LEFT JOIN deals d     ON d.id = h.deal_id
+       -- Phone fallback: catches inbound-opened threads that were never linked
+       -- to a contact record. Digits only, because stored numbers carry every
+       -- punctuation style a human can invent.
+       LEFT JOIN LATERAL (
+         SELECT c2.first_name, c2.last_name
+           FROM contacts c2
+          WHERE c2.org_id = t.org_id AND c2.account_id = $2
+            AND regexp_replace(COALESCE(c2.phone, ''), '[^0-9]', '', 'g') =
+                regexp_replace(COALESCE(t.wa_phone, ''), '[^0-9]', '', 'g')
+            AND COALESCE(c2.phone, '') <> ''
+          LIMIT 1
+       ) pc ON true
+      WHERE t.org_id = $1
+        AND t.kind = 'direct'
+        AND (c.account_id = $2 OR pc.first_name IS NOT NULL)
+        AND NOT EXISTS (
+          SELECT 1 FROM conversation_bindings b
+           WHERE b.org_id = t.org_id AND b.channel = 'whatsapp'
+             AND b.thread_ref = t.wa_phone)
+      ORDER BY message_count DESC
+      LIMIT 50`,
+    [orgId, id]
+  );
+
+  // ── captured groups with no binding yet ────────────────────────────────
+  const groupParams = seesAllGroups ? [orgId] : [orgId, viewerIds];
+  const groupVisibility = seesAllGroups ? 'TRUE' : `EXISTS (
+      SELECT 1 FROM whatsapp_thread_participants wp
+       WHERE wp.thread_id = g.thread_id AND wp.org_id = g.org_id
+         AND wp.user_id = ANY($2::int[]))`;
+
+  const { rows: groups } = await pool.query(
+    `SELECT g.id            AS group_id,
+            g.thread_id,
+            g.subject,
+            g.message_count,
+            t.handover_id,
+            COALESCE(h.name, d.name) AS current_project
+       FROM whatsapp_session_groups g
+       JOIN whatsapp_threads t ON t.id = g.thread_id
+       LEFT JOIN sales_handovers h ON h.id = t.handover_id
+       LEFT JOIN deals d ON d.id = h.deal_id
+      WHERE g.org_id = $1
+        AND g.binding_status <> 'ignored'
+        AND NOT EXISTS (
+          SELECT 1 FROM conversation_bindings b
+           WHERE b.org_id = g.org_id AND b.channel = 'whatsapp'
+             AND b.thread_ref = t.wa_group_id)
+        AND ${groupVisibility}
+      ORDER BY g.last_message_at DESC NULLS LAST
+      LIMIT 50`,
+    groupParams
+  );
+
+  return {
+    direct: direct.map(r => ({
+      threadId:       r.thread_id,
+      kind:           'direct',
+      label:          r.person || r.wa_phone,
+      phone:          r.wa_phone,
+      messageCount:   r.message_count,
+      currentProject: r.current_project || null,
+      // Every bind that would clear an existing project link needs confirming.
+      needsForce:     r.handover_id != null,
+    })),
+    groups: groups.map(r => ({
+      threadId:       r.thread_id,
+      groupId:        r.group_id,
+      kind:           'group',
+      label:          r.subject || `Group ${r.group_id}`,
+      messageCount:   r.message_count,
+      currentProject: r.current_project || null,
+      needsForce:     r.handover_id != null,
+    })),
+    // Groups cannot be narrowed by account — there is no vendor signal on a
+    // group — so the UI has to explain why the list is not pre-filtered.
+    groupsScoped: !seesAllGroups,
+  };
+}
+
 /** Pending items, for the shared approvals queue. */
 async function listPending(orgId) {
   const { rows } = await pool.query(
@@ -426,6 +715,6 @@ async function listPending(orgId) {
 module.exports = {
   KINDS, APPROVAL_DEFAULTS,
   getApprovalPolicy, setApprovalPolicy, canApprove,
-  listAccounts, listForAccount, listProjectsForAccount, projectsForRelationship,
+  listAccounts, listForAccount, listProjectsForAccount, projectsForRelationship, listConversationsForAccount, listBindableForAccount,
   request, review, end, listPending,
 };

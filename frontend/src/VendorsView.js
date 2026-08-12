@@ -84,6 +84,27 @@ const S = {
 
 const errText = (e, fallback) => e?.response?.data?.error?.message || fallback;
 
+/**
+ * "3 days ago". Deliberately relative rather than a timestamp: the question this
+ * panel answers is "is this group still alive?", and a reader judges that from
+ * elapsed time, not from a date they then have to subtract.
+ */
+function relativeTime(iso) {
+  if (!iso) return 'no activity';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return 'no activity';
+  const mins = Math.floor((Date.now() - then) / 60000);
+  if (mins < 1)    return 'just now';
+  if (mins < 60)   return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24)    return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30)   return `${days} day${days === 1 ? '' : 's'} ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months} month${months === 1 ? '' : 's'} ago`;
+  return `${Math.floor(months / 12)}y ago`;
+}
+
 function StatusPill({ status, kind }) {
   if (status === 'active')   return <span style={S.pill('#dcfce7', '#065f46')}>active</span>;
   if (status === 'pending')  return <span style={S.pill('#fef3c7', '#92400e')}>awaiting approval</span>;
@@ -151,6 +172,255 @@ function ProjectsPanel({ accountId, accountName, onOpenProject }) {
           Showing projects you have a role on. Others may exist.
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * "Bind a conversation" — the vendor-panel entry point to the same decision the
+ * WhatsApp triage screen makes, reached from the account instead of the group.
+ *
+ * WHY BOTH DOORS EXIST
+ *   Triage is group-first: you work down a list of groups deciding what each
+ *   one is. This is account-first: you are looking at Cloudsmith and you know
+ *   the Cloudsmith group should point here. Same decision, opposite starting
+ *   point, and forcing the second through the first means finding a group by
+ *   name in a list of ninety.
+ *
+ *   Both call the same server path, so the force rules, the back-fill
+ *   suppression and the media handling cannot drift between them.
+ *
+ * DIRECT threads are pre-filtered to this account's people. GROUPS cannot be —
+ * there is no vendor signal on a group — so they are listed for recognition and
+ * the copy says so rather than implying a filter that does not exist.
+ */
+function BindConversation({ accountId, accountName, onBound }) {
+  const [open,    setOpen]    = useState(false);
+  const [state,   setState]   = useState({ loading: false, direct: [], groups: [], scoped: false, err: '' });
+  const [busy,    setBusy]    = useState(false);
+  const [confirm, setConfirm] = useState(null);   // { target, message }
+
+  const load = useCallback(() => {
+    setState(st => ({ ...st, loading: true, err: '' }));
+    apiService.accountRelationships.bindableForAccount(accountId)
+      .then(r => setState({
+        loading: false,
+        direct: r.data.direct || [],
+        groups: r.data.groups || [],
+        scoped: !!r.data.groupsScoped,
+        err: '',
+      }))
+      .catch(e => setState({ loading: false, direct: [], groups: [], scoped: false,
+                             err: errText(e, 'Could not load conversations.') }));
+  }, [accountId]);
+
+  const toggle = () => { if (!open) load(); setOpen(o => !o); setConfirm(null); };
+
+  // The server owns the "are you sure": a 409 carries the sentence explaining
+  // what the change breaks, and that sentence is shown verbatim. Composing it
+  // here would mean two places deciding which transitions are dangerous.
+  const bind = async (target, force = false) => {
+    setBusy(true);
+    try {
+      await apiService.whatsappSession.bindThread(target.threadId, {
+        mode: 'account', accountId: Number(accountId), force,
+      });
+      setOpen(false); setConfirm(null);
+      onBound && onBound();
+    } catch (e) {
+      const body = e?.response?.data;
+      if (e?.response?.status === 409 && body?.code === 'NEEDS_FORCE') {
+        setConfirm({ target, message: body.error?.message || 'This changes an existing link.' });
+      } else {
+        setState(st => ({ ...st, err: errText(e, 'Could not bind this conversation.') }));
+      }
+    } finally { setBusy(false); }
+  };
+
+  const Row = ({ item }) => (
+    <div style={{ ...S.prow, alignItems: 'center' }}>
+      <span style={{ fontWeight: 500, color: '#1a202c' }}>{item.label}</span>
+      <span style={{ color: '#9ca3af' }}>
+        {item.messageCount} message{item.messageCount === 1 ? '' : 's'}
+        {item.currentProject && ` · now on ${item.currentProject}`}
+      </span>
+      <button
+        style={{ ...S.plink, marginLeft: 'auto', fontWeight: 600 }}
+        disabled={busy}
+        onClick={() => bind(item, false)}
+      >
+        Bind to {accountName} &rsaquo;
+      </button>
+    </div>
+  );
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      <button style={S.plink} onClick={toggle} disabled={busy}>
+        {open ? 'Cancel' : '+ Bind a conversation to this vendor'}
+      </button>
+
+      {open && (
+        <div style={S.panel}>
+          {state.loading && <div style={S.empty}>Loading…</div>}
+          {state.err && <div style={S.err}>{state.err}</div>}
+
+          {confirm && (
+            <div style={{
+              background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e',
+              padding: '9px 11px', borderRadius: 6, fontSize: 12, lineHeight: 1.5,
+              marginBottom: 10,
+            }}>
+              <div>{confirm.message}</div>
+              <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
+                <button style={S.plink} disabled={busy}
+                  onClick={() => bind(confirm.target, true)}>Yes, change it</button>
+                <button style={S.plink} disabled={busy}
+                  onClick={() => setConfirm(null)}>Keep it as it is</button>
+              </div>
+            </div>
+          )}
+
+          {!state.loading && !state.direct.length && !state.groups.length && (
+            <div style={S.empty}>
+              Nothing available to bind. Direct conversations appear here once
+              somebody from {accountName} has messaged or been messaged.
+            </div>
+          )}
+
+          {!!state.direct.length && (
+            <>
+              <div style={S.sub}>One-to-one with {accountName}</div>
+              {state.direct.map(d => <Row key={`d${d.threadId}`} item={d} />)}
+            </>
+          )}
+
+          {!!state.groups.length && (
+            <>
+              <div style={{ ...S.sub, marginTop: 10 }}>Groups</div>
+              <div style={{ ...S.meta, marginBottom: 4 }}>
+                Groups carry no vendor signal, so these are not filtered by
+                account — pick the one you recognise.
+                {state.scoped && ' Only groups you were in are listed.'}
+              </div>
+              {state.groups.map(g => <Row key={`g${g.threadId}`} item={g} />)}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The group conversations organised around this vendor, and — the point of the
+ * panel — how many messages in them nobody has filed yet.
+ *
+ * WHY THE UNASSIGNED COUNT IS HERE
+ *   Binding a group as a vendor deliberately files nothing: a misfiled message
+ *   is worse than an unfiled one, so entity-scoped messages wait for a human.
+ *   That is only a defensible trade if the waiting pile is VISIBLE somewhere a
+ *   person can act on it. This is that place. The number is a link, not a
+ *   statistic.
+ *
+ *   The count is scoped to the viewer, so it never shows a figure they would
+ *   then be unable to resolve.
+ *
+ * Loaded on expand, alongside ProjectsPanel, for the same reason: most rows are
+ * never opened and this is a lateral join plus a visibility-filtered count.
+ */
+function ConversationsPanel({ accountId, accountName, reloadKey = 0 }) {
+  const [state, setState] = useState({ loading: true, conversations: [], err: '' });
+
+  useEffect(() => {
+    let alive = true;
+    apiService.accountRelationships.conversationsForAccount(accountId)
+      .then(r => {
+        if (!alive) return;
+        setState({ loading: false, conversations: r.data.conversations || [], err: '' });
+      })
+      .catch(e => {
+        if (!alive) return;
+        setState({ loading: false, conversations: [], err: errText(e, 'Could not load conversations.') });
+      });
+    return () => { alive = false; };
+    // reloadKey: bumped by BindConversation so a freshly bound thread appears
+    // here immediately rather than after a manual collapse and re-expand.
+  }, [accountId, reloadKey]);
+
+  if (state.loading) return <div style={{ ...S.panel, ...S.empty, padding: '10px 0' }}>Loading conversations…</div>;
+  if (state.err)     return <div style={S.panel}><div style={S.err}>{state.err}</div></div>;
+
+  if (!state.conversations.length) {
+    return (
+      <div style={S.panel}>
+        <div style={S.empty}>
+          No group conversations are bound to {accountName}. Bind one from
+          WhatsApp&nbsp;&rsaquo;&nbsp;Groups.
+        </div>
+      </div>
+    );
+  }
+
+  const totalUnassigned = state.conversations.reduce((n, c) => n + (c.unassignedCount || 0), 0);
+
+  return (
+    <div style={S.panel}>
+      <div style={S.sub}>
+        Conversations
+        {totalUnassigned > 0 && (
+          <span style={{ marginLeft: 8, fontWeight: 400, color: '#92400e' }}>
+            {totalUnassigned} message{totalUnassigned === 1 ? '' : 's'} waiting to be filed
+          </span>
+        )}
+      </div>
+
+      {state.conversations.map(c => (
+        <div key={c.bindingId} style={S.prow}>
+          <span style={{ fontWeight: 600, color: '#1a202c' }}>{c.subject}</span>
+          <span style={{ color: '#9ca3af' }}>
+            {c.messageCount} message{c.messageCount === 1 ? '' : 's'}
+            {c.candidateCount > 0 && ` · ${c.candidateCount} project${c.candidateCount === 1 ? '' : 's'} on its shortlist`}
+          </span>
+
+          {/* The number IS the link. A count somebody cannot act on is worse
+              than no count. */}
+          {c.unassignedCount > 0 ? (
+            <a href={c.resolveHref}
+               style={{
+                 marginLeft: 'auto', fontSize: 12, fontWeight: 600,
+                 color: '#92400e', background: '#fffbeb',
+                 border: '1px solid #fde68a', borderRadius: 5,
+                 padding: '2px 8px', textDecoration: 'none',
+               }}>
+              File {c.unassignedCount} message{c.unassignedCount === 1 ? '' : 's'} &rsaquo;
+            </a>
+          ) : (
+            <span style={{ marginLeft: 'auto', fontSize: 12, color: '#059669' }}>
+              nothing waiting
+            </span>
+          )}
+
+          {c.lastActivity && (
+            <div style={{ flexBasis: '100%', paddingTop: 3, color: '#6b7280' }}>
+              <a href={c.lastActivity.href}
+                 style={{ color: '#1A3A5C', textDecoration: 'none', fontWeight: 500 }}>
+                {relativeTime(c.lastActivity.at)}
+              </a>
+              {c.lastActivity.preview && (
+                <span style={{ marginLeft: 8, color: '#9ca3af' }}>
+                  {c.lastActivity.preview}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      ))}
+
+      <div style={{ ...S.meta, marginTop: 8 }}>
+        Vendor groups cover several projects, so nothing is filed automatically.
+        Counts show what you can see and act on.
+      </div>
     </div>
   );
 }
@@ -429,6 +699,9 @@ export default function VendorsView({ onOpenProject }) {
   const [policyOpen, setPolicyOpen] = useState(false);
   const [canApprove, setCanApprove] = useState(false);
   const [openId,   setOpenId]   = useState(null);   // relationship_id of the expanded row
+  // Bumped after a successful bind so ConversationsPanel refetches. A counter
+  // rather than a boolean: two binds in a row must both trigger a reload.
+  const [bindNonce, setBindNonce] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true); setErr('');
@@ -566,11 +839,26 @@ export default function VendorsView({ onOpenProject }) {
             </div>
             {a.notes && <div style={{ fontSize: 12, color: '#374151', marginTop: 6 }}>{a.notes}</div>}
             {open && (
-              <ProjectsPanel
-                accountId={a.id}
-                accountName={a.name}
-                onOpenProject={onOpenProject}
-              />
+              <>
+                <ProjectsPanel
+                  accountId={a.id}
+                  accountName={a.name}
+                  onOpenProject={onOpenProject}
+                />
+                {/* Conversations second: projects are the primary fact about a
+                    vendor, and the filing queue only makes sense once you know
+                    which engagements they are on. */}
+                <ConversationsPanel
+                  accountId={a.id}
+                  accountName={a.name}
+                  reloadKey={bindNonce}
+                />
+                <BindConversation
+                  accountId={a.id}
+                  accountName={a.name}
+                  onBound={() => setBindNonce(n => n + 1)}
+                />
+              </>
             )}
           </div>
         );

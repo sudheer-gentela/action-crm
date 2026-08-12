@@ -1012,7 +1012,27 @@ async function syncOrgMembersForGroup(orgId, sessionGroupId, participants = []) 
  * that turns raw capture into CRM data — without it the messages land in
  * threads nobody can find.
  */
-async function listTriage(orgId, { status = 'all', watched = null, q = null, limit = 200 } = {}) {
+/**
+ * VIEWER SCOPING (added when the vendor panel got the same treatment).
+ *
+ * A group's SUBJECT LINE routinely names a project — "Acme Migration – All" —
+ * so an unscoped triage list hands every project name in the org to anyone who
+ * can log in. But the obvious fix is wrong: scoping by project membership would
+ * hide every UNBOUND group from everyone, because an unbound group has no
+ * binding, no candidates and no project. Nobody could triage anything, which is
+ * the one thing this screen exists to do.
+ *
+ * So the rule is different from the vendor panel's on purpose:
+ *   steward or admin  → every group. Triage is their job; isSteward already
+ *                       covers explicit grants, org admins and the person who
+ *                       connected the session.
+ *   everyone else     → only groups they are a PARTICIPANT in. They were in the
+ *                       room; the subject is not news to them.
+ *
+ * userId is optional so existing internal callers keep working, but a call
+ * WITHOUT it is unscoped — pass it from anything user-facing.
+ */
+async function listTriage(orgId, { status = 'all', watched = null, q = null, limit = 200, userId = null } = {}) {
   const params = [orgId];
   const where = ['g.org_id = $1'];
 
@@ -1020,6 +1040,22 @@ async function listTriage(orgId, { status = 'all', watched = null, q = null, lim
   if (watched === true  || watched === 'true')  where.push('g.is_watched = true');
   if (watched === false || watched === 'false') where.push('g.is_watched = false');
   if (q) { params.push(`%${String(q).toLowerCase()}%`); where.push(`lower(coalesce(g.subject,'')) LIKE $${params.length}`); }
+
+  // See the note on this function: stewards and admins see everything, everyone
+  // else sees only the groups they were actually in.
+  let scoped = false;
+  if (userId) {
+    const access = require('./whatsappAccess.service');
+    const { steward } = await access.isSteward(orgId, userId);
+    if (!steward) {
+      scoped = true;
+      params.push(parseInt(userId, 10));
+      where.push(`EXISTS (SELECT 1 FROM whatsapp_thread_participants wp
+                           WHERE wp.thread_id = g.thread_id
+                             AND wp.org_id    = g.org_id
+                             AND wp.user_id   = $${params.length})`);
+    }
+  }
 
   params.push(Math.min(parseInt(limit, 10) || 200, 500));
 
@@ -1073,6 +1109,9 @@ async function listTriage(orgId, { status = 'all', watched = null, q = null, lim
     // The two entity shapes are counted separately AND rolled into `decided`,
     // so a screen that wants "how many has somebody made a call on" does not
     // have to enumerate the vocabulary.
+    // Counts follow the same scoping. An unscoped header over a scoped list
+    // would say "42 groups" above four rows, which reads as a bug and also
+    // leaks the very total the scoping exists to withhold.
     `SELECT count(*)                                                AS total,
             count(*) FILTER (WHERE is_watched)                      AS watched,
             count(*) FILTER (WHERE binding_status='bound')          AS bound,
@@ -1080,12 +1119,21 @@ async function listTriage(orgId, { status = 'all', watched = null, q = null, lim
             count(*) FILTER (WHERE binding_status='bound_pool')     AS bound_pool,
             count(*) FILTER (WHERE binding_status IN ('bound','bound_account','bound_pool')) AS decided,
             count(*) FILTER (WHERE binding_status='unbound' AND is_watched) AS needs_binding
-       FROM whatsapp_session_groups WHERE org_id = $1`,
-    [orgId]
+       FROM whatsapp_session_groups g
+      WHERE g.org_id = $1
+        AND ($2::int IS NULL OR EXISTS (
+              SELECT 1 FROM whatsapp_thread_participants wp
+               WHERE wp.thread_id = g.thread_id
+                 AND wp.org_id    = g.org_id
+                 AND wp.user_id   = $2::int))`,
+    [orgId, scoped ? parseInt(userId, 10) : null]
   );
 
   return {
     groups: rows,
+    // Whether this view is partial. The UI needs to be able to say so — a
+    // scoped viewer seeing four groups should not conclude the org has four.
+    scoped,
     counts: {
       total:        Number(counts.total),
       watched:      Number(counts.watched),
@@ -1535,6 +1583,122 @@ async function watchByJid(orgId, sessionId, userId, jids = [], watched = true, s
 }
 
 /**
+ * Bind any WhatsApp thread — group OR direct — by thread id.
+ *
+ * WHY THIS EXISTS BESIDE bindGroup
+ *   bindGroup is keyed on a whatsapp_session_groups row, which only exists for
+ *   captured GROUPS. Two things need to bind without one: a direct thread (a
+ *   1:1 with a vendor contact, which has no session-group row at all) and the
+ *   vendor panel (which starts from an account, not from triage).
+ *
+ *   Rather than duplicate the guards, this delegates to bindGroup whenever a
+ *   session-group row exists, so a group bound from the vendor panel takes
+ *   exactly the same path — same force rules, same back-fill suppression, same
+ *   media handling — as one bound from triage. Only the genuinely group-less
+ *   case is handled here.
+ *
+ * DIRECT THREADS ARE ACCOUNT MODE ONLY.
+ *   A 1:1 is organised around the PERSON in it. 'pool' — a hand-declared list of
+ *   projects — is a group-shaped idea; offering it for a 1:1 would be a control
+ *   nobody uses. The schema permits it (thread_ref takes a phone), so this is a
+ *   deliberate product gate and not a limitation: lifting it later is this
+ *   `if` and a radio button.
+ *
+ *   'project' is not offered either — that is what linkThreadToProject already
+ *   does for direct threads, and having two doors to one state is how they
+ *   drift.
+ */
+async function bindThread(orgId, userId, threadId, { mode = 'account', accountId = null, force = false } = {}) {
+  const { rows: [thread] } = await pool.query(
+    `SELECT id, kind, wa_group_id, wa_phone, handover_id
+       FROM whatsapp_threads WHERE id = $1 AND org_id = $2`,
+    [threadId, orgId]
+  );
+  if (!thread) return { ok: false, code: 'NOT_FOUND' };
+
+  // A group with a session row goes through bindGroup, guards and all.
+  if (thread.kind === 'group') {
+    const { rows: [g] } = await pool.query(
+      `SELECT id FROM whatsapp_session_groups WHERE org_id = $1 AND thread_id = $2`,
+      [orgId, threadId]
+    );
+    if (g) return bindGroup(orgId, userId, g.id, { mode, accountId, force });
+    return { ok: false, code: 'NO_SESSION_GROUP',
+             error: 'This group was not captured by the WhatsApp session, so it cannot be bound here.' };
+  }
+
+  // ── direct ──────────────────────────────────────────────────────────────
+  if (mode !== 'account') {
+    return { ok: false, code: 'BAD_MODE',
+             error: 'A one-to-one conversation can only be organised around the person in it. Link it to a project instead.' };
+  }
+  if (!thread.wa_phone) return { ok: false, code: 'NO_THREAD' };
+  if (!accountId) return { ok: false, code: 'INVALID_ACCOUNT', error: 'Pick a vendor or partner.' };
+
+  const { rows: [rel] } = await pool.query(
+    `SELECT 1 FROM account_relationships
+      WHERE org_id = $1 AND account_id = $2
+        AND relationship IN ('vendor', 'partner') AND status = 'active' LIMIT 1`,
+    [orgId, parseInt(accountId, 10)]
+  );
+  if (!rel) {
+    return { ok: false, code: 'NOT_A_VENDOR',
+             error: 'That account is not an approved vendor or partner. Add the relationship first.' };
+  }
+
+  // Same rule as a group: clearing an existing project link needs confirmation,
+  // because somebody decided it.
+  if (thread.handover_id != null && !force) {
+    return {
+      ok: false, code: 'NEEDS_FORCE', currentHandoverId: thread.handover_id,
+      error: 'This conversation is already linked to a project. Confirm the change — the link will be removed, though messages already filed to it stay where they are.',
+    };
+  }
+
+  const derived = await accountRels.projectsForRelationship(orgId, accountId);
+
+  const client = await pool.connect();
+  let bindingRow;
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL app.current_org_id = '${parseInt(orgId, 10)}'`);
+
+    bindingRow = await bindings.bind(orgId, userId, 'whatsapp', thread.wa_phone, {
+      mode: 'account', accountId, client,
+    });
+    await bindings.setCandidates(orgId, bindingRow.id, derived.map(d => d.handoverId),
+      { source: 'derived', declaredBy: userId, client });
+
+    // Cleared, never back-filled. Messages already attributed keep their
+    // handover_id — past attributions were decisions.
+    await client.query(
+      `UPDATE whatsapp_threads SET handover_id = NULL, updated_at = now()
+        WHERE id = $1 AND org_id = $2`,
+      [threadId, orgId]
+    );
+
+    await client.query('COMMIT');
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* already failed */ }
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  return {
+    ok: true,
+    threadId,
+    kind: 'direct',
+    mode: 'account',
+    accountId: parseInt(accountId, 10),
+    bindingId: bindingRow.id,
+    candidates: derived.length,
+    backfilled: 0,
+    clearedProject: thread.handover_id ?? null,
+  };
+}
+
+/**
  * Remove a group's binding. The escape hatch from a wrong bind.
  *
  * Reverts the group to LEGACY behaviour — no binding row, and the attribution
@@ -1730,6 +1894,7 @@ module.exports = {
   syncGroupMetadata,
   listTriage,
   bindGroup,
+  bindThread,
   unbindGroup,
   ignoreGroup,
   health,

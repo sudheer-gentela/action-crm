@@ -722,6 +722,11 @@ twilio: {
     // Per-project involvement for one vendor/partner. Scoped server-side to the
     // projects the caller may see, so the count differs between viewers.
     projectsForAccount: (accountId)  => api.get(`/account-relationships/account/${accountId}/projects`),
+    // Bound group conversations for a vendor. Scoped to the viewer, so two
+    // people can legitimately see different counts for the same account.
+    conversationsForAccount: (accountId) => api.get(`/account-relationships/account/${accountId}/conversations`),
+    // Threads that could be bound to this vendor but are not yet.
+    bindableForAccount:      (accountId) => api.get(`/account-relationships/account/${accountId}/bindable`),
     request:    (data)              => api.post('/account-relationships', data),
     review:     (id, body)          => api.post(`/account-relationships/${id}/review`, body),
     end:        (id)                => api.post(`/account-relationships/${id}/end`),
@@ -916,6 +921,10 @@ twilio: {
     // Back to legacy behaviour. Does not restore a cleared project link and
     // does not retract anything already filed.
     unbind:         (id)        => api.post(`/whatsapp-session/triage/${id}/unbind`),
+    // Bind by THREAD id — direct threads, and binds initiated from the vendor
+    // panel. body: { mode: 'account', accountId, force? }. 409 NEEDS_FORCE
+    // means an existing project link would be cleared; re-send with force.
+    bindThread:     (threadId, body) => api.post(`/whatsapp-session/threads/${threadId}/bind`, body),
     ignore:         (id)        => api.post(`/whatsapp-session/triage/${id}/ignore`),
     // Per-group attachment policy. Bulk, like the watch routes: a number in
     // eighty groups is configured in sweeps, not one dialog at a time.

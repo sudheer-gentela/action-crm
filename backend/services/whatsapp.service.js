@@ -524,7 +524,13 @@ async function resolveDirectThreadByPhone(handoverId, orgId, phone, userId) {
     [orgId, waPhone]
   );
   if (existing) {
-    if (existing.handover_id == null) {
+    // Null here is a DECISION when the thread is entity-bound — a 1:1 with a
+    // vendor contact covers several projects and belongs to none. Adopting it
+    // because somebody sent one message would reinstate exactly the project
+    // link the bind removed, and every later reply would inherit it through the
+    // thread fallback. The send still goes out; the MESSAGE still carries its
+    // own project.
+    if (existing.handover_id == null && !(await threadIsEntityBound(orgId, existing))) {
       await pool.query(`UPDATE whatsapp_threads SET handover_id = $1, updated_at = now() WHERE id = $2`,
         [handoverId, existing.id]);
       existing.handover_id = handoverId;
@@ -548,8 +554,15 @@ async function resolveDirectThreadByPhone(handoverId, orgId, phone, userId) {
     `INSERT INTO whatsapp_threads
        (org_id, kind, wa_phone, handover_id, deal_id, account_id, contact_id, status, created_by)
      VALUES ($1, 'direct', $2, $3, $4, $5, $6, 'active', $7)
+     -- COALESCE, not overwrite. This branch is only reached when the SELECT
+     -- above found nothing, so a conflict here means a concurrent insert won
+     -- the race — and unconditionally taking EXCLUDED.handover_id would clobber
+     -- whatever that insert decided, including a deliberate NULL on an
+     -- entity-bound thread. Preferring the existing value keeps the winner's
+     -- decision and still fills in a genuinely empty link.
      ON CONFLICT (org_id, wa_phone) WHERE kind = 'direct'
-       DO UPDATE SET handover_id = EXCLUDED.handover_id, updated_at = now()
+       DO UPDATE SET handover_id = COALESCE(whatsapp_threads.handover_id, EXCLUDED.handover_id),
+                     updated_at = now()
      RETURNING *`,
     [orgId, waPhone, handoverId, ho?.deal_id ?? null, ho?.account_id ?? null, ct?.id ?? null, userId]
   );
@@ -1318,7 +1331,13 @@ async function threadForInbound(orgId, fromPhone, value) {
     // Adopt an orphan we can now identify — e.g. the number was added to a
     // project after this conversation started. Never overwrite an existing
     // link: the thread already belongs somewhere.
-    if (existing.handover_id == null && inferredHandoverId) {
+    // THE GUARD THAT MATTERS MOST for direct threads. Without it, binding a
+    // vendor 1:1 to an account is undone by the vendor's very next reply:
+    // projectForPhone finds the contact on a project and re-links the thread,
+    // silently restoring the misfile the bind existed to stop. Null on an
+    // entity-bound thread is a decision, not an orphan.
+    if (existing.handover_id == null && inferredHandoverId
+        && !(await threadIsEntityBound(orgId, existing))) {
       await pool.query(
         `UPDATE whatsapp_threads SET handover_id = $1, updated_at = now() WHERE id = $2`,
         [inferredHandoverId, existing.id]
@@ -1444,6 +1463,10 @@ module.exports = {
   listSendTargets,
   projectForPhone,
   linkThreadToProject,
+  // Exported because the guards it powers are asserted from outside this file,
+  // and because an unexported helper called cross-module is exactly how
+  // projectFiles.assertCanFile stayed broken for months.
+  threadIsEntityBound,
   listMoveTargets,
   moveMessage,
   // Exported for diagnostics and back-fill: it is the one place that decides

@@ -448,11 +448,29 @@ router.get('/triage', async (req, res) => {
     const s = await session.getSession(req.orgId);
     if (!s) return res.json({ groups: [], counts: {}, connected: false });
 
-    groupCache.requestRefresh(s.id);
-    const snap = groupCache.get(s.id);
+    // SCOPING, and why the snapshot is handled separately.
+    //
+    // listTriage scopes STORED groups: stewards and admins see all, everyone
+    // else sees only groups they were a participant in. But the live snapshot
+    // is the worker's in-memory list of EVERY group the connected handset is
+    // in — it has no thread, no participants and no stored decision, so there
+    // is nothing to scope it by. Merging it unscoped would hand every group
+    // name in the org to any logged-in user and make the query-level scoping
+    // decorative.
+    //
+    // So a non-steward gets NO snapshot at all. That is coherent rather than a
+    // compromise: an undecided group is triage work, triage is a steward's job,
+    // and a group with no stored row is by definition undecided.
+    const access = require('../services/whatsappAccess.service');
+    const { steward } = await access.isSteward(req.orgId, req.userId);
+
+    if (steward) groupCache.requestRefresh(s.id);
+    const snap = steward ? groupCache.get(s.id) : null;
+
     const stored = await session.listTriage(req.orgId, {
       status: req.query.status, watched: req.query.watched,
       q: req.query.q, limit: req.query.limit,
+      userId: req.userId,
     });
 
     // Stored decisions win: they carry the project link, message counts and
@@ -488,6 +506,10 @@ router.get('/triage', async (req, res) => {
       connected: s.status === 'connected',
       snapshotAgeMs: snap?.ageMs ?? null,
       snapshotStale: snap?.stale ?? true,
+      // Partial view. The UI must be able to say so — somebody seeing four
+      // groups should not conclude the org has four.
+      scoped: !!stored.scoped,
+      canTriage: steward,
       // Say it plainly in the API too, not just the UI copy.
       note: 'Group names are held in memory only. Nothing is stored until you switch capture on.',
     });
@@ -576,6 +598,36 @@ router.post('/triage/:groupId/bind', async (req, res) => {
       { mode, handoverId, accountId, candidateIds, force: !!force }
     );
 
+    if (!result.ok) {
+      const status = result.code === 'NOT_FOUND'   ? 404
+                   : result.code === 'NEEDS_FORCE' ? 409
+                   : 400;
+      return res.status(status).json({ ...result, error: { message: result.error || result.code } });
+    }
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: { message: e.message } });
+  }
+});
+
+/**
+ * Bind by THREAD id — the entry point for direct threads and for the vendor
+ * panel, which starts from an account rather than from triage.
+ *
+ * A group with a session row is delegated to bindGroup so it takes exactly the
+ * same path as a triage bind: same force rules, same back-fill suppression,
+ * same media handling. Direct threads are account mode only.
+ */
+router.post('/threads/:threadId/bind', async (req, res) => {
+  try {
+    const { mode = 'account', accountId, force } = req.body || {};
+    if (mode === 'account' && !accountId) {
+      return res.status(400).json({ error: { message: 'accountId required' } });
+    }
+    const result = await session.bindThread(
+      req.orgId, req.userId, parseInt(req.params.threadId, 10),
+      { mode, accountId, force: !!force }
+    );
     if (!result.ok) {
       const status = result.code === 'NOT_FOUND'   ? 404
                    : result.code === 'NEEDS_FORCE' ? 409
