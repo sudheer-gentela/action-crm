@@ -555,7 +555,22 @@ async function unhideFile(handoverId, orgId, userId, recordId) {
 }
 
 module.exports = {
-  canManageFiles, canFile,
+  // assertCanFile was defined here but never exported, and BOTH callers of it
+  // live outside this file:
+  //
+  //   whatsapp.service.moveMessage       called it directly  → TypeError, 500 on
+  //                                      every attempt to move a message
+  //   whatsappAccess.canFileInto         called it inside try/catch → the
+  //                                      TypeError was swallowed and the
+  //                                      function returned false unconditionally,
+  //                                      so canMoveMessage denied EVERY move
+  //                                      with NO_DESTINATION_ACCESS
+  //
+  // Net effect before this line: nobody could file or move a WhatsApp message,
+  // and the failure looked like a permissions decision rather than a bug.
+  // Phase 1 depends on that path — an entity-scoped message lands unassigned
+  // and is filed by a human — so it is fixed here rather than left.
+  canManageFiles, canFile, assertCanFile,
   listFolders, mapFolder, unmapFolder, resolveFolderMembership, setUploadTarget,
   listForProject, linkStatus, uploadLocalFile,
   tagFile, untagFile, hideFile, unhideFile,

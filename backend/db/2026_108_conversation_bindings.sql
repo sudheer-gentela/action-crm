@@ -126,10 +126,19 @@ COMMENT ON COLUMN public.conversation_project_candidates.source IS
 -- migrations' audit queries, and would make rollback partial. Not worth the
 -- symmetry. If the asymmetry grates later it is a one-line UPDATE.
 
+-- NAME MATTERS HERE. 2026_101 created this as `wa_session_groups_binding_chk`,
+-- not the Postgres-default `whatsapp_session_groups_binding_status_chk`. A DROP
+-- of the wrong name succeeds silently (IF EXISTS) and leaves the ORIGINAL
+-- three-value constraint in place beside the new one — at which point every
+-- account and pool bind fails at the database with a check violation, in
+-- production, on a migration that reported success. Both names are dropped so
+-- this is correct whether or not an earlier attempt created the other one.
+ALTER TABLE public.whatsapp_session_groups
+  DROP CONSTRAINT IF EXISTS wa_session_groups_binding_chk;
 ALTER TABLE public.whatsapp_session_groups
   DROP CONSTRAINT IF EXISTS whatsapp_session_groups_binding_status_chk;
 ALTER TABLE public.whatsapp_session_groups
-  ADD  CONSTRAINT whatsapp_session_groups_binding_status_chk
+  ADD  CONSTRAINT wa_session_groups_binding_chk
   CHECK (binding_status IN ('unbound', 'bound', 'bound_account', 'bound_pool', 'ignored'));
 
 -- 2026_106's decided-check enumerates the same vocabulary and would reject the
