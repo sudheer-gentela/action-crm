@@ -188,6 +188,18 @@ async function review(orgId, approverId, relationshipId, action, reason) {
       [relationshipId, orgId, approverId]
     );
     if (!rows.length) throw Object.assign(new Error('Request not found or already decided'), { status: 404 });
+
+    // A newly approved vendor may already be bound to a conversation — the
+    // relationship can be requested AFTER somebody bound the group, and
+    // bindGroup refuses an account with no active row, so this is the moment
+    // that binding's candidate set can first be derived.
+    //
+    // Fire-and-forget by design: the nightly reconciler is what guarantees
+    // correctness, so failing an approval because a refresh hiccuped would
+    // trade a real action for a set that would be right tomorrow anyway.
+    require('./conversationCandidateSync.service')
+      .resyncSoon(orgId, rows[0].account_id, 'relationship approved');
+
     return { id: rows[0].id, status: 'active' };
   }
 
@@ -220,10 +232,19 @@ async function end(orgId, userId, relationshipId) {
     `UPDATE account_relationships
         SET status = 'ended', ended_at = now()
       WHERE id = $1 AND org_id = $2 AND status = 'active'
-      RETURNING id`,
+      RETURNING id, account_id`,
     [relationshipId, orgId]
   );
   if (!rows.length) throw Object.assign(new Error('Active relationship not found'), { status: 404 });
+
+  // The candidate set is now stale in the way that matters most: it would keep
+  // suggesting projects for a vendor we no longer work with. resyncForAccount
+  // derives an EMPTY set for an ended relationship rather than skipping, so the
+  // shortlist empties out. The binding itself survives — the group's history is
+  // still organised around that vendor.
+  require('./conversationCandidateSync.service')
+    .resyncSoon(orgId, rows[0].account_id, 'relationship ended');
+
   return { id: rows[0].id, status: 'ended' };
 }
 

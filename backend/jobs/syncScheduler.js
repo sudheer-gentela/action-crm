@@ -1073,6 +1073,30 @@ function startScheduler() {
       .catch(err => console.error('❌ Deal sweep error:', err.message));
   }, { timezone: 'UTC' });
 
+  // ── Conversation candidate reconcile — nightly at 01:45 UTC ──────────────
+  //
+  // THE CORRECTNESS GUARANTEE for derived candidate sets. Hooks in
+  // accountRelationships (approve/end) and handover (stakeholder add/remove)
+  // fire on the events we can see, and exist for latency. This catches
+  // everything they cannot: a project quietly completing (nothing calls a hook
+  // for that), a contact moving between accounts, bulk imports, direct SQL, and
+  // any code path added later by someone unaware of the hooks.
+  //
+  // Only touches source='derived' rows. A pool binding's declared candidates
+  // are a human's list and are never recomputed.
+  //
+  // 01:45 UTC: after the deal sweep at 01:00, before Cases at 02:15.
+  cron.schedule('45 1 * * *', async () => {
+    console.log('🌙 Running nightly conversation candidate reconcile...');
+    try {
+      const sync = require('../services/conversationCandidateSync.service');
+      const r = await sync.reconcileAll();
+      console.log(`✅ Candidate reconcile done — accounts: ${r.accounts}, changed: ${r.changed}, +${r.added}/-${r.removed}, errors: ${r.errors}, ${r.ms}ms`);
+    } catch (err) {
+      console.error('❌ Candidate reconcile error:', err.message);
+    }
+  }, { timezone: 'UTC' });
+
   // ── Cases diagnostic sweep — nightly at 02:15 UTC ────────────────────────
   // Runs CasesRulesEngine for every non-terminal case in every active org.
   // Upserts Type A diagnostic alerts (unassigned, SLA breach, stale, etc.)

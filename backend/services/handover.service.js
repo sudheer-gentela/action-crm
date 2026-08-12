@@ -1272,17 +1272,52 @@ async function addStakeholder(handoverId, orgId, userId, data) {
      RETURNING id`,
     [orgId, handoverId, contactId, role, side, !!data.isPrimaryContact, data.relationshipNotes || null, userId]);
 
+  // A vendor or partner joining a project changes which projects that account's
+  // bound conversations could be about — the candidate shortlist Phase 3 files
+  // against. Only the vendor sides matter: a customer-side contact does not
+  // widen any vendor group's shortlist.
+  //
+  // Fire-and-forget. The nightly reconciler is the guarantee; this only saves
+  // the rep waiting until tomorrow for the new project to appear.
+  if (side === 'vendor' || side === 'partner') {
+    const sync = require('./conversationCandidateSync.service');
+    sync.accountForContact(orgId, contactId)
+      .then(accountId => sync.resyncSoon(orgId, accountId, 'vendor added to project'))
+      .catch(err => console.warn(`[candidate-sync] stakeholder add hook: ${err.message}`));
+  }
+
   const list = await _getStakeholders(handoverId, orgId);
   return list.find(s => s.id === pc.id) || null;
 }
 
 async function removeStakeholder(handoverId, orgId, stakeholderId) {
+  // Read the contact and side BEFORE the delete — afterwards there is nothing
+  // left to resolve the account from, and the candidate set cannot be corrected
+  // without knowing which account to recompute.
+  const { rows: [before] } = await pool.query(
+    `SELECT contact_id, side FROM project_contacts
+      WHERE id = $1 AND context_type = 'handover' AND context_id = $2 AND org_id = $3`,
+    [stakeholderId, handoverId, orgId]
+  );
+
   const { rowCount } = await pool.query(
     `DELETE FROM project_contacts
       WHERE id = $1 AND context_type = 'handover' AND context_id = $2 AND org_id = $3`,
     [stakeholderId, handoverId, orgId]
   );
   if (rowCount === 0) throw Object.assign(new Error('Project contact not found'), { status: 404 });
+
+  // Removing the LAST vendor contact on a project drops it from that account's
+  // shortlist. Removing one of several changes nothing — resyncForAccount
+  // recomputes rather than decrements, so it gets that right without this hook
+  // needing to know how many were left.
+  if (before && (before.side === 'vendor' || before.side === 'partner')) {
+    const sync = require('./conversationCandidateSync.service');
+    sync.accountForContact(orgId, before.contact_id)
+      .then(accountId => sync.resyncSoon(orgId, accountId, 'vendor removed from project'))
+      .catch(err => console.warn(`[candidate-sync] stakeholder remove hook: ${err.message}`));
+  }
+
   return { deleted: true, id: stakeholderId };
 }
 

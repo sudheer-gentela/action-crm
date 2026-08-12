@@ -6,9 +6,20 @@
  * critical checks is that the guard lives in JavaScript: an assertion written
  * in SQL would pass while `bindGroup` still ran the unguarded back-fill.
  *
+ * WHERE THIS FILE LIVES
+ *   backend/scripts/phase1_acceptance.js
+ *
+ *   scripts/, not db/ and not a tests/ directory: it is executable Node that
+ *   requires the service layer, which is what everything already in scripts/
+ *   is. Its two SQL companions go in backend/db/ beside the migration they
+ *   verify. It is NOT wired into any test runner — it needs a seeded database
+ *   and would fail in CI without one.
+ *
  * USAGE
  *   cd backend
+ *   psql "$DATABASE_URL" -f db/phase1_schema_audit.sql    # expect zero rows
  *   psql "$DATABASE_URL" -f db/2026_108_conversation_bindings.sql
+ *   psql "$DATABASE_URL" -f db/phase1_schema_audit.sql    # expect zero rows again
  *   psql "$DATABASE_URL" -f db/phase1_fixture.sql
  *   DATABASE_URL=... node scripts/phase1_acceptance.js
  *   psql "$DATABASE_URL" -f db/phase1_teardown.sql
@@ -337,7 +348,133 @@ async function threadProject(orgId, threadId) {
           pg.binding_status === 'bound_account', pg.binding_status);
   }
 
-  console.log('\nPhase 1 acceptance\n' + '='.repeat(60));
+  // ═══════════════════════════════════════════════════════════════════════
+  // PHASE 2 — candidate sync
+  // ═══════════════════════════════════════════════════════════════════════
+  const sync = require(path.join(__dirname, '..', 'services', 'conversationCandidateSync.service'));
+
+  // Rebind the vendor group to account mode: check 7 left it as a project.
+  let vendorBindingId;
+  {
+    const r = await session.bindGroup(org, user, ID.g_vendor, {
+      mode: 'account', accountId: ID.vendor_account, force: true,
+    });
+    vendorBindingId = r.bindingId;
+    check('S0 vendor group re-bound to account mode for Phase 2', r.ok && r.candidates === 2,
+          JSON.stringify(r));
+  }
+
+  // ── S1. A vendor added to a NEW project becomes a candidate ─────────────
+  {
+    const r = await sync.resyncForAccount(org, ID.vendor_account, { reason: 'test-noop' });
+    check('S1a resync with nothing changed is a no-op',
+          r.changed === 0 && r.details.every(d => d.noop), JSON.stringify(r.details));
+
+    // Put the vendor on P3 (internal, previously customer-side only).
+    await pool.query(
+      `INSERT INTO project_contacts (org_id, context_type, context_id, contact_id, side, role)
+       VALUES ($1,'handover',$2,$3,'vendor','engagement_lead')`,
+      [org, ID.p3, ID.vendor_contact]);
+
+    const r2 = await sync.resyncForAccount(org, ID.vendor_account, { reason: 'test-add' });
+    // NOTE: two bindings point at this account by now — check 5c downgraded the
+    // project group onto the same vendor. Asserting on details[0] would be
+    // asserting on row order; find the binding under test instead. That both
+    // bindings updated is itself the multi-binding case working.
+    const d1 = r2.details.find(d => d.bindingId === vendorBindingId);
+    check('S1b the new project is added to the binding under test',
+          !!d1 && d1.added.includes(ID.p3), JSON.stringify(r2.details));
+    check('S1b2 and to every other binding on the same account',
+          r2.details.every(d => d.added.includes(ID.p3)), JSON.stringify(r2.details));
+    const cands = await bindings.candidatesFor(org, vendorBindingId);
+    check('S1c candidate set now has three projects', cands.length === 3, `got ${cands.length}`);
+    check('S1d and they are all still derived', cands.every(c => c.source === 'derived'));
+  }
+
+  // ── S2. Removing the vendor drops the project ──────────────────────────
+  {
+    await pool.query(
+      `DELETE FROM project_contacts
+        WHERE org_id=$1 AND context_type='handover' AND context_id=$2
+          AND contact_id=$3 AND side='vendor'`,
+      [org, ID.p3, ID.vendor_contact]);
+
+    const r = await sync.resyncForAccount(org, ID.vendor_account, { reason: 'test-remove' });
+    const d = r.details.find(x => x.bindingId === vendorBindingId);
+    check('S2a the project is removed', !!d && d.removed.includes(ID.p3),
+          JSON.stringify(r.details));
+    check('S2b back to two candidates',
+          (await bindings.candidatesFor(org, vendorBindingId)).length === 2);
+  }
+
+  // ── S3. A project completing drops it — the hook-invisible case ────────
+  {
+    await pool.query(`UPDATE sales_handovers SET status='completed' WHERE id=$1 AND org_id=$2`,
+                     [ID.p2, org]);
+    const r = await sync.resyncForAccount(org, ID.vendor_account, { reason: 'test-complete' });
+    const d3 = r.details.find(x => x.bindingId === vendorBindingId);
+    check('S3a a completed project leaves the shortlist',
+          !!d3 && d3.removed.includes(ID.p2), JSON.stringify(r.details));
+    await pool.query(`UPDATE sales_handovers SET status='in_progress' WHERE id=$1 AND org_id=$2`,
+                     [ID.p2, org]);
+    await sync.resyncForAccount(org, ID.vendor_account, { reason: 'test-restore' });
+    check('S3b reopening restores it',
+          (await bindings.candidatesFor(org, vendorBindingId)).length === 2);
+  }
+
+  // ── S4. DECLARED sets are never touched — the critical scoping ─────────
+  {
+    const pb = await session.bindGroup(org, user, ID.g_pool, {
+      mode: 'pool', candidateIds: [ID.p1, ID.p2],
+    });
+    check('S4a pool re-bound with declared candidates', pb.ok && pb.candidates === 2);
+
+    // Make the vendor's derived set change; the pool's declared set must not.
+    await pool.query(
+      `INSERT INTO project_contacts (org_id, context_type, context_id, contact_id, side, role)
+       VALUES ($1,'handover',$2,$3,'vendor','engagement_lead')`,
+      [org, ID.p3, ID.vendor_contact]);
+    await sync.reconcileAll();
+
+    const poolCands = await bindings.candidatesFor(org, pb.bindingId);
+    check('S4b the declared pool set is untouched by a full reconcile',
+          poolCands.length === 2 && poolCands.every(c => c.source === 'declared'),
+          JSON.stringify(poolCands.map(c => [c.handover_id, c.source])));
+    check('S4c while the derived set DID change',
+          (await bindings.candidatesFor(org, vendorBindingId)).length === 3);
+  }
+
+  // ── S5. Ending the relationship empties the shortlist ──────────────────
+  {
+    const { rows: [rel] } = await pool.query(
+      `SELECT id FROM account_relationships
+        WHERE org_id=$1 AND account_id=$2 AND status='active' LIMIT 1`,
+      [org, ID.vendor_account]);
+    await pool.query(`UPDATE account_relationships SET status='ended', ended_at=now() WHERE id=$1`,
+                     [rel.id]);
+
+    const r = await sync.resyncForAccount(org, ID.vendor_account, { reason: 'test-ended' });
+    check('S5a an ended relationship reports inactive', r.relationshipActive === false);
+    check('S5b the derived shortlist is emptied, not left stale',
+          (await bindings.candidatesFor(org, vendorBindingId)).length === 0);
+    check('S5c the binding itself survives',
+          !!(await bindings.forThread(org, 'whatsapp', 'g_vendor@g.us')));
+
+    const empty = await sync.listEmptyCandidateBindings(org);
+    check('S5d it surfaces as a binding with no live projects',
+          empty.some(e => e.binding_id === vendorBindingId), JSON.stringify(empty.map(e=>e.binding_id)));
+  }
+
+  // ── S6. reconcileAll is idempotent ─────────────────────────────────────
+  {
+    const a = await sync.reconcileAll();
+    const b = await sync.reconcileAll();
+    check('S6a a second immediate reconcile changes nothing',
+          b.changed === 0 && b.added === 0 && b.removed === 0, JSON.stringify(b));
+    check('S6b and reports no errors', a.errors === 0 && b.errors === 0);
+  }
+
+  console.log('\nPhase 1 + 2 acceptance\n' + '='.repeat(60));
   console.log(results.join('\n'));
   console.log('='.repeat(60));
   console.log(`${pass} passed, ${fail} failed\n`);
