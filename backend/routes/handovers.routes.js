@@ -28,6 +28,7 @@ const { orgContext }    = require('../middleware/orgContext.middleware');
 const handoverService   = require('../services/handover.service');
 
 const projectSettings = require('../services/projectSettings.service');
+const planVariance    = require('../services/planVariance.service');   // 2026_111
 router.use(authenticateToken);
 router.use(orgContext);
 
@@ -454,11 +455,98 @@ router.patch('/sales/:id/plays/reorder', async (req, res) => {
 router.patch('/sales/:id/plays/:instanceId', async (req, res) => {
   try {
     const result = await handoverService.updatePlay(
-      parseInt(req.params.id), req.orgId, parseInt(req.params.instanceId), req.body || {}
+      parseInt(req.params.id), req.orgId, parseInt(req.params.instanceId),
+      req.body || {}, req.user.userId
     );
     res.json(result);
   } catch (err) {
     console.error('Update handover play error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── Plan vs actual (2026_111) ────────────────────────────────────────────────
+
+// GET /sales/:id/variance — per-play variance + summary
+router.get('/sales/:id/variance', async (req, res) => {
+  try {
+    res.json(await planVariance.getProjectVariance(parseInt(req.params.id), req.orgId));
+  } catch (err) {
+    console.error('Project variance error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// GET /sales/:id/variance/stages — rolled up per stage
+router.get('/sales/:id/variance/stages', async (req, res) => {
+  try {
+    res.json(await planVariance.getStageVariance(parseInt(req.params.id), req.orgId));
+  } catch (err) {
+    console.error('Stage variance error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// GET /sales/:id/plays/:instanceId/revisions — date history for one play
+router.get('/sales/:id/plays/:instanceId/revisions', async (req, res) => {
+  try {
+    res.json(await handoverService.listPlayRevisions(
+      parseInt(req.params.id), req.orgId, parseInt(req.params.instanceId)
+    ));
+  } catch (err) {
+    console.error('Play revisions error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// GET /sales/:id/plays/:instanceId/evidence
+router.get('/sales/:id/plays/:instanceId/evidence', async (req, res) => {
+  try {
+    res.json(await handoverService.listPlayEvidence(
+      parseInt(req.params.id), req.orgId, parseInt(req.params.instanceId)
+    ));
+  } catch (err) {
+    console.error('List play evidence error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// POST /sales/:id/plays/:instanceId/evidence — attach a WhatsApp message
+router.post('/sales/:id/plays/:instanceId/evidence', async (req, res) => {
+  try {
+    res.json(await handoverService.addPlayEvidence(
+      parseInt(req.params.id), req.orgId, parseInt(req.params.instanceId),
+      req.user.userId, req.body || {}
+    ));
+  } catch (err) {
+    console.error('Add play evidence error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// POST /sales/:id/evidence/:evidenceId/revoke — withdraw, never delete
+router.post('/sales/:id/evidence/:evidenceId/revoke', async (req, res) => {
+  try {
+    res.json(await handoverService.revokePlayEvidence(
+      parseInt(req.params.id), req.orgId, parseInt(req.params.evidenceId),
+      req.user.userId, (req.body || {}).reason
+    ));
+  } catch (err) {
+    console.error('Revoke play evidence error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// GET /sales/:id/can-rebaseline — lets the UI hide the control rather than
+// offering it and then rejecting the save
+router.get('/sales/:id/can-rebaseline', async (req, res) => {
+  try {
+    const allowed = await handoverService.canRebaseline(
+      parseInt(req.params.id), req.orgId, req.user.userId
+    );
+    res.json({ canRebaseline: allowed });
+  } catch (err) {
+    console.error('canRebaseline error:', err);
     res.status(err.status || 500).json({ error: { message: err.message } });
   }
 });

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict wkwXTOfyyFFZNhIW9VlmfSfndfqtsuUieaw8KrhjMnd2RiyA9MBSAeEBPIhvUaJ
+\restrict 4ddAfyALbwJtweOuXbcBsZtCgtiwnuYiRRCMwN2in1i61decGZCjnwcBc4dgz6j
 
 -- Dumped from database version 17.10 (Debian 17.10-1.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -88,6 +88,47 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+
+
+--
+-- Name: play_evidence_immutable(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.play_evidence_immutable() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'play_evidence is append-only: revoke it instead of deleting (id %)', OLD.id;
+  END IF;
+
+  IF OLD.revoked_at IS NOT NULL THEN
+    RAISE EXCEPTION 'play_evidence % is already revoked and cannot be changed', OLD.id;
+  END IF;
+
+  IF NEW.revoked_at IS NULL THEN
+    RAISE EXCEPTION 'play_evidence % is immutable; the only permitted update is a revocation', OLD.id;
+  END IF;
+
+  -- Every substantive field must be carried through unchanged.
+  IF NEW.id                       IS DISTINCT FROM OLD.id
+     OR NEW.org_id                IS DISTINCT FROM OLD.org_id
+     OR NEW.project_play_instance_id IS DISTINCT FROM OLD.project_play_instance_id
+     OR NEW.channel               IS DISTINCT FROM OLD.channel
+     OR NEW.whatsapp_message_id   IS DISTINCT FROM OLD.whatsapp_message_id
+     OR NEW.snapshot_body         IS DISTINCT FROM OLD.snapshot_body
+     OR NEW.snapshot_sender       IS DISTINCT FROM OLD.snapshot_sender
+     OR NEW.snapshot_sent_at      IS DISTINCT FROM OLD.snapshot_sent_at
+     OR NEW.snapshot_thread_id    IS DISTINCT FROM OLD.snapshot_thread_id
+     OR NEW.note                  IS DISTINCT FROM OLD.note
+     OR NEW.accepted_by           IS DISTINCT FROM OLD.accepted_by
+     OR NEW.accepted_at           IS DISTINCT FROM OLD.accepted_at
+  THEN
+    RAISE EXCEPTION 'play_evidence % is immutable; only the revocation fields may be set', OLD.id;
+  END IF;
+
+  RETURN NEW;
+END $$;
 
 
 --
@@ -604,7 +645,9 @@ CREATE VIEW pavan_preview.linkedin_timeline AS
 CREATE TABLE stg.map_user (
     mongo_id text NOT NULL,
     pg_user_id integer NOT NULL,
-    email text
+    email text,
+    org_id integer,
+    mongo_tenant_id text
 );
 
 
@@ -615,7 +658,9 @@ CREATE TABLE stg.map_user (
 CREATE VIEW pavan_preview.user_map AS
  SELECT pg_user_id,
     mongo_id AS mongo_user_id,
-    email
+    email,
+    org_id,
+    mongo_tenant_id
    FROM stg.map_user;
 
 
@@ -1058,6 +1103,7 @@ CREATE TABLE public.actions (
     external_refs jsonb DEFAULT '{}'::jsonb NOT NULL,
     intended_role_id integer,
     assignment_source text,
+    handover_id integer,
     CONSTRAINT actions_assignment_source_check CHECK (((assignment_source IS NULL) OR (assignment_source = ANY (ARRAY['role_holder'::text, 'team_queue'::text, 'project_owner'::text, 'manual_override'::text, 'reassigned'::text])))),
     CONSTRAINT actions_next_step_check CHECK (((next_step)::text = ANY ((ARRAY['email'::character varying, 'call'::character varying, 'whatsapp'::character varying, 'linkedin'::character varying, 'slack'::character varying, 'document'::character varying, 'internal_task'::character varying])::text[]))),
     CONSTRAINT actions_status_check CHECK (((status)::text = ANY ((ARRAY['not_started'::character varying, 'in_progress'::character varying, 'blocked'::character varying, 'snoozed'::character varying, 'completed'::character varying, 'skipped'::character varying, 'cancelled'::character varying])::text[]))),
@@ -5914,6 +5960,108 @@ CREATE TABLE public.platform_settings (
 
 
 --
+-- Name: play_due_date_revisions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.play_due_date_revisions (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    source_module text NOT NULL,
+    project_play_instance_id integer,
+    deal_play_instance_id integer,
+    contract_play_instance_id integer,
+    from_due_date date,
+    to_due_date date,
+    reason text,
+    is_rebaseline boolean DEFAULT false NOT NULL,
+    previous_baseline_date date,
+    revised_by integer NOT NULL,
+    revised_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT play_due_date_revisions_module_chk CHECK ((source_module = ANY (ARRAY['project'::text, 'deal'::text, 'contract'::text]))),
+    CONSTRAINT play_due_date_revisions_one_entity_chk CHECK ((((
+CASE
+    WHEN (project_play_instance_id IS NOT NULL) THEN 1
+    ELSE 0
+END +
+CASE
+    WHEN (deal_play_instance_id IS NOT NULL) THEN 1
+    ELSE 0
+END) +
+CASE
+    WHEN (contract_play_instance_id IS NOT NULL) THEN 1
+    ELSE 0
+END) = 1)),
+    CONSTRAINT play_due_date_revisions_rebaseline_reason_chk CHECK (((is_rebaseline = false) OR ((reason IS NOT NULL) AND (btrim(reason) <> ''::text))))
+);
+
+
+--
+-- Name: play_due_date_revisions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.play_due_date_revisions_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: play_due_date_revisions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.play_due_date_revisions_id_seq OWNED BY public.play_due_date_revisions.id;
+
+
+--
+-- Name: play_evidence; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.play_evidence (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    project_play_instance_id integer NOT NULL,
+    channel text DEFAULT 'whatsapp'::text NOT NULL,
+    whatsapp_message_id integer,
+    snapshot_body text,
+    snapshot_sender text,
+    snapshot_sent_at timestamp with time zone,
+    snapshot_thread_id integer,
+    note text,
+    accepted_by integer NOT NULL,
+    accepted_at timestamp with time zone DEFAULT now() NOT NULL,
+    revoked_at timestamp with time zone,
+    revoked_by integer,
+    revoke_reason text,
+    CONSTRAINT play_evidence_channel_chk CHECK ((channel = ANY (ARRAY['whatsapp'::text, 'email'::text, 'file'::text, 'manual'::text]))),
+    CONSTRAINT play_evidence_revoke_shape_chk CHECK ((((revoked_at IS NULL) AND (revoked_by IS NULL)) OR ((revoked_at IS NOT NULL) AND (revoked_by IS NOT NULL) AND (revoke_reason IS NOT NULL) AND (btrim(revoke_reason) <> ''::text)))),
+    CONSTRAINT play_evidence_whatsapp_shape_chk CHECK (((channel <> 'whatsapp'::text) OR (whatsapp_message_id IS NOT NULL)))
+);
+
+
+--
+-- Name: play_evidence_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.play_evidence_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: play_evidence_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.play_evidence_id_seq OWNED BY public.play_evidence.id;
+
+
+--
 -- Name: playbook_play_roles; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -6466,6 +6614,7 @@ CREATE TABLE public.project_members (
     exited_at timestamp with time zone,
     exit_reason text,
     side text DEFAULT 'delivery'::text NOT NULL,
+    can_rebaseline boolean DEFAULT false NOT NULL,
     CONSTRAINT project_members_exit_shape_chk CHECK ((((status = ANY (ARRAY['declined'::text, 'left'::text])) AND (exited_at IS NOT NULL)) OR ((status <> ALL (ARRAY['declined'::text, 'left'::text])) AND (exited_at IS NULL)))),
     CONSTRAINT project_members_side_chk CHECK ((side = ANY (ARRAY['delivery'::text, 'internal_customer'::text]))),
     CONSTRAINT project_members_status_chk CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'declined'::text, 'left'::text])))
@@ -6511,6 +6660,100 @@ CREATE SEQUENCE public.project_members_id_seq
 --
 
 ALTER SEQUENCE public.project_members_id_seq OWNED BY public.project_members.id;
+
+
+--
+-- Name: project_play_assignees; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.project_play_assignees (
+    id integer NOT NULL,
+    instance_id integer NOT NULL,
+    user_id integer NOT NULL,
+    role_id integer,
+    assigned_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: project_play_assignees_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.project_play_assignees_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: project_play_assignees_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.project_play_assignees_id_seq OWNED BY public.project_play_assignees.id;
+
+
+--
+-- Name: project_play_instances; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.project_play_instances (
+    id integer NOT NULL,
+    handover_id integer NOT NULL,
+    org_id integer NOT NULL,
+    play_id integer,
+    stage_key text NOT NULL,
+    title text NOT NULL,
+    description text,
+    channel text,
+    priority text DEFAULT 'medium'::text,
+    execution_type text DEFAULT 'parallel'::text NOT NULL,
+    is_gate boolean DEFAULT false NOT NULL,
+    due_date date,
+    sort_order integer DEFAULT 0 NOT NULL,
+    status text DEFAULT 'not_started'::text NOT NULL,
+    is_manual boolean DEFAULT false NOT NULL,
+    overridden_by integer,
+    completed_at timestamp with time zone,
+    completed_by integer,
+    action_id integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    playbook_id integer,
+    due_anchor character varying(20) DEFAULT 'created'::character varying NOT NULL,
+    completion_note text,
+    completion_evidence jsonb,
+    owner_user_id integer,
+    parent_instance_id integer,
+    baseline_due_date date,
+    baseline_source text,
+    CONSTRAINT project_play_instances_baseline_source_chk CHECK (((baseline_source IS NULL) OR (baseline_source = ANY (ARRAY['original'::text, 'inferred'::text, 'rebaselined'::text])))),
+    CONSTRAINT project_play_instances_parent_not_self CHECK (((parent_instance_id IS NULL) OR (parent_instance_id <> id))),
+    CONSTRAINT project_play_instances_status_check CHECK ((status = ANY (ARRAY['not_started'::text, 'in_progress'::text, 'blocked'::text, 'snoozed'::text, 'completed'::text, 'skipped'::text, 'cancelled'::text])))
+);
+
+
+--
+-- Name: project_play_instances_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.project_play_instances_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: project_play_instances_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.project_play_instances_id_seq OWNED BY public.project_play_instances.id;
 
 
 --
@@ -10852,6 +11095,20 @@ ALTER TABLE ONLY public.pipeline_stages ALTER COLUMN id SET DEFAULT nextval('pub
 
 
 --
+-- Name: play_due_date_revisions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_due_date_revisions ALTER COLUMN id SET DEFAULT nextval('public.play_due_date_revisions_id_seq'::regclass);
+
+
+--
+-- Name: play_evidence id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_evidence ALTER COLUMN id SET DEFAULT nextval('public.play_evidence_id_seq'::regclass);
+
+
+--
 -- Name: playbook_play_roles id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -10933,6 +11190,20 @@ ALTER TABLE ONLY public.project_folders ALTER COLUMN id SET DEFAULT nextval('pub
 --
 
 ALTER TABLE ONLY public.project_members ALTER COLUMN id SET DEFAULT nextval('public.project_members_id_seq'::regclass);
+
+
+--
+-- Name: project_play_assignees id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_assignees ALTER COLUMN id SET DEFAULT nextval('public.project_play_assignees_id_seq'::regclass);
+
+
+--
+-- Name: project_play_instances id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_instances ALTER COLUMN id SET DEFAULT nextval('public.project_play_instances_id_seq'::regclass);
 
 
 --
@@ -12428,6 +12699,22 @@ ALTER TABLE ONLY public.platform_settings
 
 
 --
+-- Name: play_due_date_revisions play_due_date_revisions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_due_date_revisions
+    ADD CONSTRAINT play_due_date_revisions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: play_evidence play_evidence_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_evidence
+    ADD CONSTRAINT play_evidence_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: playbook_play_roles playbook_play_roles_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -12593,6 +12880,30 @@ ALTER TABLE ONLY public.project_members
 
 ALTER TABLE ONLY public.project_members
     ADD CONSTRAINT project_members_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: project_play_assignees project_play_assignees_instance_id_user_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_assignees
+    ADD CONSTRAINT project_play_assignees_instance_id_user_id_key UNIQUE (instance_id, user_id);
+
+
+--
+-- Name: project_play_assignees project_play_assignees_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_assignees
+    ADD CONSTRAINT project_play_assignees_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: project_play_instances project_play_instances_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_instances
+    ADD CONSTRAINT project_play_instances_pkey PRIMARY KEY (id);
 
 
 --
@@ -13352,7 +13663,7 @@ ALTER TABLE ONLY stg.internal_domains
 --
 
 ALTER TABLE ONLY stg.map_user
-    ADD CONSTRAINT map_user_pkey PRIMARY KEY (mongo_id);
+    ADD CONSTRAINT map_user_pkey PRIMARY KEY (pg_user_id);
 
 
 --
@@ -13657,6 +13968,13 @@ CREATE INDEX idx_actions_escalation ON public.actions USING btree (org_id, user_
 --
 
 CREATE INDEX idx_actions_external_refs ON public.actions USING gin (external_refs);
+
+
+--
+-- Name: idx_actions_handover; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_actions_handover ON public.actions USING btree (handover_id, status) WHERE (handover_id IS NOT NULL);
 
 
 --
@@ -15711,6 +16029,20 @@ CREATE INDEX idx_pactivities_prospect ON public.prospecting_activities USING btr
 
 
 --
+-- Name: idx_pddr_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_pddr_org ON public.play_due_date_revisions USING btree (org_id, revised_at);
+
+
+--
+-- Name: idx_pddr_project; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_pddr_project ON public.play_due_date_revisions USING btree (project_play_instance_id, revised_at) WHERE (project_play_instance_id IS NOT NULL);
+
+
+--
 -- Name: idx_pe_grants_lookup; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -15743,6 +16075,13 @@ CREATE INDEX idx_play_assignees_instance ON public.deal_play_assignees USING btr
 --
 
 CREATE INDEX idx_play_assignees_user ON public.deal_play_assignees USING btree (user_id);
+
+
+--
+-- Name: idx_play_evidence_instance; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_play_evidence_instance ON public.play_evidence USING btree (project_play_instance_id) WHERE (revoked_at IS NULL);
 
 
 --
@@ -15900,6 +16239,20 @@ CREATE INDEX idx_portal_users_magic_token ON public.client_portal_users USING bt
 
 
 --
+-- Name: idx_ppa_instance; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppa_instance ON public.project_play_assignees USING btree (instance_id);
+
+
+--
+-- Name: idx_ppa_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppa_user ON public.project_play_assignees USING btree (user_id);
+
+
+--
 -- Name: idx_ppd_contact; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -15918,6 +16271,83 @@ CREATE INDEX idx_ppd_user ON public.pavan_preview_data USING btree (mongo_user_i
 --
 
 CREATE INDEX idx_ppd_ws ON public.pavan_preview_data USING btree (workspace_id);
+
+
+--
+-- Name: idx_ppi_action; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppi_action ON public.project_play_instances USING btree (action_id) WHERE (action_id IS NOT NULL);
+
+
+--
+-- Name: idx_ppi_baseline; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppi_baseline ON public.project_play_instances USING btree (handover_id, baseline_due_date) WHERE (baseline_due_date IS NOT NULL);
+
+
+--
+-- Name: idx_ppi_display_order; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppi_display_order ON public.project_play_instances USING btree (handover_id, stage_key, sort_order);
+
+
+--
+-- Name: idx_ppi_go_live_anchored; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppi_go_live_anchored ON public.project_play_instances USING btree (handover_id) WHERE (((due_anchor)::text = 'go_live'::text) AND (status <> ALL (ARRAY['completed'::text, 'skipped'::text])));
+
+
+--
+-- Name: idx_ppi_handover_stage; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppi_handover_stage ON public.project_play_instances USING btree (handover_id, stage_key);
+
+
+--
+-- Name: idx_ppi_handover_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppi_handover_status ON public.project_play_instances USING btree (handover_id, status);
+
+
+--
+-- Name: idx_ppi_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppi_org ON public.project_play_instances USING btree (org_id);
+
+
+--
+-- Name: idx_ppi_owner_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppi_owner_user ON public.project_play_instances USING btree (owner_user_id) WHERE (owner_user_id IS NOT NULL);
+
+
+--
+-- Name: idx_ppi_parent; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppi_parent ON public.project_play_instances USING btree (parent_instance_id) WHERE (parent_instance_id IS NOT NULL);
+
+
+--
+-- Name: idx_ppi_playbook_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppi_playbook_id ON public.project_play_instances USING btree (playbook_id) WHERE (playbook_id IS NOT NULL);
+
+
+--
+-- Name: idx_ppi_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_ppi_unique ON public.project_play_instances USING btree (handover_id, play_id) WHERE (play_id IS NOT NULL);
 
 
 --
@@ -17321,6 +17751,13 @@ CREATE UNIQUE INDEX uq_actions_deal_source_rule ON public.actions USING btree (d
 
 
 --
+-- Name: uq_actions_handover_play; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_actions_handover_play ON public.actions USING btree (handover_id, playbook_play_id) WHERE ((handover_id IS NOT NULL) AND (playbook_play_id IS NOT NULL));
+
+
+--
 -- Name: uq_aie_org_provider_dedupe; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -17486,6 +17923,13 @@ CREATE UNIQUE INDEX uq_pactions_prospect_source_rule ON public.prospecting_actio
 --
 
 CREATE UNIQUE INDEX uq_pi_finding ON public.prospecting_insights USING btree (org_id, metric, cause_code, segment_hash);
+
+
+--
+-- Name: uq_play_evidence_live; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_play_evidence_live ON public.play_evidence USING btree (project_play_instance_id, whatsapp_message_id) WHERE ((revoked_at IS NULL) AND (whatsapp_message_id IS NOT NULL));
 
 
 --
@@ -17720,6 +18164,13 @@ CREATE INDEX idx_ecm_ts ON stg.email_contact_match USING btree (ts);
 
 
 --
+-- Name: idx_map_user_mongo; Type: INDEX; Schema: stg; Owner: -
+--
+
+CREATE INDEX idx_map_user_mongo ON stg.map_user USING btree (mongo_id);
+
+
+--
 -- Name: idx_twc_contact; Type: INDEX; Schema: stg; Owner: -
 --
 
@@ -17836,6 +18287,13 @@ CREATE TRIGGER trg_org_integrations_updated_at BEFORE UPDATE ON public.org_integ
 --
 
 CREATE TRIGGER trg_organizations_updated_at BEFORE UPDATE ON public.organizations FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
+-- Name: play_evidence trg_play_evidence_immutable; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_play_evidence_immutable BEFORE DELETE OR UPDATE ON public.play_evidence FOR EACH ROW EXECUTE FUNCTION public.play_evidence_immutable();
 
 
 --
@@ -18142,6 +18600,14 @@ ALTER TABLE ONLY public.actions
 
 ALTER TABLE ONLY public.actions
     ADD CONSTRAINT actions_deal_id_fkey FOREIGN KEY (deal_id) REFERENCES public.deals(id) ON DELETE CASCADE;
+
+
+--
+-- Name: actions actions_handover_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.actions
+    ADD CONSTRAINT actions_handover_id_fkey FOREIGN KEY (handover_id) REFERENCES public.sales_handovers(id) ON DELETE CASCADE;
 
 
 --
@@ -20297,6 +20763,86 @@ ALTER TABLE ONLY public.platform_settings
 
 
 --
+-- Name: play_due_date_revisions play_due_date_revisions_contract_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_due_date_revisions
+    ADD CONSTRAINT play_due_date_revisions_contract_fkey FOREIGN KEY (contract_play_instance_id) REFERENCES public.contract_play_instances(id) ON DELETE CASCADE;
+
+
+--
+-- Name: play_due_date_revisions play_due_date_revisions_deal_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_due_date_revisions
+    ADD CONSTRAINT play_due_date_revisions_deal_fkey FOREIGN KEY (deal_play_instance_id) REFERENCES public.deal_play_instances(id) ON DELETE CASCADE;
+
+
+--
+-- Name: play_due_date_revisions play_due_date_revisions_org_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_due_date_revisions
+    ADD CONSTRAINT play_due_date_revisions_org_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: play_due_date_revisions play_due_date_revisions_project_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_due_date_revisions
+    ADD CONSTRAINT play_due_date_revisions_project_fkey FOREIGN KEY (project_play_instance_id) REFERENCES public.project_play_instances(id) ON DELETE CASCADE;
+
+
+--
+-- Name: play_due_date_revisions play_due_date_revisions_user_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_due_date_revisions
+    ADD CONSTRAINT play_due_date_revisions_user_fkey FOREIGN KEY (revised_by) REFERENCES public.users(id);
+
+
+--
+-- Name: play_evidence play_evidence_accepted_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_evidence
+    ADD CONSTRAINT play_evidence_accepted_by_fkey FOREIGN KEY (accepted_by) REFERENCES public.users(id);
+
+
+--
+-- Name: play_evidence play_evidence_instance_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_evidence
+    ADD CONSTRAINT play_evidence_instance_fkey FOREIGN KEY (project_play_instance_id) REFERENCES public.project_play_instances(id) ON DELETE CASCADE;
+
+
+--
+-- Name: play_evidence play_evidence_message_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_evidence
+    ADD CONSTRAINT play_evidence_message_fkey FOREIGN KEY (whatsapp_message_id) REFERENCES public.whatsapp_messages(id) ON DELETE SET NULL;
+
+
+--
+-- Name: play_evidence play_evidence_org_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_evidence
+    ADD CONSTRAINT play_evidence_org_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: play_evidence play_evidence_revoked_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_evidence
+    ADD CONSTRAINT play_evidence_revoked_by_fkey FOREIGN KEY (revoked_by) REFERENCES public.users(id);
+
+
+--
 -- Name: playbook_play_roles playbook_play_roles_play_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -20622,6 +21168,110 @@ ALTER TABLE ONLY public.project_members
 
 ALTER TABLE ONLY public.project_members
     ADD CONSTRAINT project_members_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: project_play_assignees project_play_assignees_assigned_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_assignees
+    ADD CONSTRAINT project_play_assignees_assigned_by_fkey FOREIGN KEY (assigned_by) REFERENCES public.users(id);
+
+
+--
+-- Name: project_play_assignees project_play_assignees_instance_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_assignees
+    ADD CONSTRAINT project_play_assignees_instance_id_fkey FOREIGN KEY (instance_id) REFERENCES public.project_play_instances(id) ON DELETE CASCADE;
+
+
+--
+-- Name: project_play_assignees project_play_assignees_role_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_assignees
+    ADD CONSTRAINT project_play_assignees_role_id_fkey FOREIGN KEY (role_id) REFERENCES public.org_roles(id) ON DELETE SET NULL;
+
+
+--
+-- Name: project_play_assignees project_play_assignees_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_assignees
+    ADD CONSTRAINT project_play_assignees_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: project_play_instances project_play_instances_action_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_instances
+    ADD CONSTRAINT project_play_instances_action_id_fkey FOREIGN KEY (action_id) REFERENCES public.actions(id) ON DELETE SET NULL;
+
+
+--
+-- Name: project_play_instances project_play_instances_completed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_instances
+    ADD CONSTRAINT project_play_instances_completed_by_fkey FOREIGN KEY (completed_by) REFERENCES public.users(id);
+
+
+--
+-- Name: project_play_instances project_play_instances_handover_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_instances
+    ADD CONSTRAINT project_play_instances_handover_fkey FOREIGN KEY (handover_id) REFERENCES public.sales_handovers(id) ON DELETE CASCADE;
+
+
+--
+-- Name: project_play_instances project_play_instances_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_instances
+    ADD CONSTRAINT project_play_instances_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: project_play_instances project_play_instances_overridden_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_instances
+    ADD CONSTRAINT project_play_instances_overridden_by_fkey FOREIGN KEY (overridden_by) REFERENCES public.users(id);
+
+
+--
+-- Name: project_play_instances project_play_instances_owner_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_instances
+    ADD CONSTRAINT project_play_instances_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id);
+
+
+--
+-- Name: project_play_instances project_play_instances_parent_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_instances
+    ADD CONSTRAINT project_play_instances_parent_fkey FOREIGN KEY (parent_instance_id) REFERENCES public.project_play_instances(id) ON DELETE CASCADE;
+
+
+--
+-- Name: project_play_instances project_play_instances_play_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_instances
+    ADD CONSTRAINT project_play_instances_play_id_fkey FOREIGN KEY (play_id) REFERENCES public.playbook_plays(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: project_play_instances project_play_instances_playbook_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_instances
+    ADD CONSTRAINT project_play_instances_playbook_id_fkey FOREIGN KEY (playbook_id) REFERENCES public.playbooks(id) ON DELETE SET NULL;
 
 
 --
@@ -22438,5 +23088,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict wkwXTOfyyFFZNhIW9VlmfSfndfqtsuUieaw8KrhjMnd2RiyA9MBSAeEBPIhvUaJ
+\unrestrict 4ddAfyALbwJtweOuXbcBsZtCgtiwnuYiRRCMwN2in1i61decGZCjnwcBc4dgz6j
 

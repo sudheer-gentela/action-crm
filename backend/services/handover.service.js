@@ -52,6 +52,50 @@ const TRANSITIONS = {
 // list view to default-hide them.
 const TERMINAL_STATUSES = new Set(['completed', 'cancelled']);
 
+// ── Plan-vs-actual helpers (2026_111) ────────────────────────────────────────
+
+/**
+ * Normalise a date column to 'YYYY-MM-DD'.
+ *
+ * pg returns DATE as a JS Date in local time. Comparing that to the
+ * 'YYYY-MM-DD' string the client sends via `new Date(x) === new Date(y)` or
+ * naive string compare produces spurious differences either side of midnight,
+ * which would log a revision for a save that changed nothing.
+ */
+function toDateStr(d) {
+  if (!d) return null;
+  if (typeof d === 'string') return d.slice(0, 10);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
+ * May this user reset the baseline on this project?
+ *
+ * Three routes in: org admin/owner, the two people accountable for the project
+ * (service owner, creator) — both already covered by canManageProject — or an
+ * approved member explicitly granted can_rebaseline.
+ *
+ * The grant is per-project by design. Someone overseeing one delivery should
+ * not thereby be able to reset baselines on every other project in the org.
+ */
+async function canRebaseline(handoverId, orgId, userId) {
+  if (!userId) return false;
+  if (await projectMembers.canManageProject(handoverId, orgId, userId)) return true;
+
+  const { rows: [m] } = await pool.query(
+    `SELECT 1
+       FROM project_members
+      WHERE org_id = $1 AND context_type = 'handover' AND context_id = $2
+        AND user_id = $3 AND status = 'approved' AND exited_at IS NULL
+        AND can_rebaseline = TRUE
+      LIMIT 1`,
+    [orgId, handoverId, userId]
+  );
+  return Boolean(m);
+}
+
+
 // Who can trigger each target status
 const TRANSITION_ROLES = {
   submitted:    'sales',      // created_by / owner
@@ -1691,6 +1735,191 @@ async function reorderPlays(handoverId, orgId, stageKey, orderedIds) {
   return { plays: plays.filter(p => p.stageKey === stage) };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// EVIDENCE — proof that a play was actually done (2026_111)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Attach a WhatsApp message to a play as evidence of completion.
+ *
+ * Stores BOTH a live FK to the message and a snapshot of its content. The
+ * snapshot is not redundancy: conversation bindings exist because messages get
+ * re-filed between projects, so a message accepted as proof for this project
+ * can later belong to another. The FK keeps the thread openable; the snapshot
+ * preserves what the approver actually saw when they signed off.
+ *
+ * The row is immutable once written (trg_play_evidence_immutable). A mistake
+ * is corrected by revoking, never by editing.
+ */
+async function addPlayEvidence(handoverId, orgId, playInstanceId, userId, data = {}) {
+  const { rows: [play] } = await pool.query(
+    `SELECT id FROM project_play_instances
+      WHERE id = $1 AND handover_id = $2 AND org_id = $3`,
+    [playInstanceId, handoverId, orgId]
+  );
+  if (!play) {
+    throw Object.assign(new Error('Play does not belong to this project'), { status: 404 });
+  }
+
+  const messageId = data.whatsappMessageId ? parseInt(data.whatsappMessageId, 10) : null;
+  if (!messageId) {
+    throw Object.assign(new Error('A WhatsApp message is required as evidence.'), { status: 400 });
+  }
+
+  // Org-scoped read. Without this a caller could snapshot a message belonging
+  // to another tenant by guessing an id.
+  const { rows: [msg] } = await pool.query(
+    `SELECT id, thread_id, body, from_name, from_phone, sent_at, handover_id
+       FROM whatsapp_messages
+      WHERE id = $1 AND org_id = $2`,
+    [messageId, orgId]
+  );
+  if (!msg) {
+    throw Object.assign(new Error('Message not found.'), { status: 404 });
+  }
+
+  // Not an error: a message may legitimately predate the project being tagged,
+  // and refusing would make evidence unusable for exactly the historic threads
+  // this feature exists to surface. Recorded as a warning so the UI can say so.
+  const warnings = [];
+  if (msg.handover_id && msg.handover_id !== handoverId) {
+    warnings.push('That message is currently filed against a different project.');
+  }
+
+  const { rows: [row] } = await pool.query(
+    `INSERT INTO play_evidence
+       (org_id, project_play_instance_id, channel, whatsapp_message_id,
+        snapshot_body, snapshot_sender, snapshot_sent_at, snapshot_thread_id,
+        note, accepted_by)
+     VALUES ($1, $2, 'whatsapp', $3, $4, $5, $6, $7, $8, $9)
+     RETURNING id, accepted_at`,
+    [orgId, playInstanceId, messageId,
+     msg.body || null,
+     msg.from_name || msg.from_phone || null,
+     msg.sent_at || null,
+     msg.thread_id || null,
+     (data.note || '').trim() || null,
+     userId]
+  );
+
+  return { evidenceId: row.id, acceptedAt: row.accepted_at, warnings };
+}
+
+/**
+ * List evidence for a play. Revoked rows are returned too, flagged — hiding
+ * them would make the audit trail useless for the question it exists to
+ * answer ("what was accepted, and what was withdrawn").
+ */
+async function listPlayEvidence(handoverId, orgId, playInstanceId) {
+  const { rows } = await pool.query(
+    `SELECT e.id, e.channel, e.whatsapp_message_id,
+            e.snapshot_body, e.snapshot_sender, e.snapshot_sent_at,
+            e.snapshot_thread_id, e.note,
+            e.accepted_at, e.revoked_at, e.revoke_reason,
+            au.first_name || ' ' || au.last_name AS accepted_by_name,
+            ru.first_name || ' ' || ru.last_name AS revoked_by_name,
+            -- has the message since been re-filed elsewhere?
+            m.handover_id AS message_handover_id
+       FROM play_evidence e
+       JOIN project_play_instances p ON p.id = e.project_play_instance_id
+       LEFT JOIN users au ON au.id = e.accepted_by
+       LEFT JOIN users ru ON ru.id = e.revoked_by
+       LEFT JOIN whatsapp_messages m ON m.id = e.whatsapp_message_id
+      WHERE e.project_play_instance_id = $1
+        AND e.org_id = $2
+        AND p.handover_id = $3
+      ORDER BY e.accepted_at DESC`,
+    [playInstanceId, orgId, handoverId]
+  );
+
+  return {
+    evidence: rows.map(r => ({
+      id:            r.id,
+      channel:       r.channel,
+      messageId:     r.whatsapp_message_id,
+      threadId:      r.snapshot_thread_id,
+      body:          r.snapshot_body,
+      sender:        r.snapshot_sender,
+      sentAt:        r.snapshot_sent_at,
+      note:          r.note,
+      acceptedAt:    r.accepted_at,
+      acceptedBy:    r.accepted_by_name,
+      revoked:       r.revoked_at != null,
+      revokedAt:     r.revoked_at,
+      revokedBy:     r.revoked_by_name,
+      revokeReason:  r.revoke_reason,
+      // true when the underlying message has since moved to another project,
+      // so the UI can show the snapshot without implying live linkage.
+      messageMoved:  r.message_handover_id != null && r.message_handover_id !== handoverId,
+    })),
+  };
+}
+
+/**
+ * Withdraw evidence. Never a delete — the row stays, flagged, with who and why.
+ * A system that cannot correct a mistake gets worked around; one that erases
+ * the correction cannot be audited. This does both jobs.
+ */
+async function revokePlayEvidence(handoverId, orgId, evidenceId, userId, reason) {
+  const r = (reason || '').trim();
+  if (!r) {
+    throw Object.assign(new Error('A reason is required to withdraw evidence.'), { status: 400 });
+  }
+
+  const { rows: [ev] } = await pool.query(
+    `SELECT e.id, e.revoked_at
+       FROM play_evidence e
+       JOIN project_play_instances p ON p.id = e.project_play_instance_id
+      WHERE e.id = $1 AND e.org_id = $2 AND p.handover_id = $3`,
+    [evidenceId, orgId, handoverId]
+  );
+  if (!ev) throw Object.assign(new Error('Evidence not found.'), { status: 404 });
+  if (ev.revoked_at) {
+    throw Object.assign(new Error('That evidence has already been withdrawn.'), { status: 409 });
+  }
+
+  await pool.query(
+    `UPDATE play_evidence
+        SET revoked_at = now(), revoked_by = $1, revoke_reason = $2
+      WHERE id = $3`,
+    [userId, r, evidenceId]
+  );
+
+  return { revoked: true };
+}
+
+/**
+ * The full date history for one play, newest first.
+ */
+async function listPlayRevisions(handoverId, orgId, playInstanceId) {
+  const { rows } = await pool.query(
+    `SELECT rv.id, rv.from_due_date, rv.to_due_date, rv.reason,
+            rv.is_rebaseline, rv.previous_baseline_date, rv.revised_at,
+            u.first_name || ' ' || u.last_name AS revised_by_name
+       FROM play_due_date_revisions rv
+       JOIN project_play_instances p ON p.id = rv.project_play_instance_id
+       LEFT JOIN users u ON u.id = rv.revised_by
+      WHERE rv.project_play_instance_id = $1
+        AND rv.org_id = $2
+        AND p.handover_id = $3
+      ORDER BY rv.revised_at DESC`,
+    [playInstanceId, orgId, handoverId]
+  );
+
+  return {
+    revisions: rows.map(r => ({
+      id:               r.id,
+      fromDueDate:      r.from_due_date,
+      toDueDate:        r.to_due_date,
+      reason:           r.reason,
+      isRebaseline:     r.is_rebaseline,
+      previousBaseline: r.previous_baseline_date,
+      revisedAt:        r.revised_at,
+      revisedBy:        r.revised_by_name,
+    })),
+  };
+}
+
 /**
  * Remove an ad-hoc checklist item. Guardrail: only items that are genuinely
  * ad-hoc (no playbook, no template) can be deleted here — playbook-driven rows
@@ -1726,9 +1955,12 @@ async function removePlay(handoverId, orgId, playInstanceId) {
  * keys present in `data` are changed. Completion stays a separate path
  * (completePlay), so status can't be silently flipped here.
  */
-async function updatePlay(handoverId, orgId, playInstanceId, data = {}) {
+async function updatePlay(handoverId, orgId, playInstanceId, data = {}, userId = null) {
+  // Current state is needed, not just existence: a date change has to record
+  // where it moved FROM, and a rebaseline has to record the baseline it
+  // replaced. Reading after the UPDATE would lose both.
   const { rows: link } = await pool.query(
-    `SELECT ppi.id
+    `SELECT ppi.id, ppi.due_date, ppi.baseline_due_date, ppi.baseline_source
        FROM project_play_instances ppi
       WHERE ppi.handover_id = $1 AND ppi.id = $2 AND ppi.org_id = $3`,
     [handoverId, playInstanceId, orgId]
@@ -1736,6 +1968,7 @@ async function updatePlay(handoverId, orgId, playInstanceId, data = {}) {
   if (link.length === 0) {
     throw Object.assign(new Error('Play does not belong to this handover'), { status: 404 });
   }
+  const current = link[0];
 
   const has = k => Object.prototype.hasOwnProperty.call(data, k);
   const sets = [];
@@ -1749,7 +1982,39 @@ async function updatePlay(handoverId, orgId, playInstanceId, data = {}) {
   }
   if (has('description')) add('description', (data.description || '').trim() || null);
   if (has('ownerUserId')) add('owner_user_id', data.ownerUserId ? parseInt(data.ownerUserId, 10) : null);
-  if (has('dueDate'))     add('due_date', data.dueDate || null);
+  // ── Due date: recorded, never silent ────────────────────────────────────
+  // Moving a planned date is the single act that makes a variance report
+  // either meaningful or worthless, and nothing recorded it before. Not
+  // blocked for non-managers (deliberate — recording is the improvement),
+  // but always attributed.
+  const newDue = has('dueDate') ? (data.dueDate || null) : undefined;
+  const dueChanged = newDue !== undefined
+    && String(current.due_date ? toDateStr(current.due_date) : '') !== String(newDue || '');
+  const wantsRebaseline = data.rebaseline === true;
+
+  if (has('dueDate')) add('due_date', newDue);
+
+  // A rebaseline is an authorised replan, not an edit. Gated, and it must say
+  // why — otherwise it is indistinguishable from quietly covering a slip.
+  if (wantsRebaseline) {
+    if (!dueChanged) {
+      throw Object.assign(
+        new Error('A rebaseline needs a new due date.'), { status: 400 });
+    }
+    const reason = (data.reason || '').trim();
+    if (!reason) {
+      throw Object.assign(
+        new Error('A rebaseline needs a reason.'), { status: 400 });
+    }
+    const allowed = await canRebaseline(handoverId, orgId, userId);
+    if (!allowed) {
+      throw Object.assign(
+        new Error('You do not have permission to rebaseline this project.'), { status: 403 });
+    }
+    add('baseline_due_date', newDue);
+    add('baseline_source', 'rebaselined');
+  }
+
   if (has('isGate'))      add('is_gate', data.isGate === true);
 
   // sortOrder / stageKey: a template could previously be renamed and re-dated
@@ -1769,13 +2034,54 @@ async function updatePlay(handoverId, orgId, playInstanceId, data = {}) {
     add('stage_key', sk);
   }
 
+  // A date change and its audit row must land together or not at all.
+  //
+  // These were previously two independent pool.query() calls. If the revision
+  // INSERT failed — revised_by is NOT NULL, so a caller that omitted userId
+  // was enough — the UPDATE had already committed and the date moved with no
+  // record of it. That is precisely the state the audit trail exists to make
+  // impossible, so both statements now share one transaction.
+  if (dueChanged && !userId) {
+    throw Object.assign(
+      new Error('A date change must be attributed to a user.'), { status: 400 });
+  }
+
   if (sets.length > 0) {
-    params.push(playInstanceId, orgId);
-    await pool.query(
-      `UPDATE project_play_instances SET ${sets.join(', ')}
-        WHERE id = $${params.length - 1} AND org_id = $${params.length}`,
-      params
-    );
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      params.push(playInstanceId, orgId);
+      await client.query(
+        `UPDATE project_play_instances SET ${sets.join(', ')}
+          WHERE id = $${params.length - 1} AND org_id = $${params.length}`,
+        params
+      );
+
+      // Only an actual movement is recorded — a no-op save is not a revision.
+      if (dueChanged) {
+        await client.query(
+          `INSERT INTO play_due_date_revisions
+             (org_id, source_module, project_play_instance_id,
+              from_due_date, to_due_date, reason, is_rebaseline,
+              previous_baseline_date, revised_by)
+           VALUES ($1, 'project', $2, $3, $4, $5, $6, $7, $8)`,
+          [orgId, playInstanceId,
+           current.due_date || null, newDue,
+           (data.reason || '').trim() || null,
+           wantsRebaseline,
+           wantsRebaseline ? (current.baseline_due_date || null) : null,
+           userId]
+        );
+      }
+
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   const plays = await _getPlays(handoverId, orgId);
@@ -2948,6 +3254,11 @@ module.exports = {
   removePlay,              // ad-hoc checklist item — remove
   updatePlay,              // checklist item — edit fields
   reorderPlays,            // checklist items — reposition within a stage (A5)
+  addPlayEvidence,         // evidence — attach a WhatsApp message (2026_111)
+  listPlayEvidence,        // evidence — list, including withdrawn
+  revokePlayEvidence,      // evidence — withdraw, never delete
+  listPlayRevisions,       // date history for one play
+  canRebaseline,           // permission probe for the UI
   // Nightly sweep — Phase 2
   runNightlySweep,
   buildHandoverContext,   // exported for testing / ad-hoc event triggers
