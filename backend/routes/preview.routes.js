@@ -144,11 +144,11 @@ router.get('/contacts/:id/timeline', async (req, res) => {
       pool.query(
         `SELECT channel, ts, detail, sender, direction
            FROM pavan_preview.email_timeline WHERE contact_id = $1
-           ORDER BY ts`, [contactId]),
+           ORDER BY ts DESC, message_id DESC`, [contactId]),
       pool.query(
         `SELECT channel, ts, detail, sender, direction
            FROM pavan_preview.linkedin_timeline WHERE contact_id = $1
-           ORDER BY ts`, [contactId]),
+           ORDER BY ts DESC`, [contactId]),
       pool.query(
         `SELECT tag FROM pavan_preview.contact_tags
           WHERE contact_id = $1 AND mongo_user_id = $2`, [contactId, mapping.mongoUserId]),
@@ -157,10 +157,10 @@ router.get('/contacts/:id/timeline', async (req, res) => {
           WHERE contact_id = $1 AND mongo_user_id = $2 LIMIT 1`, [contactId, mapping.mongoUserId]),
     ]);
 
-    // merge channels into one chronological feed
+    // merge channels into one newest-first feed (matches the History tab)
     const timeline = [...email.rows, ...linkedin.rows]
       .filter(r => r.ts)
-      .sort((a, b) => new Date(a.ts) - new Date(b.ts));
+      .sort((a, b) => new Date(b.ts) - new Date(a.ts));
 
     res.json({
       contact: contact.rows[0] || null,
@@ -265,14 +265,22 @@ router.get('/by-prospect/:prospectId/timeline', async (req, res) => {
 
     if (!contactId) return res.json({ found: false });
 
-    // pull email + linkedin timelines, merge chronologically
+    // pull email + linkedin timelines, merge newest-first
+    //
+    // Ordering: reverse-chronological, so the most recent interaction is at
+    // the top of the History tab. The secondary key on emails matters —
+    // migrated threads routinely carry several messages on the SAME
+    // timestamp (a thread imported in one pass), and without a tiebreak
+    // Postgres may return those in a different order between calls.
     const [emails, linkedin, tags, status, contact] = await Promise.all([
       pool.query(
         `SELECT message_id, channel, ts, detail, sender, direction
-           FROM pavan_preview.email_timeline WHERE contact_id = $1 ORDER BY ts`, [contactId]),
+           FROM pavan_preview.email_timeline WHERE contact_id = $1
+           ORDER BY ts DESC, message_id DESC`, [contactId]),
       pool.query(
         `SELECT channel, ts, detail, sender, direction
-           FROM pavan_preview.linkedin_timeline WHERE contact_id = $1 ORDER BY ts`, [contactId]),
+           FROM pavan_preview.linkedin_timeline WHERE contact_id = $1
+           ORDER BY ts DESC`, [contactId]),
       pool.query(
         `SELECT DISTINCT tag FROM pavan_preview.contact_tags WHERE contact_id = $1`, [contactId]),
       pool.query(
@@ -283,7 +291,7 @@ router.get('/by-prospect/:prospectId/timeline', async (req, res) => {
 
     const timeline = [...emails.rows, ...linkedin.rows]
       .filter(r => r.ts)
-      .sort((a, b) => new Date(a.ts) - new Date(b.ts));
+      .sort((a, b) => new Date(b.ts) - new Date(a.ts));
 
     res.json({
       found: true,
