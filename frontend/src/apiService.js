@@ -1087,6 +1087,20 @@ twilio: {
     getStats:         ()   => api.get('/playbooks/stats/summary'),
     getPlaybookStats: (id) => api.get(`/playbooks/${id}/stats`),
   },
+
+  // ── Mongo migration preview (read-only) ──────────────────────────────
+  preview: {
+    me: () => api.get('/preview/me'),
+    getContacts: (opts = {}) => {
+      const params = new URLSearchParams();
+      if (opts.q)         params.set('q', opts.q);
+      if (opts.limit)     params.set('limit', String(opts.limit));
+      if (opts.offset)    params.set('offset', String(opts.offset));
+      if (opts.workspace) params.set('workspace', opts.workspace);
+      return api.get(`/preview/contacts?${params.toString()}`);
+    },
+    getTimeline: (contactId) => api.get(`/preview/contacts/${contactId}/timeline`),
+  },
 };
 
 // ============================================================
@@ -1190,18 +1204,6 @@ export const syncAPI = {
     if (!response.ok) throw new Error('Failed to get sync config');
     return response.json();
   },
-
-  // ── Mongo migration preview (read-only) ──────────────────────────────
-  preview: {
-    me: () => api.get('/preview/me'),
-    getContacts: (opts = {}) => {
-      const params = new URLSearchParams();
-      if (opts.q)         params.set('q', opts.q);
-      if (opts.limit)     params.set('limit', String(opts.limit));
-      if (opts.offset)    params.set('offset', String(opts.offset));
-      if (opts.workspace) params.set('workspace', opts.workspace);
-      return api.get(`/preview/contacts?${params.toString()}`);
-    },
     getTimeline: (contactId) => api.get(`/preview/contacts/${contactId}/timeline`),
   },
 };
