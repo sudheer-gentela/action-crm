@@ -28,6 +28,11 @@ export default function PreviewContacts() {
   const [error, setError]         = useState(null);
 
   useEffect(() => {
+    if (!apiService.preview) {
+      setError('Preview API not available — the frontend build may be out of date. Redeploy and hard-refresh.');
+      setSummary({ hasPreview: false });
+      return;
+    }
     apiService.preview.me()
       .then(r => setSummary(r.data))
       .catch(() => setSummary({ hasPreview: false }));
