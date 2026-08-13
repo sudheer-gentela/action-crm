@@ -428,6 +428,27 @@ router.post('/sales/:id/plays', async (req, res) => {
   }
 });
 
+// ── PATCH /sales/:id/plays/reorder  — reposition plays within one stage ───────
+//
+// Body: { stageKey: 'mobilise', orderedIds: [12, 9, 30] }
+//
+// Declared BEFORE /plays/:instanceId. Express matches in declaration order, so
+// with the routes the other way round 'reorder' would be captured as an
+// :instanceId and parseInt would hand the service NaN.
+
+router.patch('/sales/:id/plays/reorder', async (req, res) => {
+  try {
+    const { stageKey, orderedIds } = req.body || {};
+    const result = await handoverService.reorderPlays(
+      parseInt(req.params.id), req.orgId, stageKey, orderedIds
+    );
+    res.json(result);
+  } catch (err) {
+    console.error('Reorder handover plays error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
 // ── PATCH /sales/:id/plays/:instanceId  — edit a checklist item ───────────────
 
 router.patch('/sales/:id/plays/:instanceId', async (req, res) => {

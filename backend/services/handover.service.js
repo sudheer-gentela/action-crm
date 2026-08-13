@@ -198,7 +198,7 @@ function fmtPlay(row) {
   if (!row) return null;
 
   // BUGFIX: due_date, due_anchor and updated_at were being neither SELECTed in
-  // _getPlays() nor mapped here, so deal_play_instances.due_date — which the
+  // _getPlays() nor mapped here, so the instance's due_date — which the
   // playbook engine has been populating all along — was invisible to the
   // handover UI. Every deliverable looked undated.
   const isDone    = ['completed', 'skipped'].includes(row.play_status);
@@ -211,7 +211,7 @@ function fmtPlay(row) {
     playInstanceId:  row.play_instance_id,
     handoverId:      row.handover_id,
     completedAt:     row.completed_at,
-    // from deal_play_instances
+    // from project_play_instances
     title:           row.title,
     description:     row.description,
     channel:         row.channel,
@@ -1595,6 +1595,103 @@ async function addPlay(handoverId, orgId, userId, data = {}) {
 }
 
 /**
+ * Reposition plays within a project.
+ *
+ * Takes an ordered list of play instance ids and renumbers them on the sparse
+ * 10-step scale (10, 20, 30 …) that addPlay also uses, so a later insert can
+ * still land between two existing plays without renumbering the whole stage.
+ *
+ * Reordering only became meaningful once _getPlays stopped sorting by due_date
+ * first — before that, sort_order was a tiebreak and dragging a play had no
+ * visible effect.
+ *
+ * Scoped to one stage at a time. Reordering across stages would silently move
+ * plays between phases, which is a different operation and belongs in
+ * updatePlay({ stageKey }) where it is explicit.
+ *
+ * @param {number}   handoverId
+ * @param {number}   orgId
+ * @param {string}   stageKey        stage whose plays are being reordered
+ * @param {number[]} orderedIds      play instance ids, in the desired order
+ */
+async function reorderPlays(handoverId, orgId, stageKey, orderedIds) {
+  const stage = (stageKey || '').trim();
+  if (!stage) {
+    throw Object.assign(new Error('stageKey is required.'), { status: 400 });
+  }
+  if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+    throw Object.assign(new Error('An ordered list of play ids is required.'), { status: 400 });
+  }
+
+  const ids = orderedIds.map(n => parseInt(n, 10));
+  if (ids.some(n => !Number.isFinite(n))) {
+    throw Object.assign(new Error('All play ids must be numbers.'), { status: 400 });
+  }
+  if (new Set(ids).size !== ids.length) {
+    throw Object.assign(new Error('The same play appears more than once.'), { status: 400 });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Every id must belong to this project AND this stage. Verified inside the
+    // transaction: a partial renumbering is worse than a rejected one, because
+    // it leaves the checklist in an order nobody chose.
+    const { rows: owned } = await client.query(
+      `SELECT id FROM project_play_instances
+        WHERE handover_id = $1 AND org_id = $2 AND stage_key = $3 AND id = ANY($4::int[])`,
+      [handoverId, orgId, stage, ids]
+    );
+    if (owned.length !== ids.length) {
+      const found = new Set(owned.map(r => r.id));
+      const bad = ids.filter(i => !found.has(i));
+      throw Object.assign(
+        new Error(`These plays are not in stage "${stage}" on this project: ${bad.join(', ')}`),
+        { status: 400 }
+      );
+    }
+
+    // The caller must supply the WHOLE stage. A partial list would renumber a
+    // subset onto the same scale as the plays it omitted, interleaving them
+    // unpredictably.
+    const { rows: [{ count: stageCount }] } = await client.query(
+      `SELECT count(*)::int AS count FROM project_play_instances
+        WHERE handover_id = $1 AND org_id = $2 AND stage_key = $3`,
+      [handoverId, orgId, stage]
+    );
+    if (stageCount !== ids.length) {
+      throw Object.assign(
+        new Error(`Stage "${stage}" has ${stageCount} plays but ${ids.length} were supplied. Send the full stage.`),
+        { status: 400 }
+      );
+    }
+
+    // Single statement rather than a loop: sort_order has no unique constraint,
+    // so intermediate collisions are harmless, but one round trip on a slow
+    // disk beats N.
+    await client.query(
+      `UPDATE project_play_instances AS p
+          SET sort_order = v.new_order, updated_at = now()
+         FROM (SELECT unnest($1::int[]) AS id,
+                      generate_subscripts($1::int[], 1) * 10 AS new_order) AS v
+        WHERE p.id = v.id AND p.handover_id = $2 AND p.org_id = $3`,
+      [ids, handoverId, orgId]
+    );
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  const plays = await _getPlays(handoverId, orgId);
+  return { plays: plays.filter(p => p.stageKey === stage) };
+}
+
+/**
  * Remove an ad-hoc checklist item. Guardrail: only items that are genuinely
  * ad-hoc (no playbook, no template) can be deleted here — playbook-driven rows
  * are managed through the playbook, not deleted off a single handover.
@@ -1654,6 +1751,23 @@ async function updatePlay(handoverId, orgId, playInstanceId, data = {}) {
   if (has('ownerUserId')) add('owner_user_id', data.ownerUserId ? parseInt(data.ownerUserId, 10) : null);
   if (has('dueDate'))     add('due_date', data.dueDate || null);
   if (has('isGate'))      add('is_gate', data.isGate === true);
+
+  // sortOrder / stageKey: a template could previously be renamed and re-dated
+  // but never restructured, which made a playbook only superficially editable.
+  // Moving a play between stages or repositioning it within one is what makes
+  // an EPC and a software playbook genuinely different shapes.
+  if (has('sortOrder')) {
+    const so = parseInt(data.sortOrder, 10);
+    if (!Number.isFinite(so) || so < 0) {
+      throw Object.assign(new Error('sortOrder must be a non-negative number.'), { status: 400 });
+    }
+    add('sort_order', so);
+  }
+  if (has('stageKey')) {
+    const sk = (data.stageKey || '').trim();
+    if (!sk) throw Object.assign(new Error('stageKey cannot be blank.'), { status: 400 });
+    add('stage_key', sk);
+  }
 
   if (sets.length > 0) {
     params.push(playInstanceId, orgId);
@@ -1796,7 +1910,10 @@ async function _getPlays(handoverId, orgId) {
   // it removes the possibility of a future caller forgetting.
   const { rows } = await pool.query(
     `SELECT
-       shp.id, shp.play_instance_id, shp.handover_id, shp.completed_at,
+       dpi.id,
+       dpi.id   AS play_instance_id,
+       dpi.handover_id,
+       dpi.completed_at,
        dpi.title, dpi.description, dpi.channel, dpi.is_gate,
        dpi.stage_key,
        dpi.execution_type, dpi.sort_order, dpi.priority,
@@ -1811,9 +1928,25 @@ async function _getPlays(handoverId, orgId) {
      LEFT JOIN users ou     ON ou.id = dpi.owner_user_id
      LEFT JOIN users cu     ON cu.id = dpi.completed_by
      LEFT JOIN playbooks pb ON pb.id = dpi.playbook_id
+     -- Stage order comes from the PROJECT's playbook, not the play's: an
+     -- ad-hoc item has playbook_id NULL but still sits in a real stage.
+     LEFT JOIN sales_handovers h  ON h.id = dpi.handover_id
+     LEFT JOIN playbook_stages ps ON ps.playbook_id = h.playbook_id
+                                 AND ps.key = dpi.stage_key
      WHERE dpi.handover_id = $1
        AND ($2::int IS NULL OR dpi.org_id = $2)
-     ORDER BY dpi.due_date ASC NULLS LAST, dpi.sort_order ASC`,
+     -- Plan order first, date as the tiebreak.
+     --
+     -- This was ORDER BY due_date, sort_order — date-driven, so the checklist
+     -- read as a to-do list rather than a plan and reordering a play had no
+     -- visible effect. Stage sequence now leads, then position within the
+     -- stage, then date. Stages with no match (an ad-hoc item left in
+     -- 'custom') sort last rather than jumping to the front.
+     ORDER BY ps.sort_order ASC NULLS LAST,
+              dpi.stage_key ASC,
+              dpi.sort_order ASC,
+              dpi.due_date ASC NULLS LAST,
+              dpi.id ASC`,
     [handoverId, orgId ?? null]
   );
   return rows.map(fmtPlay);
@@ -2814,6 +2947,7 @@ module.exports = {
   addPlay,                 // ad-hoc checklist item — add
   removePlay,              // ad-hoc checklist item — remove
   updatePlay,              // checklist item — edit fields
+  reorderPlays,            // checklist items — reposition within a stage (A5)
   // Nightly sweep — Phase 2
   runNightlySweep,
   buildHandoverContext,   // exported for testing / ad-hoc event triggers
