@@ -832,6 +832,7 @@ twilio: {
 
     // ── Plan vs actual (2026_111) ──
     variance:       (id) => api.get(`/handovers/sales/${id}/variance`),
+    canRebaseline:  (id) => api.get(`/handovers/sales/${id}/can-rebaseline`),
     varianceStages: (id) => api.get(`/handovers/sales/${id}/variance/stages`),
     playRevisions:  (id, instanceId) =>
       api.get(`/handovers/sales/${id}/plays/${instanceId}/revisions`),

@@ -33,6 +33,7 @@ import { hashParts, hashSegment, writeHash } from './hashNav';
 import ProjectFilesPanel from './ProjectFilesPanel';
 import ProjectPeoplePanel from './ProjectPeoplePanel';
 import ProjectPlanVsActual from './ProjectPlanVsActual';
+import { PlayDateModal, PlayEvidenceModal } from './ProjectPlayModals';
 import ProjectEmailThreads from './ProjectEmailThreads';
 import ProjectAttachments from './ProjectAttachments';
 
@@ -1205,6 +1206,44 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     }
   };
 
+  // Drag-to-reorder state. Held here rather than in PlaySection because a drop
+  // is only meaningful relative to its siblings, which only this level knows.
+  const [dragPlay,  setDragPlay]  = useState(null);   // { id, stageKey }
+  const [dragOver,  setDragOver]  = useState(null);   // instance id being hovered
+  const [dateModal, setDateModal] = useState(null);   // play object
+  const [evidModal, setEvidModal] = useState(null);   // play object
+
+  /**
+   * Commit a reorder. The server takes the WHOLE stage in its new order and
+   * renumbers on a sparse scale, so the list is rebuilt locally first and sent
+   * as one array — sending a single moved id would leave the rest interleaved.
+   *
+   * Reordering across stages is not allowed here: that is a change of phase,
+   * which is an explicit edit rather than something a drag should do silently.
+   */
+  const handleDropPlay = async (targetPlay, stageItems) => {
+    const src = dragPlay;
+    setDragPlay(null); setDragOver(null);
+    if (!src || src.id === targetPlay.id) return;
+    if (src.stageKey !== targetPlay.stageKey) {
+      flash('error', 'Drag within a stage. To move a play to another stage, edit it.');
+      return;
+    }
+
+    const ids = stageItems.map(p => p.id);
+    const from = ids.indexOf(src.id);
+    const to   = ids.indexOf(targetPlay.id);
+    if (from < 0 || to < 0) return;
+    ids.splice(to, 0, ids.splice(from, 1)[0]);
+
+    try {
+      await apiService.handovers.reorderPlays(h.id, src.stageKey, ids);
+      await load();
+    } catch (err) {
+      flash('error', err?.response?.data?.error?.message || 'Could not reorder the checklist');
+    }
+  };
+
   const handleUpdatePlay = async (playInstanceId, data) => {
     try {
       await apiService.handovers.updatePlay(h.id, playInstanceId, data);
@@ -1585,15 +1624,57 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                     </div>
                   </div>
                   {group.items.map(play => (
-                    <PlaySection
+                    // Wrapper carries the drag affordance so PlaySection itself
+                    // stays unchanged — its internal inputs must remain
+                    // selectable, which is why draggable sits on the handle
+                    // rather than the whole row.
+                    <div
                       key={play.id}
-                      play={play}
-                      canEdit={salesCanEdit}
-                      onComplete={handleCompletePlay}
-                      onRemove={handleRemovePlay}
-                      onEdit={handleUpdatePlay}
-                      users={users}
-                    />
+                      onDragOver={e => { if (dragPlay) { e.preventDefault(); setDragOver(play.id); } }}
+                      onDragLeave={() => setDragOver(o => (o === play.id ? null : o))}
+                      onDrop={e => { e.preventDefault(); handleDropPlay(play, group.items); }}
+                      style={{
+                        position: 'relative',
+                        borderTop: dragOver === play.id && dragPlay && dragPlay.id !== play.id
+                          ? '2px solid #0369a1' : '2px solid transparent',
+                        opacity: dragPlay && dragPlay.id === play.id ? 0.45 : 1,
+                      }}
+                    >
+                      {salesCanEdit && (
+                        <span
+                          draggable
+                          onDragStart={() => setDragPlay({ id: play.id, stageKey: group.key })}
+                          onDragEnd={() => { setDragPlay(null); setDragOver(null); }}
+                          title="Drag to reorder within this stage"
+                          style={{ position: 'absolute', left: -14, top: 12, cursor: 'grab',
+                                   color: '#cbd5e1', fontSize: 13, userSelect: 'none' }}
+                        >⠿</span>
+                      )}
+                      <PlaySection
+                        play={play}
+                        canEdit={salesCanEdit}
+                        onComplete={handleCompletePlay}
+                        onRemove={handleRemovePlay}
+                        onEdit={handleUpdatePlay}
+                        users={users}
+                      />
+                      {salesCanEdit && (
+                        <div style={{ display: 'flex', gap: 10, margin: '-4px 0 10px 2px' }}>
+                          <button onClick={() => setDateModal(play)}
+                            style={{ fontSize: 11, padding: '2px 8px', borderRadius: 5,
+                                     border: '1px solid #e5e7eb', background: '#fff',
+                                     color: '#374151', cursor: 'pointer' }}>
+                            Change date
+                          </button>
+                          <button onClick={() => setEvidModal(play)}
+                            style={{ fontSize: 11, padding: '2px 8px', borderRadius: 5,
+                                     border: '1px solid #e5e7eb', background: '#fff',
+                                     color: '#374151', cursor: 'pointer' }}>
+                            Evidence
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   ))}
                 </div>
               );
@@ -1643,6 +1724,23 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
         <div style={{ padding: '16px 20px' }}>
           <ProjectFilesPanel handoverId={detail.id} />
         </div>
+      )}
+
+      {dateModal && (
+        <PlayDateModal
+          handoverId={detail.id}
+          play={dateModal}
+          onClose={() => setDateModal(null)}
+          onSaved={load}
+        />
+      )}
+      {evidModal && (
+        <PlayEvidenceModal
+          handoverId={detail.id}
+          play={evidModal}
+          onClose={() => setEvidModal(null)}
+          onSaved={load}
+        />
       )}
 
       {detailTab === 'variance' && (

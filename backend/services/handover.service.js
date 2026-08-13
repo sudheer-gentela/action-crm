@@ -260,6 +260,10 @@ function fmtPlay(row) {
     description:     row.description,
     channel:         row.channel,
     stageKey:        row.stage_key ?? null,
+    // Baseline is what the Change-date dialog compares against; without it
+    // the dialog cannot show what was originally committed.
+    baselineDueDate: row.baseline_due_date ?? null,
+    baselineSource:  row.baseline_source ?? null,
     completionNote:  row.completion_note ?? null,
     completionEvidence: row.completion_evidence ?? null,
     isGate:          row.is_gate,
@@ -2225,6 +2229,7 @@ async function _getPlays(handoverId, orgId) {
        dpi.execution_type, dpi.sort_order, dpi.priority,
        dpi.status AS play_status, dpi.completed_by,
        dpi.due_date, dpi.due_anchor,
+       dpi.baseline_due_date, dpi.baseline_source,
        dpi.completion_note, dpi.completion_evidence,
        dpi.play_id, dpi.playbook_id, dpi.owner_user_id,
        ou.first_name || ' ' || ou.last_name AS owner_name,
