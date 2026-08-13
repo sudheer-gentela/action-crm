@@ -24,6 +24,7 @@ import ContractsView from './ContractsView';
 import HandoverView from './HandoverView';
 import SupportView from './SupportView';
 import AgencyView from './AgencyView';
+import PreviewContacts from './PreviewContacts';
 import ReportingHub from './ReportingHub';
 import Sidebar from './Sidebar';
 
@@ -82,6 +83,7 @@ const ALL_MODULE_ITEMS = [
   { id: 'handovers',   label: 'Projects',    icon: '🤝' },
   { id: 'service',     label: 'Service',     icon: '🎧' },
   { id: 'agency',      label: 'Agency',      icon: '🏢' },
+  { id: 'preview',     label: 'Data Preview', icon: '🔎' },
 ];
 
 const NAV_ITEMS_BY_ROLE = {
@@ -973,6 +975,7 @@ function Dashboard({ user, onLogout }) {
 
         <div className="content-area">
           {currentTab === 'actions'     && <ActionsView openActionId={pendingActionId} onActionOpened={() => setPendingActionId(null)} />}
+          {currentTab === 'preview'     && <PreviewContacts />}
           {currentTab === 'prospecting' && (
             orgModules.prospecting
               ? <ProspectingView />
