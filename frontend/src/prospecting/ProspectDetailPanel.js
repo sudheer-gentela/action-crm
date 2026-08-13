@@ -19,6 +19,26 @@ import ProspectPhonesPanel from './ProspectPhonesPanel';
 import CustomFieldsPanel from '../customfields/CustomFieldsPanel';
 import ProspectHistoryTab from './ProspectHistoryTab';
 
+// ── Migrated-history availability (Mongo migration preview) ─────────────────
+// The History tab surfaces migrated Mongo interaction data, which only exists
+// for users who have a mapping row in stg.map_user for their own org. Ask the
+// server once per page load and cache the in-flight promise — without the
+// cache this would refire every time a prospect panel opens.
+//
+// Resolves to false on any error, so a preview outage hides the tab rather
+// than breaking the detail panel. This is a UI affordance only: the server
+// gates the data independently in preview.routes.js, and hiding a tab is not
+// an access control.
+let _previewAvailability = null;
+function checkPreviewAvailable() {
+  if (_previewAvailability === null) {
+    _previewAvailability = apiFetch('/preview/me')
+      .then(r => !!(r && r.hasPreview))
+      .catch(() => false);
+  }
+  return _previewAvailability;
+}
+
 function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpenProspect }) {
   const { allStages, prospectStages } = useStages();
   const [prospect, setProspect] = useState(null);
@@ -36,6 +56,10 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpen
   const [activities, setActivities] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState(initialTab || 'overview');
+  // Migration History tab visibility. Starts false so the tab is never shown
+  // to a user who turns out not to have migrated data; it appears once the
+  // /preview/me check resolves. See checkPreviewAvailable above.
+  const [hasPreview, setHasPreview] = useState(false);
   const [editMode, setEditMode]   = useState(false);
   const [editForm, setEditForm]   = useState({});
   const [editSaving, setEditSaving] = useState(false);
@@ -417,6 +441,21 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpen
       setContextLoading(false);
     }
   }, [prospectId, contextData, contextLoading]);
+
+  // Resolve whether this user has migrated data (drives History tab visibility).
+  useEffect(() => {
+    let cancelled = false;
+    checkPreviewAvailable().then(ok => { if (!cancelled) setHasPreview(ok); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // If the panel was opened straight onto History via initialTab but this user
+  // has no migrated data, fall back to Overview — otherwise activeTab would
+  // point at a tab that isn't rendered in the tab row and the content area
+  // would come up blank.
+  useEffect(() => {
+    if (!hasPreview && activeTab === 'history') setActiveTab('overview');
+  }, [hasPreview, activeTab]);
 
   const handleTabChange = (t) => {
     setActiveTab(t);
@@ -1005,7 +1044,7 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpen
             prospect is in a campaign: the Work panel is the campaign-queue
             experience (priority · why-now · validations · draft · outcome). */}
 <div className="pv-detail-tabs">
-	  {['overview', ...(prospect?.campaign_id ? ['work'] : []), 'linkedin', 'calls', 'intel', 'actions', 'activity', 'history'].map(t => (
+	  {['overview', ...(prospect?.campaign_id ? ['work'] : []), 'linkedin', 'calls', 'intel', 'actions', 'activity', ...(hasPreview ? ['history'] : [])].map(t => (
             <button
               key={t}
               className={`pv-detail-tab ${activeTab === t ? 'active' : ''}`}
@@ -1490,7 +1529,7 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpen
             </div>
           )}
 
-          {activeTab === 'history' && (
+          {activeTab === 'history' && hasPreview && (
             <div className="pv-history-tab" style={{ padding: 12 }}>
               <ProspectHistoryTab prospectId={prospectId} />
             </div>

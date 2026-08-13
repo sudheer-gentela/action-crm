@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict s7BVVg1vcac94HJnTe4wIsUqqc8Axwt7vIlA4xgmjtl2hfhcIzywPrCm1x29TL5
+\restrict wkwXTOfyyFFZNhIW9VlmfSfndfqtsuUieaw8KrhjMnd2RiyA9MBSAeEBPIhvUaJ
 
 -- Dumped from database version 17.10 (Debian 17.10-1.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -18,6 +18,20 @@ SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
+
+--
+-- Name: pavan_preview; Type: SCHEMA; Schema: -; Owner: -
+--
+
+CREATE SCHEMA pavan_preview;
+
+
+--
+-- Name: stg; Type: SCHEMA; Schema: -; Owner: -
+--
+
+CREATE SCHEMA stg;
+
 
 --
 -- Name: uuid-ossp; Type: EXTENSION; Schema: -; Owner: -
@@ -384,6 +398,226 @@ $$;
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
+
+--
+-- Name: contact_custom_attrs; Type: TABLE; Schema: stg; Owner: -
+--
+
+CREATE TABLE stg.contact_custom_attrs (
+    doc jsonb
+);
+
+
+--
+-- Name: contact_tags; Type: VIEW; Schema: pavan_preview; Owner: -
+--
+
+CREATE VIEW pavan_preview.contact_tags AS
+ SELECT ((doc -> 'user_id'::text) ->> '$oid'::text) AS mongo_user_id,
+    ((doc -> 'contact_id'::text) ->> '$oid'::text) AS contact_id,
+    jsonb_array_elements_text(COALESCE((doc -> 'tags'::text), '[]'::jsonb)) AS tag
+   FROM stg.contact_custom_attrs
+  WHERE (jsonb_typeof((doc -> 'tags'::text)) = 'array'::text);
+
+
+--
+-- Name: contacts; Type: TABLE; Schema: stg; Owner: -
+--
+
+CREATE TABLE stg.contacts (
+    doc jsonb
+);
+
+
+--
+-- Name: contacts; Type: VIEW; Schema: pavan_preview; Owner: -
+--
+
+CREATE VIEW pavan_preview.contacts AS
+ SELECT ((doc -> '_id'::text) ->> '$oid'::text) AS contact_id,
+    NULLIF((doc ->> 'first_name'::text), ''::text) AS first_name,
+    NULLIF((doc ->> 'last_name'::text), ''::text) AS last_name,
+    lower(NULLIF((doc ->> 'email'::text), ''::text)) AS email,
+    NULLIF((doc ->> 'linkedin_profile_url'::text), ''::text) AS linkedin_url,
+    (((doc -> 'current_jobs'::text) -> 0) ->> 'title'::text) AS current_title,
+    (((doc -> 'current_jobs'::text) -> 0) ->> 'company_name'::text) AS current_company
+   FROM stg.contacts;
+
+
+--
+-- Name: pavan_preview_data; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.pavan_preview_data (
+    mongo_user_id text,
+    workspace_name text,
+    workspace_id text,
+    contact_id text,
+    first_name text,
+    last_name text,
+    email text,
+    linkedin_url text,
+    current_title text,
+    current_company text,
+    email_count integer
+);
+
+
+--
+-- Name: contacts_with_activity; Type: VIEW; Schema: pavan_preview; Owner: -
+--
+
+CREATE VIEW pavan_preview.contacts_with_activity AS
+ SELECT mongo_user_id,
+    workspace_id,
+    workspace_name,
+    contact_id,
+    first_name,
+    last_name,
+    email,
+    linkedin_url,
+    current_title,
+    current_company,
+    email_count
+   FROM public.pavan_preview_data;
+
+
+--
+-- Name: email_contact_match; Type: TABLE; Schema: stg; Owner: -
+--
+
+CREATE TABLE stg.email_contact_match (
+    contact_id text,
+    message_id text,
+    subject text,
+    ts timestamp with time zone,
+    sender text,
+    direction text
+);
+
+
+--
+-- Name: email_timeline; Type: VIEW; Schema: pavan_preview; Owner: -
+--
+
+CREATE VIEW pavan_preview.email_timeline AS
+ SELECT contact_id,
+    message_id,
+    'email'::text AS channel,
+    ts,
+    subject AS detail,
+    sender,
+    direction
+   FROM stg.email_contact_match;
+
+
+--
+-- Name: user_contacts; Type: VIEW; Schema: pavan_preview; Owner: -
+--
+
+CREATE VIEW pavan_preview.user_contacts AS
+ SELECT DISTINCT ((doc -> 'user_id'::text) ->> '$oid'::text) AS mongo_user_id,
+    ((doc -> 'contact_id'::text) ->> '$oid'::text) AS contact_id,
+    ((doc -> 'list_id'::text) ->> '$oid'::text) AS list_id,
+    ((doc -> 'workspace_id'::text) ->> '$oid'::text) AS workspace_id,
+    (doc ->> 'customer'::text) AS customer_label
+   FROM stg.contact_custom_attrs
+  WHERE ((((doc -> 'contact_id'::text) ->> '$oid'::text) ~ '^[0-9a-f]{24}$'::text) AND (COALESCE(((doc ->> 'contact_deleted'::text))::boolean, false) = false));
+
+
+--
+-- Name: user_linkedin_connections; Type: TABLE; Schema: stg; Owner: -
+--
+
+CREATE TABLE stg.user_linkedin_connections (
+    doc jsonb
+);
+
+
+--
+-- Name: linkedin_status; Type: VIEW; Schema: pavan_preview; Owner: -
+--
+
+CREATE VIEW pavan_preview.linkedin_status AS
+ SELECT uc.mongo_user_id,
+    uc.contact_id,
+        CASE
+            WHEN (conn.vanity IS NOT NULL) THEN 'connected'::text
+            ELSE 'not_connected'::text
+        END AS status,
+    conn.connected_on
+   FROM ((pavan_preview.user_contacts uc
+     JOIN pavan_preview.contacts c ON ((c.contact_id = uc.contact_id)))
+     LEFT JOIN ( SELECT DISTINCT ((user_linkedin_connections.doc -> 'user_id'::text) ->> '$oid'::text) AS mongo_user_id,
+            lower((user_linkedin_connections.doc ->> 'vanity_name'::text)) AS vanity,
+            (((user_linkedin_connections.doc -> 'connected_on'::text) ->> '$date'::text))::timestamp with time zone AS connected_on
+           FROM stg.user_linkedin_connections
+          WHERE ((user_linkedin_connections.doc ->> 'vanity_name'::text) IS NOT NULL)) conn ON (((conn.mongo_user_id = uc.mongo_user_id) AND (conn.vanity = lower(regexp_replace(regexp_replace(COALESCE(c.linkedin_url, ''::text), '^.*/in/'::text, ''::text), '/.*$'::text, ''::text))) AND (COALESCE(c.linkedin_url, ''::text) <> ''::text))));
+
+
+--
+-- Name: linkedin_messages; Type: TABLE; Schema: stg; Owner: -
+--
+
+CREATE TABLE stg.linkedin_messages (
+    doc jsonb
+);
+
+
+--
+-- Name: linkedin_timeline; Type: VIEW; Schema: pavan_preview; Owner: -
+--
+
+CREATE VIEW pavan_preview.linkedin_timeline AS
+ WITH msg AS (
+         SELECT (m.doc ->> 'user_id'::text) AS mongo_user_id_oid,
+            ((m.doc -> 'user_id'::text) ->> '$oid'::text) AS mongo_user_id,
+            (m.doc ->> 'sent_at'::text) AS sent_raw,
+            (((m.doc -> 'sent_at'::text) ->> '$date'::text))::timestamp with time zone AS ts,
+            (m.doc ->> 'sender_name'::text) AS sender_name,
+            (m.doc ->> 'receiver_names'::text) AS receiver_names,
+            "left"((m.doc ->> 'message_text'::text), 300) AS message_text
+           FROM stg.linkedin_messages m
+        )
+ SELECT DISTINCT c.contact_id,
+    'linkedin'::text AS channel,
+    msg.ts,
+    msg.message_text AS detail,
+    msg.sender_name AS sender,
+        CASE
+            WHEN (lower(msg.sender_name) = 'pavan kanugo'::text) THEN 'outbound'::text
+            ELSE 'inbound'::text
+        END AS direction
+   FROM (msg
+     JOIN pavan_preview.contacts c ON ((lower(TRIM(BOTH FROM ((c.first_name || ' '::text) || c.last_name))) = lower(TRIM(BOTH FROM
+        CASE
+            WHEN (lower(msg.sender_name) = 'pavan kanugo'::text) THEN msg.receiver_names
+            ELSE msg.sender_name
+        END)))))
+  WHERE ((msg.ts IS NOT NULL) AND (c.first_name IS NOT NULL) AND (c.last_name IS NOT NULL) AND (c.last_name <> '-'::text));
+
+
+--
+-- Name: map_user; Type: TABLE; Schema: stg; Owner: -
+--
+
+CREATE TABLE stg.map_user (
+    mongo_id text NOT NULL,
+    pg_user_id integer NOT NULL,
+    email text
+);
+
+
+--
+-- Name: user_map; Type: VIEW; Schema: pavan_preview; Owner: -
+--
+
+CREATE VIEW pavan_preview.user_map AS
+ SELECT pg_user_id,
+    mongo_id AS mongo_user_id,
+    email
+   FROM stg.map_user;
+
 
 --
 -- Name: account_hierarchy; Type: TABLE; Schema: public; Owner: -
@@ -4064,6 +4298,18 @@ CREATE SEQUENCE public.entity_signals_id_seq
 --
 
 ALTER SEQUENCE public.entity_signals_id_seq OWNED BY public.entity_signals.id;
+
+
+--
+-- Name: etl_row_log; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.etl_row_log (
+    batch text NOT NULL,
+    table_name text NOT NULL,
+    row_id bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT now()
+);
 
 
 --
@@ -9802,6 +10048,138 @@ ALTER SEQUENCE public.workflows_id_seq OWNED BY public.workflows.id;
 
 
 --
+-- Name: contact_emails; Type: TABLE; Schema: stg; Owner: -
+--
+
+CREATE TABLE stg.contact_emails (
+    email text,
+    mongo_contact_id text
+);
+
+
+--
+-- Name: contact_organizations; Type: TABLE; Schema: stg; Owner: -
+--
+
+CREATE TABLE stg.contact_organizations (
+    doc jsonb
+);
+
+
+--
+-- Name: emails; Type: TABLE; Schema: stg; Owner: -
+--
+
+CREATE TABLE stg.emails (
+    doc jsonb
+);
+
+
+--
+-- Name: internal_domains; Type: TABLE; Schema: stg; Owner: -
+--
+
+CREATE TABLE stg.internal_domains (
+    domain text NOT NULL
+);
+
+
+--
+-- Name: linkedin_message_history; Type: TABLE; Schema: stg; Owner: -
+--
+
+CREATE TABLE stg.linkedin_message_history (
+    doc jsonb
+);
+
+
+--
+-- Name: pavan_account_ids; Type: TABLE; Schema: stg; Owner: -
+--
+
+CREATE TABLE stg.pavan_account_ids (
+    mongo_id text NOT NULL
+);
+
+
+--
+-- Name: pavan_addr; Type: TABLE; Schema: stg; Owner: -
+--
+
+CREATE TABLE stg.pavan_addr (
+    addr text
+);
+
+
+--
+-- Name: pavan_contact_ids; Type: TABLE; Schema: stg; Owner: -
+--
+
+CREATE TABLE stg.pavan_contact_ids (
+    mongo_id text NOT NULL
+);
+
+
+--
+-- Name: target_workspace_contacts; Type: TABLE; Schema: stg; Owner: -
+--
+
+CREATE TABLE stg.target_workspace_contacts (
+    contact_id text,
+    workspace_name text,
+    workspace_id text
+);
+
+
+--
+-- Name: tenant_contact_records; Type: TABLE; Schema: stg; Owner: -
+--
+
+CREATE TABLE stg.tenant_contact_records (
+    doc jsonb
+);
+
+
+--
+-- Name: tenant_user_contact_lists; Type: TABLE; Schema: stg; Owner: -
+--
+
+CREATE TABLE stg.tenant_user_contact_lists (
+    doc jsonb
+);
+
+
+--
+-- Name: tenants; Type: TABLE; Schema: stg; Owner: -
+--
+
+CREATE TABLE stg.tenants (
+    doc jsonb
+);
+
+
+--
+-- Name: user_addresses; Type: TABLE; Schema: stg; Owner: -
+--
+
+CREATE TABLE stg.user_addresses (
+    batch text NOT NULL,
+    address text NOT NULL,
+    source text NOT NULL,
+    approved boolean DEFAULT true
+);
+
+
+--
+-- Name: users; Type: TABLE; Schema: stg; Owner: -
+--
+
+CREATE TABLE stg.users (
+    doc jsonb
+);
+
+
+--
 -- Name: account_hierarchy id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -12962,6 +13340,46 @@ ALTER TABLE ONLY public.workflows
 
 
 --
+-- Name: internal_domains internal_domains_pkey; Type: CONSTRAINT; Schema: stg; Owner: -
+--
+
+ALTER TABLE ONLY stg.internal_domains
+    ADD CONSTRAINT internal_domains_pkey PRIMARY KEY (domain);
+
+
+--
+-- Name: map_user map_user_pkey; Type: CONSTRAINT; Schema: stg; Owner: -
+--
+
+ALTER TABLE ONLY stg.map_user
+    ADD CONSTRAINT map_user_pkey PRIMARY KEY (mongo_id);
+
+
+--
+-- Name: pavan_account_ids pavan_account_ids_pkey; Type: CONSTRAINT; Schema: stg; Owner: -
+--
+
+ALTER TABLE ONLY stg.pavan_account_ids
+    ADD CONSTRAINT pavan_account_ids_pkey PRIMARY KEY (mongo_id);
+
+
+--
+-- Name: pavan_contact_ids pavan_contact_ids_pkey; Type: CONSTRAINT; Schema: stg; Owner: -
+--
+
+ALTER TABLE ONLY stg.pavan_contact_ids
+    ADD CONSTRAINT pavan_contact_ids_pkey PRIMARY KEY (mongo_id);
+
+
+--
+-- Name: user_addresses user_addresses_batch_address_key; Type: CONSTRAINT; Schema: stg; Owner: -
+--
+
+ALTER TABLE ONLY stg.user_addresses
+    ADD CONSTRAINT user_addresses_batch_address_key UNIQUE (batch, address);
+
+
+--
 -- Name: ai_credentials_org_provider_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -14782,6 +15200,13 @@ CREATE INDEX idx_entity_signals_org_key_observed ON public.entity_signals USING 
 
 
 --
+-- Name: idx_etl_row_log_batch; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_etl_row_log_batch ON public.etl_row_log USING btree (batch);
+
+
+--
 -- Name: idx_handover_commitments_handover; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -15472,6 +15897,27 @@ CREATE INDEX idx_portal_users_invite_token ON public.client_portal_users USING b
 --
 
 CREATE INDEX idx_portal_users_magic_token ON public.client_portal_users USING btree (magic_token) WHERE (magic_token IS NOT NULL);
+
+
+--
+-- Name: idx_ppd_contact; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppd_contact ON public.pavan_preview_data USING btree (contact_id);
+
+
+--
+-- Name: idx_ppd_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppd_user ON public.pavan_preview_data USING btree (mongo_user_id);
+
+
+--
+-- Name: idx_ppd_ws; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppd_ws ON public.pavan_preview_data USING btree (workspace_id);
 
 
 --
@@ -17243,6 +17689,41 @@ CREATE UNIQUE INDEX uq_wa_threads_direct ON public.whatsapp_threads USING btree 
 --
 
 CREATE UNIQUE INDEX uq_wa_threads_group ON public.whatsapp_threads USING btree (org_id, wa_group_id) WHERE (kind = 'group'::text);
+
+
+--
+-- Name: idx_ce_contact; Type: INDEX; Schema: stg; Owner: -
+--
+
+CREATE INDEX idx_ce_contact ON stg.contact_emails USING btree (mongo_contact_id);
+
+
+--
+-- Name: idx_ce_email; Type: INDEX; Schema: stg; Owner: -
+--
+
+CREATE INDEX idx_ce_email ON stg.contact_emails USING btree (email);
+
+
+--
+-- Name: idx_ecm_contact; Type: INDEX; Schema: stg; Owner: -
+--
+
+CREATE INDEX idx_ecm_contact ON stg.email_contact_match USING btree (contact_id);
+
+
+--
+-- Name: idx_ecm_ts; Type: INDEX; Schema: stg; Owner: -
+--
+
+CREATE INDEX idx_ecm_ts ON stg.email_contact_match USING btree (ts);
+
+
+--
+-- Name: idx_twc_contact; Type: INDEX; Schema: stg; Owner: -
+--
+
+CREATE INDEX idx_twc_contact ON stg.target_workspace_contacts USING btree (contact_id);
 
 
 --
@@ -21957,5 +22438,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict s7BVVg1vcac94HJnTe4wIsUqqc8Axwt7vIlA4xgmjtl2hfhcIzywPrCm1x29TL5
+\unrestrict wkwXTOfyyFFZNhIW9VlmfSfndfqtsuUieaw8KrhjMnd2RiyA9MBSAeEBPIhvUaJ
 
