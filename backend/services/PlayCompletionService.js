@@ -94,13 +94,25 @@ const MODULE_CONFIG = {
     ownerCol:     'owner_id',
   },
   handover: {
-    // Handovers write actions using deal_id FK (architectural decision #7).
-    // entityId passed in for handovers IS the deal_id (from handover.deal_id).
+    // 2026_109. Handovers previously wrote actions against deal_id, and
+    // entityId passed in for a handover WAS the deal_id — "architectural
+    // decision #7". Two consequences made that untenable:
+    //
+    //   • An internal project has no deal, so entityQuery found nothing,
+    //     roles could not resolve, and no action was ever created. Internal
+    //     projects were structurally excluded from the action layer.
+    //   • A project's actions were attributed to, and assigned from, its
+    //     deal — so delivery work was routed to the deal owner rather than
+    //     the person running the project.
+    //
+    // entityId is now the handover id. The upsert conflicts on
+    // (handover_id, playbook_play_id), which is uq_actions_handover_play
+    // from 2026_110 — the mirror of uq_actions_deal_play.
     actionTable:  'actions',
-    entityFkCol:  'deal_id',
+    entityFkCol:  'handover_id',
     playFkCol:    'playbook_play_id',
-    entityQuery:  'SELECT id, owner_id FROM deals WHERE id = $1',
-    entityType:   'deal',   // roles resolved against the deal
+    entityQuery:  'SELECT id, assigned_service_owner_id AS owner_id FROM sales_handovers WHERE id = $1',
+    entityType:   'handover',   // roles resolved against the project
     ownerCol:     'owner_id',
   },
   prospect: {
@@ -129,7 +141,10 @@ class PlayCompletionService {
    *
    * @param {string} module          — 'deal'|'contract'|'case'|'handover'|'prospect'
    * @param {number} entityId        — deal_id, contract_id, case_id, prospect_id,
-   *                                   OR deal_id (for handovers — see MODULE_CONFIG)
+   *                                   or handover_id (for handovers). 2026_109:
+   *                                   this was previously the DEAL id for
+   *                                   handovers; callers must now pass the
+   *                                   project id.
    * @param {number} completedPlayId — playbook_plays.id of the just-completed play
    * @param {number} orgId
    * @param {number} userId          — the user who completed the play (for role fallback)

@@ -35,7 +35,7 @@
 
 const db = require('../config/database');
 const { resolveForPlay } = require('./PlayRouteResolver');
-const { evaluateConditions } = require('./playbook.service');
+const { evaluateConditions, PROJECT_EVALUABLE_CONDITIONS } = require('./playbook.service');
 
 // Canonical statuses a play can hold while still "open" (not terminal).
 const OPEN_PLAY_STATUSES = ['not_started', 'in_progress', 'blocked', 'snoozed'];
@@ -442,15 +442,16 @@ class PlaybookPlayService {
     }
 
     const existingResult = await db.query(
-      `SELECT dpi.play_id FROM deal_play_instances dpi
-       JOIN playbook_plays pp ON pp.id = dpi.play_id
-       WHERE dpi.handover_id = $1 AND dpi.stage_key = $2 AND pp.playbook_id = $3`,
+      `SELECT ppi.play_id FROM project_play_instances ppi
+       JOIN playbook_plays pp ON pp.id = ppi.play_id
+       WHERE ppi.handover_id = $1 AND ppi.stage_key = $2 AND pp.playbook_id = $3`,
       [handoverId, stageKey, playbookId]
     );
     const existingPlayIds = new Set(existingResult.rows.map(r => r.play_id));
 
     const { rows: [handover] } = await db.query(
-      `SELECT id, org_id, assigned_service_owner_id, go_live_date, created_by, project_kind
+      `SELECT id, org_id, assigned_service_owner_id, go_live_date, created_by,
+              project_kind, budget
          FROM sales_handovers WHERE id = $1 AND org_id = $2`,
       [handoverId, orgId]
     );
@@ -458,23 +459,69 @@ class PlaybookPlayService {
       throw Object.assign(new Error('Project not found'), { status: 404 });
     }
 
+    // Only fetch file names if some play in this stage actually uses
+    // no_file_matching — most stages don't, and this saves a query per
+    // activation.
+    const needsFileNames = playsResult.rows.some(p =>
+      Array.isArray(p.fire_conditions) &&
+      p.fire_conditions.some(c => c && c.type === 'no_file_matching')
+    );
+    let projectFileNames = [];
+    if (needsFileNames) {
+      const { rows: fileRows } = await db.query(
+        `SELECT file_name FROM storage_files
+          WHERE handover_id = $1 AND org_id = $2 AND file_name IS NOT NULL`,
+        [handoverId, orgId]
+      );
+      projectFileNames = fileRows.map(r => r.file_name);
+    }
+
     const goLiveDate = handover.go_live_date
       ? new Date(handover.go_live_date).toISOString().slice(0, 10)
       : null;
+
+    // Context for fire_conditions. Deliberately narrow — it carries only what
+    // a project can truthfully answer. daysInStage is absent because
+    // sales_handovers has no stage-change timestamp; supplying updated_at
+    // would look right and be wrong, since it moves on any edit.
+    const projectContext = {
+      daysUntilGoLive: goLiveDate
+        ? Math.ceil((new Date(goLiveDate + 'T00:00:00Z') - Date.now()) / 86400000)
+        : null,
+      projectKind: handover.project_kind || 'customer',
+      budget:      handover.budget ?? null,
+      fileNames:   projectFileNames,
+    };
 
     const instances = [];
 
     for (const play of playsResult.rows) {
       if (existingPlayIds.has(play.id)) continue;
 
-      // fire_conditions are written against deal fields (days in stage, days to
-      // close). With no deal there is nothing to evaluate them against, and
-      // firing regardless would silently ignore a rule the author meant to
-      // apply. Skip and say so.
+      // Evaluate fire_conditions against the PROJECT, not a deal.
+      //
+      // Previously every play carrying any condition was skipped outright,
+      // because conditions were assumed to be deal-only. Most are, but a
+      // delivery playbook legitimately wants project ones — "escalate if
+      // commissioning is not done 14 days before go-live". Those are now
+      // evaluated; conditions that genuinely need a deal are reported BY NAME
+      // and the play is skipped, rather than the whole play being dropped for
+      // an unnamed reason.
       const conditions = Array.isArray(play.fire_conditions) ? play.fire_conditions : [];
       if (conditions.length > 0) {
-        warnings.push(`Play "${play.title}" skipped: fire conditions need a deal, which this project does not have`);
-        continue;
+        const inapplicable = conditions
+          .map(c => c && c.type)
+          .filter(t => t && !PROJECT_EVALUABLE_CONDITIONS.has(t));
+
+        if (inapplicable.length > 0) {
+          warnings.push(
+            `Play "${play.title}" skipped: condition(s) ${[...new Set(inapplicable)].join(', ')} ` +
+            'cannot be evaluated for a project (they need a deal, case or contract)'
+          );
+          continue;
+        }
+
+        if (!evaluateConditions(conditions, projectContext)) continue;
       }
 
       let initialStatus = 'not_started';
@@ -486,12 +533,12 @@ class PlaybookPlayService {
       const dueDate = computeInstanceDueDate(anchor, play.due_offset_days, goLiveDate);
 
       const instResult = await db.query(
-        `INSERT INTO deal_play_instances (
-           handover_id, deal_id, org_id, play_id, stage_key,
+        `INSERT INTO project_play_instances (
+           handover_id, org_id, play_id, stage_key,
            title, description, channel, priority,
            execution_type, is_gate, due_date, sort_order,
            status, due_anchor, playbook_id
-         ) VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
          RETURNING *`,
         [
           handoverId, orgId, play.id, stageKey,
@@ -502,13 +549,10 @@ class PlaybookPlayService {
       );
       const instance = instResult.rows[0];
 
-      // Link it to the project the same way the deal path does, so the
-      // Summary tab and deliverable rollup pick it up with no changes.
-      await db.query(
-        `INSERT INTO sales_handover_plays (handover_id, play_instance_id, org_id)
-         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-        [handoverId, instance.id, orgId]
-      );
+      // sales_handover_plays is no longer written. project_play_instances
+      // .handover_id is the single link, and the link table is retained
+      // only as the rollback path for 2026_109. Writing both would let the
+      // two disagree, which is the ambiguity the split removed.
 
       const plays_roles = Array.isArray(play.roles)
         ? play.roles
@@ -548,7 +592,7 @@ class PlaybookPlayService {
             }
           );
           if (actionId) {
-            await db.query('UPDATE deal_play_instances SET action_id = $1 WHERE id = $2',
+            await db.query('UPDATE project_play_instances SET action_id = $1 WHERE id = $2',
               [actionId, instance.id]);
           }
         } catch (err) {
@@ -837,6 +881,200 @@ class PlaybookPlayService {
     }
 
     return { success: true };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PROJECT PLAY LIFECYCLE  (2026_109 split)
+  //
+  // Deliberately separate from the deal methods above rather than making those
+  // dispatch on which table holds the instance. The promise of the split is
+  // that deal behaviour is byte-identical, and the cheapest way to keep that
+  // promise is to not touch the deal code path at all.
+  //
+  // The bodies mirror their deal counterparts. Two differences are structural,
+  // not stylistic:
+  //   • they read and write project_play_instances / project_play_assignees
+  //   • dependency resolution is keyed on handover_id, because a project play
+  //     has no deal_id to key on
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Mark a project play instance as completed. Triggers dependency resolution.
+   */
+  static async completePlayForProject(instanceId, userId, orgId) {
+    const result = await db.query(
+      `UPDATE project_play_instances
+       SET status = 'completed', completed_at = NOW(), completed_by = $1, updated_at = NOW()
+       WHERE id = $2 AND org_id = $3 AND status IN ('not_started', 'in_progress', 'blocked', 'snoozed')
+       RETURNING *`,
+      [userId, instanceId, orgId]
+    );
+
+    if (result.rows.length === 0) {
+      throw new Error('Play instance not found or already completed');
+    }
+
+    const instance = result.rows[0];
+
+    if (instance.action_id) {
+      await db.query(
+        `UPDATE actions SET status = 'completed', completed = true,
+         completed_at = NOW(), completed_by = $1
+         WHERE id = $2 AND status != 'completed'`,
+        [userId, instance.action_id]
+      );
+    }
+
+    const activated = await this._resolveDependenciesForProject(
+      instance.handover_id, instance.play_id, orgId, userId
+    );
+
+    return { instance, activated };
+  }
+
+  static async skipPlayForProject(instanceId, userId, orgId) {
+    const result = await db.query(
+      `UPDATE project_play_instances
+       SET status = 'skipped', overridden_by = $1, updated_at = NOW()
+       WHERE id = $2 AND org_id = $3 AND status IN ('not_started', 'in_progress', 'blocked', 'snoozed')
+       RETURNING *`,
+      [userId, instanceId, orgId]
+    );
+
+    if (result.rows.length === 0) {
+      throw new Error('Play instance not found or already completed/skipped');
+    }
+
+    const instance = result.rows[0];
+
+    // Skipping also resolves dependencies (downstream plays can proceed)
+    const activated = await this._resolveDependenciesForProject(
+      instance.handover_id, instance.play_id, orgId, userId
+    );
+
+    return { instance, activated };
+  }
+
+  static async reassignPlayForProject(instanceId, newUserId, roleId, assignedBy, orgId) {
+    const userCheck = await db.query(
+      `SELECT id FROM users WHERE id = $1 AND org_id = $2`, [newUserId, orgId]
+    );
+    if (userCheck.rows.length === 0) throw new Error('User not in org');
+
+    // Requires project_play_assignees_instance_id_user_id_key (2026_110).
+    // 2026_109 created the table without it and this upsert would have raised.
+    await db.query(
+      `INSERT INTO project_play_assignees (instance_id, user_id, role_id, assigned_by)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (instance_id, user_id) DO UPDATE
+         SET role_id = EXCLUDED.role_id, assigned_by = EXCLUDED.assigned_by`,
+      [instanceId, newUserId, roleId || null, assignedBy]
+    );
+
+    const instance = await db.query(
+      `SELECT action_id FROM project_play_instances WHERE id = $1 AND org_id = $2`,
+      [instanceId, orgId]
+    );
+    if (instance.rows[0]?.action_id) {
+      await db.query(
+        `UPDATE actions SET user_id = $1 WHERE id = $2`,
+        [newUserId, instance.rows[0].action_id]
+      );
+    }
+
+    return { success: true };
+  }
+
+  static async _areDependenciesCompleteForProject(handoverId, dependsOnPlayIds) {
+    if (!dependsOnPlayIds || dependsOnPlayIds.length === 0) return true;
+
+    const result = await db.query(
+      `SELECT COUNT(*) AS incomplete
+       FROM project_play_instances
+       WHERE handover_id = $1
+         AND play_id = ANY($2)
+         AND status NOT IN ('completed', 'skipped', 'cancelled')`,
+      [handoverId, dependsOnPlayIds]
+    );
+
+    return parseInt(result.rows[0].incomplete) === 0;
+  }
+
+  /**
+   * When a project play completes, activate any blocked plays that depended
+   * on it. Scoped by handover_id — the deal version keys on deal_id, which a
+   * project play does not have.
+   */
+  static async _resolveDependenciesForProject(handoverId, completedPlayId, orgId, userId) {
+    if (!completedPlayId || !handoverId) return [];
+
+    const pendingResult = await db.query(
+      `SELECT ppi.id, ppi.play_id, pp.depends_on
+       FROM project_play_instances ppi
+       LEFT JOIN playbook_plays pp ON pp.id = ppi.play_id
+       WHERE ppi.handover_id = $1 AND ppi.status = 'blocked'
+         AND pp.depends_on IS NOT NULL
+         AND $2 = ANY(pp.depends_on)`,
+      [handoverId, completedPlayId]
+    );
+
+    const activated = [];
+
+    for (const pending of pendingResult.rows) {
+      const allDepsComplete = await this._areDependenciesCompleteForProject(
+        handoverId, pending.depends_on
+      );
+      if (!allDepsComplete) continue;
+
+      await db.query(
+        `UPDATE project_play_instances SET status = 'not_started', updated_at = NOW()
+         WHERE id = $1`,
+        [pending.id]
+      );
+
+      const inst = await db.query(
+        `SELECT * FROM project_play_instances WHERE id = $1`, [pending.id]
+      );
+      const instance = inst.rows[0];
+
+      const assigneeResult = await db.query(
+        `SELECT ppa.user_id, u.first_name || ' ' || u.last_name AS name
+         FROM project_play_assignees ppa
+         JOIN users u ON u.id = ppa.user_id
+         WHERE ppa.instance_id = $1
+         LIMIT 1`,
+        [pending.id]
+      );
+
+      if (assigneeResult.rows.length > 0 && instance) {
+        // No sales_handover_plays lookup needed to derive the module: every
+        // row in this table belongs to a project by definition.
+        //
+        // Contained: unblocking play N+1 must not fail because its action
+        // could not be created — the status transition above is already
+        // committed and is the semantically important part.
+        try {
+          const actionId = await this._createActionForPlay(
+            instance, assigneeResult.rows[0], orgId, 'handovers'
+          );
+          if (actionId) {
+            await db.query(
+              `UPDATE project_play_instances SET action_id = $1 WHERE id = $2`,
+              [actionId, pending.id]
+            );
+          }
+        } catch (err) {
+          console.error(
+            `[PlaybookPlayService] action link failed while unblocking project instance ${pending.id}:`,
+            err.message
+          );
+        }
+      }
+
+      activated.push({ instanceId: pending.id, playId: pending.play_id });
+    }
+
+    return activated;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1196,12 +1434,83 @@ class PlaybookPlayService {
       stage_key: instance.stage_key,
     });
 
-    // Manual plays have no playbook_play_id; they can't use the (deal_id,
-    // playbook_play_id) index, so fall back to a plain insert. Playbook-derived
-    // plays upsert idempotently on that index.
+    // Which entity does this action hang off? A deal play carries deal_id; a
+    // project play carries handover_id and has no deal at all. Before the
+    // 2026_109 split both branches wrote deal_id, so a project play inserted
+    // deal_id NULL — which made the partial index
+    //   uq_actions_deal_play WHERE deal_id IS NOT NULL
+    // inapplicable, silently degrading the upsert to a plain INSERT. Every
+    // re-activation of a stage then created a duplicate action, and the action
+    // was attached to nothing. uq_actions_handover_play (2026_110) is the
+    // mirror index that makes the project branch idempotent.
+    const handoverId = instance.handover_id ?? null;
+    const dealId     = instance.deal_id ?? null;
+    if (!handoverId && !dealId) {
+      throw new Error(
+        `Play instance ${instance.id} has neither deal_id nor handover_id; ` +
+        'cannot attach an action to it.'
+      );
+    }
+    // ON CONFLICT targets must be literal, so the two shapes are separate
+    // statements rather than an interpolated column name.
+    const conflictOnHandover = handoverId !== null;
+
+    // Manual plays have no playbook_play_id; they can't use the
+    // (entity, playbook_play_id) index, so fall back to a plain insert.
+    // Playbook-derived plays upsert idempotently on that index.
     const hasPlayId = instance.play_id != null;
 
     try {
+      if (hasPlayId && conflictOnHandover) {
+        const result = await db.query(
+          `INSERT INTO actions (
+             org_id, user_id, handover_id,
+             title, description,
+             type, action_type, priority,
+             next_step, is_internal,
+             source, source_rule, source_module,
+             playbook_play_id,
+             due_date, status, completed,
+             metadata,
+             intended_role_id, assignment_source
+           ) VALUES (
+             $1, $2, $3, $4, $5, $6, $6, $7, $8, $9,
+             'playbook', NULL, $10,
+             $11,
+             $12, 'not_started', false, $13,
+             $14, $15
+           )
+           ON CONFLICT (handover_id, playbook_play_id)
+             WHERE handover_id IS NOT NULL AND playbook_play_id IS NOT NULL
+           DO UPDATE SET
+             user_id           = EXCLUDED.user_id,
+             due_date          = EXCLUDED.due_date,
+             intended_role_id  = EXCLUDED.intended_role_id,
+             assignment_source = EXCLUDED.assignment_source,
+             updated_at        = NOW()
+           RETURNING id`,
+          [
+            orgId,
+            assignee.userId,
+            handoverId,
+            instance.title,
+            instance.description || 'Playbook play: ' + instance.title,
+            instance.channel === 'meeting' ? 'meeting_schedule'
+              : (instance.channel === 'email' ? 'email_send' : 'task_complete'),
+            instance.priority || 'medium',
+            channelMap[instance.channel] || 'document',
+            instance.channel === 'internal_task' || instance.channel === 'document',
+            sourceModule,
+            instance.play_id,
+            instance.due_date,
+            metadata,
+            intendedRoleId,
+            assignmentSource,
+          ]
+        );
+        return result.rows[0]?.id || null;
+      }
+
       if (hasPlayId) {
         const result = await db.query(
           `INSERT INTO actions (
@@ -1252,10 +1561,11 @@ class PlaybookPlayService {
         return result.rows[0]?.id || null;
       }
 
-      // Manual play — no playbook_play_id.
+      // Manual play — no playbook_play_id, so no upsert index applies.
+      // Writes whichever entity column this instance belongs to.
       const result = await db.query(
         `INSERT INTO actions (
-           org_id, user_id, deal_id,
+           org_id, user_id, deal_id, handover_id,
            title, description,
            type, action_type, priority,
            next_step, is_internal,
@@ -1263,15 +1573,16 @@ class PlaybookPlayService {
            due_date, status, completed,
            metadata
          ) VALUES (
-           $1, $2, $3, $4, $5, $6, $6, $7, $8, $9,
-           'playbook', NULL, $10,
-           $11, 'not_started', false, $12
+           $1, $2, $3, $4, $5, $6, $7, $7, $8, $9, $10,
+           'playbook', NULL, $11,
+           $12, 'not_started', false, $13
          )
          RETURNING id`,
         [
           orgId,
           assignee.userId,
-          instance.deal_id,
+          dealId,
+          handoverId,
           instance.title,
           instance.description || 'Playbook play: ' + instance.title,
           instance.channel === 'meeting' ? 'meeting_schedule'

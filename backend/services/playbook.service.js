@@ -429,6 +429,35 @@ function evaluateConditions(conditions, context) {
         case 'outreach_count_above':
           return (context.outreachCount || 0) > (cond.value || 0);
 
+        // ── Project / Handover conditions (2026_109 split) ────────────────
+        // Projects have no deal to measure against, so the deal analogues
+        // (days_in_stage, days_until_close) do not apply to them. These are
+        // the project equivalents, sourced from sales_handovers.
+        //
+        // NOTE on days_in_stage: sales_handovers has no stage-change
+        // timestamp and there is no handover status-history table, so a
+        // project has no honest source for it. It is deliberately NOT
+        // mapped to updated_at, which moves on any edit. The project path
+        // reports it as inapplicable instead of guessing.
+        case 'days_until_go_live': {
+          // null when go_live_date is unset — the project analogue of
+          // days_until_close. Returns false rather than defaulting to a
+          // large number: "30 days before go-live" cannot be true when
+          // there is no go-live date, and silently passing is how the
+          // existing conditions went unnoticed.
+          const dtg = context.daysUntilGoLive ?? null;
+          if (dtg === null) return false;
+          return applyOperator(cond.operator, dtg, cond.value);
+        }
+        case 'project_kind_is':
+          return context.projectKind === cond.value;
+        case 'budget_above':
+          // Only internal projects may carry a budget
+          // (sales_handovers_budget_internal_chk), so this is false for a
+          // customer project rather than treating absent as zero.
+          if (context.budget === null || context.budget === undefined) return false;
+          return Number(context.budget) > Number(cond.value || 0);
+
         default:
           return true; // Unknown condition — don't block
       }
@@ -643,6 +672,20 @@ async function fireForEntity({ orgId, playbookType, playbookId, stageKey, entity
   }
 }
 
+// ── Condition applicability by entity ─────────────────────────────────────────
+// Which condition types a project (handover) can actually evaluate. Anything
+// outside this set needs a deal, a case, or a contract, and the project path
+// warns by name rather than skipping the play silently.
+//
+// days_in_stage is absent on purpose: sales_handovers records no stage-change
+// timestamp, so there is nothing truthful to measure it against.
+const PROJECT_EVALUABLE_CONDITIONS = new Set([
+  'days_until_go_live',
+  'project_kind_is',
+  'budget_above',
+  'no_file_matching',
+]);
+
 module.exports = {
   // Channel map — single source of truth
   CHANNEL_MAP,
@@ -660,6 +703,7 @@ module.exports = {
   firePlaybookPlays,
   fireForEntity,
   evaluateConditions,
+  PROJECT_EVALUABLE_CONDITIONS,
   extractKeywords,
   requiresExternalEvidence,
 };

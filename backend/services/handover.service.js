@@ -207,7 +207,7 @@ function fmtPlay(row) {
     && new Date(row.due_date) < new Date(new Date().toDateString());
 
   return {
-    id:              row.id,             // sales_handover_plays.id
+    id:              row.id,             // project_play_instances.id
     playInstanceId:  row.play_instance_id,
     handoverId:      row.handover_id,
     completedAt:     row.completed_at,
@@ -356,33 +356,24 @@ async function initiate(dealId, orgId, userId) {
   });
 
   // Activate handover_s2i plays (outside transaction — PlaybookPlayService manages its own writes)
+  //
+  // 2026_109: this used activateStageForPlaybook(dealId, …), which wrote the
+  // plays into deal_play_instances and then linked them to the project through
+  // sales_handover_plays. That is why every project play in the database had
+  // handover_id NULL and was reachable only via the link table.
+  //
+  // It now uses the project path, which writes project_play_instances with
+  // handover_id set. The sales_handover_plays insert is gone with it: one link,
+  // not two that can disagree.
   if (playbookId) {
     try {
       const { instances, warnings: playWarnings } =
-        await PlaybookPlayService.activateStageForPlaybook(
-          dealId, 'closed_won', orgId, userId, playbookId
+        await PlaybookPlayService.activateStageForProject(
+          handover.id, 'closed_won', orgId, userId, playbookId
         );
 
       playWarnings.forEach(w => warnings.push(w));
-
-      // Link play instances to handover via sales_handover_plays
-      if (instances.length > 0) {
-        const values = instances
-          .map((_, i) => `($1, $${i * 2 + 2}, $${i * 2 + 3})`)
-          .join(', ');
-
-        const params = [handover.id];
-        for (const inst of instances) {
-          params.push(inst.id, orgId);
-        }
-
-        await pool.query(
-          `INSERT INTO sales_handover_plays (handover_id, play_instance_id, org_id)
-           VALUES ${values}
-           ON CONFLICT DO NOTHING`,
-          params
-        );
-      }
+      void instances;
     } catch (err) {
       warnings.push(`Play activation failed: ${err.message}`);
       console.error('Handover play activation error:', err);
@@ -502,15 +493,15 @@ async function _cancelOpenPlaybookWork(handoverId, orgId, userId, oldPlaybookId)
           -- A play that was skipped can still have left an open action behind,
           -- and after a swap no open action from the old checklist should
           -- survive — that is precisely the orphan this sweep exists to stop.
-          SELECT dpi.action_id FROM deal_play_instances dpi
-           WHERE dpi.handover_id = $3
-             AND dpi.action_id IS NOT NULL
-             AND (dpi.playbook_id = $4 OR dpi.playbook_id IS NULL)
+          SELECT ppi.action_id FROM project_play_instances ppi
+           WHERE ppi.handover_id = $3
+             AND ppi.action_id IS NOT NULL
+             AND (ppi.playbook_id = $4 OR ppi.playbook_id IS NULL)
         )`,
     [orgId, OPEN, handoverId, oldPlaybookId]);
 
   const { rowCount: plays } = await pool.query(
-    `UPDATE deal_play_instances
+    `UPDATE project_play_instances
         SET status = 'cancelled', updated_at = now()
       WHERE handover_id = $1 AND org_id = $2
         AND status = ANY($3::text[])
@@ -571,20 +562,16 @@ async function setPlaybook(handoverId, orgId, userId, playbookId, stageKey = nul
 
   const PlaybookPlayService = require('./PlaybookPlayService');
   try {
-    // A project with a deal keeps using the deal path, so nothing about the
-    // existing behaviour changes for handovers created from a won deal.
-    const { instances, warnings } = h.deal_id
-      ? await PlaybookPlayService.activateStageForPlaybook(h.deal_id, stage, orgId, userId, playbookId)
-      : await PlaybookPlayService.activateStageForProject(handoverId, stage, orgId, userId, playbookId);
-
-    if (h.deal_id && instances.length) {
-      const values = instances.map((_, i) => `($1, $${i * 2 + 2}, $${i * 2 + 3})`).join(', ');
-      const params = [handoverId];
-      for (const inst of instances) params.push(inst.id, orgId);
-      await pool.query(
-        `INSERT INTO sales_handover_plays (handover_id, play_instance_id, org_id)
-         VALUES ${values} ON CONFLICT DO NOTHING`, params);
-    }
+    // 2026_109: previously a project WITH a deal took the deal path
+    // (activateStageForPlaybook -> deal_play_instances + sales_handover_plays)
+    // and only a deal-less project took the project path. That split by
+    // provenance is exactly what the migration removed: a project's plays
+    // belong to the project regardless of how the project came to exist.
+    //
+    // activateStageForPlaybook now has no callers. It is left in place rather
+    // than deleted so this change can be reverted without restoring code.
+    const { instances, warnings } =
+      await PlaybookPlayService.activateStageForProject(handoverId, stage, orgId, userId, playbookId);
 
     return {
       playbookId, playbookName: pb.name, stage,
@@ -707,7 +694,7 @@ async function list(orgId, userId, { scope = 'mine', status, kind = null, subord
        u_so.first_name || ' ' || u_so.last_name  AS service_owner_name,
        u_cb.first_name || ' ' || u_cb.last_name  AS created_by_name,
        COUNT(DISTINCT shp.id)::int               AS total_plays,
-       COUNT(DISTINCT shp.id) FILTER (WHERE shp.completed_at IS NOT NULL)::int AS completed_plays,
+       COUNT(DISTINCT shp.id) FILTER (WHERE shp.status = 'completed')::int AS completed_plays,
        COUNT(DISTINCT s.id)::int                 AS stakeholder_count,
        -- Deliverable rollup (2026_64). 1:1 with the handover, so joining it
        -- neither multiplies rows nor disturbs the COUNT(DISTINCT ...) above.
@@ -723,7 +710,7 @@ async function list(orgId, userId, { scope = 'mine', status, kind = null, subord
      LEFT JOIN accounts a ON a.id  = h.account_id
      LEFT JOIN users u_so ON u_so.id = h.assigned_service_owner_id
      LEFT JOIN users u_cb ON u_cb.id = h.created_by
-     LEFT JOIN sales_handover_plays shp ON shp.handover_id = h.id
+     LEFT JOIN project_play_instances shp ON shp.handover_id = h.id
      LEFT JOIN project_contacts s  ON s.context_type = 'handover' AND s.context_id = h.id
      LEFT JOIN handover_deliverable_rollup r  ON r.handover_id = h.id
      WHERE ${conditions.join(' AND ')}
@@ -1210,12 +1197,11 @@ async function revokeSignOff(handoverId, orgId, userId) {
 
 async function canSubmit(handoverId, orgId) {
   const { rows } = await pool.query(
-    `SELECT shp.id, dpi.title, dpi.is_gate, dpi.status AS play_status
-     FROM sales_handover_plays shp
-     JOIN deal_play_instances dpi ON dpi.id = shp.play_instance_id
-     WHERE shp.handover_id = $1 AND shp.org_id = $2
-       AND dpi.is_gate = TRUE
-       AND dpi.status NOT IN ('completed', 'skipped')`,
+    `SELECT ppi.id, ppi.title, ppi.is_gate, ppi.status AS play_status
+     FROM project_play_instances ppi
+     WHERE ppi.handover_id = $1 AND ppi.org_id = $2
+       AND ppi.is_gate = TRUE
+       AND ppi.status NOT IN ('completed', 'skipped')`,
     [handoverId, orgId]
   );
 
@@ -1488,49 +1474,47 @@ async function removeCommitment(handoverId, orgId, commitmentId) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Complete a handover play instance and sync the completed_at timestamp
- * in sales_handover_plays for efficient gate checking.
+ * Complete a handover play instance. completed_at lives on the instance
+ * itself; there is no longer a link table to keep in step.
  *
  * @param {number} handoverId
- * @param {number} playInstanceId  — deal_play_instances.id
+ * @param {number} playInstanceId  — project_play_instances.id
  * @param {number} userId
  * @param {number} orgId
  */
 async function completePlay(handoverId, playInstanceId, userId, orgId, data = {}) {
   // Verify the play belongs to this handover
   const linkResult = await pool.query(
-    'SELECT id FROM sales_handover_plays WHERE handover_id = $1 AND play_instance_id = $2',
-    [handoverId, playInstanceId]
+    'SELECT id FROM project_play_instances WHERE handover_id = $1 AND id = $2 AND org_id = $3',
+    [handoverId, playInstanceId, orgId]
   );
 
   if (linkResult.rows.length === 0) {
     throw Object.assign(new Error('Play does not belong to this handover'), { status: 404 });
   }
 
-  // Delegate to PlaybookPlayService
-  const { instance } = await PlaybookPlayService.completePlay(playInstanceId, userId, orgId);
-
-  // Sync completed_at in our join table
-  await pool.query(
-    `UPDATE sales_handover_plays
-     SET completed_at = $1
-     WHERE handover_id = $2 AND play_instance_id = $3`,
-    [instance.completed_at, handoverId, playInstanceId]
+  // Delegate to the project-scoped method. The deal-scoped completePlay()
+  // reads deal_play_instances and would no longer find this row.
+  const { instance } = await PlaybookPlayService.completePlayForProject(
+    playInstanceId, userId, orgId
   );
 
+  // No link-table sync: completed_at lives on the instance itself now, and
+  // sales_handover_plays is no longer written.
+
   // Phase 6 — fire next sequential play.
-  // Handover actions use deal_id as the entity FK (architectural decision #7).
-  // Load the deal_id from the handover row and pass module='handover'.
+  //
+  // 2026_109: this used to load the handover's deal_id and pass that, because
+  // MODULE_CONFIG.handover keyed actions off deal_id. It now passes the
+  // project id directly, which is what makes this work for an internal
+  // project — those have no deal, so the old code returned early and no next
+  // play ever fired for them.
+  //
   // Non-blocking: next-play failure must not disrupt the completion response.
   if (instance.play_id) {
-    pool.query(
-      'SELECT deal_id FROM sales_handovers WHERE id = $1',
-      [handoverId]
-    ).then(r => {
-      const dealId = r.rows[0]?.deal_id;
-      if (!dealId) return;
-      return PlayCompletionService.fireNextPlay('handover', dealId, instance.play_id, orgId, userId);
-    }).catch(err => console.error(
+    Promise.resolve(
+      PlayCompletionService.fireNextPlay('handover', handoverId, instance.play_id, orgId, userId)
+    ).catch(err => console.error(
       `[handover.service] next-play hook failed for handover ${handoverId} play ${instance.play_id}:`,
       err.message
     ));
@@ -1540,7 +1524,7 @@ async function completePlay(handoverId, playInstanceId, userId, orgId, data = {}
   // closed it (mirrors the actions-engine completion_evidence pattern).
   if (data.completionNote != null || data.completionEvidence != null) {
     await pool.query(
-      `UPDATE deal_play_instances
+      `UPDATE project_play_instances
           SET completion_note = COALESCE($1, completion_note),
               completion_evidence = COALESCE($2::jsonb, completion_evidence)
         WHERE id = $3 AND org_id = $4`,
@@ -1577,22 +1561,33 @@ async function addPlay(handoverId, orgId, userId, data = {}) {
   const isGate = data.isGate === true;
   const dueDate = data.dueDate || null;
 
-  const { rows: [inst] } = await pool.query(
-    `INSERT INTO deal_play_instances
-       (deal_id, org_id, playbook_id, play_id, stage_key, title, description,
-        channel, priority, execution_type, is_gate, due_date, due_anchor,
-        sort_order, status, owner_user_id)
-     VALUES ($1, $2, NULL, NULL, 'custom', $3, $4,
-             'internal_task', 'medium', 'parallel', $5, $6, 'created',
-             9000, 'not_started', $7)
-     RETURNING id`,
-    [h.deal_id, orgId, title, (data.description || '').trim() || null, isGate, dueDate, ownerUserId]
+  // stage_key: an ad-hoc item now joins a real stage when the caller names
+  // one. It previously always went to 'custom', which parked every ad-hoc
+  // play outside the project's actual phases.
+  const stageKey = (data.stageKey || '').trim() || 'custom';
+
+  // sort_order: previously hardcoded 9000, so every ad-hoc play tied with
+  // every other and their relative order was whatever Postgres returned.
+  // Now it lands at the end of its stage, on the sparse 10-step scale that
+  // leaves room to insert between two existing plays.
+  const { rows: [{ next_order: nextOrder }] } = await pool.query(
+    `SELECT COALESCE(MAX(sort_order), 0) + 10 AS next_order
+       FROM project_play_instances
+      WHERE handover_id = $1 AND org_id = $2 AND stage_key = $3`,
+    [handoverId, orgId, stageKey]
   );
 
-  await pool.query(
-    `INSERT INTO sales_handover_plays (handover_id, play_instance_id, org_id)
-     VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-    [handoverId, inst.id, orgId]
+  const { rows: [inst] } = await pool.query(
+    `INSERT INTO project_play_instances
+       (handover_id, org_id, playbook_id, play_id, stage_key, title, description,
+        channel, priority, execution_type, is_gate, due_date, due_anchor,
+        sort_order, status, owner_user_id)
+     VALUES ($1, $2, NULL, NULL, $3, $4, $5,
+             'internal_task', 'medium', 'parallel', $6, $7, 'created',
+             $8, 'not_started', $9)
+     RETURNING id`,
+    [handoverId, orgId, stageKey, title, (data.description || '').trim() || null,
+     isGate, dueDate, nextOrder, ownerUserId]
   );
 
   const plays = await _getPlays(handoverId, orgId);
@@ -1606,41 +1601,39 @@ async function addPlay(handoverId, orgId, userId, data = {}) {
  */
 async function removePlay(handoverId, orgId, playInstanceId) {
   const { rows: [inst] } = await pool.query(
-    `SELECT dpi.id
-       FROM sales_handover_plays shp
-       JOIN deal_play_instances dpi ON dpi.id = shp.play_instance_id
-      WHERE shp.handover_id = $1 AND shp.play_instance_id = $2 AND shp.org_id = $3
-        AND dpi.play_id IS NULL AND dpi.playbook_id IS NULL`,
+    `SELECT ppi.id
+       FROM project_play_instances ppi
+      WHERE ppi.handover_id = $1 AND ppi.id = $2 AND ppi.org_id = $3
+        AND ppi.play_id IS NULL AND ppi.playbook_id IS NULL`,
     [handoverId, playInstanceId, orgId]
   );
   if (!inst) {
     throw Object.assign(new Error('Only items added on this handover can be removed here.'), { status: 400 });
   }
 
+  // Single delete. This previously removed the sales_handover_plays link AND
+  // the deal_play_instances row. Deleting from deal_play_instances now would
+  // destroy the stale pre-migration copy that 2026_109 deliberately retained
+  // as the rollback path, so it is gone.
   await pool.query(
-    `DELETE FROM sales_handover_plays WHERE handover_id = $1 AND play_instance_id = $2 AND org_id = $3`,
+    `DELETE FROM project_play_instances WHERE handover_id = $1 AND id = $2 AND org_id = $3`,
     [handoverId, playInstanceId, orgId]
-  );
-  await pool.query(
-    `DELETE FROM deal_play_instances WHERE id = $1 AND org_id = $2`,
-    [playInstanceId, orgId]
   );
   return { removed: true };
 }
 
 /**
  * Edit a checklist item on a handover. Updates only the per-instance fields
- * (title, description, owner, due date, gate) on deal_play_instances — it never
+ * (title, description, owner, due date, gate) on project_play_instances — it never
  * touches the playbook template, so an edit is scoped to THIS handover. Only the
  * keys present in `data` are changed. Completion stays a separate path
  * (completePlay), so status can't be silently flipped here.
  */
 async function updatePlay(handoverId, orgId, playInstanceId, data = {}) {
   const { rows: link } = await pool.query(
-    `SELECT dpi.id
-       FROM sales_handover_plays shp
-       JOIN deal_play_instances dpi ON dpi.id = shp.play_instance_id
-      WHERE shp.handover_id = $1 AND shp.play_instance_id = $2 AND shp.org_id = $3`,
+    `SELECT ppi.id
+       FROM project_play_instances ppi
+      WHERE ppi.handover_id = $1 AND ppi.id = $2 AND ppi.org_id = $3`,
     [handoverId, playInstanceId, orgId]
   );
   if (link.length === 0) {
@@ -1665,7 +1658,7 @@ async function updatePlay(handoverId, orgId, playInstanceId, data = {}) {
   if (sets.length > 0) {
     params.push(playInstanceId, orgId);
     await pool.query(
-      `UPDATE deal_play_instances SET ${sets.join(', ')}
+      `UPDATE project_play_instances SET ${sets.join(', ')}
         WHERE id = $${params.length - 1} AND org_id = $${params.length}`,
       params
     );
@@ -1814,13 +1807,12 @@ async function _getPlays(handoverId, orgId) {
        ou.first_name || ' ' || ou.last_name AS owner_name,
        cu.first_name || ' ' || cu.last_name AS completed_by_name,
        pb.name AS playbook_name
-     FROM sales_handover_plays shp
-     JOIN deal_play_instances dpi ON dpi.id = shp.play_instance_id
+     FROM project_play_instances dpi
      LEFT JOIN users ou     ON ou.id = dpi.owner_user_id
      LEFT JOIN users cu     ON cu.id = dpi.completed_by
      LEFT JOIN playbooks pb ON pb.id = dpi.playbook_id
-     WHERE shp.handover_id = $1
-       AND ($2::int IS NULL OR shp.org_id = $2)
+     WHERE dpi.handover_id = $1
+       AND ($2::int IS NULL OR dpi.org_id = $2)
      ORDER BY dpi.due_date ASC NULLS LAST, dpi.sort_order ASC`,
     [handoverId, orgId ?? null]
   );

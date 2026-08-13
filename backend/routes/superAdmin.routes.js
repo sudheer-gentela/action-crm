@@ -369,6 +369,13 @@ router.delete('/orgs/:orgId', async (req, res) => {
       // deal play instances
       await client.query(`UPDATE deal_play_instances SET completed_by = NULL WHERE completed_by = ANY($1)`, [ids]);
       await client.query(`UPDATE deal_play_instances SET overridden_by = NULL WHERE overridden_by = ANY($1)`, [ids]);
+      // project play instances (2026_109 split). These FKs have no ON DELETE,
+      // so without nulling them a user delete raises a foreign key violation.
+      // owner_user_id is included here; note the deal table above has the same
+      // column and does NOT null it, which is a pre-existing gap.
+      await client.query(`UPDATE project_play_instances SET completed_by = NULL WHERE completed_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE project_play_instances SET overridden_by = NULL WHERE overridden_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE project_play_instances SET owner_user_id = NULL WHERE owner_user_id = ANY($1)`, [ids]);
       // contract play instances
       await client.query(`UPDATE contract_play_instances SET completed_by = NULL WHERE completed_by = ANY($1)`, [ids]);
       // contract document versions
@@ -399,6 +406,9 @@ router.delete('/orgs/:orgId', async (req, res) => {
       await client.query(`UPDATE deal_team_members SET added_by = NULL WHERE added_by = ANY($1)`, [ids]);
       // deal play assignees
       await client.query(`UPDATE deal_play_assignees SET assigned_by = NULL WHERE assigned_by = ANY($1)`, [ids]);
+      // project_play_assignees.user_id is ON DELETE CASCADE, so only
+      // assigned_by needs clearing here.
+      await client.query(`UPDATE project_play_assignees SET assigned_by = NULL WHERE assigned_by = ANY($1)`, [ids]);
       // account teams / hierarchy
       await client.query(`UPDATE account_teams SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
       await client.query(`UPDATE account_hierarchy SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
