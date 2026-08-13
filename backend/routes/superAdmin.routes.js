@@ -369,10 +369,9 @@ router.delete('/orgs/:orgId', async (req, res) => {
       // deal play instances
       await client.query(`UPDATE deal_play_instances SET completed_by = NULL WHERE completed_by = ANY($1)`, [ids]);
       await client.query(`UPDATE deal_play_instances SET overridden_by = NULL WHERE overridden_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE deal_play_instances SET owner_user_id = NULL WHERE owner_user_id = ANY($1)`, [ids]);
       // project play instances (2026_109 split). These FKs have no ON DELETE,
       // so without nulling them a user delete raises a foreign key violation.
-      // owner_user_id is included here; note the deal table above has the same
-      // column and does NOT null it, which is a pre-existing gap.
       await client.query(`UPDATE project_play_instances SET completed_by = NULL WHERE completed_by = ANY($1)`, [ids]);
       await client.query(`UPDATE project_play_instances SET overridden_by = NULL WHERE overridden_by = ANY($1)`, [ids]);
       await client.query(`UPDATE project_play_instances SET owner_user_id = NULL WHERE owner_user_id = ANY($1)`, [ids]);
@@ -409,6 +408,49 @@ router.delete('/orgs/:orgId', async (req, res) => {
       // project_play_assignees.user_id is ON DELETE CASCADE, so only
       // assigned_by needs clearing here.
       await client.query(`UPDATE project_play_assignees SET assigned_by = NULL WHERE assigned_by = ANY($1)`, [ids]);
+
+      // ── Audit: FK columns referencing users(id) with NO on-delete action ──
+      // A schema sweep found 67 such columns; 24 of them were not being
+      // cleared here, so deleting a user raised a foreign key violation on
+      // whichever one it hit first. The ones below close that gap.
+      //
+      // Every column here is an attribution field (who did it / who approved
+      // it), so NULL is the right value: the record survives, the attribution
+      // is lost with the user. Nothing here is an ownership field whose loss
+      // would orphan a live workflow.
+      //
+      // Projects / commitments
+      await client.query(`UPDATE sales_handovers SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE sales_handovers SET completed_by = NULL WHERE completed_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE sales_handovers SET cancelled_by = NULL WHERE cancelled_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE sales_handover_commitments SET owner_user_id = NULL WHERE owner_user_id = ANY($1)`, [ids]);
+      await client.query(`UPDATE sales_handover_commitments SET closed_by = NULL WHERE closed_by = ANY($1)`, [ids]);
+      // Calls
+      await client.query(`UPDATE calls SET user_id = NULL WHERE user_id = ANY($1)`, [ids]);
+      // Playbook access
+      await client.query(`UPDATE playbook_user_access SET set_by = NULL WHERE set_by = ANY($1)`, [ids]);
+      // Org credentials / WhatsApp accounts
+      await client.query(`UPDATE org_credentials SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE org_whatsapp_accounts SET connected_by = NULL WHERE connected_by = ANY($1)`, [ids]);
+      // Communications stewardship
+      await client.query(`UPDATE communication_stewards SET granted_by = NULL WHERE granted_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE communication_stewards SET revoked_by = NULL WHERE revoked_by = ANY($1)`, [ids]);
+      // WhatsApp capture / sessions / threads
+      await client.query(`UPDATE whatsapp_capture_requests SET requested_by = NULL WHERE requested_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE whatsapp_capture_requests SET decided_by = NULL WHERE decided_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE whatsapp_sessions SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE whatsapp_sessions SET phone_confirmed_by = NULL WHERE phone_confirmed_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE whatsapp_session_groups SET bound_by = NULL WHERE bound_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE whatsapp_session_groups SET watched_by = NULL WHERE watched_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE whatsapp_threads SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE whatsapp_templates SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE whatsapp_messages SET sent_by_user_id = NULL WHERE sent_by_user_id = ANY($1)`, [ids]);
+      await client.query(`UPDATE whatsapp_messages SET excluded_by = NULL WHERE excluded_by = ANY($1)`, [ids]);
+      await client.query(`UPDATE whatsapp_messages SET handover_tagged_by = NULL WHERE handover_tagged_by = ANY($1)`, [ids]);
+      // whatsapp_thread_participants.user_id is an identity row, not an
+      // attribution field — NULLing it would leave a participant record that
+      // names nobody. Deleted instead.
+      await client.query(`DELETE FROM whatsapp_thread_participants WHERE user_id = ANY($1)`, [ids]);
       // account teams / hierarchy
       await client.query(`UPDATE account_teams SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
       await client.query(`UPDATE account_hierarchy SET created_by = NULL WHERE created_by = ANY($1)`, [ids]);
