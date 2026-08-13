@@ -39,6 +39,7 @@ export default function PreviewContacts() {
   }, []);
 
   const loadContacts = useCallback((newOffset, query) => {
+    if (!apiService.preview) { setLoadingList(false); return; }
     setLoadingList(true);
     apiService.preview.getContacts({ q: query, limit: PAGE, offset: newOffset })
       .then(r => { setContacts(r.data.contacts); setTotal(r.data.total); setOffset(newOffset); })
@@ -51,6 +52,7 @@ export default function PreviewContacts() {
   const openContact = (c) => {
     setSelected(c);
     setTimeline(null);
+    if (!apiService.preview) { setLoadingTl(false); return; }
     setLoadingTl(true);
     apiService.preview.getTimeline(c.contact_id)
       .then(r => setTimeline(r.data))

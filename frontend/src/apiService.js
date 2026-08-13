@@ -1204,8 +1204,6 @@ export const syncAPI = {
     if (!response.ok) throw new Error('Failed to get sync config');
     return response.json();
   },
-    getTimeline: (contactId) => api.get(`/preview/contacts/${contactId}/timeline`),
-  },
 };
 
 export default api;
