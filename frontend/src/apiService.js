@@ -827,6 +827,20 @@ twilio: {
     addPlay:    (id, data)       => api.post(`/handovers/sales/${id}/plays`, data),
     updatePlay: (id, instanceId, data) => api.patch(`/handovers/sales/${id}/plays/${instanceId}`, data),
     removePlay: (id, instanceId) => api.delete(`/handovers/sales/${id}/plays/${instanceId}`),
+    reorderPlays: (id, stageKey, orderedIds) =>
+      api.patch(`/handovers/sales/${id}/plays/reorder`, { stageKey, orderedIds }),
+
+    // ── Plan vs actual (2026_111) ──
+    variance:       (id) => api.get(`/handovers/sales/${id}/variance`),
+    varianceStages: (id) => api.get(`/handovers/sales/${id}/variance/stages`),
+    playRevisions:  (id, instanceId) =>
+      api.get(`/handovers/sales/${id}/plays/${instanceId}/revisions`),
+    playEvidence:   (id, instanceId) =>
+      api.get(`/handovers/sales/${id}/plays/${instanceId}/evidence`),
+    addPlayEvidence: (id, instanceId, data) =>
+      api.post(`/handovers/sales/${id}/plays/${instanceId}/evidence`, data),
+    revokePlayEvidence: (id, evidenceId, reason) =>
+      api.post(`/handovers/sales/${id}/evidence/${evidenceId}/revoke`, { reason }),
     teamMemberProjects: (userId) => api.get(`/handovers/team-members/${userId}/projects`),
     personDashboard: (userId) => api.get(`/handovers/team-members/${userId}/dashboard`),
     contactCommunications: (contactId) => api.get(`/handovers/contacts/${contactId}/communications`),

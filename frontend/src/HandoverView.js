@@ -32,6 +32,7 @@ import PortfolioHealthReport from './PortfolioHealthReport';
 import { hashParts, hashSegment, writeHash } from './hashNav';
 import ProjectFilesPanel from './ProjectFilesPanel';
 import ProjectPeoplePanel from './ProjectPeoplePanel';
+import ProjectPlanVsActual from './ProjectPlanVsActual';
 import ProjectEmailThreads from './ProjectEmailThreads';
 import ProjectAttachments from './ProjectAttachments';
 
@@ -1489,7 +1490,8 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
         {[{ key: 'summary', label: 'Summary' }, { key: 'details', label: 'Details' },
           ...(detail.canSeeCommercial ? [{ key: 'commercial', label: '💰 Commercial' }] : []),
           { key: 'files', label: '📎 Files' },
-          { key: 'communications', label: 'Communications' }].map(t => (
+          { key: 'communications', label: 'Communications' },
+          { key: 'variance', label: 'Plan vs actual' }].map(t => (
           <button key={t.key} onClick={() => setDetailTab(t.key)} style={{
             padding: '10px 16px', background: 'none', border: 'none',
             borderBottom: `2px solid ${detailTab === t.key ? '#0369a1' : 'transparent'}`,
@@ -1641,6 +1643,10 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
         <div style={{ padding: '16px 20px' }}>
           <ProjectFilesPanel handoverId={detail.id} />
         </div>
+      )}
+
+      {detailTab === 'variance' && (
+        <ProjectPlanVsActual handoverId={detail.id} />
       )}
 
       {detailTab === 'communications' && (
