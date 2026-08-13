@@ -1490,6 +1490,12 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpen
             </div>
           )}
 
+          {activeTab === 'history' && (
+            <div className="pv-history-tab" style={{ padding: 12 }}>
+              <ProspectHistoryTab prospectId={prospectId} />
+            </div>
+          )}
+
           {activeTab === 'activity' && (
             <div className="pv-activity-tab">
 
