@@ -1100,6 +1100,8 @@ twilio: {
       return api.get(`/preview/contacts?${params.toString()}`);
     },
     getTimeline: (contactId) => api.get(`/preview/contacts/${contactId}/timeline`),
+    byProspectTimeline: (prospectId) => api.get(`/preview/by-prospect/${prospectId}/timeline`),
+    getEmail: (messageId) => api.get(`/preview/emails/${encodeURIComponent(messageId)}`),
   },
 };
 

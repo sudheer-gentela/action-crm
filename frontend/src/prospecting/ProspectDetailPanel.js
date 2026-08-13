@@ -17,6 +17,7 @@ import EnrollInCampaignModal from './EnrollInCampaignModal';
 import TwilioCallModal from '../TwilioCallModal';
 import ProspectPhonesPanel from './ProspectPhonesPanel';
 import CustomFieldsPanel from '../customfields/CustomFieldsPanel';
+import ProspectHistoryTab from './ProspectHistoryTab';
 
 function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpenProspect }) {
   const { allStages, prospectStages } = useStages();
@@ -1003,8 +1004,8 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpen
         {/* Tabs — 'work' (Signal-Based Campaigns P7) only shows when the
             prospect is in a campaign: the Work panel is the campaign-queue
             experience (priority · why-now · validations · draft · outcome). */}
-        <div className="pv-detail-tabs">
-          {['overview', ...(prospect?.campaign_id ? ['work'] : []), 'linkedin', 'calls', 'intel', 'actions', 'activity'].map(t => (
+<div className="pv-detail-tabs">
+	  {['overview', ...(prospect?.campaign_id ? ['work'] : []), 'linkedin', 'calls', 'intel', 'actions', 'activity', 'history'].map(t => (
             <button
               key={t}
               className={`pv-detail-tab ${activeTab === t ? 'active' : ''}`}
@@ -1034,6 +1035,7 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpen
                 )
                 : t === 'intel' ? '🎯 Intel'
                 : t === 'actions' ? `Actions (${actions.filter(a => a.status === 'pending').length})`
+                : t === 'history' ? '🗒️ History'
                 : 'Activity'}
             </button>
           ))}
