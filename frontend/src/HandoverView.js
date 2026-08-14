@@ -34,6 +34,7 @@ import ProjectFilesPanel from './ProjectFilesPanel';
 import ProjectPeoplePanel from './ProjectPeoplePanel';
 import ProjectPlanVsActual from './ProjectPlanVsActual';
 import { PlayDateModal, PlayEvidenceModal } from './ProjectPlayModals';
+import ProjectBoQ from './ProjectBoQ';
 import ProjectEmailThreads from './ProjectEmailThreads';
 import ProjectAttachments from './ProjectAttachments';
 
@@ -58,7 +59,11 @@ function parseHandoverHash() {
   let id = null;
   const n = parseInt(parts[i], 10);
   if (Number.isInteger(n) && n > 0 && String(n) === parts[i]) { id = n; i += 1; }
-  const sub = ['summary', 'details', 'communications'].includes(parts[i]) ? parts[i] : 'summary';
+  // Every key the rail renders must be listed here, or a deep link to it
+  // silently falls back to Summary. commercial/files/variance were already
+  // missing before boq was added.
+  const sub = ['summary', 'details', 'commercial', 'files', 'communications',
+               'variance', 'boq'].includes(parts[i]) ? parts[i] : 'summary';
   return { scope, id, sub };
 }
 
@@ -1524,21 +1529,52 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
         {success && <div style={{ marginTop: 10, padding: '6px 10px', background: '#dcfce7', borderRadius: 6, fontSize: 12, color: '#065f46' }}>{success}</div>}
       </div>
 
-      {/* ── Summary / Details sub-tabs ──────────────────── */}
-      <div className="gw-scroll-x" style={{ display: 'flex', gap: 4, padding: '0 20px', borderBottom: '1px solid #e5e7eb', background: '#fff' }}>
-        {[{ key: 'summary', label: 'Summary' }, { key: 'details', label: 'Details' },
-          ...(detail.canSeeCommercial ? [{ key: 'commercial', label: '💰 Commercial' }] : []),
-          { key: 'files', label: '📎 Files' },
-          { key: 'communications', label: 'Communications' },
-          { key: 'variance', label: 'Plan vs actual' }].map(t => (
-          <button key={t.key} onClick={() => setDetailTab(t.key)} style={{
-            padding: '10px 16px', background: 'none', border: 'none',
-            borderBottom: `2px solid ${detailTab === t.key ? '#0369a1' : 'transparent'}`,
-            color: detailTab === t.key ? '#0369a1' : '#6b7280',
-            fontWeight: detailTab === t.key ? 700 : 400, fontSize: 13, cursor: 'pointer',
-          }}>{t.label}</button>
-        ))}
-      </div>
+      {/* ── Left rail ─────────────────────────────────────
+          Replaces the horizontal strip, which had reached six entries and was
+          about to gain BoQ, Progress and Variations. A rail holds a dozen
+          comfortably and gives each area a stable position, so people navigate
+          by memory instead of reading the row each time.
+
+          Grouped with headings rather than one flat list: the strip's real
+          problem was not its length but that Summary, Files and Commercial sat
+          at equal weight with no indication of what belonged together.       */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', background: '#fff' }}>
+        <nav aria-label="Project sections"
+             style={{ width: 152, flexShrink: 0, padding: '14px 0 24px 20px',
+                      borderRight: '1px solid #e5e7eb', minHeight: 380 }}>
+          {[
+            { group: null,          items: [{ key: 'summary', label: 'Overview' }] },
+            { group: 'Plan',        items: [
+                { key: 'details',  label: 'Checklist' },
+                { key: 'variance', label: 'Plan vs actual' }] },
+            { group: 'Commercial',  items: [
+                ...(detail.canSeeCommercial ? [{ key: 'commercial', label: 'Budget' }] : []),
+                { key: 'boq', label: 'Bill of quantities' }] },
+            { group: 'Records',     items: [
+                { key: 'files',          label: 'Files' },
+                { key: 'communications', label: 'Communications' }] },
+          ].map((sec, si) => (
+            <div key={si} style={{ marginBottom: 12 }}>
+              {sec.group && (
+                <div style={{ fontSize: 10, color: '#9ca3af', letterSpacing: '0.05em',
+                              textTransform: 'uppercase', margin: '0 0 3px' }}>{sec.group}</div>
+              )}
+              {sec.items.map(t => (
+                <button key={t.key} onClick={() => setDetailTab(t.key)} style={{
+                  display: 'block', width: '100%', textAlign: 'left',
+                  padding: '5px 10px 5px 8px', marginLeft: -8, background: 'none', border: 'none',
+                  borderLeft: `2px solid ${detailTab === t.key ? '#0369a1' : 'transparent'}`,
+                  color: detailTab === t.key ? '#0369a1' : '#4b5563',
+                  fontWeight: detailTab === t.key ? 600 : 400, fontSize: 13, cursor: 'pointer',
+                }}>{t.label}</button>
+              ))}
+            </div>
+          ))}
+        </nav>
+
+        {/* minWidth 0 is load-bearing: without it a wide table inside a flex
+            child refuses to shrink and pushes the rail off-screen. */}
+        <div style={{ flex: 1, minWidth: 0 }}>
 
       {/* ── Summary ─────────────────────────────────────── */}
       {detailTab === 'summary' && (
@@ -1743,6 +1779,10 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
         />
       )}
 
+      {detailTab === 'boq' && (
+        <ProjectBoQ handoverId={detail.id} />
+      )}
+
       {detailTab === 'variance' && (
         <ProjectPlanVsActual handoverId={detail.id} />
       )}
@@ -1758,6 +1798,8 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
           <CommercialTab detail={detail} users={users} onRefresh={load} />
         </div>
       )}
+        </div>{/* content column */}
+      </div>{/* rail + content row */}
     </div>
   );
 }

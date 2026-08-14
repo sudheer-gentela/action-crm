@@ -833,6 +833,31 @@ twilio: {
     // ── Plan vs actual (2026_111) ──
     variance:       (id) => api.get(`/handovers/sales/${id}/variance`),
     canRebaseline:  (id) => api.get(`/handovers/sales/${id}/can-rebaseline`),
+
+    // ── Bill of Quantities (2026_113/114) ──
+    // Bill-scoped calls take boqId rather than the project id, so they keep
+    // working when a project may hold more than one bill.
+    boq:              (id) => api.get(`/handovers/sales/${id}/boq`),
+    boqSummary:       (id) => api.get(`/handovers/sales/${id}/boq/summary`),
+    createBoq:        (id, data) => api.post(`/handovers/sales/${id}/boq`, data),
+    updateBoq:        (boqId, data) => api.patch(`/handovers/boq/${boqId}`, data),
+    addBoqItem:       (boqId, data) => api.post(`/handovers/boq/${boqId}/items`, data),
+    updateBoqItem:    (itemId, data) => api.patch(`/handovers/boq/items/${itemId}`, data),
+    removeBoqItem:    (itemId) => api.delete(`/handovers/boq/items/${itemId}`),
+    boqItemProgress:  (itemId) => api.get(`/handovers/boq/items/${itemId}/progress`),
+    recordBoqProgress:(itemId, data) => api.post(`/handovers/boq/items/${itemId}/progress`, data),
+    recordBoqBulk:    (boqId, data) => api.post(`/handovers/boq/${boqId}/progress/bulk`, data),
+    reverseBoqEntry:  (entryId, data) => api.post(`/handovers/boq/progress/${entryId}/reverse`, data),
+    // Query string rather than an axios params object, matching the
+    // convention used elsewhere in this file (see dealsAging above).
+    boqLedger:        (boqId, limit = 200, offset = 0) =>
+      api.get(`/handovers/boq/${boqId}/ledger?limit=${limit}&offset=${offset}`),
+    setBoqProcurement:(boqId, data) => api.patch(`/handovers/boq/${boqId}/procurement`, data),
+    boqVendors:       () => api.get('/handovers/boq/vendors'),
+    boqVariations:    (boqId) => api.get(`/handovers/boq/${boqId}/variations`),
+    addBoqVariation:  (boqId, data) => api.post(`/handovers/boq/${boqId}/variations`, data),
+    decideBoqVariation: (id, variationId, decision, reason) =>
+      api.post(`/handovers/sales/${id}/boq/variations/${variationId}/decision`, { decision, reason }),
     varianceStages: (id) => api.get(`/handovers/sales/${id}/variance/stages`),
     playRevisions:  (id, instanceId) =>
       api.get(`/handovers/sales/${id}/plays/${instanceId}/revisions`),
