@@ -29,6 +29,7 @@ const handoverService   = require('../services/handover.service');
 
 const projectSettings = require('../services/projectSettings.service');
 const planVariance    = require('../services/planVariance.service');   // 2026_111
+const boq             = require('../services/boq.service');            // 2026_113/114
 router.use(authenticateToken);
 router.use(orgContext);
 
@@ -547,6 +548,201 @@ router.get('/sales/:id/can-rebaseline', async (req, res) => {
     res.json({ canRebaseline: allowed });
   } catch (err) {
     console.error('canRebaseline error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BILL OF QUANTITIES  (2026_113 / 2026_114)
+//
+// Bill-scoped routes take :boqId rather than resolving it from the project, so
+// they keep working once a project may hold several bills. Every handler passes
+// req.orgId, and the service scopes every statement on it — a bill id from
+// another org resolves to nothing rather than to someone else's data.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── GET /sales/:id/boq — the bill, its items, sections and totals ─────────────
+router.get('/sales/:id/boq', async (req, res) => {
+  try {
+    const data = await boq.getBill(parseInt(req.params.id), req.orgId);
+    // Null rather than 404: "this project has no bill yet" is a normal state
+    // the UI renders as an empty state with a create button, not an error.
+    res.json(data || { bill: null, items: [], sections: [], totals: null });
+  } catch (err) {
+    console.error('Get BoQ error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+router.post('/sales/:id/boq', async (req, res) => {
+  try {
+    res.json(await boq.createBill(
+      parseInt(req.params.id), req.orgId, req.user.userId, req.body || {}));
+  } catch (err) {
+    console.error('Create BoQ error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+router.patch('/boq/:boqId', async (req, res) => {
+  try {
+    res.json(await boq.updateBill(parseInt(req.params.boqId), req.orgId, req.body || {}));
+  } catch (err) {
+    console.error('Update BoQ error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── Items ────────────────────────────────────────────────────────────────────
+router.post('/boq/:boqId/items', async (req, res) => {
+  try {
+    res.json(await boq.addItem(
+      parseInt(req.params.boqId), req.orgId, req.user.userId, req.body || {}));
+  } catch (err) {
+    console.error('Add BoQ item error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+router.patch('/boq/items/:itemId', async (req, res) => {
+  try {
+    res.json(await boq.updateItem(parseInt(req.params.itemId), req.orgId, req.body || {}));
+  } catch (err) {
+    console.error('Update BoQ item error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+router.delete('/boq/items/:itemId', async (req, res) => {
+  try {
+    res.json(await boq.removeItem(parseInt(req.params.itemId), req.orgId));
+  } catch (err) {
+    console.error('Remove BoQ item error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── Progress ─────────────────────────────────────────────────────────────────
+// Declared before /boq/:boqId/progress/bulk would be shadowed — distinct paths
+// here, but the ordering discipline is kept deliberately.
+router.get('/boq/items/:itemId/progress', async (req, res) => {
+  try {
+    res.json(await boq.listProgress(parseInt(req.params.itemId), req.orgId));
+  } catch (err) {
+    console.error('List BoQ progress error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+router.post('/boq/items/:itemId/progress', async (req, res) => {
+  try {
+    res.json(await boq.recordProgress(
+      parseInt(req.params.itemId), req.orgId, req.user.userId, req.body || {}));
+  } catch (err) {
+    console.error('Record BoQ progress error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// Bulk measurement sheet — one date across many lines, for orgs configured
+// with boq_progress_entry_mode = 'bulk_sheet'.
+router.post('/boq/:boqId/progress/bulk', async (req, res) => {
+  try {
+    res.json(await boq.recordProgressBulk(
+      parseInt(req.params.boqId), req.orgId, req.user.userId, req.body || {}));
+  } catch (err) {
+    console.error('Bulk BoQ progress error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// No DELETE for a progress entry, by design. The ledger is append-only; a
+// mistake is corrected by posting a reversal, which stays on the record.
+router.post('/boq/progress/:entryId/reverse', async (req, res) => {
+  try {
+    res.json(await boq.reverseProgress(
+      parseInt(req.params.entryId), req.orgId, req.user.userId, req.body || {}));
+  } catch (err) {
+    console.error('Reverse BoQ progress error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+router.get('/boq/:boqId/ledger', async (req, res) => {
+  try {
+    res.json(await boq.listBillLedger(parseInt(req.params.boqId), req.orgId, req.query));
+  } catch (err) {
+    console.error('BoQ ledger error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── Procurement ──────────────────────────────────────────────────────────────
+router.patch('/boq/:boqId/procurement', async (req, res) => {
+  try {
+    res.json(await boq.setProcurement(parseInt(req.params.boqId), req.orgId, req.body || {}));
+  } catch (err) {
+    console.error('Set BoQ procurement error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// Approved vendors only. accounts has no 'vendor' type — vendor-ness lives in
+// account_relationships — so the picker must not simply list accounts.
+router.get('/boq/vendors', async (req, res) => {
+  try {
+    res.json(await boq.listVendors(req.orgId));
+  } catch (err) {
+    console.error('List vendors error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── Variations ───────────────────────────────────────────────────────────────
+router.get('/boq/:boqId/variations', async (req, res) => {
+  try {
+    res.json(await boq.listVariations(parseInt(req.params.boqId), req.orgId));
+  } catch (err) {
+    console.error('List BoQ variations error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+router.post('/boq/:boqId/variations', async (req, res) => {
+  try {
+    res.json(await boq.addVariation(
+      parseInt(req.params.boqId), req.orgId, req.user.userId, req.body || {}));
+  } catch (err) {
+    console.error('Add BoQ variation error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// Approving is what makes a variation count towards the sanctioned amount, so
+// it is gated on project management rights rather than plain membership.
+router.post('/sales/:id/boq/variations/:variationId/decision', async (req, res) => {
+  try {
+    const allowed = await handoverService.canRebaseline(
+      parseInt(req.params.id), req.orgId, req.user.userId);
+    if (!allowed) {
+      return res.status(403).json({
+        error: { message: 'You do not have rights to approve variations on this project.' } });
+    }
+    res.json(await boq.decideVariation(
+      parseInt(req.params.variationId), req.orgId, req.user.userId,
+      (req.body || {}).decision, (req.body || {}).reason));
+  } catch (err) {
+    console.error('Decide BoQ variation error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── Overview one-liner ───────────────────────────────────────────────────────
+router.get('/sales/:id/boq/summary', async (req, res) => {
+  try {
+    res.json(await boq.summaryForProject(parseInt(req.params.id), req.orgId));
+  } catch (err) {
+    console.error('BoQ summary error:', err);
     res.status(err.status || 500).json({ error: { message: err.message } });
   }
 });
