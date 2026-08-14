@@ -72,7 +72,7 @@ export function PlayDateModal({ handoverId, play, onClose, onSaved }) {
   useEffect(() => {
     let dead = false;
     apiService.handovers.canRebaseline(handoverId)
-      .then(r => { if (!dead) setAllowed(Boolean(r && r.canRebaseline)); })
+      .then(r => { if (!dead) setAllowed(Boolean(r.data && r.data.canRebaseline)); })
       .catch(() => { if (!dead) setAllowed(false); });
     return () => { dead = true; };
   }, [handoverId]);
@@ -186,11 +186,11 @@ export function PlayEvidenceModal({ handoverId, play, onClose, onSaved }) {
         apiService.handovers.playEvidence(handoverId, play.id),
         apiService.handovers.communications(handoverId),
       ]);
-      setExisting(ev.evidence || []);
+      setExisting(ev.data?.evidence || []);
       // The communications feed is the only place project-attributed WhatsApp
       // messages are already assembled, so it is reused rather than adding a
       // second endpoint that could drift from it. Ids arrive as 'wa-<id>'.
-      const items = (comms.items || []).filter(i => i.channel === 'whatsapp');
+      const items = (comms.data?.items || []).filter(i => i.channel === 'whatsapp');
       setMessages(items);
     } catch (err) {
       setError(err?.response?.data?.error?.message || err.message || 'Could not load messages');
@@ -215,7 +215,8 @@ export function PlayEvidenceModal({ handoverId, play, onClose, onSaved }) {
         whatsappMessageId: messageId,
         note: note.trim() || undefined,
       });
-      if (r && Array.isArray(r.warnings) && r.warnings.length) setWarn(r.warnings.join(' '));
+      const w = r.data?.warnings;
+      if (Array.isArray(w) && w.length) setWarn(w.join(' '));
       setPicked(null); setNote('');
       await load();
       onSaved && onSaved();

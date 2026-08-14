@@ -73,8 +73,9 @@ export default function ProjectBoQ({ handoverId }) {
   const load = useCallback(async () => {
     setState(s => ({ ...s, loading: true, error: null }));
     try {
-      const d = await apiService.handovers.boq(handoverId);
-      setState({ loading: false, error: null, data: d });
+      // Raw axios: the payload is at r.data, not on the response itself.
+      const r = await apiService.handovers.boq(handoverId);
+      setState({ loading: false, error: null, data: r.data });
     } catch (err) {
       setState({ loading: false, data: null,
         error: err?.response?.data?.error?.message || err.message || 'Could not load the bill' });
@@ -84,7 +85,7 @@ export default function ProjectBoQ({ handoverId }) {
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
     apiService.handovers.boqVendors()
-      .then(r => setVendors(r.vendors || []))
+      .then(r => setVendors(r.data?.vendors || []))
       // A failed vendor list must not block the bill — the column just shows
       // ids-less blanks rather than the screen erroring.
       .catch(() => setVendors([]));
@@ -99,7 +100,7 @@ export default function ProjectBoQ({ handoverId }) {
     setLedger(l => ({ ...l, [itemId]: { loading: true } }));
     try {
       const r = await apiService.handovers.boqItemProgress(itemId);
-      setLedger(l => ({ ...l, [itemId]: { loading: false, entries: r.entries || [] } }));
+      setLedger(l => ({ ...l, [itemId]: { loading: false, entries: r.data?.entries || [] } }));
     } catch (err) {
       setLedger(l => ({ ...l, [itemId]: { loading: false, error: err.message } }));
     }
@@ -107,7 +108,7 @@ export default function ProjectBoQ({ handoverId }) {
 
   const refreshRow = async (itemId) => {
     const r = await apiService.handovers.boqItemProgress(itemId);
-    setLedger(l => ({ ...l, [itemId]: { loading: false, entries: r.entries || [] } }));
+    setLedger(l => ({ ...l, [itemId]: { loading: false, entries: r.data?.entries || [] } }));
     await load();
   };
 
@@ -162,8 +163,9 @@ export default function ProjectBoQ({ handoverId }) {
     setBusy(true);
     try {
       const r = await apiService.handovers.setBoqProcurement(bill.id, payload);
+      const n = r.data?.updated ?? 0;
       await load();
-      say('ok', `Updated ${r.updated} line${r.updated === 1 ? '' : 's'}.`);
+      say('ok', `Updated ${n} line${n === 1 ? '' : 's'}.`);
     } catch (err) {
       say('error', err?.response?.data?.error?.message || 'Could not update procurement');
     } finally { setBusy(false); }
@@ -198,7 +200,14 @@ export default function ProjectBoQ({ handoverId }) {
     );
   }
 
-  const { bill, items = [], sections = [], totals, config } = state.data || {};
+  // Per-key guards rather than one fallback object: a 200 with an unexpected
+  // shape must still render, not throw on .length or .map.
+  const d0       = state.data || {};
+  const bill     = d0.bill || null;
+  const items    = Array.isArray(d0.items) ? d0.items : [];
+  const sections = Array.isArray(d0.sections) ? d0.sections : [];
+  const totals   = d0.totals || {};
+  const config   = d0.config || {};
 
   if (!bill) {
     return (

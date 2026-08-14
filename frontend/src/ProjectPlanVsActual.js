@@ -80,8 +80,10 @@ export default function ProjectPlanVsActual({ handoverId }) {
   const load = useCallback(async () => {
     setState(s => ({ ...s, loading: true, error: null }));
     try {
-      const d = await apiService.handovers.variance(handoverId);
-      setState({ loading: false, error: null, data: d });
+      // apiService is raw axios with NO response interceptor, so the payload
+      // is at r.data — every other caller in this codebase does the same.
+      const r = await apiService.handovers.variance(handoverId);
+      setState({ loading: false, error: null, data: r.data });
     } catch (err) {
       setState({ loading: false, error: err.message || 'Could not load plan vs actual', data: null });
     }
@@ -104,7 +106,9 @@ export default function ProjectPlanVsActual({ handoverId }) {
       ]);
       setDetail(d => ({
         ...d,
-        [playId]: { loading: false, revisions: rev.revisions || [], evidence: ev.evidence || [] },
+        [playId]: { loading: false,
+                    revisions: rev.data?.revisions || [],
+                    evidence:  ev.data?.evidence  || [] },
       }));
     } catch (err) {
       setDetail(d => ({ ...d, [playId]: { loading: false, error: err.message } }));
@@ -125,7 +129,12 @@ export default function ProjectPlanVsActual({ handoverId }) {
     );
   }
 
-  const { summary, plays } = state.data || { summary: {}, plays: [] };
+  // Defaults are applied per KEY, not with a single fallback object. The old
+  // `state.data || {...}` only helped when data was null — a 200 response whose
+  // shape differed still yielded plays === undefined and crashed the render on
+  // .length. A screen should degrade to an empty state, never white-screen.
+  const summary = (state.data && state.data.summary) || {};
+  const plays   = Array.isArray(state.data && state.data.plays) ? state.data.plays : [];
 
   if (!plays.length) {
     return (
