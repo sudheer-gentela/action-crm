@@ -53,6 +53,19 @@ function fmtDate(d) {
     : dt.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: '2-digit' });
 }
 
+function Field({ label, value, onChange, placeholder, type = 'text', disabled }) {
+  return (
+    <label style={{ fontSize: 11, color: C.muted, display: 'block' }}>
+      {label}
+      <input type={type} value={value} disabled={disabled} placeholder={placeholder}
+             onChange={e => onChange(e.target.value)}
+             style={{ display: 'block', width: '100%', boxSizing: 'border-box', marginTop: 3,
+                      fontSize: 12, padding: '5px 7px', border: `1px solid ${C.line}`,
+                      borderRadius: 5, background: disabled ? '#f3f4f6' : '#fff' }} />
+    </label>
+  );
+}
+
 function Metric({ label, value, tone }) {
   return (
     <div style={{ background: '#f9fafb', borderRadius: 8, padding: '11px 13px', flex: '1 1 120px', minWidth: 120 }}>
@@ -62,6 +75,16 @@ function Metric({ label, value, tone }) {
   );
 }
 
+const BLANK_LINE = {
+  section: '', itemCode: '', description: '', unit: '',
+  plannedQty: '', rate: '', vendorAccountId: '',
+  procurementStatus: 'not_required', procurementRef: '',
+};
+
+// Common currencies first; the project's contract value may well not be INR
+// even though INR is the schema default.
+const CURRENCIES = ['INR', 'USD', 'EUR', 'GBP', 'AED', 'SGD', 'AUD'];
+
 export default function ProjectBoQ({ handoverId }) {
   const [state, setState] = useState({ loading: true, error: null, data: null });
   const [openRow, setOpenRow] = useState(null);
@@ -69,6 +92,10 @@ export default function ProjectBoQ({ handoverId }) {
   const [vendors, setVendors] = useState([]);
   const [busy, setBusy] = useState(false);
   const [flash, setFlash] = useState(null);
+  // null = closed, 'new' = adding, or an item id = editing that line.
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState(BLANK_LINE);
+  const [showSettings, setShowSettings] = useState(false);
 
   const load = useCallback(async () => {
     setState(s => ({ ...s, loading: true, error: null }));
@@ -181,6 +208,98 @@ export default function ProjectBoQ({ handoverId }) {
     } finally { setBusy(false); }
   };
 
+  // ── Line editing ───────────────────────────────────────────────────────────
+  const openNew = () => {
+    // Prefill the section from the last line added: a bill is usually entered
+    // section by section, and retyping "Civil" twenty times is where typos
+    // creep in and split one section into two.
+    const lastSection = (state.data?.items || []).slice(-1)[0]?.section || '';
+    setForm({ ...BLANK_LINE, section: lastSection });
+    setEditing('new');
+  };
+
+  const openEdit = (it) => {
+    setForm({
+      section:           it.section || '',
+      itemCode:          it.itemCode || '',
+      description:       it.description || '',
+      unit:              it.unit || '',
+      plannedQty:        String(it.plannedQty ?? ''),
+      rate:              String(it.rate ?? ''),
+      vendorAccountId:   it.vendorAccountId || '',
+      procurementStatus: it.procurementStatus || 'not_required',
+      procurementRef:    it.procurementRef || '',
+    });
+    setEditing(it.id);
+  };
+
+  const saveLine = async () => {
+    const desc = (form.description || '').trim();
+    if (!desc) { say('error', 'A description is required.'); return; }
+    const q = form.plannedQty === '' ? 0 : Number(form.plannedQty);
+    const r = form.rate === '' ? 0 : Number(form.rate);
+    if (!Number.isFinite(q) || q < 0) { say('error', 'Quantity must be zero or more.'); return; }
+    if (!Number.isFinite(r) || r < 0) { say('error', 'Rate must be zero or more.'); return; }
+
+    const payload = {
+      section:           form.section.trim() || null,
+      itemCode:          form.itemCode.trim() || null,
+      description:       desc,
+      unit:              form.unit.trim() || null,
+      vendorAccountId:   form.vendorAccountId ? parseInt(form.vendorAccountId, 10) : null,
+      procurementStatus: form.procurementStatus,
+      procurementRef:    form.procurementRef.trim() || null,
+    };
+    // Quantity and rate are omitted entirely when the bill is locked, rather
+    // than sent and rejected — the server would 409 the whole save and the
+    // other edits would be lost with it.
+    // Read from state rather than the `bill`/`config` consts declared further
+    // down: those sit after the early returns, so referencing them here would
+    // be a temporal-dead-zone hazard if this ever ran before that point.
+    const cfg = state.data?.config || {};
+    if (!cfg.itemsLocked) { payload.plannedQty = q; payload.rate = r; }
+
+    setBusy(true);
+    try {
+      const billId = state.data?.bill?.id;
+      if (!billId) throw new Error('No bill loaded.');
+      if (editing === 'new') await apiService.handovers.addBoqItem(billId, payload);
+      else                   await apiService.handovers.updateBoqItem(editing, payload);
+      setEditing(null); setForm(BLANK_LINE);
+      await load();
+      say('ok', editing === 'new' ? 'Line added.' : 'Line updated.');
+    } catch (err) {
+      say('error', err?.response?.data?.error?.message || 'Could not save the line');
+    } finally { setBusy(false); }
+  };
+
+  const removeLine = async (it) => {
+    if (!window.confirm(`Delete "${it.itemCode || it.description}"? This cannot be undone.`)) return;
+    setBusy(true);
+    try {
+      await apiService.handovers.removeBoqItem(it.id);
+      await load();
+      say('ok', 'Line deleted.');
+    } catch (err) {
+      // The server refuses to delete a line that has progress booked against
+      // it — deleting recorded spend is what append-only exists to prevent.
+      say('error', err?.response?.data?.error?.message || 'Could not delete the line');
+    } finally { setBusy(false); }
+  };
+
+  const saveBillSettings = async (patch) => {
+    setBusy(true);
+    try {
+      const billId = state.data?.bill?.id;
+      if (!billId) throw new Error('No bill loaded.');
+      await apiService.handovers.updateBoq(billId, patch);
+      await load();
+      say('ok', 'Bill updated.');
+    } catch (err) {
+      say('error', err?.response?.data?.error?.message || 'Could not update the bill');
+    } finally { setBusy(false); }
+  };
+
   const createBill = async () => {
     setBusy(true);
     try { await apiService.handovers.createBoq(handoverId, {}); await load(); }
@@ -254,7 +373,55 @@ export default function ProjectBoQ({ handoverId }) {
                            background: C.warnBg, color: C.warn }}>quantities locked</span>
           )}
         </div>
+        <div style={{ display: 'flex', gap: 7 }}>
+          <button onClick={() => setShowSettings(v => !v)} disabled={busy}
+                  style={{ fontSize: 12, padding: '5px 11px', borderRadius: 6,
+                           border: `1px solid ${C.line}`, background: '#fff', cursor: 'pointer' }}>
+            Bill settings
+          </button>
+          {!config?.itemsLocked && (
+            <button onClick={openNew} disabled={busy || editing === 'new'}
+                    style={{ fontSize: 12, padding: '5px 13px', borderRadius: 6, border: 'none',
+                             background: C.accent, color: '#fff', cursor: 'pointer' }}>
+              Add line
+            </button>
+          )}
+        </div>
       </div>
+
+      {showSettings && (
+        <div style={{ background: '#f9fafb', border: `1px solid ${C.line}`, borderRadius: 8,
+                      padding: '12px 14px', marginBottom: 14, display: 'flex',
+                      gap: 16, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <label style={{ fontSize: 11, color: C.muted }}>
+            Currency
+            {/* The bill defaults to INR, but a project's contract value may be in
+                another currency — every figure on this screen is formatted from
+                this setting, so it must be changeable. */}
+            <select value={bill.currency} disabled={busy}
+                    onChange={e => saveBillSettings({ currency: e.target.value })}
+                    style={{ display: 'block', marginTop: 3, fontSize: 12, padding: '4px 6px',
+                             border: `1px solid ${C.line}`, borderRadius: 5 }}>
+              {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </label>
+          <label style={{ fontSize: 11, color: C.muted }}>
+            Status
+            <select value={bill.status} disabled={busy}
+                    onChange={e => saveBillSettings({ status: e.target.value })}
+                    style={{ display: 'block', marginTop: 3, fontSize: 12, padding: '4px 6px',
+                             border: `1px solid ${C.line}`, borderRadius: 5 }}>
+              <option value="draft">Draft — still being built</option>
+              <option value="active">Active — work is measured against it</option>
+              <option value="archived">Archived — superseded</option>
+            </select>
+          </label>
+          <div style={{ fontSize: 11, color: C.muted, maxWidth: 340, lineHeight: 1.6 }}>
+            Archiving keeps the bill and its ledger, and frees the project to hold a new one.
+            Nothing is deleted.
+          </div>
+        </div>
+      )}
 
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
         <Metric label="Bill value" value={money(totals?.plannedAmount, cur)} />
@@ -274,9 +441,96 @@ export default function ProjectBoQ({ handoverId }) {
         </div>
       )}
 
+      {editing && (
+        <div style={{ background: '#f9fafb', border: `1px solid ${C.line}`, borderRadius: 8,
+                      padding: '13px 15px', marginBottom: 14 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10 }}>
+            {editing === 'new' ? 'Add a line' : 'Edit line'}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: 10 }}>
+            <Field label="Section" value={form.section}
+                   onChange={v => setForm(f => ({ ...f, section: v }))} placeholder="Civil" />
+            <Field label="Item code" value={form.itemCode}
+                   onChange={v => setForm(f => ({ ...f, itemCode: v }))} placeholder="C-101" />
+            <Field label="Unit" value={form.unit}
+                   onChange={v => setForm(f => ({ ...f, unit: v }))} placeholder="m3" />
+            <Field label={`Quantity${config?.itemsLocked ? ' (locked)' : ''}`} value={form.plannedQty}
+                   onChange={v => setForm(f => ({ ...f, plannedQty: v }))}
+                   type="number" disabled={config?.itemsLocked} placeholder="1000" />
+            <Field label={`Rate${config?.itemsLocked ? ' (locked)' : ''}`} value={form.rate}
+                   onChange={v => setForm(f => ({ ...f, rate: v }))}
+                   type="number" disabled={config?.itemsLocked} placeholder="250" />
+            <Field label="PO / RFQ ref" value={form.procurementRef}
+                   onChange={v => setForm(f => ({ ...f, procurementRef: v }))} placeholder="PO-2291" />
+          </div>
+
+          <div style={{ marginTop: 10 }}>
+            <Field label="Description" value={form.description}
+                   onChange={v => setForm(f => ({ ...f, description: v }))}
+                   placeholder="Excavation in ordinary soil" />
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))',
+                        gap: 10, marginTop: 10 }}>
+            <label style={{ fontSize: 11, color: C.muted }}>
+              Vendor
+              <select value={form.vendorAccountId}
+                      onChange={e => setForm(f => ({ ...f, vendorAccountId: e.target.value }))}
+                      style={{ display: 'block', width: '100%', marginTop: 3, fontSize: 12,
+                               padding: '5px 6px', border: `1px solid ${C.line}`, borderRadius: 5 }}>
+                <option value="">—</option>
+                {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+              </select>
+              {vendors.length === 0 && (
+                <span style={{ fontSize: 10, color: C.muted }}>
+                  No approved vendors yet — add one under Accounts first.
+                </span>
+              )}
+            </label>
+            <label style={{ fontSize: 11, color: C.muted }}>
+              Procurement
+              <select value={form.procurementStatus}
+                      onChange={e => setForm(f => ({ ...f, procurementStatus: e.target.value }))}
+                      style={{ display: 'block', width: '100%', marginTop: 3, fontSize: 12,
+                               padding: '5px 6px', border: `1px solid ${C.line}`, borderRadius: 5 }}>
+                {PROC_ORDER.map(k => <option key={k} value={k}>{PROC_LABEL[k]}</option>)}
+              </select>
+            </label>
+          </div>
+
+          <div style={{ fontSize: 11, color: C.muted, margin: '10px 0 0', lineHeight: 1.6 }}>
+            Leave procurement as “Not required” for own-labour lines — otherwise they sit in the
+            procurement counts forever.
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, marginTop: 11 }}>
+            <button onClick={saveLine} disabled={busy || !form.description.trim()}
+                    style={{ fontSize: 12, padding: '6px 14px', borderRadius: 6, border: 'none',
+                             background: form.description.trim() ? C.accent : '#cbd5e1',
+                             color: '#fff', cursor: form.description.trim() ? 'pointer' : 'not-allowed' }}>
+              {busy ? 'Saving…' : (editing === 'new' ? 'Add line' : 'Save changes')}
+            </button>
+            <button onClick={() => { setEditing(null); setForm(BLANK_LINE); }} disabled={busy}
+                    style={{ fontSize: 12, padding: '6px 14px', borderRadius: 6,
+                             border: `1px solid ${C.line}`, background: '#fff', cursor: 'pointer' }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {items.length === 0 ? (
-        <div style={{ fontSize: 13, color: C.muted, padding: '12px 0' }}>
+        <div style={{ fontSize: 13, color: C.muted, padding: '12px 0', lineHeight: 1.7 }}>
           The bill has no lines yet.
+          {!config?.itemsLocked && !editing && (
+            <div style={{ marginTop: 10 }}>
+              <button onClick={openNew}
+                      style={{ fontSize: 12, padding: '6px 14px', borderRadius: 6, border: 'none',
+                               background: C.accent, color: '#fff', cursor: 'pointer' }}>
+                Add the first line
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         <div style={{ overflowX: 'auto' }}>
@@ -400,13 +654,30 @@ export default function ProjectBoQ({ handoverId }) {
                                         ))}
                                       </div>
                                     )}
-                                    <div style={{ marginTop: 9 }}>
+                                    <div style={{ marginTop: 9, display: 'flex', gap: 7 }}>
                                       <button onClick={() => recordProgress(it)} disabled={busy}
                                               style={{ fontSize: 11, padding: '4px 10px', borderRadius: 5,
                                                        border: `1px solid ${C.line}`, background: '#fff',
                                                        cursor: 'pointer' }}>
                                         Record progress
                                       </button>
+                                      <button onClick={() => openEdit(it)} disabled={busy}
+                                              style={{ fontSize: 11, padding: '4px 10px', borderRadius: 5,
+                                                       border: `1px solid ${C.line}`, background: '#fff',
+                                                       cursor: 'pointer' }}>
+                                        Edit line
+                                      </button>
+                                      {/* Only offered when nothing is booked. The server refuses
+                                          otherwise, and showing a button that always fails is worse
+                                          than not showing it. */}
+                                      {it.entryCount === 0 && !config?.itemsLocked && (
+                                        <button onClick={() => removeLine(it)} disabled={busy}
+                                                style={{ fontSize: 11, padding: '4px 10px', borderRadius: 5,
+                                                         border: `1px solid ${C.line}`, background: '#fff',
+                                                         color: C.danger, cursor: 'pointer' }}>
+                                          Delete line
+                                        </button>
+                                      )}
                                     </div>
                                     <div style={{ fontSize: 10, color: C.muted, marginTop: 7, lineHeight: 1.6 }}>
                                       Entries cannot be edited. A correction is posted as a reversal at the
