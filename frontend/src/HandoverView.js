@@ -613,7 +613,13 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
   };
 
   const ev = play.completionEvidence;
-  const EV_LABEL = { whatsapp: 'WhatsApp', email: 'Email', note: 'Note', document: 'Document' };
+  // completion_evidence is a free-form jsonb column with no CHECK constraint,
+  // so this list can grow without a migration. (The formal play_evidence table
+  // is separate and DOES constrain channel — don't confuse the two.)
+  const EV_LABEL = {
+    whatsapp: 'WhatsApp', email: 'Email', note: 'Note', document: 'Document',
+    in_person: 'In person', meeting: 'Meeting',
+  };
   const CH_LABEL = { whatsapp: 'WhatsApp', email: 'Email', internal_task: 'Internal', call: 'Call', linkedin: 'LinkedIn' };
 
   // Status pill — makes in_progress distinct from not_started (both looked the
@@ -740,6 +746,8 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
               style={{ fontSize: 12, padding: '5px 6px', borderRadius: 4, border: '1px solid #d1d5db' }}>
               <option value="whatsapp">WhatsApp</option>
               <option value="email">Email</option>
+              <option value="meeting">Meeting</option>
+              <option value="in_person">In person</option>
               <option value="note">Note</option>
               <option value="document">Document</option>
             </select>
@@ -2023,11 +2031,16 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                 <StageHeader group={group} />
                 <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
                   <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+                    {/* Widths sized for the widest real content, not the header
+                        text: DUE holds "⚠ 33d overdue  17 Jul 2026" and STATUS
+                        holds a pill plus the Start/Pause button. At the old
+                        130/110 both clipped — the date rendered as "17 Jul 202"
+                        and the button spilled past the column edge. */}
                     <colgroup>
                       <col />
+                      <col style={{ width: 150 }} />
+                      <col style={{ width: 190 }} />
                       <col style={{ width: 170 }} />
-                      <col style={{ width: 130 }} />
-                      <col style={{ width: 110 }} />
                       <col style={{ width: 28 }} />
                     </colgroup>
                     <thead>
@@ -2045,7 +2058,12 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                       {group.items.map(play => {
                         const done = ['completed', 'skipped'].includes(play.status);
                         const isOpen = !!expandedPlays[play.id];
-                        const td = { padding: '8px 10px', borderTop: '1px solid #f3f4f6', verticalAlign: 'middle' };
+                        // whiteSpace: nowrap on the metadata cells — with
+                        // tableLayout: 'fixed' a too-narrow cell silently clips
+                        // rather than growing, so the content must be allowed to
+                        // stay on one line and the widths must fit it.
+                        const td = { padding: '8px 10px', borderTop: '1px solid #f3f4f6',
+                                     verticalAlign: 'middle', whiteSpace: 'nowrap' };
                         return (
                           <React.Fragment key={play.id}>
                             <tr onClick={() => togglePlay(play.id)} title="Click for detail"
