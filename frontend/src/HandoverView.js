@@ -292,6 +292,82 @@ function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setS
   );
 }
 
+// ── Checklist layouts ─────────────────────────────────────────────────────────
+const CHECKLIST_LAYOUTS = [
+  ['compact',  'Compact'],
+  ['table',    'Table'],
+  ['detailed', 'Detailed'],
+];
+
+// Stage banner + progress bar, shared by all three checklist views so a change
+// to stage presentation does not have to be made in three places.
+function StageHeader({ group }) {
+  const pct = group.items.length ? Math.round((group.done / group.items.length) * 100) : 0;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+      <span style={{ fontSize: 9, fontWeight: 700, color: '#94a3b8', background: '#f1f5f9',
+                     padding: '1px 5px', borderRadius: 4, letterSpacing: 0.3 }}>STAGE</span>
+      <span style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase',
+                     letterSpacing: 0.4, whiteSpace: 'nowrap' }}>{group.label}</span>
+      <span style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>
+        {group.done}/{group.items.length}
+      </span>
+      <div style={{ flex: 1, height: 4, background: '#f1f5f9', borderRadius: 2, overflow: 'hidden' }}>
+        <div style={{ width: `${pct}%`, height: '100%',
+                      background: pct === 100 ? '#10b981' : '#0369a1', transition: 'width 0.2s' }} />
+      </div>
+    </div>
+  );
+}
+
+// ── Play status pill ──────────────────────────────────────────────────────────
+//
+// Hoisted out of PlaySection: the Table view is a sibling renderer, not a child,
+// so it could not reach a map declared inside PlaySection's body. Keeping one
+// copy also means a status added later shows up in every view at once.
+const PLAY_STATUS = {
+  completed:   { label: 'Done',        color: '#065f46', bg: '#ecfdf5', bd: '#a7f3d0' },
+  skipped:     { label: 'Skipped',     color: '#6b7280', bg: '#f3f4f6', bd: '#e5e7eb' },
+  in_progress: { label: 'In progress', color: '#1d4ed8', bg: '#eff6ff', bd: '#bfdbfe' },
+  blocked:     { label: 'Blocked',     color: '#991b1b', bg: '#fef2f2', bd: '#fecaca' },
+  not_started: { label: 'Not started', color: '#6b7280', bg: '#f8fafc', bd: '#e5e7eb' },
+};
+
+function PlayStatusPill({ status }) {
+  const s = PLAY_STATUS[status] || PLAY_STATUS.not_started;
+  return (
+    <span style={{
+      fontSize: 10, fontWeight: 600, color: s.color, background: s.bg,
+      border: `1px solid ${s.bd}`, borderRadius: 10, padding: '1px 8px',
+      whiteSpace: 'nowrap',
+    }}>{s.label}</span>
+  );
+}
+
+// Owner avatar + name, shared by the Table and Compact views.
+function OwnerChip({ name, compact = false }) {
+  const dot = (
+    <span style={{
+      width: 20, height: 20, borderRadius: '50%', flexShrink: 0,
+      background: name ? '#e0f2fe' : '#f1f5f9',
+      color: name ? '#0369a1' : '#9ca3af',
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      fontSize: 9, fontWeight: 700,
+    }}>{name ? initials(name) : '—'}</span>
+  );
+  if (compact) return <span title={name || 'Unassigned'}>{dot}</span>;
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6,
+                   fontSize: 12, color: name ? '#374151' : '#9ca3af',
+                   minWidth: 0 }}>
+      {dot}
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {name || 'Unassigned'}
+      </span>
+    </span>
+  );
+}
+
 // ── PlaySection ───────────────────────────────────────────────────────────────
 
 function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, users }) {
@@ -347,14 +423,9 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, users }) {
 
   // Status pill — makes in_progress distinct from not_started (both looked the
   // same before), and names the state in words rather than only an icon.
-  const STATUS = {
-    completed:   { label: 'Done',        color: '#065f46', bg: '#ecfdf5', bd: '#a7f3d0' },
-    skipped:     { label: 'Skipped',     color: '#6b7280', bg: '#f3f4f6', bd: '#e5e7eb' },
-    in_progress: { label: 'In progress', color: '#1d4ed8', bg: '#eff6ff', bd: '#bfdbfe' },
-    blocked:     { label: 'Blocked',     color: '#991b1b', bg: '#fef2f2', bd: '#fecaca' },
-    not_started: { label: 'Not started', color: '#6b7280', bg: '#f8fafc', bd: '#e5e7eb' },
-  };
-  const st = STATUS[play.status] || STATUS.not_started;
+  // The map itself now lives at module scope (PLAY_STATUS) so the Table view
+  // can share it.
+  const st = PLAY_STATUS[play.status] || PLAY_STATUS.not_started;
 
   const confirm = () => {
     const data = {};
@@ -538,8 +609,19 @@ function stageLabel(key) {
   if (!key) return 'Other';
   return STAGE_LABELS[key] || key.replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
-// Group plays by stage, ordered by each group's earliest sort order; ad-hoc
-// ('custom') always last.
+// Group plays by stage, in the order the server resolved; ad-hoc ('custom')
+// always last.
+//
+// 2026_115: ordering now comes from play.stageSortOrder, which the backend
+// derives from COALESCE(playbook_stages, project_stages). It used to be
+// minSort — the smallest sortOrder among a group's plays — which looked
+// reasonable but never worked: addPlay numbers sort_order per stage starting
+// at 10, so the first play in EVERY stage was 10, all groups tied, and the
+// stable sort just handed back SQL order (alphabetical by stage_key). Stages
+// silently ran in the wrong sequence.
+//
+// minSort is kept as the tiebreak for pre-migration rows that have no
+// stageSortOrder yet.
 function groupPlaysByStage(plays) {
   const map = new Map();
   for (const p of plays) {
@@ -549,14 +631,21 @@ function groupPlaysByStage(plays) {
   }
   const groups = [...map.entries()].map(([key, items]) => ({
     key,
-    label: stageLabel(key),
+    // Server-supplied name first: it is the only one that knows this project's
+    // own vocabulary. stageLabel() remains the fallback for older payloads.
+    label: items.find(i => i.stageName)?.stageName || stageLabel(key),
     items,
+    stageSort: items.find(i => i.stageSortOrder != null)?.stageSortOrder ?? null,
     minSort: Math.min(...items.map(i => i.sortOrder ?? 9999)),
     done: items.filter(i => ['completed', 'skipped'].includes(i.status)).length,
   }));
   groups.sort((a, b) => {
     if (a.key === 'custom') return 1;
     if (b.key === 'custom') return -1;
+    const as = a.stageSort, bs = b.stageSort;
+    if (as != null && bs != null && as !== bs) return as - bs;
+    if (as != null && bs == null) return -1;   // defined stages before undefined
+    if (as == null && bs != null) return 1;
     return a.minSort - b.minSort;
   });
   return groups;
@@ -1112,8 +1201,19 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   const [success,   setSuccess]   = useState('');
   const [closureFor, setClosureFor] = useState(null); // 'completed' | 'cancelled' | null
   const [menuOpen, setMenuOpen] = useState(false);    // header "⋯" overflow menu
+  // Checklist layout. Three views now:
+  //   compact  — title only, densest (this was 'grid')
+  //   table    — task / owner / due / status, the default working view
+  //   detailed — full PlaySection with Mark done, evidence, edit, drag-reorder
+  //
+  // The stored value is validated rather than trusted: a browser holding the
+  // old 'grid' string (or anything else) must not render an empty checklist.
   const [checklistLayout, setChecklistLayout] = useState(() => {
-    try { return localStorage.getItem('gw_project_checklist_layout') || 'grid'; } catch { return 'grid'; }
+    try {
+      const v = localStorage.getItem('gw_project_checklist_layout');
+      if (v === 'grid') return 'compact';                       // legacy key
+      return CHECKLIST_LAYOUTS.some(([k]) => k === v) ? v : 'table';
+    } catch { return 'table'; }
   });
   const [expandedPlays, setExpandedPlays] = useState({});
   const setLayout = (v) => { setChecklistLayout(v); try { localStorage.setItem('gw_project_checklist_layout', v); } catch { /* ignore */ } };
@@ -1592,7 +1692,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 12px' }}>
             <h4 style={{ margin: 0, fontSize: 14, color: '#374151' }}>📋 Project checklist <span style={{ fontSize: 11, fontWeight: 400, color: '#9ca3af' }}>· steps grouped by stage</span></h4>
             <div style={{ marginLeft: 'auto', display: 'inline-flex', border: '1px solid #d1d5db', borderRadius: 6, overflow: 'hidden' }}>
-              {[['grid', 'Grid'], ['detailed', 'Detailed']].map(([k, label]) => (
+              {CHECKLIST_LAYOUTS.map(([k, label]) => (
                 <button key={k} onClick={() => setLayout(k)} style={{ padding: '4px 12px', fontSize: 11, fontWeight: 600, border: 'none', cursor: 'pointer',
                   background: checklistLayout === k ? '#0369a1' : '#fff', color: checklistLayout === k ? '#fff' : '#374151' }}>{label}</button>
               ))}
@@ -1602,21 +1702,13 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
             <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 12 }}>No checklist items yet.</div>
           )}
 
-          {checklistLayout === 'grid' ? (
-            /* ── Boxed grid: one card per stage, compact rows that expand ── */
+          {checklistLayout === 'compact' ? (
+            /* ── Compact: one card per stage, title-only rows that expand ── */
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 14, alignItems: 'start' }}>
               {groupPlaysByStage(plays).map(group => {
-                const pct = group.items.length ? Math.round((group.done / group.items.length) * 100) : 0;
                 return (
                   <div key={group.key} style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 14, background: '#fff' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                      <span style={{ fontSize: 9, fontWeight: 700, color: '#94a3b8', background: '#f1f5f9', padding: '1px 5px', borderRadius: 4, letterSpacing: 0.3 }}>STAGE</span>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4 }}>{group.label}</span>
-                      <span style={{ fontSize: 11, color: '#6b7280' }}>{group.done}/{group.items.length}</span>
-                      <div style={{ flex: 1, height: 4, background: '#f1f5f9', borderRadius: 2, overflow: 'hidden' }}>
-                        <div style={{ width: `${pct}%`, height: '100%', background: pct === 100 ? '#10b981' : '#0369a1' }} />
-                      </div>
-                    </div>
+                    <StageHeader group={group} />
                     {group.items.map(play => {
                       const done = ['completed', 'skipped'].includes(play.status);
                       const icon = play.status === 'skipped' ? '⊘' : done ? '✅' : play.isGate ? '🔒' : play.status === 'in_progress' ? '🔄' : '⬜';
@@ -1643,22 +1735,86 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                 );
               })}
             </div>
+          ) : checklistLayout === 'table' ? (
+            /* ── Table: task · owner · due · status, one table per stage ──
+               Rows stay expandable so "Mark done" is one click away without
+               having to switch views. */
+            groupPlaysByStage(plays).map(group => (
+              <div key={group.key} style={{ marginBottom: 18 }}>
+                <StageHeader group={group} />
+                <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+                    <colgroup>
+                      <col />
+                      <col style={{ width: 170 }} />
+                      <col style={{ width: 130 }} />
+                      <col style={{ width: 110 }} />
+                      <col style={{ width: 28 }} />
+                    </colgroup>
+                    <thead>
+                      <tr style={{ background: '#f8fafc' }}>
+                        {['Task', 'Owner', 'Due', 'Status', ''].map((h, i) => (
+                          <th key={i} style={{
+                            textAlign: 'left', fontSize: 10, fontWeight: 700, color: '#94a3b8',
+                            letterSpacing: 0.4, textTransform: 'uppercase',
+                            padding: '7px 10px', borderBottom: '1px solid #e5e7eb',
+                          }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {group.items.map(play => {
+                        const done = ['completed', 'skipped'].includes(play.status);
+                        const isOpen = !!expandedPlays[play.id];
+                        const td = { padding: '8px 10px', borderTop: '1px solid #f3f4f6', verticalAlign: 'middle' };
+                        return (
+                          <React.Fragment key={play.id}>
+                            <tr onClick={() => togglePlay(play.id)} title="Click for detail"
+                                style={{ cursor: 'pointer', background: isOpen ? '#f8fafc' : '#fff' }}>
+                              <td style={{ ...td, fontSize: 13 }}>
+                                <span style={{
+                                  display: 'block', color: done ? '#6b7280' : '#111827',
+                                  textDecoration: done ? 'line-through' : 'none',
+                                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                }}>{play.title}</span>
+                                {play.isGate && !done && (
+                                  <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px',
+                                                 borderRadius: 4, background: '#eff6ff', color: '#1d4ed8' }}>GATE</span>
+                                )}
+                              </td>
+                              <td style={td}><OwnerChip name={play.ownerName} /></td>
+                              <td style={td}>
+                                {done && play.completedAt
+                                  ? <span style={{ fontSize: 11, color: '#059669', whiteSpace: 'nowrap' }}>✓ {fmtDate(play.completedAt)}</span>
+                                  : play.dueDate
+                                    ? <DueChip dueDate={play.dueDate} isOverdue={play.isOverdue} daysOverdue={play.daysOverdue} />
+                                    : <span style={{ fontSize: 11, color: '#d1d5db' }}>—</span>}
+                              </td>
+                              <td style={td}><PlayStatusPill status={play.status} /></td>
+                              <td style={{ ...td, color: '#9ca3af', fontSize: 10 }}>{isOpen ? '▾' : '▸'}</td>
+                            </tr>
+                            {isOpen && (
+                              <tr>
+                                <td colSpan={5} style={{ padding: '0 10px 8px', background: '#f8fafc', borderTop: 'none' }}>
+                                  <PlaySection play={play} canEdit={salesCanEdit} onComplete={handleCompletePlay}
+                                    onRemove={handleRemovePlay} onEdit={handleUpdatePlay} users={users} />
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ))
           ) : (
             /* ── Detailed: full grouped list ── */
             groupPlaysByStage(plays).map(group => {
-              const pct = group.items.length ? Math.round((group.done / group.items.length) * 100) : 0;
               return (
                 <div key={group.key} style={{ marginBottom: 18 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                    <span style={{ fontSize: 9, fontWeight: 700, color: '#94a3b8', background: '#f1f5f9', padding: '1px 5px', borderRadius: 4, letterSpacing: 0.3 }}>STAGE</span>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.4, whiteSpace: 'nowrap' }}>
-                      {group.label}
-                    </span>
-                    <span style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>{group.done}/{group.items.length} done</span>
-                    <div style={{ flex: 1, height: 4, background: '#f1f5f9', borderRadius: 2, overflow: 'hidden' }}>
-                      <div style={{ width: `${pct}%`, height: '100%', background: pct === 100 ? '#10b981' : '#0369a1', transition: 'width 0.2s' }} />
-                    </div>
-                  </div>
+                  <StageHeader group={group} />
                   {group.items.map(play => (
                     // Wrapper carries the drag affordance so PlaySection itself
                     // stays unchanged — its internal inputs must remain

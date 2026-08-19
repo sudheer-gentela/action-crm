@@ -430,6 +430,57 @@ router.post('/sales/:id/plays', async (req, res) => {
   }
 });
 
+// ── Project stages (2026_115) ────────────────────────────────────────────────
+//
+// Declared BEFORE /plays/* only for readability — these do not collide.
+// Stage ordering used to be implicit and alphabetical for any stage the
+// project's playbook did not define; these endpoints make it explicit.
+
+// GET /sales/:id/stages — playbook + project stages merged, in run order
+router.get('/sales/:id/stages', async (req, res) => {
+  try {
+    res.json(await handoverService.listStages(parseInt(req.params.id, 10), req.orgId));
+  } catch (err) {
+    console.error('List project stages error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// POST /sales/:id/stages — add a stage to this project
+// Body: { name: 'User acceptance', key?: 'uat', sortOrder?: 30 }
+router.post('/sales/:id/stages', async (req, res) => {
+  try {
+    res.json(await handoverService.addStage(
+      parseInt(req.params.id, 10), req.orgId, req.user.userId, req.body || {}));
+  } catch (err) {
+    console.error('Add project stage error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message, code: err.code } });
+  }
+});
+
+// PATCH /sales/:id/stages — rename / reorder in one atomic call
+// Body: { stages: [{ key, name?, sortOrder? }, ...] }
+router.patch('/sales/:id/stages', async (req, res) => {
+  try {
+    res.json(await handoverService.updateStages(
+      parseInt(req.params.id, 10), req.orgId, req.body?.stages || []));
+  } catch (err) {
+    console.error('Update project stages error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// DELETE /sales/:id/stages/:stageKey — soft delete; refuses if tasks remain
+router.delete('/sales/:id/stages/:stageKey', async (req, res) => {
+  try {
+    res.json(await handoverService.removeStage(
+      parseInt(req.params.id, 10), req.orgId, req.params.stageKey));
+  } catch (err) {
+    console.error('Remove project stage error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message, code: err.code } });
+  }
+});
+
 // ── PATCH /sales/:id/plays/reorder  — reposition plays within one stage ───────
 //
 // Body: { stageKey: 'mobilise', orderedIds: [12, 9, 30] }

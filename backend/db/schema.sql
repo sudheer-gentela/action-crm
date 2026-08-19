@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 4ddAfyALbwJtweOuXbcBsZtCgtiwnuYiRRCMwN2in1i61decGZCjnwcBc4dgz6j
+\restrict 3knAz7JYgxTYLnFehfEOAc4De9JGkDGQEmLWsHWPuP4gkAkaXpX6bbmaac3RfWM
 
 -- Dumped from database version 17.10 (Debian 17.10-1.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -45,6 +45,21 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;
 --
 
 COMMENT ON EXTENSION "uuid-ossp" IS 'generate universally unique identifiers (UUIDs)';
+
+
+--
+-- Name: boq_progress_append_only(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.boq_progress_append_only() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'boq_progress is append-only: post a reversing entry instead of deleting (id %)', OLD.id;
+  END IF;
+  RAISE EXCEPTION 'boq_progress is append-only: entry % cannot be edited. Post a reversing entry.', OLD.id;
+END $$;
 
 
 --
@@ -1536,6 +1551,258 @@ CREATE SEQUENCE public.baseline_snapshots_id_seq
 --
 
 ALTER SEQUENCE public.baseline_snapshots_id_seq OWNED BY public.baseline_snapshots.id;
+
+
+--
+-- Name: boq_items; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.boq_items (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    boq_id integer NOT NULL,
+    section text,
+    item_code text,
+    description text NOT NULL,
+    unit text,
+    planned_qty numeric(16,3) DEFAULT 0 NOT NULL,
+    rate numeric(16,2) DEFAULT 0 NOT NULL,
+    planned_amount numeric(18,2) GENERATED ALWAYS AS (round((planned_qty * rate), 2)) STORED,
+    sort_order integer DEFAULT 0 NOT NULL,
+    notes text,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    vendor_account_id integer,
+    procurement_ref text,
+    procurement_status text DEFAULT 'not_required'::text NOT NULL,
+    CONSTRAINT boq_items_procurement_status_chk CHECK ((procurement_status = ANY (ARRAY['not_required'::text, 'to_procure'::text, 'rfq_issued'::text, 'quoted'::text, 'po_issued'::text, 'in_transit'::text, 'delivered'::text]))),
+    CONSTRAINT boq_items_qty_chk CHECK ((planned_qty >= (0)::numeric)),
+    CONSTRAINT boq_items_rate_chk CHECK ((rate >= (0)::numeric))
+);
+
+
+--
+-- Name: boq_progress; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.boq_progress (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    boq_item_id integer NOT NULL,
+    entry_date date DEFAULT CURRENT_DATE NOT NULL,
+    qty_delta numeric(16,3) DEFAULT 0 NOT NULL,
+    rate_used numeric(16,2) NOT NULL,
+    amount_delta numeric(18,2) GENERATED ALWAYS AS (round((qty_delta * rate_used), 2)) STORED,
+    note text,
+    reverses_id integer,
+    recorded_by integer NOT NULL,
+    recorded_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT boq_progress_reversal_shape_chk CHECK (((reverses_id IS NULL) OR (qty_delta <> (0)::numeric)))
+);
+
+
+--
+-- Name: boq_variations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.boq_variations (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    boq_id integer NOT NULL,
+    boq_item_id integer,
+    reference text,
+    description text NOT NULL,
+    qty_delta numeric(16,3) DEFAULT 0 NOT NULL,
+    rate numeric(16,2) DEFAULT 0 NOT NULL,
+    amount_delta numeric(18,2) GENERATED ALWAYS AS (round((qty_delta * rate), 2)) STORED,
+    status text DEFAULT 'proposed'::text NOT NULL,
+    reason text,
+    approved_by integer,
+    approved_at timestamp with time zone,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT boq_variations_approval_shape_chk CHECK (((status <> 'approved'::text) OR ((approved_by IS NOT NULL) AND (approved_at IS NOT NULL)))),
+    CONSTRAINT boq_variations_status_chk CHECK ((status = ANY (ARRAY['proposed'::text, 'approved'::text, 'rejected'::text])))
+);
+
+
+--
+-- Name: boq_item_rollup; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.boq_item_rollup AS
+ SELECT i.id AS boq_item_id,
+    i.boq_id,
+    i.org_id,
+    i.section,
+    i.item_code,
+    i.description,
+    i.unit,
+    i.planned_qty,
+    i.rate,
+    i.planned_amount,
+    COALESCE(v.qty_delta, (0)::numeric) AS approved_variation_qty,
+    COALESCE(v.amount_delta, (0)::numeric) AS approved_variation_amount,
+    (i.planned_amount + COALESCE(v.amount_delta, (0)::numeric)) AS sanctioned_amount,
+    COALESCE(p.qty_done, (0)::numeric) AS executed_qty,
+    COALESCE(p.amount_spent, (0)::numeric) AS spent_amount,
+    ((i.planned_amount + COALESCE(v.amount_delta, (0)::numeric)) - COALESCE(p.amount_spent, (0)::numeric)) AS remaining_amount,
+    COALESCE(p.entries, 0) AS entry_count,
+    p.last_entry_date,
+    i.vendor_account_id,
+    va.name AS vendor_name,
+    i.procurement_status,
+    i.procurement_ref
+   FROM (((public.boq_items i
+     LEFT JOIN public.accounts va ON ((va.id = i.vendor_account_id)))
+     LEFT JOIN LATERAL ( SELECT sum(pr.qty_delta) AS qty_done,
+            sum(pr.amount_delta) AS amount_spent,
+            (count(*))::integer AS entries,
+            max(pr.entry_date) AS last_entry_date
+           FROM public.boq_progress pr
+          WHERE (pr.boq_item_id = i.id)) p ON (true))
+     LEFT JOIN LATERAL ( SELECT sum(vr.qty_delta) AS qty_delta,
+            sum(vr.amount_delta) AS amount_delta
+           FROM public.boq_variations vr
+          WHERE ((vr.boq_item_id = i.id) AND (vr.status = 'approved'::text))) v ON (true));
+
+
+--
+-- Name: VIEW boq_item_rollup; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON VIEW public.boq_item_rollup IS 'Per-BoQ-item aggregate: planned, approved variations, executed and remaining. Variations are added separately from planned_amount so overrun stays distinguishable from sanctioned scope growth.';
+
+
+--
+-- Name: boq_items_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.boq_items_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: boq_items_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.boq_items_id_seq OWNED BY public.boq_items.id;
+
+
+--
+-- Name: boq_progress_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.boq_progress_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: boq_progress_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.boq_progress_id_seq OWNED BY public.boq_progress.id;
+
+
+--
+-- Name: boq_section_rollup; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.boq_section_rollup AS
+ SELECT r.boq_id,
+    r.org_id,
+    COALESCE(r.section, 'Unsectioned'::text) AS section,
+    (count(*))::integer AS items,
+    sum(r.planned_amount) AS planned_amount,
+    sum(r.approved_variation_amount) AS approved_variation_amount,
+    sum(r.sanctioned_amount) AS sanctioned_amount,
+    sum(r.spent_amount) AS spent_amount,
+    sum(r.remaining_amount) AS remaining_amount,
+    (count(*) FILTER (WHERE (r.remaining_amount < (0)::numeric)))::integer AS overrun_items,
+    (count(*) FILTER (WHERE (i.procurement_status = ANY (ARRAY['to_procure'::text, 'rfq_issued'::text, 'quoted'::text]))))::integer AS awaiting_order,
+    (count(*) FILTER (WHERE (i.procurement_status = ANY (ARRAY['po_issued'::text, 'in_transit'::text]))))::integer AS on_order,
+    (count(*) FILTER (WHERE (i.procurement_status = 'delivered'::text)))::integer AS delivered
+   FROM (public.boq_item_rollup r
+     JOIN public.boq_items i ON ((i.id = r.boq_item_id)))
+  GROUP BY r.boq_id, r.org_id, COALESCE(r.section, 'Unsectioned'::text);
+
+
+--
+-- Name: VIEW boq_section_rollup; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON VIEW public.boq_section_rollup IS 'Per-section totals for a bill. overrun_items counts LINES over their own sanctioned amount, not the section net, so overspend is not masked by underspend on other lines.';
+
+
+--
+-- Name: boq_variations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.boq_variations_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: boq_variations_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.boq_variations_id_seq OWNED BY public.boq_variations.id;
+
+
+--
+-- Name: boqs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.boqs (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    handover_id integer NOT NULL,
+    name text DEFAULT 'Bill of Quantities'::text NOT NULL,
+    status text DEFAULT 'draft'::text NOT NULL,
+    currency text DEFAULT 'INR'::text NOT NULL,
+    notes text,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT boqs_status_chk CHECK ((status = ANY (ARRAY['draft'::text, 'active'::text, 'archived'::text])))
+);
+
+
+--
+-- Name: boqs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.boqs_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: boqs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.boqs_id_seq OWNED BY public.boqs.id;
 
 
 --
@@ -4359,6 +4626,46 @@ CREATE TABLE public.etl_row_log (
 
 
 --
+-- Name: project_play_instances; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.project_play_instances (
+    id integer NOT NULL,
+    handover_id integer NOT NULL,
+    org_id integer NOT NULL,
+    play_id integer,
+    stage_key text NOT NULL,
+    title text NOT NULL,
+    description text,
+    channel text,
+    priority text DEFAULT 'medium'::text,
+    execution_type text DEFAULT 'parallel'::text NOT NULL,
+    is_gate boolean DEFAULT false NOT NULL,
+    due_date date,
+    sort_order integer DEFAULT 0 NOT NULL,
+    status text DEFAULT 'not_started'::text NOT NULL,
+    is_manual boolean DEFAULT false NOT NULL,
+    overridden_by integer,
+    completed_at timestamp with time zone,
+    completed_by integer,
+    action_id integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    playbook_id integer,
+    due_anchor character varying(20) DEFAULT 'created'::character varying NOT NULL,
+    completion_note text,
+    completion_evidence jsonb,
+    owner_user_id integer,
+    parent_instance_id integer,
+    baseline_due_date date,
+    baseline_source text,
+    CONSTRAINT project_play_instances_baseline_source_chk CHECK (((baseline_source IS NULL) OR (baseline_source = ANY (ARRAY['original'::text, 'inferred'::text, 'rebaselined'::text])))),
+    CONSTRAINT project_play_instances_parent_not_self CHECK (((parent_instance_id IS NULL) OR (parent_instance_id <> id))),
+    CONSTRAINT project_play_instances_status_check CHECK ((status = ANY (ARRAY['not_started'::text, 'in_progress'::text, 'blocked'::text, 'snoozed'::text, 'completed'::text, 'skipped'::text, 'cancelled'::text])))
+);
+
+
+--
 -- Name: sales_handover_commitments; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4410,27 +4717,6 @@ COMMENT ON COLUMN public.sales_handover_commitments.owner_user_id IS 'Who owes t
 --
 
 COMMENT ON COLUMN public.sales_handover_commitments.status IS 'open | in_progress | met | waived | breached. The last three are terminal. waived = customer released us from it; breached = we did not deliver. Both require closure_note.';
-
-
---
--- Name: sales_handover_plays; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.sales_handover_plays (
-    id integer NOT NULL,
-    handover_id integer NOT NULL,
-    play_instance_id integer NOT NULL,
-    org_id integer NOT NULL,
-    completed_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-
---
--- Name: TABLE sales_handover_plays; Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON TABLE public.sales_handover_plays IS 'Join between a sales_handover and the deal_play_instances created by the handover_s2i playbook for that deal. The handover form reads its section list from here. completed_at is kept in sync with deal_play_instances.completed_at for efficient gate checking without a join.';
 
 
 --
@@ -4561,18 +4847,17 @@ CREATE VIEW public.handover_deliverable_rollup AS
     h.status,
     h.go_live_date,
     (h.go_live_date - CURRENT_DATE) AS days_to_go_live,
-    count(DISTINCT dpi.id) AS plays_total,
-    count(DISTINCT dpi.id) FILTER (WHERE (dpi.status = ANY (ARRAY['completed'::text, 'skipped'::text, 'cancelled'::text]))) AS plays_done,
-    count(DISTINCT dpi.id) FILTER (WHERE ((dpi.status <> ALL (ARRAY['completed'::text, 'skipped'::text, 'cancelled'::text, 'snoozed'::text])) AND (dpi.due_date < CURRENT_DATE))) AS plays_overdue,
-    count(DISTINCT dpi.id) FILTER (WHERE (dpi.is_gate AND (dpi.status <> ALL (ARRAY['completed'::text, 'skipped'::text, 'cancelled'::text])))) AS gates_open,
+    count(DISTINCT ppi.id) AS plays_total,
+    count(DISTINCT ppi.id) FILTER (WHERE (ppi.status = ANY (ARRAY['completed'::text, 'skipped'::text, 'cancelled'::text]))) AS plays_done,
+    count(DISTINCT ppi.id) FILTER (WHERE ((ppi.status <> ALL (ARRAY['completed'::text, 'skipped'::text, 'cancelled'::text, 'snoozed'::text])) AND (ppi.due_date < CURRENT_DATE))) AS plays_overdue,
+    count(DISTINCT ppi.id) FILTER (WHERE (ppi.is_gate AND (ppi.status <> ALL (ARRAY['completed'::text, 'skipped'::text, 'cancelled'::text])))) AS gates_open,
     count(DISTINCT c.id) AS commitments_total,
-    count(DISTINCT c.id) FILTER (WHERE ((c.status)::text = ANY ((ARRAY['met'::character varying, 'waived'::character varying, 'breached'::character varying])::text[]))) AS commitments_closed,
-    count(DISTINCT c.id) FILTER (WHERE (((c.status)::text = ANY ((ARRAY['open'::character varying, 'in_progress'::character varying])::text[])) AND (c.due_date < CURRENT_DATE))) AS commitments_overdue,
+    count(DISTINCT c.id) FILTER (WHERE ((c.status)::text = ANY (ARRAY[('met'::character varying)::text, ('waived'::character varying)::text, ('breached'::character varying)::text]))) AS commitments_closed,
+    count(DISTINCT c.id) FILTER (WHERE (((c.status)::text = ANY (ARRAY[('open'::character varying)::text, ('in_progress'::character varying)::text])) AND (c.due_date < CURRENT_DATE))) AS commitments_overdue,
     count(DISTINCT c.id) FILTER (WHERE ((c.status)::text = 'breached'::text)) AS commitments_breached,
-    ((count(DISTINCT dpi.id) FILTER (WHERE (dpi.is_gate AND (dpi.status <> ALL (ARRAY['completed'::text, 'skipped'::text, 'cancelled'::text])))) = 0) AND (count(DISTINCT c.id) FILTER (WHERE ((c.status)::text = ANY ((ARRAY['open'::character varying, 'in_progress'::character varying])::text[]))) = 0)) AS is_closeable
-   FROM (((public.sales_handovers h
-     LEFT JOIN public.sales_handover_plays shp ON ((shp.handover_id = h.id)))
-     LEFT JOIN public.deal_play_instances dpi ON ((dpi.id = shp.play_instance_id)))
+    ((count(DISTINCT ppi.id) FILTER (WHERE (ppi.is_gate AND (ppi.status <> ALL (ARRAY['completed'::text, 'skipped'::text, 'cancelled'::text])))) = 0) AND (count(DISTINCT c.id) FILTER (WHERE ((c.status)::text = ANY (ARRAY[('open'::character varying)::text, ('in_progress'::character varying)::text]))) = 0)) AS is_closeable
+   FROM ((public.sales_handovers h
+     LEFT JOIN public.project_play_instances ppi ON ((ppi.handover_id = h.id)))
      LEFT JOIN public.sales_handover_commitments c ON ((c.handover_id = h.id)))
   GROUP BY h.id, h.org_id, h.status, h.go_live_date;
 
@@ -4581,7 +4866,7 @@ CREATE VIEW public.handover_deliverable_rollup AS
 -- Name: VIEW handover_deliverable_rollup; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON VIEW public.handover_deliverable_rollup IS 'Per-handover deliverable aggregate: play + commitment counts, overdue counts, and is_closeable. Read by handover.service.list() and canClose(). Canonical status vocabulary as of 2026_70.';
+COMMENT ON VIEW public.handover_deliverable_rollup IS 'Per-handover deliverable aggregate: play + commitment counts, overdue counts, and is_closeable. Read by handover.service.list(), canClose(), handoverHealthService and notificationService. Reads project_play_instances as of 2026_112 (was deal_play_instances via sales_handover_plays, which froze after the 2026_109 split).';
 
 
 --
@@ -6697,46 +6982,6 @@ ALTER SEQUENCE public.project_play_assignees_id_seq OWNED BY public.project_play
 
 
 --
--- Name: project_play_instances; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.project_play_instances (
-    id integer NOT NULL,
-    handover_id integer NOT NULL,
-    org_id integer NOT NULL,
-    play_id integer,
-    stage_key text NOT NULL,
-    title text NOT NULL,
-    description text,
-    channel text,
-    priority text DEFAULT 'medium'::text,
-    execution_type text DEFAULT 'parallel'::text NOT NULL,
-    is_gate boolean DEFAULT false NOT NULL,
-    due_date date,
-    sort_order integer DEFAULT 0 NOT NULL,
-    status text DEFAULT 'not_started'::text NOT NULL,
-    is_manual boolean DEFAULT false NOT NULL,
-    overridden_by integer,
-    completed_at timestamp with time zone,
-    completed_by integer,
-    action_id integer,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    playbook_id integer,
-    due_anchor character varying(20) DEFAULT 'created'::character varying NOT NULL,
-    completion_note text,
-    completion_evidence jsonb,
-    owner_user_id integer,
-    parent_instance_id integer,
-    baseline_due_date date,
-    baseline_source text,
-    CONSTRAINT project_play_instances_baseline_source_chk CHECK (((baseline_source IS NULL) OR (baseline_source = ANY (ARRAY['original'::text, 'inferred'::text, 'rebaselined'::text])))),
-    CONSTRAINT project_play_instances_parent_not_self CHECK (((parent_instance_id IS NULL) OR (parent_instance_id <> id))),
-    CONSTRAINT project_play_instances_status_check CHECK ((status = ANY (ARRAY['not_started'::text, 'in_progress'::text, 'blocked'::text, 'snoozed'::text, 'completed'::text, 'skipped'::text, 'cancelled'::text])))
-);
-
-
---
 -- Name: project_play_instances_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -7721,6 +7966,27 @@ CREATE SEQUENCE public.sales_handover_commitments_id_seq
 --
 
 ALTER SEQUENCE public.sales_handover_commitments_id_seq OWNED BY public.sales_handover_commitments.id;
+
+
+--
+-- Name: sales_handover_plays; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sales_handover_plays (
+    id integer NOT NULL,
+    handover_id integer NOT NULL,
+    play_instance_id integer NOT NULL,
+    org_id integer NOT NULL,
+    completed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE sales_handover_plays; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.sales_handover_plays IS 'Join between a sales_handover and the deal_play_instances created by the handover_s2i playbook for that deal. The handover form reads its section list from here. completed_at is kept in sync with deal_play_instances.completed_at for efficient gate checking without a join.';
 
 
 --
@@ -10521,6 +10787,34 @@ ALTER TABLE ONLY public.baseline_snapshots ALTER COLUMN id SET DEFAULT nextval('
 
 
 --
+-- Name: boq_items id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boq_items ALTER COLUMN id SET DEFAULT nextval('public.boq_items_id_seq'::regclass);
+
+
+--
+-- Name: boq_progress id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boq_progress ALTER COLUMN id SET DEFAULT nextval('public.boq_progress_id_seq'::regclass);
+
+
+--
+-- Name: boq_variations id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boq_variations ALTER COLUMN id SET DEFAULT nextval('public.boq_variations_id_seq'::regclass);
+
+
+--
+-- Name: boqs id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boqs ALTER COLUMN id SET DEFAULT nextval('public.boqs_id_seq'::regclass);
+
+
+--
 -- Name: calendar_sync_history id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -11768,6 +12062,38 @@ ALTER TABLE ONLY public.baseline_reports
 
 ALTER TABLE ONLY public.baseline_snapshots
     ADD CONSTRAINT baseline_snapshots_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: boq_items boq_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boq_items
+    ADD CONSTRAINT boq_items_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: boq_progress boq_progress_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boq_progress
+    ADD CONSTRAINT boq_progress_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: boq_variations boq_variations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boq_variations
+    ADD CONSTRAINT boq_variations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: boqs boqs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boqs
+    ADD CONSTRAINT boqs_pkey PRIMARY KEY (id);
 
 
 --
@@ -14248,6 +14574,62 @@ CREATE INDEX idx_baseline_snapshots_connection ON public.baseline_snapshots USIN
 --
 
 CREATE INDEX idx_baseline_snapshots_org ON public.baseline_snapshots USING btree (org_id, captured_at DESC);
+
+
+--
+-- Name: idx_boq_items_boq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_boq_items_boq ON public.boq_items USING btree (boq_id, sort_order);
+
+
+--
+-- Name: idx_boq_items_proc_ref; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_boq_items_proc_ref ON public.boq_items USING btree (boq_id, procurement_ref) WHERE (procurement_ref IS NOT NULL);
+
+
+--
+-- Name: idx_boq_items_proc_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_boq_items_proc_status ON public.boq_items USING btree (boq_id, procurement_status);
+
+
+--
+-- Name: idx_boq_items_vendor; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_boq_items_vendor ON public.boq_items USING btree (vendor_account_id) WHERE (vendor_account_id IS NOT NULL);
+
+
+--
+-- Name: idx_boq_progress_item; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_boq_progress_item ON public.boq_progress USING btree (boq_item_id, entry_date);
+
+
+--
+-- Name: idx_boq_progress_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_boq_progress_org ON public.boq_progress USING btree (org_id, entry_date);
+
+
+--
+-- Name: idx_boq_variations_boq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_boq_variations_boq ON public.boq_variations USING btree (boq_id, status);
+
+
+--
+-- Name: idx_boqs_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_boqs_org ON public.boqs USING btree (org_id, handover_id);
 
 
 --
@@ -17765,6 +18147,27 @@ CREATE UNIQUE INDEX uq_aie_org_provider_dedupe ON public.activity_inflow_events 
 
 
 --
+-- Name: uq_boq_items_code; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_boq_items_code ON public.boq_items USING btree (boq_id, item_code) WHERE (item_code IS NOT NULL);
+
+
+--
+-- Name: uq_boq_progress_one_reversal; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_boq_progress_one_reversal ON public.boq_progress USING btree (reverses_id) WHERE (reverses_id IS NOT NULL);
+
+
+--
+-- Name: uq_boqs_one_live_per_project; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_boqs_one_live_per_project ON public.boqs USING btree (handover_id) WHERE (status <> 'archived'::text);
+
+
+--
 -- Name: uq_cfd_org_campaign_target_key; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -18203,6 +18606,13 @@ CREATE TRIGGER trg_aie_updated_at BEFORE UPDATE ON public.activity_inflow_events
 --
 
 CREATE TRIGGER trg_baseline_snapshots_freeze BEFORE DELETE OR UPDATE ON public.baseline_snapshots FOR EACH ROW EXECUTE FUNCTION public.reject_frozen_mutation();
+
+
+--
+-- Name: boq_progress trg_boq_progress_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_boq_progress_append_only BEFORE DELETE OR UPDATE ON public.boq_progress FOR EACH ROW EXECUTE FUNCTION public.boq_progress_append_only();
 
 
 --
@@ -18848,6 +19258,134 @@ ALTER TABLE ONLY public.baseline_snapshots
 
 ALTER TABLE ONLY public.baseline_snapshots
     ADD CONSTRAINT baseline_snapshots_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: boq_items boq_items_boq_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boq_items
+    ADD CONSTRAINT boq_items_boq_fkey FOREIGN KEY (boq_id) REFERENCES public.boqs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: boq_items boq_items_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boq_items
+    ADD CONSTRAINT boq_items_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- Name: boq_items boq_items_org_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boq_items
+    ADD CONSTRAINT boq_items_org_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: boq_items boq_items_vendor_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boq_items
+    ADD CONSTRAINT boq_items_vendor_fkey FOREIGN KEY (vendor_account_id) REFERENCES public.accounts(id) ON DELETE SET NULL;
+
+
+--
+-- Name: boq_progress boq_progress_item_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boq_progress
+    ADD CONSTRAINT boq_progress_item_fkey FOREIGN KEY (boq_item_id) REFERENCES public.boq_items(id) ON DELETE CASCADE;
+
+
+--
+-- Name: boq_progress boq_progress_org_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boq_progress
+    ADD CONSTRAINT boq_progress_org_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: boq_progress boq_progress_recorded_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boq_progress
+    ADD CONSTRAINT boq_progress_recorded_by_fkey FOREIGN KEY (recorded_by) REFERENCES public.users(id);
+
+
+--
+-- Name: boq_progress boq_progress_reverses_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boq_progress
+    ADD CONSTRAINT boq_progress_reverses_fkey FOREIGN KEY (reverses_id) REFERENCES public.boq_progress(id);
+
+
+--
+-- Name: boq_variations boq_variations_approved_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boq_variations
+    ADD CONSTRAINT boq_variations_approved_by_fkey FOREIGN KEY (approved_by) REFERENCES public.users(id);
+
+
+--
+-- Name: boq_variations boq_variations_boq_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boq_variations
+    ADD CONSTRAINT boq_variations_boq_fkey FOREIGN KEY (boq_id) REFERENCES public.boqs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: boq_variations boq_variations_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boq_variations
+    ADD CONSTRAINT boq_variations_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- Name: boq_variations boq_variations_item_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boq_variations
+    ADD CONSTRAINT boq_variations_item_fkey FOREIGN KEY (boq_item_id) REFERENCES public.boq_items(id) ON DELETE SET NULL;
+
+
+--
+-- Name: boq_variations boq_variations_org_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boq_variations
+    ADD CONSTRAINT boq_variations_org_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: boqs boqs_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boqs
+    ADD CONSTRAINT boqs_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- Name: boqs boqs_handover_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boqs
+    ADD CONSTRAINT boqs_handover_fkey FOREIGN KEY (handover_id) REFERENCES public.sales_handovers(id) ON DELETE CASCADE;
+
+
+--
+-- Name: boqs boqs_org_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.boqs
+    ADD CONSTRAINT boqs_org_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
 
 
 --
@@ -23088,5 +23626,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 4ddAfyALbwJtweOuXbcBsZtCgtiwnuYiRRCMwN2in1i61decGZCjnwcBc4dgz6j
+\unrestrict 3knAz7JYgxTYLnFehfEOAc4De9JGkDGQEmLWsHWPuP4gkAkaXpX6bbmaac3RfWM
 
