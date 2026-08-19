@@ -138,12 +138,18 @@ function fmtCurrency(v) {
 function DueChip({ dueDate, isOverdue, daysOverdue }) {
   if (!dueDate) return null;
   if (isOverdue) {
+    // The date is shown as well as the overdue count. "33d overdue" alone
+    // tells you the size of the problem but not the deadline it missed, so
+    // there was no way to see the actual date anywhere in the checklist.
     return (
-      <span style={{
-        fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
-        background: '#fee2e2', color: '#991b1b', whiteSpace: 'nowrap',
-      }}>
-        ⚠ {daysOverdue}d overdue
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}>
+        <span style={{
+          fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
+          background: '#fee2e2', color: '#991b1b',
+        }}>
+          ⚠ {daysOverdue}d overdue
+        </span>
+        <span style={{ fontSize: 10, color: '#9ca3af' }}>{fmtDate(dueDate)}</span>
       </span>
     );
   }
@@ -492,6 +498,37 @@ function PlayStatusPill({ status }) {
   );
 }
 
+// Start / pause control. Completion is deliberately NOT here — it goes through
+// the complete endpoint, which enforces gates and captures evidence.
+//
+// 'in_progress' was a valid status in the schema and was already read by
+// PlaybookPlayService, but nothing in the product ever SET it: a task could
+// only be "Not started" or done. This is the missing transition.
+function StatusAction({ play, canEdit, onSetStatus, compact = false }) {
+  if (!canEdit) return null;
+  const done = ['completed', 'skipped'].includes(play.status);
+  if (done) return null;
+
+  const next  = play.status === 'in_progress' ? 'not_started' : 'in_progress';
+  const label = play.status === 'in_progress' ? 'Pause' : 'Start';
+
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); onSetStatus(play.playInstanceId, next); }}
+      title={play.status === 'in_progress' ? 'Move back to Not started' : 'Mark as started'}
+      style={{
+        fontSize: compact ? 10 : 11, padding: compact ? '2px 7px' : '3px 10px',
+        borderRadius: 5, fontWeight: 600, cursor: 'pointer',
+        border: '1px solid ' + (play.status === 'in_progress' ? '#e5e7eb' : '#bfdbfe'),
+        background: play.status === 'in_progress' ? '#fff' : '#eff6ff',
+        color: play.status === 'in_progress' ? '#6b7280' : '#1d4ed8',
+        whiteSpace: 'nowrap',
+      }}>
+      {label}
+    </button>
+  );
+}
+
 // Owner avatar + name, shared by the Table and Compact views.
 function OwnerChip({ name, compact = false }) {
   const dot = (
@@ -518,7 +555,7 @@ function OwnerChip({ name, compact = false }) {
 
 // ── PlaySection ───────────────────────────────────────────────────────────────
 
-function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, users, stages }) {
+function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus, users, stages }) {
   // Done-state mirrors the backend gate, which treats a play as satisfied when
   // its status is 'completed' OR 'skipped' — not merely when completedAt is set.
   // (A skipped play has no completedAt but still clears the gate.)
@@ -653,6 +690,9 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, users, stage
               color: '#065f46', border: '1px solid #a7f3d0', cursor: 'pointer' }}>
               {showEv ? 'Hide evidence' : 'Evidence'}
             </button>
+          )}
+          {!isDone && canEdit && !capturing && onSetStatus && (
+            <StatusAction play={play} canEdit={canEdit} onSetStatus={onSetStatus} />
           )}
           {!isDone && canEdit && !capturing && (
             <button onClick={() => setCapturing(true)} style={{
@@ -1557,6 +1597,17 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     await load();
   };
 
+  // Start / pause. Separate from handleUpdatePlay so a status flip does not
+  // reload the stage list — nothing about stages changes.
+  const handleSetPlayStatus = async (playInstanceId, status) => {
+    try {
+      await apiService.handovers.updatePlay(h.id, playInstanceId, { status });
+      await load();
+    } catch (err) {
+      flash('error', err?.response?.data?.error?.message || 'Could not update that task');
+    }
+  };
+
   const handleUpdatePlay = async (playInstanceId, data) => {
     try {
       await apiService.handovers.updatePlay(h.id, playInstanceId, data);
@@ -1953,7 +2004,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                           </div>
                           {isOpen && (
                             <div style={{ paddingBottom: 8 }}>
-                              <PlaySection play={play} canEdit={salesCanEdit} onComplete={handleCompletePlay} onRemove={handleRemovePlay} onEdit={handleUpdatePlay} users={users} stages={stages} />
+                              <PlaySection play={play} canEdit={salesCanEdit} onComplete={handleCompletePlay} onRemove={handleRemovePlay} onEdit={handleUpdatePlay} onSetStatus={handleSetPlayStatus} users={users} stages={stages} />
                             </div>
                           )}
                         </div>
@@ -2018,14 +2069,20 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                                     ? <DueChip dueDate={play.dueDate} isOverdue={play.isOverdue} daysOverdue={play.daysOverdue} />
                                     : <span style={{ fontSize: 11, color: '#d1d5db' }}>—</span>}
                               </td>
-                              <td style={td}><PlayStatusPill status={play.status} /></td>
+                              <td style={td}>
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                  <PlayStatusPill status={play.status} />
+                                  <StatusAction play={play} canEdit={salesCanEdit}
+                                    onSetStatus={handleSetPlayStatus} compact />
+                                </span>
+                              </td>
                               <td style={{ ...td, color: '#9ca3af', fontSize: 10 }}>{isOpen ? '▾' : '▸'}</td>
                             </tr>
                             {isOpen && (
                               <tr>
                                 <td colSpan={5} style={{ padding: '0 10px 8px', background: '#f8fafc', borderTop: 'none' }}>
                                   <PlaySection play={play} canEdit={salesCanEdit} onComplete={handleCompletePlay}
-                                    onRemove={handleRemovePlay} onEdit={handleUpdatePlay} users={users} stages={stages} />
+                                    onRemove={handleRemovePlay} onEdit={handleUpdatePlay} onSetStatus={handleSetPlayStatus} users={users} stages={stages} />
                                 </td>
                               </tr>
                             )}
@@ -2076,6 +2133,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                         onComplete={handleCompletePlay}
                         onRemove={handleRemovePlay}
                         onEdit={handleUpdatePlay}
+                        onSetStatus={handleSetPlayStatus}
                         users={users}
                         stages={stages}
                       />

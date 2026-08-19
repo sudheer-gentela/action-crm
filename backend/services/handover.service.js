@@ -2309,6 +2309,27 @@ async function updatePlay(handoverId, orgId, playInstanceId, data = {}, userId =
     }
     add('sort_order', so);
   }
+  if (has('status')) {
+    // In-flight status only. 'completed' and 'skipped' are deliberately NOT
+    // settable here: completePlay() delegates to PlaybookPlayService, which
+    // enforces gates, records completed_at/completed_by, captures evidence and
+    // unlocks dependent plays. Letting a plain PATCH write 'completed' would
+    // skip all of that and leave completed_at NULL, which the checklist reads
+    // as "done but with no completion date".
+    const ALLOWED = ['not_started', 'in_progress', 'blocked'];
+    const st = String(data.status || '').trim();
+    if (!ALLOWED.includes(st)) {
+      throw Object.assign(
+        new Error(`status must be one of: ${ALLOWED.join(', ')}. Use the complete endpoint to finish a task.`),
+        { status: 400, code: 'STATUS_NOT_SETTABLE' });
+    }
+    // Moving a finished play back to an in-flight status has to clear the
+    // completion trail too, or the row claims both.
+    add('status', st);
+    add('completed_at', null);
+    add('completed_by', null);
+  }
+
   if (has('stageKey')) {
     // 2026_115: same normalisation and auto-registration as addPlay. Moving a
     // play into a stage with no definition would place it correctly in the
