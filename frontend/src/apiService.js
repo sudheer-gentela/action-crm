@@ -825,6 +825,12 @@ twilio: {
 
     completePlay: (id, instanceId, data) => api.post(`/handovers/sales/${id}/plays/${instanceId}/complete`, data || {}),
     addPlay:    (id, data)       => api.post(`/handovers/sales/${id}/plays`, data),
+    // Project stages (2026_116). project_stages is authoritative, so these
+    // read/write the project's own stage list — not an org-wide catalogue.
+    listStages:   (id)        => api.get(`/handovers/sales/${id}/stages`),
+    addStage:     (id, data)  => api.post(`/handovers/sales/${id}/stages`, data),
+    updateStages: (id, stages) => api.patch(`/handovers/sales/${id}/stages`, { stages }),
+    removeStage:  (id, stageKey) => api.delete(`/handovers/sales/${id}/stages/${encodeURIComponent(stageKey)}`),
     updatePlay: (id, instanceId, data) => api.patch(`/handovers/sales/${id}/plays/${instanceId}`, data),
     removePlay: (id, instanceId) => api.delete(`/handovers/sales/${id}/plays/${instanceId}`),
     reorderPlays: (id, stageKey, orderedIds) =>

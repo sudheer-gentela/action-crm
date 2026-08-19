@@ -299,6 +299,114 @@ const CHECKLIST_LAYOUTS = [
   ['detailed', 'Detailed'],
 ];
 
+// Stage manager — rename, reorder and remove a project's stages.
+//
+// Collapsed to a single link so it does not compete with the checklist for
+// attention. Stages are per-project (project_stages is authoritative), so
+// renaming one here cannot affect any other project.
+function StageManager({ stages, onSave, onAdd, onRemove, onClose }) {
+  const [rows, setRows]   = useState(() => (stages || []).map(s => ({ ...s })));
+  const [fresh, setFresh] = useState('');
+  const [busy, setBusy]   = useState(false);
+  const [err, setErr]     = useState('');
+
+  const move = (i, dir) => {
+    const j = i + dir;
+    if (j < 0 || j >= rows.length) return;
+    const next = [...rows];
+    [next[i], next[j]] = [next[j], next[i]];
+    // Renumber on the same sparse 10-step scale the backend uses so a later
+    // insert can sit between two stages without a full renumber.
+    setRows(next.map((r, k) => ({ ...r, sortOrder: (k + 1) * 10 })));
+  };
+
+  const save = async () => {
+    setBusy(true); setErr('');
+    try { await onSave(rows.map(r => ({ key: r.key, name: r.name, sortOrder: r.sortOrder }))); }
+    catch (e) { setErr(e?.response?.data?.error?.message || 'Could not save stages'); }
+    finally { setBusy(false); }
+  };
+
+  const add = async () => {
+    if (!fresh.trim()) return;
+    setBusy(true); setErr('');
+    try { await onAdd(fresh.trim()); setFresh(''); }
+    catch (e) { setErr(e?.response?.data?.error?.message || 'Could not add that stage'); }
+    finally { setBusy(false); }
+  };
+
+  const remove = async (key) => {
+    setBusy(true); setErr('');
+    try { await onRemove(key); }
+    catch (e) { setErr(e?.response?.data?.error?.message || 'Could not remove that stage'); }
+    finally { setBusy(false); }
+  };
+
+  // 'custom' is hard-pinned last by groupPlaysByStage regardless of its
+  // sort_order, so offering to rename or reposition it would be a lie.
+  const editable = rows.filter(r => r.key !== 'custom');
+
+  return (
+    <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, padding: 14, background: '#f8fafc', marginBottom: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: '#374151', flex: 1 }}>Stages</span>
+        <button onClick={onClose} style={{ fontSize: 11, padding: '3px 9px', borderRadius: 4,
+          background: '#f1f5f9', color: '#374151', border: 'none', cursor: 'pointer' }}>Close</button>
+      </div>
+
+      {editable.length === 0 && (
+        <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 10 }}>
+          No stages yet — every task sits in the ad-hoc bucket. Add one below.
+        </div>
+      )}
+
+      {editable.map((r, i) => (
+        <div key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+          <input value={r.name}
+            onChange={e => setRows(rows.map(x => (x.key === r.key ? { ...x, name: e.target.value } : x)))}
+            style={{ flex: 1, fontSize: 12, padding: '5px 8px', borderRadius: 4, border: '1px solid #d1d5db' }} />
+          <span style={{ fontSize: 10, color: '#9ca3af', width: 62, textAlign: 'right' }}>
+            {r.inUse} task{r.inUse === 1 ? '' : 's'}
+          </span>
+          <button onClick={() => move(i, -1)} disabled={i === 0} title="Move up"
+            style={{ fontSize: 11, padding: '3px 7px', borderRadius: 4, border: '1px solid #d1d5db',
+                     background: '#fff', cursor: i === 0 ? 'default' : 'pointer', opacity: i === 0 ? 0.4 : 1 }}>↑</button>
+          <button onClick={() => move(i, 1)} disabled={i === editable.length - 1} title="Move down"
+            style={{ fontSize: 11, padding: '3px 7px', borderRadius: 4, border: '1px solid #d1d5db',
+                     background: '#fff', cursor: i === editable.length - 1 ? 'default' : 'pointer',
+                     opacity: i === editable.length - 1 ? 0.4 : 1 }}>↓</button>
+          <button onClick={() => remove(r.key)} disabled={busy || r.inUse > 0}
+            title={r.inUse > 0 ? 'Move its tasks out first' : 'Remove stage'}
+            style={{ fontSize: 11, padding: '3px 7px', borderRadius: 4, border: '1px solid #fecaca',
+                     background: '#fff', color: '#991b1b',
+                     cursor: (busy || r.inUse > 0) ? 'default' : 'pointer', opacity: r.inUse > 0 ? 0.4 : 1 }}>×</button>
+        </div>
+      ))}
+
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 10 }}>
+        <input value={fresh} onChange={e => setFresh(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') add(); }}
+          placeholder="Add a stage (e.g. Discovery)"
+          style={{ flex: 1, fontSize: 12, padding: '5px 8px', borderRadius: 4, border: '1px solid #d1d5db' }} />
+        <button onClick={add} disabled={busy || !fresh.trim()}
+          style={{ fontSize: 11, padding: '5px 12px', borderRadius: 4, fontWeight: 600, border: 'none', color: '#fff',
+                   background: (busy || !fresh.trim()) ? '#9ca3af' : '#0369a1',
+                   cursor: (busy || !fresh.trim()) ? 'default' : 'pointer' }}>Add</button>
+      </div>
+
+      {err && <div style={{ fontSize: 11, color: '#991b1b', marginTop: 8 }}>{err}</div>}
+
+      <div style={{ marginTop: 12 }}>
+        <button onClick={save} disabled={busy}
+          style={{ fontSize: 12, padding: '6px 14px', borderRadius: 4, fontWeight: 600, border: 'none', color: '#fff',
+                   background: busy ? '#9ca3af' : '#0369a1', cursor: busy ? 'default' : 'pointer' }}>
+          {busy ? 'Saving…' : 'Save names & order'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // Stage banner + progress bar, shared by all three checklist views so a change
 // to stage presentation does not have to be made in three places.
 function StageHeader({ group }) {
@@ -322,6 +430,41 @@ function StageHeader({ group }) {
                       background: pct === 100 ? '#10b981' : '#0369a1', transition: 'width 0.2s' }} />
       </div>
     </div>
+  );
+}
+
+// Stage <select> shared by the add-item and edit-item forms.
+//
+// "__new__" lets a stage be created inline rather than forcing a trip to the
+// stage manager first — the backend's _ensureStageExists materialises whatever
+// key is sent, so a typed name is enough.
+function StagePicker({ value, onChange, stages, label = 'Stage' }) {
+  const [creating, setCreating] = useState(false);
+  const [fresh, setFresh] = useState('');
+
+  if (creating) {
+    return (
+      <label style={{ fontSize: 11, color: '#6b7280' }}>{label}
+        <input autoFocus value={fresh} placeholder="New stage name"
+          onChange={e => { setFresh(e.target.value); onChange(e.target.value); }}
+          style={{ marginLeft: 6, fontSize: 12, padding: '4px 6px', borderRadius: 4, border: '1px solid #d1d5db', width: 150 }} />
+        <button type="button" onClick={() => { setCreating(false); setFresh(''); onChange(''); }}
+          style={{ marginLeft: 4, fontSize: 11, padding: '3px 7px', borderRadius: 4,
+                   background: '#f1f5f9', color: '#374151', border: 'none', cursor: 'pointer' }}>×</button>
+      </label>
+    );
+  }
+  return (
+    <label style={{ fontSize: 11, color: '#6b7280' }}>{label}
+      <select value={value || ''}
+        onChange={e => { if (e.target.value === '__new__') { setCreating(true); onChange(''); } else onChange(e.target.value); }}
+        style={{ marginLeft: 6, fontSize: 12, padding: '4px 6px', borderRadius: 4, border: '1px solid #d1d5db' }}>
+        <option value="">Added on this project</option>
+        {(stages || []).filter(st => st.key !== 'custom')
+          .map(st => <option key={st.key} value={st.key}>{st.name}</option>)}
+        <option value="__new__">+ New stage…</option>
+      </select>
+    </label>
   );
 }
 
@@ -375,7 +518,7 @@ function OwnerChip({ name, compact = false }) {
 
 // ── PlaySection ───────────────────────────────────────────────────────────────
 
-function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, users }) {
+function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, users, stages }) {
   // Done-state mirrors the backend gate, which treats a play as satisfied when
   // its status is 'completed' OR 'skipped' — not merely when completedAt is set.
   // (A skipped play has no completedAt but still clears the gate.)
@@ -397,6 +540,7 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, users }) {
   const [eOwner, setEOwner] = useState('');
   const [eDue,   setEDue]   = useState('');
   const [eGate,  setEGate]  = useState(false);
+  const [eStage, setEStage] = useState('');
   const [eSaving, setESaving] = useState(false);
 
   const openEdit = () => {
@@ -405,6 +549,9 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, users }) {
     setEOwner(play.ownerUserId != null ? String(play.ownerUserId) : '');
     setEDue(play.dueDate ? String(play.dueDate).slice(0, 10) : '');
     setEGate(!!play.isGate);
+    // 'custom' maps to the empty option — the picker labels it
+    // "Added on this project" rather than exposing the raw key.
+    setEStage(play.stageKey && play.stageKey !== 'custom' ? play.stageKey : '');
     setEditing(true);
   };
   const saveEdit = async () => {
@@ -417,6 +564,12 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, users }) {
         ownerUserId: eOwner || null,
         dueDate: eDue || null,
         isGate: eGate,
+        // Blank means the ad-hoc bucket. Sent explicitly (not undefined) so a
+        // task can be moved back OUT of a named stage, which an omitted field
+        // could not express.
+        stageKey: eStage.trim() || 'custom',
+        stageName: (eStage.trim() && !(stages || []).some(st => st.key === eStage.trim()))
+          ? eStage.trim() : undefined,
       });
       setEditing(false);
     } finally { setESaving(false); }
@@ -585,6 +738,7 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, users }) {
               <input type="date" value={eDue} onChange={e => setEDue(e.target.value)}
                 style={{ marginLeft: 6, fontSize: 12, padding: '4px 6px', borderRadius: 4, border: '1px solid #d1d5db' }} />
             </label>
+            <StagePicker value={eStage} onChange={setEStage} stages={stages} label="Stage" />
             <label style={{ fontSize: 11, color: '#6b7280', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               <input type="checkbox" checked={eGate} onChange={e => setEGate(e.target.checked)} /> Gate (blocks go-live)
             </label>
@@ -657,13 +811,14 @@ function groupPlaysByStage(plays) {
 }
 
 // ── AddPlayForm: add an ad-hoc checklist item directly on a handover ───────────
-function AddPlayForm({ users, onAdd }) {
+function AddPlayForm({ users, onAdd, stages }) {
   const [open,   setOpen]   = useState(false);
   const [title,  setTitle]  = useState('');
   const [desc,   setDesc]   = useState('');
   const [due,    setDue]    = useState('');
   const [owner,  setOwner]  = useState('');
   const [gate,   setGate]   = useState(false);
+  const [stage,  setStage]  = useState('');
   const [saving, setSaving] = useState(false);
 
   const submit = async () => {
@@ -676,8 +831,16 @@ function AddPlayForm({ users, onAdd }) {
         dueDate: due || undefined,
         ownerUserId: owner || undefined,
         isGate: gate,
+        // Omitted rather than sent blank: addPlay falls back to 'custom',
+        // which is the ad-hoc bucket the empty option represents.
+        stageKey: stage.trim() || undefined,
+        // For a stage typed fresh in the picker, send the name verbatim too.
+        // Without it the backend derives the label from the normalised key and
+        // punctuation is lost — "Go-Live Prep" came back as "Go Live Prep".
+        stageName: (stage.trim() && !(stages || []).some(st => st.key === stage.trim()))
+          ? stage.trim() : undefined,
       });
-      setTitle(''); setDesc(''); setDue(''); setOwner(''); setGate(false); setOpen(false);
+      setTitle(''); setDesc(''); setDue(''); setOwner(''); setGate(false); setStage(''); setOpen(false);
     } finally { setSaving(false); }
   };
 
@@ -707,6 +870,7 @@ function AddPlayForm({ users, onAdd }) {
           <input type="date" value={due} onChange={e => setDue(e.target.value)}
             style={{ marginLeft: 6, fontSize: 12, padding: '4px 6px', borderRadius: 4, border: '1px solid #d1d5db' }} />
         </label>
+        <StagePicker value={stage} onChange={setStage} stages={stages} />
         <label style={{ fontSize: 11, color: '#6b7280', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           <input type="checkbox" checked={gate} onChange={e => setGate(e.target.checked)} /> Gate (blocks go-live)
         </label>
@@ -1221,6 +1385,10 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     } catch { return 'table'; }
   });
   const [expandedPlays, setExpandedPlays] = useState({});
+  // Project stages, loaded alongside the checklist. Drives the stage picker on
+  // both item forms and the stage manager.
+  const [stages, setStages] = useState([]);
+  const [showStageMgr, setShowStageMgr] = useState(false);
   const setLayout = (v) => { setChecklistLayout(v); try { localStorage.setItem('gw_project_checklist_layout', v); } catch { /* ignore */ } };
   const togglePlay = (id) => setExpandedPlays(x => ({ ...x, [id]: !x[id] }));
   const [closureText, setClosureText] = useState('');
@@ -1252,7 +1420,23 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     } finally { setLoading(false); }
   }, [h.id]);
 
+  // ── Project stages ────────────────────────────────────────────────────────
+  // Declared before the play handlers that call it, and memoised so it can be
+  // an effect dependency without re-firing every render.
+  const loadStages = useCallback(async () => {
+    if (!h?.id) return;
+    try {
+      const res = await apiService.handovers.listStages(h.id);
+      setStages(res.data.stages || []);
+    } catch {
+      // Non-fatal: the checklist still renders; the picker just offers the
+      // ad-hoc bucket alone.
+      setStages([]);
+    }
+  }, [h?.id]);
+
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { loadStages(); }, [loadStages]);
 
   const flash = (type, msg) => {
     if (type === 'success') { setSuccess(msg); setError(''); }
@@ -1302,6 +1486,8 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     try {
       await apiService.handovers.addPlay(h.id, data);
       await load();
+      // A new stage may have been created inline via the picker.
+      await loadStages();
     } catch (err) {
       flash('error', err?.response?.data?.error?.message || 'Could not add that item');
     }
@@ -1354,10 +1540,28 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     }
   };
 
+  const handleSaveStages = async (rows) => {
+    await apiService.handovers.updateStages(h.id, rows);
+    await loadStages();
+    await load();          // stage names are denormalised onto each play
+  };
+
+  const handleAddStage = async (name) => {
+    await apiService.handovers.addStage(h.id, { name });
+    await loadStages();
+  };
+
+  const handleRemoveStage = async (key) => {
+    await apiService.handovers.removeStage(h.id, key);
+    await loadStages();
+    await load();
+  };
+
   const handleUpdatePlay = async (playInstanceId, data) => {
     try {
       await apiService.handovers.updatePlay(h.id, playInstanceId, data);
       await load();
+      await loadStages();   // moving a task changes each stage's in-use count
     } catch (err) {
       flash('error', err?.response?.data?.error?.message || 'Could not save your changes');
     }
@@ -1696,13 +1900,32 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
         <section style={{ marginBottom: 24 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 12px' }}>
             <h4 style={{ margin: 0, fontSize: 14, color: '#374151' }}>📋 Project checklist <span style={{ fontSize: 11, fontWeight: 400, color: '#9ca3af' }}>· steps grouped by stage</span></h4>
-            <div style={{ marginLeft: 'auto', display: 'inline-flex', border: '1px solid #d1d5db', borderRadius: 6, overflow: 'hidden' }}>
+            {salesCanEdit && (
+              <button onClick={() => setShowStageMgr(v => !v)}
+                style={{ marginLeft: 'auto', fontSize: 11, padding: '4px 10px', borderRadius: 6, fontWeight: 600,
+                         border: '1px solid #d1d5db', background: showStageMgr ? '#eff6ff' : '#fff',
+                         color: '#0369a1', cursor: 'pointer' }}>
+                ⚙ Manage stages
+              </button>
+            )}
+            <div style={{ marginLeft: salesCanEdit ? 8 : 'auto', display: 'inline-flex', border: '1px solid #d1d5db', borderRadius: 6, overflow: 'hidden' }}>
               {CHECKLIST_LAYOUTS.map(([k, label]) => (
                 <button key={k} onClick={() => setLayout(k)} style={{ padding: '4px 12px', fontSize: 11, fontWeight: 600, border: 'none', cursor: 'pointer',
                   background: checklistLayout === k ? '#0369a1' : '#fff', color: checklistLayout === k ? '#fff' : '#374151' }}>{label}</button>
               ))}
             </div>
           </div>
+
+          {salesCanEdit && showStageMgr && (
+            <StageManager
+              stages={stages}
+              onSave={handleSaveStages}
+              onAdd={handleAddStage}
+              onRemove={handleRemoveStage}
+              onClose={() => setShowStageMgr(false)}
+            />
+          )}
+
           {plays.length === 0 && (
             <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 12 }}>No checklist items yet.</div>
           )}
@@ -1730,7 +1953,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                           </div>
                           {isOpen && (
                             <div style={{ paddingBottom: 8 }}>
-                              <PlaySection play={play} canEdit={salesCanEdit} onComplete={handleCompletePlay} onRemove={handleRemovePlay} onEdit={handleUpdatePlay} users={users} />
+                              <PlaySection play={play} canEdit={salesCanEdit} onComplete={handleCompletePlay} onRemove={handleRemovePlay} onEdit={handleUpdatePlay} users={users} stages={stages} />
                             </div>
                           )}
                         </div>
@@ -1802,7 +2025,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                               <tr>
                                 <td colSpan={5} style={{ padding: '0 10px 8px', background: '#f8fafc', borderTop: 'none' }}>
                                   <PlaySection play={play} canEdit={salesCanEdit} onComplete={handleCompletePlay}
-                                    onRemove={handleRemovePlay} onEdit={handleUpdatePlay} users={users} />
+                                    onRemove={handleRemovePlay} onEdit={handleUpdatePlay} users={users} stages={stages} />
                                 </td>
                               </tr>
                             )}
@@ -1854,6 +2077,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                         onRemove={handleRemovePlay}
                         onEdit={handleUpdatePlay}
                         users={users}
+                        stages={stages}
                       />
                       {salesCanEdit && (
                         <div style={{ display: 'flex', gap: 10, margin: '-4px 0 10px 2px' }}>
@@ -1879,7 +2103,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
           )}
           {salesCanEdit && (
             <div style={{ marginTop: 4 }}>
-              <AddPlayForm users={users} onAdd={handleAddPlay} />
+              <AddPlayForm users={users} onAdd={handleAddPlay} stages={stages} />
             </div>
           )}
         </section>
