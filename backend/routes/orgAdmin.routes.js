@@ -1649,6 +1649,54 @@ router.get('/seed-status', adminOnly, async (req, res) => {
  * Body: { module: 'prospecting' | 'sales' | 'clm' | 'service' | 'handovers' }
  * Returns: { seeded: true, message } on success, or { seeded: false, message } if already done.
  */
+// ── POST /seed-pipeline-stages ───────────────────────────────────────────────
+//
+// Seeds a pipeline's starter stage catalogue into THIS org, on demand.
+//
+// Exists because new orgs get the delivery catalogue automatically via
+// seedOrg(), but existing orgs are deliberately NOT backfilled — an org that
+// never runs implementation projects should not silently acquire stages it
+// did not ask for. This is the opt-in.
+//
+// Stages only. Unlike /seed-module this creates no playbook and no plays,
+// so it is safe on an org that already has its own delivery playbook: the
+// stages simply become the catalogue those plays validate against.
+//
+// Idempotent — upsertStages uses ON CONFLICT (org_id, pipeline, key) and will
+// refresh names/ordering without duplicating. Note that it DOES overwrite
+// name, sort_order and colour on conflict, so an org that has already
+// renamed these stages will have those edits reverted. Check the Stages tab
+// before running it a second time.
+router.post('/seed-pipeline-stages', adminOnly, async (req, res) => {
+  try {
+    const { pipeline } = req.body;
+    // Only pipelines that have a starter set defined in orgSeed's STAGES map.
+    const SEEDABLE = ['prospecting', 'sales', 'clm', 'service', 'handovers', 'delivery'];
+    if (!pipeline || !SEEDABLE.includes(pipeline)) {
+      return res.status(400).json({
+        error: { message: `pipeline must be one of: ${SEEDABLE.join(', ')}` },
+      });
+    }
+
+    const { upsertStages } = require('../services/orgSeed.service');
+    // pool is passed where a client is expected; upsertStages only ever calls
+    // .query(), and the same pattern is already used in crm-connections.routes.
+    await upsertStages(pool, req.orgId, pipeline);
+
+    const { rows } = await pool.query(
+      `SELECT key, name, sort_order, is_terminal
+         FROM pipeline_stages
+        WHERE org_id = $1 AND pipeline = $2 AND is_active = TRUE
+        ORDER BY sort_order ASC`,
+      [req.orgId, pipeline]);
+
+    res.json({ pipeline, seeded: rows.length, stages: rows });
+  } catch (err) {
+    console.error('Seed pipeline stages error:', err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
 router.post('/seed-module', adminOnly, async (req, res) => {
   try {
     const { module } = req.body;

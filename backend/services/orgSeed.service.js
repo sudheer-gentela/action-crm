@@ -66,6 +66,27 @@ const STAGES = {
     { key: 'confirm_golive_commercial',   name: 'Confirm Go-Live & Commercial',   stage_type: 'active', sort_order: 4, is_terminal: false, is_system: false, color: '#A78BFA' },
     { key: 'attach_docs_signoff',         name: 'Attach Docs & Sign-off',         stage_type: 'won',    sort_order: 5, is_terminal: true,  is_system: false, color: '#34D399' },
   ],
+
+  // Delivery — the stages a handed-over project actually RUNS through, as
+  // opposed to the `handovers` pipeline above which GATES the transfer into
+  // implementation.
+  //
+  // These keys existed in the product long before this entry: they were string
+  // literals inside a jsonb blob in seed_impl_into_org.sql, written straight
+  // into playbook_plays.stage_key and never registered in any stage catalogue.
+  // Their display names lived only in a hardcoded STAGE_LABELS map in the
+  // frontend. That is why they had no sort_order and ordered alphabetically.
+  //
+  // This is a STARTER set. Delivery vocabulary is industry-specific — these
+  // names suit physical build-out; a software team would rename them to
+  // Discovery / Build / UAT. Orgs edit them via the Stages tab in Org Admin.
+  delivery: [
+    { key: 'mobilize',     name: 'Mobilization', stage_type: 'active', sort_order: 1, is_terminal: false, is_system: false, color: '#60A5FA' },
+    { key: 'groundwork',   name: 'Groundwork',   stage_type: 'active', sort_order: 2, is_terminal: false, is_system: false, color: '#FBBF24' },
+    { key: 'installation', name: 'Installation', stage_type: 'active', sort_order: 3, is_terminal: false, is_system: false, color: '#F97316' },
+    { key: 'finishing',    name: 'Finishing',    stage_type: 'active', sort_order: 4, is_terminal: false, is_system: false, color: '#A78BFA' },
+    { key: 'signoff',      name: 'Sign-off',     stage_type: 'won',    sort_order: 5, is_terminal: true,  is_system: false, color: '#34D399' },
+  ],
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1777,6 +1798,17 @@ async function seedOrg(orgId) {
 
     // Seed Sales pipeline stages
     await upsertStages(client, orgId, 'sales');
+
+    // Seed Delivery pipeline stages.
+    //
+    // NEW ORGS ONLY — deliberately not backfilled into existing orgs, which
+    // may never run implementation projects and should not acquire a stage
+    // catalogue they did not ask for. Existing orgs opt in on demand via
+    // POST /org-admin/seed-pipeline-stages { pipeline: 'delivery' }.
+    //
+    // Stages only, no playbook: the delivery playbook is industry-specific
+    // and is created by the org, not seeded generically.
+    await upsertStages(client, orgId, 'delivery');
 
     // Seed Sales playbook
     const alreadySeeded = await hasBeenSeeded(client, orgId, 'sales');

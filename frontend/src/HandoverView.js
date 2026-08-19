@@ -308,9 +308,14 @@ function StageHeader({ group }) {
       <span style={{ fontSize: 9, fontWeight: 700, color: '#94a3b8', background: '#f1f5f9',
                      padding: '1px 5px', borderRadius: 4, letterSpacing: 0.3 }}>STAGE</span>
       <span style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase',
-                     letterSpacing: 0.4, whiteSpace: 'nowrap' }}>{group.label}</span>
+                     letterSpacing: 0.4, whiteSpace: 'nowrap',
+                     // nowrap came from the Detailed header, which sits in a
+                     // full-width row. The Compact card is a ~340px grid cell
+                     // and previously allowed wrapping, so a long stage name
+                     // would overflow it without these two.
+                     overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{group.label}</span>
       <span style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>
-        {group.done}/{group.items.length}
+        {group.done}/{group.items.length} done
       </span>
       <div style={{ flex: 1, height: 4, background: '#f1f5f9', borderRadius: 2, overflow: 'hidden' }}>
         <div style={{ width: `${pct}%`, height: '100%',

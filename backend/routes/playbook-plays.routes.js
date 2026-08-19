@@ -146,21 +146,42 @@ router.post('/', adminOnly, async (req, res) => {
           : pbType === 'prospecting'   ? 'prospecting'
           : pbType; // clm, service, handover_s2i, or any custom type
 
-        // Only validate if stages have been seeded for this pipeline
+        // Validate the stage key against the org's catalogue.
+        //
+        // This used to skip validation entirely when a pipeline had zero
+        // stages seeded ("only validate if stages have been seeded"), which
+        // let a playbook be created whose stages exist nowhere in the
+        // catalogue. That is exactly how the delivery playbook ended up with
+        // mobilize/groundwork/installation/finishing/signoff defined only as
+        // string literals in a seed file — no names, no ordering, so every
+        // project using it rendered its stages alphabetically.
+        //
+        // An empty catalogue is now an error with a fixable message rather
+        // than a silent pass.
         const stageCountRow = await db.query(
           `SELECT COUNT(*) AS cnt FROM pipeline_stages WHERE org_id = $1 AND pipeline = $2`,
           [req.orgId, pipeline]
         );
-        if (parseInt(stageCountRow.rows[0].cnt) > 0) {
-          const stageRow = await db.query(
-            `SELECT key FROM pipeline_stages WHERE org_id = $1 AND pipeline = $2 AND key = $3 LIMIT 1`,
-            [req.orgId, pipeline, stageKey]
-          );
-          if (stageRow.rows.length === 0) {
-            return res.status(400).json({
-              error: { message: `Stage key "${stageKey}" does not exist in the "${pipeline}" pipeline for your organisation` },
-            });
-          }
+        if (parseInt(stageCountRow.rows[0].cnt) === 0) {
+          return res.status(400).json({
+            error: {
+              message: `The "${pipeline}" pipeline has no stages defined for your organisation, `
+                     + `so stage "${stageKey}" cannot be validated. Add stages via the Stages tab `
+                     + `in Org Admin, or seed the starter set with `
+                     + `POST /org-admin/seed-pipeline-stages { "pipeline": "${pipeline}" }.`,
+              code: 'PIPELINE_HAS_NO_STAGES',
+              pipeline,
+            },
+          });
+        }
+        const stageRow = await db.query(
+          `SELECT key FROM pipeline_stages WHERE org_id = $1 AND pipeline = $2 AND key = $3 LIMIT 1`,
+          [req.orgId, pipeline, stageKey]
+        );
+        if (stageRow.rows.length === 0) {
+          return res.status(400).json({
+            error: { message: `Stage key "${stageKey}" does not exist in the "${pipeline}" pipeline for your organisation` },
+          });
         }
       }
     }

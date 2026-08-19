@@ -52,11 +52,12 @@ async function getProjectVariance(handoverId, orgId) {
        p.baseline_due_date,
        p.baseline_source,
        p.completed_at,
-       -- 2026_115: must match handover.service._getPlays() exactly. If these
+       -- 2026_116: must match handover.service._getPlays() exactly. If these
        -- two disagree, Plan vs Actual lists stages in a different order from
-       -- the checklist they are meant to explain.
-       COALESCE(ps.name, pst.name)             AS stage_name,
-       COALESCE(ps.sort_order, pst.sort_order) AS stage_order,
+       -- the checklist it is meant to explain. project_stages is
+       -- authoritative; no COALESCE against the dead playbook_stages table.
+       pst.name       AS stage_name,
+       pst.sort_order AS stage_order,
        ou.first_name || ' ' || ou.last_name AS owner_name,
 
        -- Variance in whole days. completed_at is a timestamptz and the dates
@@ -86,8 +87,9 @@ async function getProjectVariance(handoverId, orgId) {
          WHERE e.project_play_instance_id = p.id AND e.revoked_at IS NULL)::int AS evidence_count
 
      FROM project_play_instances p
-     LEFT JOIN sales_handovers h  ON h.id = p.handover_id
-     LEFT JOIN playbook_stages ps ON ps.playbook_id = h.playbook_id AND ps.key = p.stage_key
+     -- The sales_handovers join was only ever here to reach h.playbook_id for
+     -- the playbook_stages lookup. 2026_116 removed that lookup, leaving this
+     -- join with no referenced column.
      LEFT JOIN project_stages pst ON pst.handover_id = p.handover_id
                                  AND pst.key = p.stage_key
                                  AND pst.is_active = TRUE
@@ -95,7 +97,7 @@ async function getProjectVariance(handoverId, orgId) {
     WHERE p.handover_id = $1
       AND p.org_id = $3
       AND NOT (p.status = ANY($2::text[]))
-    ORDER BY COALESCE(ps.sort_order, pst.sort_order) ASC NULLS LAST,
+    ORDER BY pst.sort_order ASC NULLS LAST,
              p.stage_key ASC, p.sort_order ASC, p.id ASC`,
     [handoverId, EXCLUDED_STATUSES, orgId]
   );

@@ -420,6 +420,9 @@ async function initiate(dealId, orgId, userId) {
   // not two that can disagree.
   if (playbookId) {
     try {
+      // 2026_116: stages first, then plays — same reason as setPlaybook.
+      await _materializeStagesFromCatalogue(handover.id, orgId, playbookId, userId);
+
       const { instances, warnings: playWarnings } =
         await PlaybookPlayService.activateStageForProject(
           handover.id, 'closed_won', orgId, userId, playbookId
@@ -598,6 +601,12 @@ async function setPlaybook(handoverId, orgId, userId, playbookId, stageKey = nul
   await pool.query(
     `UPDATE sales_handovers SET playbook_id = $1, updated_at = now() WHERE id = $2 AND org_id = $3`,
     [playbookId, handoverId, orgId]);
+
+  // 2026_116: copy the org stage catalogue into the project, mirroring how
+  // plays are materialized. Runs BEFORE stage activation so the plays about to
+  // be created already have their stage defined and ordered — otherwise the
+  // first render sorts them NULLS LAST.
+  await _materializeStagesFromCatalogue(handoverId, orgId, playbookId, userId);
 
   // First stage of the playbook, unless the caller named one.
   let stage = stageKey;
@@ -1677,25 +1686,61 @@ function _stageKeyFrom(input) {
 }
 
 /**
+ * Copy the org's stage catalogue for a playbook's pipeline into a project.
+ *
+ * 2026_116. This is the stage-level equivalent of what
+ * PlaybookPlayService already does for plays: playbook_plays ->
+ * project_play_instances. The project ends up owning its stages, so editing
+ * the org catalogue later does not relabel or reorder a running project.
+ *
+ * Existing rows are left alone (ON CONFLICT DO NOTHING) — a stage the project
+ * has already renamed or repositioned must not be reset by a playbook swap.
+ *
+ * The pipeline mapping MUST stay in step with playbook-plays.routes.js, which
+ * validates stage keys on the way in. If the two diverge, a stage key
+ * validates at creation and then fails to resolve at read time.
+ */
+async function _materializeStagesFromCatalogue(handoverId, orgId, playbookId, userId = null) {
+  if (!playbookId) return { materialized: 0 };
+
+  const { rows: [pb] } = await pool.query(
+    `SELECT type FROM playbooks WHERE id = $1 AND org_id = $2`, [playbookId, orgId]);
+  if (!pb) return { materialized: 0 };
+
+  const SALES_LEGACY = ['sales', 'custom', 'market', 'product'];
+  const pipeline = SALES_LEGACY.includes(pb.type) ? 'sales' : pb.type;
+
+  const { rowCount } = await pool.query(
+    `INSERT INTO project_stages (handover_id, org_id, key, name, sort_order, source, created_by)
+     SELECT $1, $2, pls.key, pls.name, pls.sort_order, 'catalogue', $4
+       FROM pipeline_stages pls
+      WHERE pls.org_id = $2 AND pls.pipeline = $3 AND pls.is_active = TRUE
+     ON CONFLICT (handover_id, key) DO NOTHING`,
+    [handoverId, orgId, pipeline, userId]);
+
+  // The ad-hoc bucket always exists. Named to match what the UI showed before
+  // project_stages became authoritative — do not change this string.
+  await pool.query(
+    `INSERT INTO project_stages (handover_id, org_id, key, name, sort_order, source, created_by)
+     VALUES ($1, $2, 'custom', 'Added on this project', 9000, 'custom', $3)
+     ON CONFLICT (handover_id, key) DO NOTHING`,
+    [handoverId, orgId, userId]);
+
+  return { materialized: rowCount, pipeline };
+}
+
+/**
  * Make sure a stage_key has a definition before a play is filed under it.
  *
  * No-op when the project's playbook already defines the key — that row takes
  * precedence anyway. Otherwise inserts a project_stages row at the end.
  */
 async function _ensureStageExists(handoverId, orgId, userId, key, displayName = null) {
-  if (!key || key === 'custom') return;
+  if (!key) return;
 
-  const { rows: [h] } = await pool.query(
-    `SELECT playbook_id FROM sales_handovers WHERE id = $1 AND org_id = $2`,
-    [handoverId, orgId]);
-  if (h?.playbook_id) {
-    const { rows: [owned] } = await pool.query(
-      `SELECT 1 FROM playbook_stages
-        WHERE playbook_id = $1 AND org_id = $2 AND key = $3 AND is_active = TRUE`,
-      [h.playbook_id, orgId, key]);
-    if (owned) return;
-  }
-
+  // 2026_116: project_stages is authoritative, so there is no longer any
+  // "another table already owns this key" case to check. A key with no row
+  // here has no definition at all and would sort NULLS LAST.
   const name = (displayName || '').trim()
     || key.replace(/_+/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
@@ -1705,8 +1750,8 @@ async function _ensureStageExists(handoverId, orgId, userId, key, displayName = 
     [handoverId, orgId]);
 
   await pool.query(
-    `INSERT INTO project_stages (handover_id, org_id, key, name, sort_order, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO project_stages (handover_id, org_id, key, name, sort_order, source, created_by)
+     VALUES ($1, $2, $3, $4, $5, 'custom', $6)
      ON CONFLICT (handover_id, key) DO UPDATE SET is_active = TRUE, updated_at = now()`,
     [handoverId, orgId, key, name, next, userId]);
 }
@@ -1726,38 +1771,28 @@ async function listStages(handoverId, orgId) {
     [handoverId, orgId]);
   if (!h) throw Object.assign(new Error('Project not found'), { status: 404 });
 
+  // 2026_116: one table, one read. This previously UNIONed playbook_stages
+  // with project_stages and deduplicated by precedence in JS — machinery that
+  // existed to serve a COALESCE that no longer exists.
   const { rows } = await pool.query(
-    `SELECT key, name, sort_order, source, in_use FROM (
-       SELECT ps.key, ps.name, ps.sort_order, 'playbook' AS source, 1 AS pref
-         FROM playbook_stages ps
-        WHERE ps.playbook_id = $2 AND ps.org_id = $3 AND ps.is_active = TRUE
-       UNION ALL
-       SELECT pst.key, pst.name, pst.sort_order, 'project' AS source, 2 AS pref
-         FROM project_stages pst
-        WHERE pst.handover_id = $1 AND pst.org_id = $3 AND pst.is_active = TRUE
-     ) s
-     LEFT JOIN LATERAL (
-       SELECT count(*)::int AS in_use
-         FROM project_play_instances dpi
-        WHERE dpi.handover_id = $1 AND dpi.stage_key = s.key
-     ) u ON TRUE
-     -- DISTINCT ON with pref ordering implements the same precedence as
-     -- _getPlays: where both define a key, the playbook row wins.
-     ORDER BY s.key, s.pref`,
-    [handoverId, h.playbook_id ?? null, orgId]);
+    `SELECT pst.key, pst.name, pst.sort_order, pst.source,
+            (SELECT count(*)::int FROM project_play_instances dpi
+              WHERE dpi.handover_id = pst.handover_id
+                AND dpi.stage_key = pst.key) AS in_use
+       FROM project_stages pst
+      WHERE pst.handover_id = $1 AND pst.org_id = $2 AND pst.is_active = TRUE
+      ORDER BY pst.sort_order ASC, pst.key ASC`,
+    [handoverId, orgId]);
 
-  const seen = new Map();
-  for (const r of rows) if (!seen.has(r.key)) seen.set(r.key, r);
-
-  const stages = [...seen.values()]
-    .map(r => ({
+  return {
+    // Every stage is now project-owned and therefore editable — the project
+    // holds a copy, so renaming one cannot affect any other project.
+    stages: rows.map(r => ({
       key: r.key, name: r.name, sortOrder: r.sort_order,
-      source: r.source, inUse: r.in_use ?? 0,
-      canEdit: r.source === 'project',
-    }))
-    .sort((a, b) => (a.sortOrder - b.sortOrder) || a.key.localeCompare(b.key));
-
-  return { stages, hasPlaybook: Boolean(h.playbook_id) };
+      source: r.source, inUse: r.in_use, canEdit: true,
+    })),
+    hasPlaybook: Boolean(h.playbook_id),
+  };
 }
 
 /**
@@ -1775,24 +1810,14 @@ async function addStage(handoverId, orgId, userId, data = {}) {
   if (!key) throw Object.assign(new Error('Stage name must contain letters or numbers.'), { status: 400 });
 
   const { rows: [h] } = await pool.query(
-    `SELECT id, playbook_id FROM sales_handovers WHERE id = $1 AND org_id = $2`,
+    `SELECT id FROM sales_handovers WHERE id = $1 AND org_id = $2`,
     [handoverId, orgId]);
   if (!h) throw Object.assign(new Error('Project not found'), { status: 404 });
 
-  // A key already owned by the playbook cannot be shadowed: _getPlays gives
-  // the playbook precedence, so the project row would be created and then
-  // silently ignored — the worst kind of no-op.
-  if (h.playbook_id) {
-    const { rows: [clash] } = await pool.query(
-      `SELECT 1 FROM playbook_stages
-        WHERE playbook_id = $1 AND org_id = $2 AND key = $3 AND is_active = TRUE`,
-      [h.playbook_id, orgId, key]);
-    if (clash) {
-      throw Object.assign(
-        new Error(`"${key}" is already a stage on this project's playbook.`),
-        { status: 409, code: 'STAGE_OWNED_BY_PLAYBOOK' });
-    }
-  }
+  // 2026_116: no playbook-ownership check any more. Stages are materialized
+  // per project, so a duplicate key is caught by the (handover_id, key)
+  // unique constraint and handled by the upsert below — it can no longer be
+  // a silently-ignored row shadowed by another table.
 
   let sortOrder = Number.isInteger(data.sortOrder) ? data.sortOrder : null;
   if (sortOrder == null) {
@@ -1806,15 +1831,15 @@ async function addStage(handoverId, orgId, userId, data = {}) {
   }
 
   const { rows: [row] } = await pool.query(
-    `INSERT INTO project_stages (handover_id, org_id, key, name, sort_order, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO project_stages (handover_id, org_id, key, name, sort_order, source, created_by)
+     VALUES ($1, $2, $3, $4, $5, 'custom', $6)
      ON CONFLICT (handover_id, key)
        DO UPDATE SET is_active = TRUE, name = EXCLUDED.name, updated_at = now()
-     RETURNING key, name, sort_order`,
+     RETURNING key, name, sort_order, source`,
     [handoverId, orgId, key, name, sortOrder, userId]);
 
   return { stage: { key: row.key, name: row.name, sortOrder: row.sort_order,
-                    source: 'project', canEdit: true, inUse: 0 } };
+                    source: row.source, canEdit: true, inUse: 0 } };
 }
 
 /**
@@ -2493,24 +2518,18 @@ async function _getPlays(handoverId, orgId) {
        ou.first_name || ' ' || ou.last_name AS owner_name,
        cu.first_name || ' ' || cu.last_name AS completed_by_name,
        pb.name AS playbook_name,
-       -- 2026_115: stage identity resolved here rather than guessed in the
-       -- frontend. playbook_stages wins where both define the key — see the
-       -- precedence note in the migration.
-       COALESCE(ps.name, pst.name)             AS stage_name,
-       COALESCE(ps.sort_order, pst.sort_order) AS stage_sort_order
+       -- 2026_116: project_stages is the single source of truth for this
+       -- project's stages, materialized from the org catalogue at creation
+       -- the same way project_play_instances materializes playbook_plays.
+       -- No COALESCE against playbook_stages — that table is dead (its only
+       -- write endpoint returns 400 unconditionally) and duplicating
+       -- precedence logic across readers is what let ordering drift before.
+       pst.name       AS stage_name,
+       pst.sort_order AS stage_sort_order
      FROM project_play_instances dpi
      LEFT JOIN users ou     ON ou.id = dpi.owner_user_id
      LEFT JOIN users cu     ON cu.id = dpi.completed_by
      LEFT JOIN playbooks pb ON pb.id = dpi.playbook_id
-     -- Stage order comes from the PROJECT's playbook, not the play's: an
-     -- ad-hoc item has playbook_id NULL but still sits in a real stage.
-     LEFT JOIN sales_handovers h  ON h.id = dpi.handover_id
-     LEFT JOIN playbook_stages ps ON ps.playbook_id = h.playbook_id
-                                 AND ps.key = dpi.stage_key
-     -- 2026_115: per-project stage definitions. Without this, any stage_key
-     -- not present in the project's playbook missed the join above, got a
-     -- NULL sort_order, and fell through to ORDER BY stage_key — i.e.
-     -- alphabetical. Discovery/Build/UAT rendered as Build/Discovery/UAT.
      LEFT JOIN project_stages pst ON pst.handover_id = dpi.handover_id
                                  AND pst.key = dpi.stage_key
                                  AND pst.is_active = TRUE
@@ -2521,9 +2540,10 @@ async function _getPlays(handoverId, orgId) {
      -- This was ORDER BY due_date, sort_order — date-driven, so the checklist
      -- read as a to-do list rather than a plan and reordering a play had no
      -- visible effect. Stage sequence now leads, then position within the
-     -- stage, then date. A stage with no definition at all still sorts last
-     -- rather than jumping to the front.
-     ORDER BY COALESCE(ps.sort_order, pst.sort_order) ASC NULLS LAST,
+     -- stage, then date. A stage with no definition still sorts last rather
+     -- than jumping to the front, though after 2026_116 that should not
+     -- happen: every key in use is materialized.
+     ORDER BY pst.sort_order ASC NULLS LAST,
               dpi.stage_key ASC,
               dpi.sort_order ASC,
               dpi.due_date ASC NULLS LAST,
