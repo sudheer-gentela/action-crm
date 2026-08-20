@@ -37,9 +37,12 @@ const EXCLUDED_STATUSES = ['cancelled', 'skipped'];
  *
  * @param {number} handoverId
  * @param {number} orgId
+ * @param {boolean} hideInternalNotes — viewer is the acceptor of the work
+ *   (project_members.side = 'internal_customer'), so internal notes are
+ *   neither listed nor counted. 2026_120.
  * @returns {{ summary: object, plays: object[] }}
  */
-async function getProjectVariance(handoverId, orgId) {
+async function getProjectVariance(handoverId, orgId, hideInternalNotes = false) {
   const { rows } = await pool.query(
     `SELECT
        p.id,
@@ -84,7 +87,20 @@ async function getProjectVariance(handoverId, orgId) {
        (SELECT count(*) FROM play_due_date_revisions rv
          WHERE rv.project_play_instance_id = p.id AND rv.is_rebaseline)::int AS rebaseline_count,
        (SELECT count(*) FROM play_evidence e
-         WHERE e.project_play_instance_id = p.id AND e.revoked_at IS NULL)::int AS evidence_count
+         WHERE e.project_play_instance_id = p.id AND e.revoked_at IS NULL)::int AS evidence_count,
+
+       -- 2026_120. The point of this table is to show WHERE the time went;
+       -- the notes are where someone wrote down WHY. A slip with an
+       -- explanation attached is a different conversation from a bare one, so
+       -- it is worth showing on the row rather than only on the checklist.
+       --
+       -- $4 = the viewer is the acceptor of the work, so internal notes are
+       -- excluded from the count as well as from the list. Counting them here
+       -- would tell the acceptor that notes exist which they cannot open.
+       (SELECT count(*) FROM play_notes n
+         WHERE n.project_play_instance_id = p.id
+           AND n.deleted_at IS NULL
+           AND ($4::boolean IS NOT TRUE OR n.is_internal = FALSE))::int AS note_count
 
      FROM project_play_instances p
      -- The sales_handovers join was only ever here to reach h.playbook_id for
@@ -99,7 +115,7 @@ async function getProjectVariance(handoverId, orgId) {
       AND NOT (p.status = ANY($2::text[]))
     ORDER BY pst.sort_order ASC NULLS LAST,
              p.stage_key ASC, p.sort_order ASC, p.id ASC`,
-    [handoverId, EXCLUDED_STATUSES, orgId]
+    [handoverId, EXCLUDED_STATUSES, orgId, !!hideInternalNotes]
   );
 
   const plays = rows.map(r => ({
@@ -120,6 +136,7 @@ async function getProjectVariance(handoverId, orgId) {
     revisionCount:     r.revision_count,
     rebaselineCount:   r.rebaseline_count,
     evidenceCount:     r.evidence_count,
+    noteCount:         r.note_count,
     // "still open and already past its date" — the number a PM acts on today,
     // as distinct from a completed play that happened to run late.
     overdue:           r.completed_at == null && r.baseline_variance_days > 0,
@@ -169,6 +186,11 @@ function summarise(plays) {
     totalRevisions:  plays.reduce((a, p) => a + p.revisionCount, 0),
     rebaselined:     plays.filter(p => p.rebaselineCount > 0).length,
     withEvidence:    plays.filter(p => p.evidenceCount > 0).length,
+    // Of the plays that slipped, how many have someone's explanation attached.
+    // The gap between lateCount and this is the unexplained slippage — the
+    // list a project review should actually work through.
+    lateWithNotes:   plays.filter(p => p.baselineVariance > 0 && p.noteCount > 0).length,
+    withNotes:       plays.filter(p => p.noteCount > 0).length,
     adHoc:           plays.filter(p => p.isAdHoc).length,
     // How much of the baseline is guesswork. Non-zero means the headline
     // understates the real slip, and the UI must say so.

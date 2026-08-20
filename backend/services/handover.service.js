@@ -301,6 +301,10 @@ function fmtPlay(row) {
     daysOverdue:     isOverdue
       ? Math.floor((Date.now() - new Date(row.due_date)) / 86400000)
       : 0,
+    // ── notes (2026_120) ──
+    // Undefined on callers that build a play row without the notes sub-select,
+    // hence the ?? fallback — the badge then simply does not render.
+    noteCount:       row.note_count ?? 0,
   };
 }
 
@@ -847,8 +851,12 @@ async function getById(handoverId, orgId, userId = null) {
   // Load commitments
   const commitments = await _getCommitments(handoverId, orgId);
 
+  // Who the viewer is relative to this project (2026_120). Resolved once and
+  // used for both the note badges below and canAddNotes, rather than twice.
+  const noteCtx = userId ? await _projectNoteContext(handoverId, orgId, userId) : null;
+
   // Load plays
-  const plays = await _getPlays(handoverId, orgId);
+  const plays = await _getPlays(handoverId, orgId, !!noteCtx?.isInternalCustomer);
 
   // Load the project team (deal_team_members → org_roles) so the Summary can
   // show who is on the project and the role each person plays.
@@ -868,6 +876,11 @@ async function getById(handoverId, orgId, userId = null) {
     isProjectAdmin:        userId ? await _isOrgAdmin(orgId, userId) : false,
     canSeeCommercial:      userId ? await canSeeTab(handoverId, orgId, userId, 'commercial') : false,
     canManageTabAccess:    userId ? await canManageTabAccess(handoverId, orgId, userId) : false,
+    // 2026_120. Deliberately NOT salesCanEdit, which is `isDraft && …` — notes
+    // are most useful once a project is running, which is exactly when that
+    // flag is false.
+    canAddNotes:           !!noteCtx?.canNote,
+    canMarkNotesInternal:  !!noteCtx?.canNote && !noteCtx?.isInternalCustomer,
     commercialViewers:     (await getTabViewers(handoverId, orgId, 'commercial')).viewers,
     signoff:               await _signoffState(handoverId, orgId),
   };
@@ -2532,6 +2545,300 @@ async function revokePlayEvidence(handoverId, orgId, evidenceId, userId, reason)
   return { revoked: true };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// NOTES — running commentary on one checklist task (2026_120)
+//
+// Distinct from the two things that already existed and were mistaken for
+// this:
+//   completion_note   one sentence, written once, at the moment of closing
+//   play_evidence     an artefact accepted as proof that it was done
+//
+// A note is neither. It is what someone says about the task WHILE it is
+// happening, or afterwards when the project is being written up. Notes may be
+// added to a task in ANY status — there is no open/closed predicate anywhere
+// in this feature, deliberately, because the reviewing case (annotating a
+// finished task) is the stronger of the two.
+//
+// Append-only. A note is never edited; a correction is a second note.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Note types a HUMAN may write. 'system' exists in the CHECK for future
+ *  machine-written notes and is refused here, so a 'system' note is always
+ *  genuinely one. */
+const NOTE_TYPES = ['comment', 'blocker', 'decision'];
+const NOTE_MAX_LENGTH = 4000;
+
+/**
+ * Who this user is, relative to ONE project — the single query behind both
+ * "may they write a note" and "which notes may they read".
+ *
+ * Returns null when the project does not exist in this org, or the caller is
+ * not an active member of the org. Both are 404-shaped, not 403-shaped: a
+ * caller who cannot see the project should not learn it exists.
+ */
+async function _projectNoteContext(handoverId, orgId, userId) {
+  if (!userId) return null;
+
+  const { rows: [r] } = await pool.query(
+    `SELECT
+       ou.role AS org_role,
+       h.assigned_service_owner_id,
+       h.created_by,
+       -- Only an APPROVED membership counts. A pending request is someone
+       -- asking for access, and 'left' / 'declined' / 'rejected' rows are
+       -- retained as history (see projectMembers.selfExit) — treating any of
+       -- them as access would hand the project back to someone who left it.
+       (SELECT pm.side
+          FROM project_members pm
+         WHERE pm.context_type = 'handover' AND pm.context_id = h.id
+           AND pm.org_id = h.org_id AND pm.user_id = ou.user_id
+           AND pm.status = 'approved'
+         LIMIT 1) AS member_side,
+       -- A project derived from a deal staffs itself from deal_team_members
+       -- and may have no project_members rows at all, so this is not a
+       -- redundant second check — for those projects it is the only one.
+       EXISTS (SELECT 1 FROM deal_team_members dtm
+                WHERE dtm.deal_id = h.deal_id AND dtm.org_id = h.org_id
+                  AND dtm.user_id = ou.user_id) AS on_deal_team,
+       -- Everyone accountable for the project, for the hierarchy check below.
+       ARRAY(
+         SELECT DISTINCT x FROM unnest(ARRAY[h.assigned_service_owner_id, h.created_by]
+           || COALESCE((SELECT array_agg(pm2.user_id)
+                          FROM project_members pm2
+                         WHERE pm2.context_type = 'handover' AND pm2.context_id = h.id
+                           AND pm2.org_id = h.org_id AND pm2.status = 'approved'), '{}')
+           || COALESCE((SELECT array_agg(dtm2.user_id)
+                          FROM deal_team_members dtm2
+                         WHERE dtm2.deal_id = h.deal_id AND dtm2.org_id = h.org_id), '{}')
+         ) AS x WHERE x IS NOT NULL
+       ) AS project_user_ids
+     FROM org_users ou
+     JOIN sales_handovers h ON h.id = $3 AND h.org_id = $1
+    WHERE ou.org_id = $1 AND ou.user_id = $2 AND ou.is_active = TRUE`,
+    [orgId, userId, handoverId]
+  );
+  if (!r) return null;
+
+  const isAdmin        = ['admin', 'owner'].includes(r.org_role);
+  const isServiceOwner = r.assigned_service_owner_id === userId;
+  const isCreator      = r.created_by === userId;
+  const isMember       = r.member_side != null || r.on_deal_team;
+
+  // "…or their manager." Read literally: the manager of anyone ON the project,
+  // not only of the Project Manager. A regional head reviewing a site they do
+  // not personally sit on is the case this exists for.
+  //
+  // Deliberately NOT gated on projectSettings.commercial_follows_hierarchy the
+  // way _isAboveServiceOwner is — that flag guards commercial figures, and a
+  // note about a crane being double-booked is not commercial data.
+  //
+  // Fails closed: any error resolving the hierarchy denies rather than grants.
+  let isManagerOfMember = false;
+  if (!isAdmin && !isServiceOwner && !isCreator && !isMember) {
+    try {
+      const subs = await hierarchyService.getSubordinates(orgId, userId);
+      const onProject = new Set((r.project_user_ids || []).map(Number));
+      isManagerOfMember = (subs || []).some(id => onProject.has(Number(id)));
+    } catch (err) {
+      console.warn('[handover] note hierarchy check failed:', err.message);
+      isManagerOfMember = false;
+    }
+  }
+
+  return {
+    isAdmin,
+    // The acceptor of the work. Decides which notes they may READ, and it wins
+    // over isAdmin: the whole point of an internal note is to be invisible to
+    // the person signing off, and an acceptor who also happens to be an org
+    // admin is still the acceptor.
+    isInternalCustomer: r.member_side === 'internal_customer',
+    canNote: isAdmin || isServiceOwner || isCreator || isMember || isManagerOfMember,
+  };
+}
+
+/**
+ * May this user write a note on this project? Exposed so the UI can hide the
+ * composer rather than offer it and then be refused.
+ */
+async function canNoteOnProject(handoverId, orgId, userId) {
+  const ctx = await _projectNoteContext(handoverId, orgId, userId);
+  return !!ctx && ctx.canNote;
+}
+
+/**
+ * The viewer's note posture on one project, for callers OUTSIDE this service —
+ * currently the Plan vs Actual route, which needs to know whether to count
+ * internal notes.
+ *
+ * Fails closed on both counts: an unresolvable viewer may not write, and is
+ * treated as an acceptor for reading, so internal notes stay hidden.
+ */
+async function getNoteVisibility(handoverId, orgId, userId) {
+  const ctx = await _projectNoteContext(handoverId, orgId, userId);
+  if (!ctx) return { canNote: false, hideInternalNotes: true };
+  return { canNote: ctx.canNote, hideInternalNotes: ctx.isInternalCustomer };
+}
+
+/** Resolve a play to its project, org-scoped. Shared by all three writers. */
+async function _requirePlayOnProject(handoverId, orgId, playInstanceId) {
+  const { rows: [play] } = await pool.query(
+    `SELECT id, status FROM project_play_instances
+      WHERE id = $1 AND handover_id = $2 AND org_id = $3`,
+    [playInstanceId, handoverId, orgId]
+  );
+  if (!play) {
+    throw Object.assign(new Error('Task does not belong to this project'), { status: 404 });
+  }
+  return play;
+}
+
+function fmtNote(row, viewerId, canManage) {
+  return {
+    id:         row.id,
+    body:       row.body,
+    noteType:   row.note_type,
+    isInternal: row.is_internal,
+    authorId:   row.author_id,
+    // Null when the author's account has since been removed — the note stays,
+    // attributed to nobody, rather than disappearing with them.
+    authorName: row.author_name || null,
+    createdAt:  row.created_at,
+    // Computed here rather than in the client so the delete rule lives in one
+    // place and the button cannot drift from what the API will actually allow.
+    canDelete:  canManage || (row.author_id != null && row.author_id === viewerId),
+  };
+}
+
+/**
+ * Add a note to a task — open or closed.
+ *
+ * @param {object} data { body, noteType?, isInternal? }
+ */
+async function addPlayNote(handoverId, orgId, playInstanceId, userId, data = {}) {
+  const ctx = await _projectNoteContext(handoverId, orgId, userId);
+  if (!ctx) throw Object.assign(new Error('Project not found'), { status: 404 });
+  if (!ctx.canNote) {
+    throw Object.assign(
+      new Error('Only people on this project, or their manager, can add notes here'),
+      { status: 403 });
+  }
+
+  await _requirePlayOnProject(handoverId, orgId, playInstanceId);
+
+  const body = String(data.body ?? '').trim();
+  if (!body) throw Object.assign(new Error('A note cannot be empty'), { status: 400 });
+  if (body.length > NOTE_MAX_LENGTH) {
+    throw Object.assign(
+      new Error(`A note cannot be longer than ${NOTE_MAX_LENGTH} characters`),
+      { status: 400 });
+  }
+
+  const noteType = data.noteType ? String(data.noteType) : 'comment';
+  if (!NOTE_TYPES.includes(noteType)) {
+    throw Object.assign(
+      new Error(`noteType must be one of: ${NOTE_TYPES.join(', ')}`), { status: 400 });
+  }
+
+  // An acceptor cannot mark their own note internal — internal means "hidden
+  // from the acceptor", so it would hide the note from its own author.
+  const isInternal = ctx.isInternalCustomer ? false : !!data.isInternal;
+
+  const { rows: [row] } = await pool.query(
+    `INSERT INTO play_notes
+       (org_id, project_play_instance_id, author_id, body, note_type, is_internal)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING id, created_at`,
+    [orgId, playInstanceId, userId, body, noteType, isInternal]
+  );
+
+  return { noteId: row.id, createdAt: row.created_at };
+}
+
+/**
+ * Notes on one task, newest first.
+ *
+ * Deleted notes are excluded for everyone. The rows survive in the table so a
+ * withdrawn note is still attributable if anyone ever needs to ask, but a
+ * tombstone in the thread would be noise on what is meant to read as a
+ * conversation.
+ */
+async function listPlayNotes(handoverId, orgId, playInstanceId, userId) {
+  const ctx = await _projectNoteContext(handoverId, orgId, userId);
+  if (!ctx) throw Object.assign(new Error('Project not found'), { status: 404 });
+  if (!ctx.canNote) {
+    throw Object.assign(new Error('You do not have access to this project'), { status: 403 });
+  }
+
+  await _requirePlayOnProject(handoverId, orgId, playInstanceId);
+
+  const canManage = await projectMembers.canManageProject(handoverId, orgId, userId);
+
+  const { rows } = await pool.query(
+    `SELECT n.id, n.body, n.note_type, n.is_internal, n.author_id, n.created_at,
+            u.first_name || ' ' || u.last_name AS author_name
+       FROM play_notes n
+       JOIN project_play_instances p ON p.id = n.project_play_instance_id
+       LEFT JOIN users u ON u.id = n.author_id
+      WHERE n.project_play_instance_id = $1
+        AND n.org_id = $2
+        AND p.handover_id = $3
+        AND n.deleted_at IS NULL
+        -- $4 = the viewer is the acceptor of this work, so delivery-side
+        -- notes are not theirs to read.
+        AND ($4::boolean IS NOT TRUE OR n.is_internal = FALSE)
+      ORDER BY n.created_at DESC, n.id DESC`,
+    [playInstanceId, orgId, handoverId, ctx.isInternalCustomer]
+  );
+
+  return {
+    notes: rows.map(r => fmtNote(r, userId, canManage)),
+    // Lets the UI decide whether to render the composer and the internal
+    // toggle without a second round trip.
+    canAdd:         ctx.canNote,
+    canMarkInternal: !ctx.isInternalCustomer,
+  };
+}
+
+/**
+ * Withdraw a note. Soft delete — the author and the text stay in the table.
+ *
+ * The author may withdraw their own; anyone who can manage the project may
+ * withdraw any. That second half is not tidiness: a note naming the wrong
+ * person, or containing something that should not have been written down, is
+ * a thing the person accountable for the project has to be able to remove
+ * without a database session.
+ */
+async function deletePlayNote(handoverId, orgId, noteId, userId) {
+  const ctx = await _projectNoteContext(handoverId, orgId, userId);
+  if (!ctx) throw Object.assign(new Error('Project not found'), { status: 404 });
+
+  const { rows: [note] } = await pool.query(
+    `SELECT n.id, n.author_id, n.deleted_at
+       FROM play_notes n
+       JOIN project_play_instances p ON p.id = n.project_play_instance_id
+      WHERE n.id = $1 AND n.org_id = $2 AND p.handover_id = $3`,
+    [noteId, orgId, handoverId]
+  );
+  if (!note) throw Object.assign(new Error('Note not found'), { status: 404 });
+  if (note.deleted_at) {
+    throw Object.assign(new Error('That note has already been removed'), { status: 409 });
+  }
+
+  const canManage = await projectMembers.canManageProject(handoverId, orgId, userId);
+  const isAuthor  = note.author_id != null && note.author_id === userId;
+  if (!canManage && !isAuthor) {
+    throw Object.assign(
+      new Error('Only the author or the Project Manager can remove a note'), { status: 403 });
+  }
+
+  await pool.query(
+    `UPDATE play_notes SET deleted_at = now(), deleted_by = $1 WHERE id = $2`,
+    [userId, noteId]
+  );
+
+  return { deleted: true, id: noteId };
+}
+
 /**
  * The full date history for one play, newest first.
  */
@@ -2922,7 +3229,16 @@ async function _getCommitments(handoverId, orgId) {
   return rows.map(fmtCommitment);
 }
 
-async function _getPlays(handoverId, orgId) {
+/**
+ * @param {boolean} hideInternalNotes — the viewer is the acceptor of this
+ *   work, so internal notes must not be COUNTED either. A badge reading "4"
+ *   over a list that renders two is worse than no badge: it tells the acceptor
+ *   there is something they are not being shown.
+ *
+ *   Only _getHandover() passes it. The other callers return plays as the
+ *   response to a write, and the acceptor does not perform those writes.
+ */
+async function _getPlays(handoverId, orgId, hideInternalNotes = false) {
   // org_id added to the predicate: every other _get* helper in this file is
   // org-scoped and this one was not. Callers all pre-verify the handover via
   // _getHandover(), so this is defence in depth rather than a live leak — but
@@ -2993,7 +3309,15 @@ async function _getPlays(handoverId, orgId) {
            FROM project_play_instances d
           WHERE d.id = ANY(dpi.depends_on)
             AND d.status NOT IN ('completed', 'skipped')
-       ), '[]'::json) AS blocked_by
+       ), '[]'::json) AS blocked_by,
+       -- 2026_120: how many live notes sit on this task, so the checklist can
+       -- show that an explanation exists without fetching every note on every
+       -- task up front. The notes themselves are loaded on expand.
+       (SELECT count(*)
+          FROM play_notes n
+         WHERE n.project_play_instance_id = dpi.id
+           AND n.deleted_at IS NULL
+           AND ($3::boolean IS NOT TRUE OR n.is_internal = FALSE))::int AS note_count
      FROM project_play_instances dpi
      LEFT JOIN users ou     ON ou.id = dpi.owner_user_id
      LEFT JOIN users cu     ON cu.id = dpi.completed_by
@@ -3016,7 +3340,7 @@ async function _getPlays(handoverId, orgId) {
               dpi.sort_order ASC,
               dpi.due_date ASC NULLS LAST,
               dpi.id ASC`,
-    [handoverId, orgId ?? null]
+    [handoverId, orgId ?? null, !!hideInternalNotes]
   );
   return rows.map(fmtPlay);
 }
@@ -4034,6 +4358,11 @@ module.exports = {
   addPlayEvidence,         // evidence — attach a WhatsApp message (2026_111)
   listPlayEvidence,        // evidence — list, including withdrawn
   revokePlayEvidence,      // evidence — withdraw, never delete
+  addPlayNote,             // notes — add to a task in any status (2026_120)
+  listPlayNotes,           // notes — list live notes, newest first
+  deletePlayNote,          // notes — soft delete by author or project manager
+  canNoteOnProject,        // permission probe for the UI
+  getNoteVisibility,       // note posture, for callers outside this service
   listPlayRevisions,       // date history for one play
   canRebaseline,           // permission probe for the UI
   // Nightly sweep — Phase 2

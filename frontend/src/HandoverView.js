@@ -784,9 +784,218 @@ function OwnerChip({ name, compact = false }) {
   );
 }
 
+// ── Notes on one task (2026_120) ──────────────────────────────────────────────
+//
+// Deliberately NOT gated on canEdit. canEdit is `isDraft && …`, which is false
+// for every project that is actually running — i.e. false during the entire
+// period when there is anything worth writing down. Notes are gated on
+// canAddNotes, which the server computes from project membership.
+//
+// Nor is it gated on the task being open. A manager reviewing a finished
+// project annotating what happened is the case this was built for.
+
+const NOTE_KIND = {
+  comment:  { label: 'Note',     color: '#374151', bg: '#f3f4f6', bd: '#e5e7eb' },
+  blocker:  { label: 'Blocker',  color: '#991b1b', bg: '#fef2f2', bd: '#fecaca' },
+  decision: { label: 'Decision', color: '#3730a3', bg: '#eef2ff', bd: '#c7d2fe' },
+  system:   { label: 'System',   color: '#6b7280', bg: '#f9fafb', bd: '#e5e7eb' },
+};
+
+function fmtDateTime(d) {
+  if (!d) return '—';
+  return new Date(d).toLocaleString('en-GB', {
+    day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+function TaskNotes({ handoverId, play, canAddNotes, canMarkInternal, onCountChange }) {
+  const [notes,   setNotes]   = useState(null);   // null = not loaded yet
+  const [loading, setLoading] = useState(false);
+  const [error,   setError]   = useState('');
+  const [draft,   setDraft]   = useState('');
+  const [kind,    setKind]    = useState('comment');
+  const [internal, setInternal] = useState(false);
+  const [saving,  setSaving]  = useState(false);
+  // The server has the final say on both of these; these mirror what it
+  // returned for this task so the composer matches what will be accepted.
+  const [srvCanAdd, setSrvCanAdd] = useState(canAddNotes);
+  const [srvCanInternal, setSrvCanInternal] = useState(canMarkInternal);
+
+  const instanceId = play.playInstanceId;
+
+  const load = useCallback(async () => {
+    setLoading(true); setError('');
+    try {
+      const r = await apiService.handovers.playNotes(handoverId, instanceId);
+      const list = r.data?.notes || [];
+      setNotes(list);
+      if (r.data?.canAdd !== undefined) setSrvCanAdd(r.data.canAdd);
+      if (r.data?.canMarkInternal !== undefined) setSrvCanInternal(r.data.canMarkInternal);
+      onCountChange?.(instanceId, list.length);
+    } catch (err) {
+      setError(err?.response?.data?.error?.message || 'Could not load notes');
+    } finally { setLoading(false); }
+  }, [handoverId, instanceId, onCountChange]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const add = async () => {
+    const body = draft.trim();
+    if (!body || saving) return;
+    setSaving(true); setError('');
+    try {
+      await apiService.handovers.addPlayNote(handoverId, instanceId, {
+        body, noteType: kind, isInternal: internal,
+      });
+      setDraft(''); setKind('comment'); setInternal(false);
+      await load();
+    } catch (err) {
+      setError(err?.response?.data?.error?.message || 'Could not add that note');
+    } finally { setSaving(false); }
+  };
+
+  const remove = async (noteId) => {
+    setError('');
+    try {
+      await apiService.handovers.deletePlayNote(handoverId, noteId);
+      await load();
+    } catch (err) {
+      setError(err?.response?.data?.error?.message || 'Could not remove that note');
+    }
+  };
+
+  // Ctrl/Cmd+Enter posts. Plain Enter inserts a newline — these are sentences,
+  // not chat messages, and losing a half-written paragraph to a stray Enter is
+  // the kind of thing that stops people writing notes at all.
+  const onKeyDown = (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); add(); }
+  };
+
+  return (
+    <div style={{ marginTop: 8, padding: '9px 11px', background: '#fff',
+                  border: '1px solid #e5e7eb', borderRadius: 6 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', letterSpacing: 0.3,
+                    textTransform: 'uppercase', marginBottom: 7 }}>
+        Notes
+      </div>
+
+      {error && (
+        <div style={{ fontSize: 11, color: '#991b1b', background: '#fef2f2',
+                      border: '1px solid #fecaca', borderRadius: 4,
+                      padding: '4px 8px', marginBottom: 7 }}>{error}</div>
+      )}
+
+      {loading && notes === null && (
+        <div style={{ fontSize: 12, color: '#9ca3af' }}>Loading notes…</div>
+      )}
+
+      {notes !== null && notes.length === 0 && (
+        <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: srvCanAdd ? 8 : 0 }}>
+          No notes on this task yet.
+        </div>
+      )}
+
+      {(notes || []).map(n => {
+        const k = NOTE_KIND[n.noteType] || NOTE_KIND.comment;
+        return (
+          <div key={n.id} style={{ display: 'flex', gap: 8, alignItems: 'flex-start',
+                                   padding: '7px 0', borderTop: '1px solid #f3f4f6' }}>
+            <span style={{ width: 22, height: 22, borderRadius: '50%', flexShrink: 0,
+                           background: '#e0f2fe', color: '#0369a1', display: 'inline-flex',
+                           alignItems: 'center', justifyContent: 'center',
+                           fontSize: 9, fontWeight: 700 }}>
+              {initials(n.authorName || '?')}
+            </span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: '#111827' }}>
+                  {n.authorName || 'Removed user'}
+                </span>
+                <span style={{ fontSize: 10, color: '#9ca3af' }}>{fmtDateTime(n.createdAt)}</span>
+                {n.noteType !== 'comment' && (
+                  <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
+                                 color: k.color, background: k.bg, border: `1px solid ${k.bd}` }}>
+                    {k.label.toUpperCase()}
+                  </span>
+                )}
+                {n.isInternal && (
+                  <span title="Not shown to the person signing this project off"
+                    style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
+                             color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a' }}>
+                    INTERNAL
+                  </span>
+                )}
+              </div>
+              <div style={{ fontSize: 12, color: '#374151', marginTop: 2, lineHeight: 1.5,
+                            whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {n.body}
+              </div>
+            </div>
+            {n.canDelete && (
+              <button onClick={() => remove(n.id)} title="Remove this note"
+                style={{ fontSize: 14, lineHeight: 1, padding: '1px 5px', borderRadius: 4,
+                         background: 'none', color: '#9ca3af', border: 'none',
+                         cursor: 'pointer', flexShrink: 0 }}>×</button>
+            )}
+          </div>
+        );
+      })}
+
+      {srvCanAdd && (
+        <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #f3f4f6' }}>
+          <textarea value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={onKeyDown}
+            rows={2} placeholder="Add a note — what happened, what's holding this up, what was agreed"
+            style={{ width: '100%', fontSize: 12, padding: '6px 8px', borderRadius: 4,
+                     border: '1px solid #d1d5db', boxSizing: 'border-box', resize: 'vertical' }} />
+          <div style={{ display: 'flex', gap: 8, marginTop: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            <select value={kind} onChange={e => setKind(e.target.value)}
+              style={{ fontSize: 11, padding: '4px 6px', borderRadius: 4, border: '1px solid #d1d5db' }}>
+              <option value="comment">Note</option>
+              <option value="blocker">Blocker</option>
+              <option value="decision">Decision</option>
+            </select>
+            {srvCanInternal && (
+              <label title="Hidden from the person who signs this project off"
+                style={{ fontSize: 11, color: '#6b7280', display: 'inline-flex',
+                         alignItems: 'center', gap: 4 }}>
+                <input type="checkbox" checked={internal}
+                  onChange={e => setInternal(e.target.checked)} /> Internal only
+              </label>
+            )}
+            <button onClick={add} disabled={!draft.trim() || saving}
+              style={{ fontSize: 12, padding: '5px 14px', borderRadius: 4, fontWeight: 600,
+                       background: (!draft.trim() || saving) ? '#e5e7eb' : '#0369a1',
+                       color: (!draft.trim() || saving) ? '#9ca3af' : '#fff', border: 'none',
+                       cursor: (!draft.trim() || saving) ? 'not-allowed' : 'pointer' }}>
+              {saving ? 'Adding…' : 'Add note'}
+            </button>
+            <span style={{ fontSize: 10, color: '#9ca3af' }}>
+              Notes can't be edited — post a correction instead.
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Small count badge, shared by the compact and table checklist rows. */
+function NoteCountBadge({ count }) {
+  if (!count) return null;
+  return (
+    <span title={`${count} note${count === 1 ? '' : 's'}`}
+      style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4,
+               background: '#f5f3ff', color: '#6d28d9', border: '1px solid #ddd6fe',
+               whiteSpace: 'nowrap' }}>
+      🗒 {count}
+    </span>
+  );
+}
+
 // ── PlaySection ───────────────────────────────────────────────────────────────
 
-function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus, onSetDeps, siblings, users, stages, evidencePolicy }) {
+function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus, onSetDeps, siblings, users, stages, evidencePolicy,
+                       handoverId, canAddNotes, canMarkNotesInternal, onNoteCountChange }) {
   // Done-state mirrors the backend gate, which treats a play as satisfied when
   // its status is 'completed' OR 'skipped' — not merely when completedAt is set.
   // (A skipped play has no completedAt but still clears the gate.)
@@ -799,6 +1008,14 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
   const [evType, setEvType] = useState('whatsapp');
   const [snippet, setSnippet] = useState('');
   const [showEv, setShowEv] = useState(false);
+  // Notes open on demand rather than eagerly: expanding a task should not fire
+  // a request per task on a 200-task project. The count badge does the
+  // discovery job, so nothing is hidden — only deferred.
+  const [showNotes, setShowNotes] = useState(false);
+  // Local echo of the count so the button updates the moment a note is added,
+  // without refetching the whole project.
+  const [localNoteCount, setLocalNoteCount] = useState(null);
+  const noteCount = localNoteCount != null ? localNoteCount : (play.noteCount || 0);
 
   // Inline edit — fields are seeded from the play when the editor opens (in
   // openEdit), not via useState initialisers, so they stay fresh across reloads.
@@ -946,6 +1163,22 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
               {showEv ? 'Hide evidence' : 'Evidence'}
             </button>
           )}
+          {/* Offered on completed and skipped tasks too — annotating a finished
+              task is the reviewing case, and it is the one that matters most.
+              Shown even with no notes and no write access, so a read-only
+              viewer can still open the thread. */}
+          {handoverId != null && (
+            <button onClick={() => setShowNotes(v => !v)}
+              title={isDone ? 'Notes — you can still annotate a closed task' : 'Notes on this task'}
+              style={{
+                fontSize: 11, padding: '3px 8px', borderRadius: 4,
+                background: noteCount ? '#f5f3ff' : '#fff',
+                color: noteCount ? '#6d28d9' : '#374151',
+                border: `1px solid ${noteCount ? '#ddd6fe' : '#d1d5db'}`,
+                cursor: 'pointer', fontWeight: 600, whiteSpace: 'nowrap' }}>
+              {showNotes ? 'Hide notes' : `Notes${noteCount ? ` (${noteCount})` : ''}`}
+            </button>
+          )}
           {!isDone && canEdit && !capturing && onSetStatus && (
             <StatusAction play={play} canEdit={canEdit} onSetStatus={onSetStatus} />
           )}
@@ -984,6 +1217,20 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
           )}
           {play.completionNote && <div style={{ color: '#6b7280' }}>{play.completionNote}</div>}
         </div>
+      )}
+
+      {/* Notes — available whatever the task's status */}
+      {showNotes && handoverId != null && (
+        <TaskNotes
+          handoverId={handoverId}
+          play={play}
+          canAddNotes={canAddNotes}
+          canMarkInternal={canMarkNotesInternal}
+          onCountChange={(id, n) => {
+            setLocalNoteCount(n);
+            onNoteCountChange?.(id, n);
+          }}
+        />
       )}
 
       {/* Manual completion capture: note + how it was closed */}
@@ -1886,6 +2133,15 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   // is only meaningful relative to its siblings, which only this level knows.
   const [dragPlay,  setDragPlay]  = useState(null);   // { id, stageKey }
   const [dragOver,  setDragOver]  = useState(null);   // instance id being hovered
+
+  // Live note counts, keyed by playInstanceId (2026_120). The counts arriving
+  // with the project are correct at load; this overlays them when a note is
+  // added or removed, so the row badge stays in step with the open panel
+  // without refetching the whole project for a one-line note.
+  const [noteCounts, setNoteCounts] = useState({});
+  const noteCountChanged = useCallback((instanceId, count) => {
+    setNoteCounts(m => (m[instanceId] === count ? m : { ...m, [instanceId]: count }));
+  }, []);
   const [dateModal, setDateModal] = useState(null);   // play object
   const [evidModal, setEvidModal] = useState(null);   // play object
 
@@ -2072,7 +2328,10 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   // member; the two tabs represent the two legitimate actors.)
   const canManageCommitments = !isTerminal;
 
-  const plays        = detail.plays        || [];
+  const plays        = (detail.plays || []).map(p => (
+    noteCounts[p.playInstanceId] != null
+      ? { ...p, noteCount: noteCounts[p.playInstanceId] }
+      : p));
   const commitments  = detail.commitments  || [];
 
   const gatePlays  = plays.filter(p => p.isGate);
@@ -2417,6 +2676,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                             <span>{icon}</span>
                             <span style={{ flex: 1, minWidth: 0, color: done ? '#6b7280' : '#111827', textDecoration: done ? 'line-through' : 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{play.title}</span>
                             {play.isGate && !done && <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: '#eff6ff', color: '#1d4ed8' }}>GATE</span>}
+                            <NoteCountBadge count={play.noteCount} />
                             {done && play.completedAt && <span style={{ fontSize: 10, color: '#9ca3af' }}>{fmtDate(play.completedAt)}</span>}
                             <span style={{ fontSize: 10, color: '#9ca3af' }}>{isOpen ? '▾' : '▸'}</span>
                           </div>
@@ -2424,7 +2684,10 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                             <div style={{ paddingBottom: 8 }}>
                               <PlaySection play={play} canEdit={salesCanEdit} onComplete={handleCompletePlay} onRemove={handleRemovePlay} onEdit={handleUpdatePlay} onSetStatus={handleSetPlayStatus} onSetDeps={handleSetPlayDeps} evidencePolicy={evidencePolicy}
                                 siblings={plays.filter(x => x.playInstanceId !== play.playInstanceId)}
-                                users={users} stages={stages} />
+                                users={users} stages={stages}
+                                handoverId={h.id} canAddNotes={detail.canAddNotes}
+                                canMarkNotesInternal={detail.canMarkNotesInternal}
+                                onNoteCountChange={noteCountChanged} />
                             </div>
                           )}
                         </div>
@@ -2493,6 +2756,9 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                                   <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, padding: '1px 6px',
                                                  borderRadius: 4, background: '#eff6ff', color: '#1d4ed8' }}>GATE</span>
                                 )}
+                                {play.noteCount > 0 && (
+                                  <span style={{ marginLeft: 6 }}><NoteCountBadge count={play.noteCount} /></span>
+                                )}
                               </td>
                               <td style={td}>
                                 <InlineCell
@@ -2553,7 +2819,10 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                                   <PlaySection play={play} canEdit={salesCanEdit} onComplete={handleCompletePlay}
                                     onRemove={handleRemovePlay} onEdit={handleUpdatePlay} onSetStatus={handleSetPlayStatus} onSetDeps={handleSetPlayDeps} evidencePolicy={evidencePolicy}
                                 siblings={plays.filter(x => x.playInstanceId !== play.playInstanceId)}
-                                users={users} stages={stages} />
+                                users={users} stages={stages}
+                                handoverId={h.id} canAddNotes={detail.canAddNotes}
+                                canMarkNotesInternal={detail.canMarkNotesInternal}
+                                onNoteCountChange={noteCountChanged} />
                                 </td>
                               </tr>
                             )}
@@ -2610,6 +2879,10 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                         siblings={plays.filter(x => x.playInstanceId !== play.playInstanceId)}
                         users={users}
                         stages={stages}
+                        handoverId={h.id}
+                        canAddNotes={detail.canAddNotes}
+                        canMarkNotesInternal={detail.canMarkNotesInternal}
+                        onNoteCountChange={noteCountChanged}
                       />
                       {salesCanEdit && (
                         <div style={{ display: 'flex', gap: 10, margin: '-4px 0 10px 2px' }}>

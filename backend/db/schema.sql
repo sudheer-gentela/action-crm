@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict Y5YwHtKF5vDeXqaVO4lbsMyOR2M3ocTwdoGwNHP3WFcSnOvuCdN1cmdydPVBh7P
+\restrict cCbkzrdUVaJ6IWWnsnsD9A0bKF8BTLbjqHILv4Oc7mgGGTpNCSzrWaevwXBjTos
 
 -- Dumped from database version 17.10 (Debian 17.10-1.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -18304,6 +18304,13 @@ CREATE UNIQUE INDEX uq_actions_handover_play ON public.actions USING btree (hand
 
 
 --
+-- Name: uq_actions_handover_rule; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_actions_handover_rule ON public.actions USING btree (handover_id, source_rule) WHERE ((handover_id IS NOT NULL) AND (source_rule IS NOT NULL));
+
+
+--
 -- Name: uq_aie_org_provider_dedupe; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -23805,5 +23812,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Y5YwHtKF5vDeXqaVO4lbsMyOR2M3ocTwdoGwNHP3WFcSnOvuCdN1cmdydPVBh7P
+\unrestrict cCbkzrdUVaJ6IWWnsnsD9A0bKF8BTLbjqHILv4Oc7mgGGTpNCSzrWaevwXBjTos
 

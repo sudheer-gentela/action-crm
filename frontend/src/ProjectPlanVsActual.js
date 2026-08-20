@@ -100,15 +100,19 @@ export default function ProjectPlanVsActual({ handoverId }) {
 
     setDetail(d => ({ ...d, [playId]: { loading: true } }));
     try {
-      const [rev, ev] = await Promise.all([
+      const [rev, ev, notes] = await Promise.all([
         apiService.handovers.playRevisions(handoverId, playId),
         apiService.handovers.playEvidence(handoverId, playId),
+        // 2026_120. Non-fatal on its own: a project whose notes fail to load
+        // should still show its date history rather than an error screen.
+        apiService.handovers.playNotes(handoverId, playId).catch(() => ({ data: { notes: [] } })),
       ]);
       setDetail(d => ({
         ...d,
         [playId]: { loading: false,
                     revisions: rev.data?.revisions || [],
-                    evidence:  ev.data?.evidence  || [] },
+                    evidence:  ev.data?.evidence  || [],
+                    notes:     notes.data?.notes  || [] },
       }));
     } catch (err) {
       setDetail(d => ({ ...d, [playId]: { loading: false, error: err.message } }));
@@ -160,6 +164,15 @@ export default function ProjectPlanVsActual({ handoverId }) {
         <Metric label="Date revisions" value={summary.totalRevisions} />
         <Metric label="Re-baselined" value={summary.rebaselined}
                 tone={summary.rebaselined > 0 ? C.warn : undefined} />
+        {/* 2026_120. Shown only once something has actually slipped —
+            "0/0 explained" on a project running to plan is a number that
+            invites worry about nothing. The gap between the two figures is
+            the agenda for the next project review. */}
+        {summary.lateCount > 0 && (
+          <Metric label="Slips explained"
+                  value={`${summary.lateWithNotes ?? 0}/${summary.lateCount}`}
+                  tone={(summary.lateWithNotes ?? 0) < summary.lateCount ? C.warn : C.early} />
+        )}
       </div>
 
       {/* Data-quality caveat. Carried from the API rather than assumed, and shown
@@ -193,6 +206,7 @@ export default function ProjectPlanVsActual({ handoverId }) {
               <th style={{ padding: '0 8px 8px', fontWeight: 600 }}>vs due</th>
               <th style={{ padding: '0 8px 8px', fontWeight: 600 }}>Rev</th>
               <th style={{ padding: '0 8px 8px', fontWeight: 600 }}>Proof</th>
+              <th style={{ padding: '0 8px 8px', fontWeight: 600 }}>Notes</th>
             </tr>
           </thead>
           <tbody>
@@ -239,11 +253,18 @@ export default function ProjectPlanVsActual({ handoverId }) {
                     <td style={{ padding: '9px 8px', color: p.evidenceCount ? C.early : C.neutral }}>
                       {p.evidenceCount ? `${p.evidenceCount} ✓` : '—'}
                     </td>
+                    {/* 2026_120. The columns to the left say how much time was
+                        lost; this one says whether anyone wrote down why. An
+                        unexplained slip is the row a project review has to
+                        stop on. */}
+                    <td style={{ padding: '9px 8px', color: p.noteCount ? '#6d28d9' : C.neutral }}>
+                      {p.noteCount ? `🗒 ${p.noteCount}` : '—'}
+                    </td>
                   </tr>
 
                   {isOpen && (
                     <tr style={{ background: '#f9fafb' }}>
-                      <td colSpan={8} style={{ padding: '0 8px 14px 26px' }}>
+                      <td colSpan={9} style={{ padding: '0 8px 14px 26px' }}>
                         {d?.loading && <div style={{ fontSize: 12, color: C.neutral }}>Loading history…</div>}
                         {d?.error   && <div style={{ fontSize: 12, color: C.late }}>{d.error}</div>}
 
@@ -279,6 +300,42 @@ export default function ProjectPlanVsActual({ handoverId }) {
                                 ))}
                               </div>
                             )}
+
+                            {/* Notes first: on a row that slipped, "why" is the
+                                thing being looked for, and it reads before the
+                                proof-of-completion trail. Read-only here — the
+                                composer lives on the checklist, where the task
+                                itself is. */}
+                            <div style={{ fontSize: 11, color: C.neutral, margin: '12px 0 6px' }}>Notes</div>
+                            {(d.notes || []).length === 0 ? (
+                              <div style={{ fontSize: 12, color: C.neutral }}>
+                                No notes on this task.
+                              </div>
+                            ) : d.notes.map(n => (
+                              <div key={n.id} style={{
+                                background: '#fff', border: `1px solid ${C.line}`, borderRadius: 6,
+                                padding: '8px 10px', marginBottom: 6,
+                              }}>
+                                <div style={{ fontSize: 11, color: C.neutral, marginBottom: 3 }}>
+                                  {n.authorName || 'Removed user'} · {fmtDate(n.createdAt)}
+                                  {n.noteType && n.noteType !== 'comment' && (
+                                    <span style={{ color: n.noteType === 'blocker' ? C.late : C.head,
+                                                   marginLeft: 8, textTransform: 'uppercase',
+                                                   fontSize: 10, fontWeight: 700 }}>
+                                      {n.noteType}
+                                    </span>
+                                  )}
+                                  {n.isInternal && (
+                                    <span style={{ color: C.warn, marginLeft: 8, fontSize: 10, fontWeight: 700 }}>
+                                      INTERNAL
+                                    </span>
+                                  )}
+                                </div>
+                                <div style={{ fontSize: 12, color: '#111827', whiteSpace: 'pre-wrap' }}>
+                                  {n.body}
+                                </div>
+                              </div>
+                            ))}
 
                             <div style={{ fontSize: 11, color: C.neutral, margin: '12px 0 6px' }}>Evidence</div>
                             {d.evidence.length === 0 ? (

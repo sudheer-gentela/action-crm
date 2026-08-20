@@ -843,6 +843,16 @@ twilio: {
     reorderPlays: (id, stageKey, orderedIds) =>
       api.patch(`/handovers/sales/${id}/plays/reorder`, { stageKey, orderedIds }),
 
+    // ── Notes on a checklist task (2026_120) ──
+    // Available on tasks in ANY status: a manager writing up a finished
+    // project needs to annotate closed items, not just open ones.
+    playNotes:      (id, instanceId) => api.get(`/handovers/sales/${id}/plays/${instanceId}/notes`),
+    addPlayNote:    (id, instanceId, data) =>
+      api.post(`/handovers/sales/${id}/plays/${instanceId}/notes`, data),
+    // Soft delete. Keyed on the note, not the play — the note id already
+    // resolves to one task.
+    deletePlayNote: (id, noteId) => api.delete(`/handovers/sales/${id}/notes/${noteId}`),
+
     // ── Plan vs actual (2026_111) ──
     variance:       (id) => api.get(`/handovers/sales/${id}/variance`),
     canRebaseline:  (id) => api.get(`/handovers/sales/${id}/can-rebaseline`),

@@ -18,6 +18,10 @@
 // DELETE /handovers/sales/:id/commitments/:cid     remove commitment
 //
 // POST   /handovers/sales/:id/plays/:instanceId/complete   complete a play
+//
+// GET    /handovers/sales/:id/plays/:instanceId/notes      notes on a task
+// POST   /handovers/sales/:id/plays/:instanceId/notes      add a note (any status)
+// DELETE /handovers/sales/:id/notes/:noteId                withdraw a note
 // ─────────────────────────────────────────────────────────────────────────────
 
 const express         = require('express');
@@ -559,7 +563,12 @@ router.patch('/sales/:id/plays/:instanceId', async (req, res) => {
 // GET /sales/:id/variance — per-play variance + summary
 router.get('/sales/:id/variance', async (req, res) => {
   try {
-    res.json(await planVariance.getProjectVariance(parseInt(req.params.id), req.orgId));
+    const handoverId = parseInt(req.params.id);
+    // 2026_120: the note counts on each row must match what this viewer would
+    // actually be shown if they opened the row.
+    const { hideInternalNotes } = await handoverService.getNoteVisibility(
+      handoverId, req.orgId, req.user.userId);
+    res.json(await planVariance.getProjectVariance(handoverId, req.orgId, hideInternalNotes));
   } catch (err) {
     console.error('Project variance error:', err);
     res.status(err.status || 500).json({ error: { message: err.message } });
@@ -622,6 +631,60 @@ router.post('/sales/:id/evidence/:evidenceId/revoke', async (req, res) => {
     ));
   } catch (err) {
     console.error('Revoke play evidence error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── NOTES ON A TASK (2026_120) ───────────────────────────────────────────────
+//
+// Notes attach to a task in ANY status. There is no open/closed check on these
+// routes, deliberately: annotating a finished task is the case a manager
+// writing up a project needs most.
+//
+// Permission lives entirely in the service (canNoteOnProject / the author-or-
+// manager rule in deletePlayNote), so these handlers stay thin and there is
+// one place to change the rule.
+
+// GET /sales/:id/plays/:instanceId/notes
+router.get('/sales/:id/plays/:instanceId/notes', async (req, res) => {
+  try {
+    res.json(await handoverService.listPlayNotes(
+      parseInt(req.params.id), req.orgId, parseInt(req.params.instanceId),
+      req.user.userId
+    ));
+  } catch (err) {
+    console.error('List play notes error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// POST /sales/:id/plays/:instanceId/notes — { body, noteType?, isInternal? }
+router.post('/sales/:id/plays/:instanceId/notes', async (req, res) => {
+  try {
+    res.json(await handoverService.addPlayNote(
+      parseInt(req.params.id), req.orgId, parseInt(req.params.instanceId),
+      req.user.userId, req.body || {}
+    ));
+  } catch (err) {
+    console.error('Add play note error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// DELETE /sales/:id/notes/:noteId — soft delete; the row is retained
+//
+// Keyed on the note rather than nested under the play: a note id already
+// resolves to exactly one task, and the service re-checks that the task
+// belongs to this project, so carrying the instance id here would add a
+// parameter that has to agree with the note and can therefore disagree.
+router.delete('/sales/:id/notes/:noteId', async (req, res) => {
+  try {
+    res.json(await handoverService.deletePlayNote(
+      parseInt(req.params.id), req.orgId, parseInt(req.params.noteId),
+      req.user.userId
+    ));
+  } catch (err) {
+    console.error('Delete play note error:', err);
     res.status(err.status || 500).json({ error: { message: err.message } });
   }
 });
