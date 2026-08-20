@@ -828,6 +828,10 @@ twilio: {
     // Task prerequisites (2026_117). Instance ids on the same project; [] clears.
     setPlayDependencies: (id, instanceId, dependsOn) =>
       api.put(`/handovers/sales/${id}/plays/${instanceId}/dependencies`, { dependsOn }),
+    // 2026_118
+    startPreview:   (id, startDate) =>
+      api.get(`/handovers/sales/${id}/start-preview${startDate ? `?startDate=${startDate}` : ''}`),
+    evidencePolicy: (id) => api.get(`/handovers/sales/${id}/evidence-policy`),
     // Project stages (2026_116). project_stages is authoritative, so these
     // read/write the project's own stage list — not an org-wide catalogue.
     listStages:   (id)        => api.get(`/handovers/sales/${id}/stages`),

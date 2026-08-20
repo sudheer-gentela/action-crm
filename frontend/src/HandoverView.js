@@ -305,6 +305,115 @@ const CHECKLIST_LAYOUTS = [
   ['detailed', 'Detailed'],
 ];
 
+// Review-dates step shown before Start / Submit.  (2026_118)
+//
+// Leaving draft freezes the plan: today's dates become baseline_source
+// 'original', and every later change is a tracked rebaseline needing a reason.
+// This is the last chance to fix them cheaply, which matters because
+// 'created'-anchored tasks carry dates computed when the row was inserted —
+// often weeks before the project actually starts.
+function StartReviewModal({ preview, loading, onConfirm, onCancel, actionLabel }) {
+  const [startDate, setStartDate] = useState(
+    preview?.startDate || new Date().toISOString().slice(0, 10));
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 1000,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div style={{ background: '#fff', borderRadius: 12, width: 'min(860px, 100%)',
+                    maxHeight: '86vh', display: 'flex', flexDirection: 'column',
+                    boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid #e5e7eb' }}>
+          <h3 style={{ margin: 0, fontSize: 15, color: '#111827' }}>Review dates before starting</h3>
+          <p style={{ margin: '4px 0 0', fontSize: 12, color: '#6b7280' }}>
+            These become the baseline. After this, changing a date is a tracked rebaseline
+            and needs a reason.
+          </p>
+        </div>
+
+        <div style={{ padding: '12px 20px', borderBottom: '1px solid #f3f4f6',
+                      display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <label style={{ fontSize: 12, color: '#374151' }}>
+            Start date
+            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
+              style={{ marginLeft: 6, fontSize: 12, padding: '4px 6px',
+                       borderRadius: 4, border: '1px solid #d1d5db' }} />
+          </label>
+          {preview && (
+            <span style={{ fontSize: 11, color: '#6b7280' }}>
+              {preview.counts.total} tasks · {preview.counts.changing} will change
+              {preview.counts.stale > 0 && (
+                <span style={{ color: '#b45309', fontWeight: 600 }}>
+                  {' '}· {preview.counts.stale} dated before the start
+                </span>
+              )}
+              {preview.counts.undated > 0 && <span> · {preview.counts.undated} undated</span>}
+            </span>
+          )}
+        </div>
+
+        <div style={{ overflowY: 'auto', flex: 1, padding: '0 20px' }}>
+          {loading && <div style={{ padding: 20, fontSize: 12, color: '#6b7280' }}>Loading…</div>}
+          {!loading && preview && (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: '#f8fafc' }}>
+                  {['Task', 'Stage', 'Current due', 'Becomes'].map(h => (
+                    <th key={h} style={{ textAlign: 'left', padding: '7px 8px', fontSize: 10,
+                                         fontWeight: 700, color: '#94a3b8', letterSpacing: 0.4,
+                                         textTransform: 'uppercase', position: 'sticky', top: 0,
+                                         background: '#f8fafc' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {preview.tasks.map(t => (
+                  <tr key={t.playInstanceId} style={{ borderTop: '1px solid #f3f4f6' }}>
+                    <td style={{ padding: '7px 8px', color: '#111827' }}>
+                      {t.title}
+                      {t.isGate && <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700,
+                        padding: '1px 5px', borderRadius: 4, background: '#eff6ff', color: '#1d4ed8' }}>GATE</span>}
+                    </td>
+                    <td style={{ padding: '7px 8px', color: '#6b7280' }}>{t.stageName || '—'}</td>
+                    <td style={{ padding: '7px 8px',
+                                 color: t.staleDate ? '#b45309' : '#6b7280',
+                                 fontWeight: t.staleDate ? 600 : 400 }}>
+                      {t.currentDueDate ? fmtDate(t.currentDueDate) : '—'}
+                      {t.staleDate && <span title="Earlier than the start date"> ⚠</span>}
+                    </td>
+                    <td style={{ padding: '7px 8px',
+                                 color: t.changes ? '#0369a1' : '#9ca3af',
+                                 fontWeight: t.changes ? 600 : 400 }}>
+                      {t.computedDueDate ? fmtDate(t.computedDueDate) : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div style={{ padding: '14px 20px', borderTop: '1px solid #e5e7eb', display: 'flex', gap: 8 }}>
+          <button onClick={() => onConfirm(startDate)} disabled={loading}
+            style={{ fontSize: 12, padding: '7px 16px', borderRadius: 6, fontWeight: 600,
+                     border: 'none', background: loading ? '#9ca3af' : '#0369a1', color: '#fff',
+                     cursor: loading ? 'default' : 'pointer' }}>
+            {actionLabel}
+          </button>
+          <button onClick={onCancel}
+            style={{ fontSize: 12, padding: '7px 14px', borderRadius: 6,
+                     border: '1px solid #d1d5db', background: '#fff', color: '#374151',
+                     cursor: 'pointer' }}>
+            Cancel
+          </button>
+          <span style={{ fontSize: 11, color: '#9ca3af', alignSelf: 'center' }}>
+            Dates can still be edited on the checklist before you confirm.
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Stage manager — rename, reorder and remove a project's stages.
 //
 // Collapsed to a single link so it does not compete with the checklist for
@@ -413,10 +522,74 @@ function StageManager({ stages, onSave, onAdd, onRemove, onClose }) {
   );
 }
 
+// Click-to-edit cell for the Table view.  (2026_118 item 7)
+//
+// Commits on blur or Enter, abandons on Escape. Deliberately NOT a controlled
+// value bound to the row: the row re-renders on every checklist reload, and a
+// bound value would discard keystrokes mid-edit.
+function InlineCell({ value, display, type = 'text', options, canEdit, onSave, placeholder }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value ?? '');
+
+  useEffect(() => { if (!editing) setDraft(value ?? ''); }, [value, editing]);
+
+  if (!canEdit) return <span>{display}</span>;
+
+  const commit = () => {
+    setEditing(false);
+    const next = draft === '' ? null : draft;
+    if (String(next ?? '') !== String(value ?? '')) onSave(next);
+  };
+
+  if (!editing) {
+    return (
+      <span
+        onClick={(e) => { e.stopPropagation(); setEditing(true); }}
+        title="Click to edit"
+        style={{ cursor: 'text', borderBottom: '1px dashed transparent', display: 'inline-block',
+                 maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis',
+                 whiteSpace: 'nowrap', verticalAlign: 'middle' }}
+        onMouseEnter={e => { e.currentTarget.style.borderBottomColor = '#cbd5e1'; }}
+        onMouseLeave={e => { e.currentTarget.style.borderBottomColor = 'transparent'; }}
+      >
+        {display || <span style={{ color: '#d1d5db' }}>{placeholder || '—'}</span>}
+      </span>
+    );
+  }
+
+  const common = {
+    autoFocus: true,
+    onClick: e => e.stopPropagation(),
+    onBlur: commit,
+    onKeyDown: e => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      if (e.key === 'Escape') { setDraft(value ?? ''); setEditing(false); }
+    },
+    style: { width: '100%', fontSize: 12, padding: '3px 6px', borderRadius: 4,
+             border: '1px solid #0369a1', boxSizing: 'border-box' },
+  };
+
+  if (type === 'select') {
+    return (
+      <select {...common} value={draft ?? ''} onChange={e => setDraft(e.target.value)}>
+        <option value="">Unassigned</option>
+        {(options || []).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+    );
+  }
+  return (
+    <input {...common} type={type} value={draft ?? ''}
+      onChange={e => setDraft(e.target.value)} />
+  );
+}
+
 // Stage banner + progress bar, shared by all three checklist views so a change
 // to stage presentation does not have to be made in three places.
 function StageHeader({ group }) {
   const pct = group.items.length ? Math.round((group.done / group.items.length) * 100) : 0;
+  // Every task in a locked stage carries the same stageBlockedBy, so the first
+  // one is representative.
+  const lockedBy = group.items[0]?.stageBlockedBy || [];
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
       <span style={{ fontSize: 9, fontWeight: 700, color: '#94a3b8', background: '#f1f5f9',
@@ -431,6 +604,14 @@ function StageHeader({ group }) {
       <span style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>
         {group.done}/{group.items.length} done
       </span>
+      {lockedBy.length > 0 && (
+        <span title={`Locked until ${lockedBy.join(', ')} clears its gates`}
+          style={{ fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 4,
+                   background: '#f1f5f9', color: '#6b7280', border: '1px solid #e5e7eb',
+                   whiteSpace: 'nowrap' }}>
+          🔒 Locked · {lockedBy.join(', ')}
+        </span>
+      )}
       <div style={{ flex: 1, height: 4, background: '#f1f5f9', borderRadius: 2, overflow: 'hidden' }}>
         <div style={{ width: `${pct}%`, height: '100%',
                       background: pct === 100 ? '#10b981' : '#0369a1', transition: 'width 0.2s' }} />
@@ -515,9 +696,15 @@ function StatusAction({ play, canEdit, onSetStatus, compact = false }) {
   // 2026_117: prerequisites block starting, not warning. Pausing an already
   // started task stays available — a task started before a dependency was
   // added must still be resettable.
-  const blocked = (play.blockedBy || []).length > 0 && play.status !== 'in_progress';
+  // 2026_118: a stage lock blocks just like a task prerequisite, but says so
+  // differently — "waiting on Core Model Pipeline" reads very differently from
+  // "waiting on task X", and conflating them hides which one to go fix.
+  const stageLocked = (play.stageBlockedBy || []).length > 0 && play.status !== 'in_progress';
+  const blocked = ((play.blockedBy || []).length > 0 || stageLocked) && play.status !== 'in_progress';
   if (blocked) {
-    const names = play.blockedBy.map(b => b.title).join(', ');
+    const names = stageLocked
+      ? `stage ${play.stageBlockedBy.join(', ')}`
+      : play.blockedBy.map(b => b.title).join(', ');
     return (
       <span
         title={`Blocked by: ${names}. Complete those first, or remove the dependency.`}
@@ -575,7 +762,7 @@ function OwnerChip({ name, compact = false }) {
 
 // ── PlaySection ───────────────────────────────────────────────────────────────
 
-function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus, onSetDeps, siblings, users, stages }) {
+function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus, onSetDeps, siblings, users, stages, evidencePolicy }) {
   // Done-state mirrors the backend gate, which treats a play as satisfied when
   // its status is 'completed' OR 'skipped' — not merely when completedAt is set.
   // (A skipped play has no completedAt but still clears the gate.)
@@ -658,7 +845,15 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
   // can share it.
   const st = PLAY_STATUS[play.status] || PLAY_STATUS.not_started;
 
+  // 2026_118: whether THIS task needs evidence. The note deliberately does not
+  // satisfy it — a note is free text, whereas the evidence field points at the
+  // artefact that closed the task. Mirrors the server-side check in
+  // completePlay, which is the actual enforcement.
+  const evidenceNeeded = Boolean(
+    evidencePolicy && (evidencePolicy.required || (evidencePolicy.requiredForGates && play.isGate)));
+
   const confirm = () => {
+    if (evidenceNeeded && !snippet.trim()) return;
     const data = {};
     if (note.trim()) data.completionNote = note.trim();
     if (snippet.trim()) data.completionEvidence = { type: evType, snippet: snippet.trim() };
@@ -787,13 +982,26 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
               <option value="note">Note</option>
               <option value="document">Document</option>
             </select>
-            <input value={snippet} onChange={e => setSnippet(e.target.value)} placeholder="Evidence (e.g. paste the message / reference)"
-              style={{ flex: 1, fontSize: 12, padding: '5px 8px', borderRadius: 4, border: '1px solid #d1d5db' }} />
+            <input value={snippet} onChange={e => setSnippet(e.target.value)}
+              placeholder={evidenceNeeded
+                ? 'Evidence required — paste the message / reference'
+                : 'Evidence (e.g. paste the message / reference)'}
+              style={{ flex: 1, fontSize: 12, padding: '5px 8px', borderRadius: 4,
+                       border: `1px solid ${evidenceNeeded && !snippet.trim() ? '#fca5a5' : '#d1d5db'}` }} />
           </div>
           <textarea value={note} onChange={e => setNote(e.target.value)} rows={2} placeholder="Optional note"
             style={{ width: '100%', fontSize: 12, padding: '5px 8px', borderRadius: 4, border: '1px solid #d1d5db', boxSizing: 'border-box', resize: 'vertical' }} />
           <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-            <button onClick={confirm} style={{ fontSize: 12, padding: '5px 14px', borderRadius: 4, background: '#059669', color: '#fff', border: 'none', fontWeight: 600, cursor: 'pointer' }}>
+            <button onClick={confirm} disabled={evidenceNeeded && !snippet.trim()}
+              title={evidenceNeeded && !snippet.trim()
+                ? (isGate ? 'This is a gate task — evidence is required.'
+                          : 'Evidence is required to close tasks on this project.')
+                : ''}
+              style={{ fontSize: 12, padding: '5px 14px', borderRadius: 4,
+                       background: (evidenceNeeded && !snippet.trim()) ? '#e5e7eb' : '#059669',
+                       color: (evidenceNeeded && !snippet.trim()) ? '#9ca3af' : '#fff',
+                       border: 'none', fontWeight: 600,
+                       cursor: (evidenceNeeded && !snippet.trim()) ? 'not-allowed' : 'pointer' }}>
               Confirm done
             </button>
             <button onClick={() => setCapturing(false)} style={{ fontSize: 12, padding: '5px 10px', borderRadius: 4, background: '#f1f5f9', color: '#374151', border: 'none', cursor: 'pointer' }}>
@@ -1503,6 +1711,8 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   // both item forms and the stage manager.
   const [stages, setStages] = useState([]);
   const [showStageMgr, setShowStageMgr] = useState(false);
+  const [evidencePolicy, setEvidencePolicy] = useState(null);
+  const [startReview, setStartReview] = useState(null);   // { preview, loading, target }
   const setLayout = (v) => { setChecklistLayout(v); try { localStorage.setItem('gw_project_checklist_layout', v); } catch { /* ignore */ } };
   const togglePlay = (id) => setExpandedPlays(x => ({ ...x, [id]: !x[id] }));
   const [closureText, setClosureText] = useState('');
@@ -1551,6 +1761,14 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => { loadStages(); }, [loadStages]);
+  useEffect(() => {
+    if (!h?.id) return;
+    apiService.handovers.evidencePolicy(h.id)
+      .then(r => setEvidencePolicy(r.data))
+      // Non-fatal: without a policy the form stays permissive and the server
+      // remains the real enforcement point.
+      .catch(() => setEvidencePolicy(null));
+  }, [h?.id]);
 
   const flash = (type, msg) => {
     if (type === 'success') { setSuccess(msg); setError(''); }
@@ -1565,6 +1783,30 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     in_progress:  'Project marked in progress',
     completed:    'Project completed',
     cancelled:    'Project cancelled',
+  };
+
+  // Leaving draft freezes the plan, so it gets a review step first. Other
+  // transitions go straight through — there is nothing to review.
+  const requestAction = async (newStatus) => {
+    if (!isDraft || newStatus === 'draft') return handleAction(newStatus);
+    setStartReview({ preview: null, loading: true, target: newStatus });
+    try {
+      const r = await apiService.handovers.startPreview(h.id, null);
+      setStartReview({ preview: r.data, loading: false, target: newStatus });
+    } catch {
+      // If the preview cannot be built, do not trap the user — fall back to
+      // the direct transition rather than blocking a legitimate action.
+      setStartReview(null);
+      return handleAction(newStatus);
+    }
+  };
+
+  const refreshPreview = async (startDate) => {
+    setStartReview(st => st && { ...st, loading: true });
+    try {
+      const r = await apiService.handovers.startPreview(h.id, startDate);
+      setStartReview(st => st && { ...st, preview: r.data, loading: false });
+    } catch { setStartReview(st => st && { ...st, loading: false }); }
   };
 
   const handleAction = async (newStatus, closureSummary = null) => {
@@ -1673,6 +1915,50 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
 
   // Start / pause. Separate from handleUpdatePlay so a status flip does not
   // reload the stage list — nothing about stages changes.
+  // 2026_118 item 7: duplicate a row. Copies the plan-shaped fields (stage,
+  // owner, gate, offset) but deliberately NOT status, completion or
+  // dependencies — a copy is a new piece of work, not a clone of progress,
+  // and inheriting depends_on would silently make the copy blocked.
+  const handleDuplicatePlay = async (play) => {
+    try {
+      await apiService.handovers.addPlay(h.id, {
+        title: `${play.title} (copy)`,
+        description: play.description || undefined,
+        dueDate: play.dueDate || undefined,
+        ownerUserId: play.ownerUserId || undefined,
+        isGate: play.isGate === true,
+        stageKey: play.stageKey || undefined,
+      });
+      await load();
+      await loadStages();
+    } catch (err) {
+      flash('error', err?.response?.data?.error?.message || 'Could not duplicate that task');
+    }
+  };
+
+  const handleDeletePlay = async (play) => {
+    // eslint-disable-next-line no-restricted-globals
+    if (!window.confirm(`Delete "${play.title}"? This cannot be undone.`)) return;
+    try {
+      await apiService.handovers.removePlay(h.id, play.playInstanceId);
+      await load();
+      await loadStages();
+    } catch (err) {
+      flash('error', err?.response?.data?.error?.message || 'Could not delete that task');
+    }
+  };
+
+  // Inline edit from the Table view. Sends only the changed field, so a
+  // title edit cannot accidentally clear a due date.
+  const handleInlineSave = async (playInstanceId, field, value) => {
+    try {
+      await apiService.handovers.updatePlay(h.id, playInstanceId, { [field]: value });
+      await load();
+    } catch (err) {
+      flash('error', err?.response?.data?.error?.message || 'Could not save that change');
+    }
+  };
+
   const handleSetPlayDeps = async (playInstanceId, dependsOn) => {
     try {
       await apiService.handovers.setPlayDependencies(h.id, playInstanceId, dependsOn);
@@ -1868,10 +2154,29 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
           </div>
         )}
 
+        {startReview && (
+          <StartReviewModal
+            preview={startReview.preview}
+            loading={startReview.loading}
+            actionLabel={isInternal ? '▶️ Start project' : '📤 Submit project'}
+            onCancel={() => setStartReview(null)}
+            onConfirm={async (startDate) => {
+              // Re-preview if the date moved, so the user confirms what they saw.
+              if (startReview.preview && startDate !== startReview.preview.startDate) {
+                await refreshPreview(startDate);
+                return;
+              }
+              const target = startReview.target;
+              setStartReview(null);
+              await handleAction(target);
+            }}
+          />
+        )}
+
         {/* Action buttons */}
         <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
           {isSalesView && isDraft && (
-            <button onClick={() => handleAction(isInternal ? 'in_progress' : 'submitted')}
+            <button onClick={() => requestAction(isInternal ? 'in_progress' : 'submitted')}
               disabled={actioning || !canSubmit}
               title={!canSubmit ? `Complete all gate plays before ${isInternal ? 'starting' : 'submitting'}` : ''}
               style={{
@@ -2088,7 +2393,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                           </div>
                           {isOpen && (
                             <div style={{ paddingBottom: 8 }}>
-                              <PlaySection play={play} canEdit={salesCanEdit} onComplete={handleCompletePlay} onRemove={handleRemovePlay} onEdit={handleUpdatePlay} onSetStatus={handleSetPlayStatus} onSetDeps={handleSetPlayDeps}
+                              <PlaySection play={play} canEdit={salesCanEdit} onComplete={handleCompletePlay} onRemove={handleRemovePlay} onEdit={handleUpdatePlay} onSetStatus={handleSetPlayStatus} onSetDeps={handleSetPlayDeps} evidencePolicy={evidencePolicy}
                                 siblings={plays.filter(x => x.playInstanceId !== play.playInstanceId)}
                                 users={users} stages={stages} />
                             </div>
@@ -2119,11 +2424,12 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                       <col style={{ width: 150 }} />
                       <col style={{ width: 190 }} />
                       <col style={{ width: 170 }} />
+                      <col style={{ width: 74 }} />
                       <col style={{ width: 28 }} />
                     </colgroup>
                     <thead>
                       <tr style={{ background: '#f8fafc' }}>
-                        {['Task', 'Owner', 'Due', 'Status', ''].map((h, i) => (
+                        {['Task', 'Owner', 'Due', 'Status', '', ''].map((h, i) => (
                           <th key={i} style={{
                             textAlign: 'left', fontSize: 10, fontWeight: 700, color: '#94a3b8',
                             letterSpacing: 0.4, textTransform: 'uppercase',
@@ -2146,24 +2452,46 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                           <React.Fragment key={play.id}>
                             <tr onClick={() => togglePlay(play.id)} title="Click for detail"
                                 style={{ cursor: 'pointer', background: isOpen ? '#f8fafc' : '#fff' }}>
-                              <td style={{ ...td, fontSize: 13 }}>
-                                <span style={{
-                                  display: 'block', color: done ? '#6b7280' : '#111827',
-                                  textDecoration: done ? 'line-through' : 'none',
-                                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                                }}>{play.title}</span>
+                              <td style={{ ...td, fontSize: 13,
+                                           color: done ? '#6b7280' : '#111827',
+                                           textDecoration: done ? 'line-through' : 'none' }}>
+                                <InlineCell
+                                  value={play.title} display={play.title}
+                                  canEdit={salesCanEdit && !done}
+                                  onSave={v => v && handleInlineSave(play.playInstanceId, 'title', v)}
+                                />
                                 {play.isGate && !done && (
-                                  <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px',
+                                  <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, padding: '1px 6px',
                                                  borderRadius: 4, background: '#eff6ff', color: '#1d4ed8' }}>GATE</span>
                                 )}
                               </td>
-                              <td style={td}><OwnerChip name={play.ownerName} /></td>
+                              <td style={td}>
+                                <InlineCell
+                                  type="select"
+                                  value={play.ownerUserId ? String(play.ownerUserId) : ''}
+                                  display={<OwnerChip name={play.ownerName} />}
+                                  options={(users || []).map(u => ({
+                                    value: String(u.id),
+                                    // Same precedence as the other user pickers
+                                    // in this file (line ~1395).
+                                    label: u.name || `${u.first_name || ''} ${u.last_name || ''}`.trim() || u.email,
+                                  }))}
+                                  canEdit={salesCanEdit && !done}
+                                  onSave={v => handleInlineSave(play.playInstanceId, 'ownerUserId', v)}
+                                />
+                              </td>
                               <td style={td}>
                                 {done && play.completedAt
                                   ? <span style={{ fontSize: 11, color: '#059669', whiteSpace: 'nowrap' }}>✓ {fmtDate(play.completedAt)}</span>
-                                  : play.dueDate
-                                    ? <DueChip dueDate={play.dueDate} isOverdue={play.isOverdue} daysOverdue={play.daysOverdue} />
-                                    : <span style={{ fontSize: 11, color: '#d1d5db' }}>—</span>}
+                                  : <InlineCell
+                                      type="date"
+                                      value={play.dueDate ? String(play.dueDate).slice(0, 10) : ''}
+                                      display={play.dueDate
+                                        ? <DueChip dueDate={play.dueDate} isOverdue={play.isOverdue} daysOverdue={play.daysOverdue} />
+                                        : null}
+                                      canEdit={salesCanEdit}
+                                      onSave={v => handleInlineSave(play.playInstanceId, 'dueDate', v)}
+                                    />}
                               </td>
                               <td style={td}>
                                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -2172,13 +2500,29 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                                     onSetStatus={handleSetPlayStatus} compact />
                                 </span>
                               </td>
+                              <td style={td}>
+                                {salesCanEdit && (
+                                  <span style={{ display: 'inline-flex', gap: 4 }}>
+                                    <button title="Duplicate this task"
+                                      onClick={e => { e.stopPropagation(); handleDuplicatePlay(play); }}
+                                      style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4,
+                                               border: '1px solid #e5e7eb', background: '#fff',
+                                               color: '#6b7280', cursor: 'pointer', lineHeight: 1.4 }}>⧉</button>
+                                    <button title="Delete this task"
+                                      onClick={e => { e.stopPropagation(); handleDeletePlay(play); }}
+                                      style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4,
+                                               border: '1px solid #fecaca', background: '#fff',
+                                               color: '#991b1b', cursor: 'pointer', lineHeight: 1.4 }}>🗑</button>
+                                  </span>
+                                )}
+                              </td>
                               <td style={{ ...td, color: '#9ca3af', fontSize: 10 }}>{isOpen ? '▾' : '▸'}</td>
                             </tr>
                             {isOpen && (
                               <tr>
-                                <td colSpan={5} style={{ padding: '0 10px 8px', background: '#f8fafc', borderTop: 'none' }}>
+                                <td colSpan={6} style={{ padding: '0 10px 8px', background: '#f8fafc', borderTop: 'none' }}>
                                   <PlaySection play={play} canEdit={salesCanEdit} onComplete={handleCompletePlay}
-                                    onRemove={handleRemovePlay} onEdit={handleUpdatePlay} onSetStatus={handleSetPlayStatus} onSetDeps={handleSetPlayDeps}
+                                    onRemove={handleRemovePlay} onEdit={handleUpdatePlay} onSetStatus={handleSetPlayStatus} onSetDeps={handleSetPlayDeps} evidencePolicy={evidencePolicy}
                                 siblings={plays.filter(x => x.playInstanceId !== play.playInstanceId)}
                                 users={users} stages={stages} />
                                 </td>
@@ -2233,6 +2577,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                         onEdit={handleUpdatePlay}
                         onSetStatus={handleSetPlayStatus}
                         onSetDeps={handleSetPlayDeps}
+                        evidencePolicy={evidencePolicy}
                         siblings={plays.filter(x => x.playInstanceId !== play.playInstanceId)}
                         users={users}
                         stages={stages}

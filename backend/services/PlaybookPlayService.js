@@ -60,12 +60,27 @@ async function goLiveDateForDeal(dealId, orgId) {
   return r.rows[0]?.go_live_date ?? null; // 'YYYY-MM-DD' | null
 }
 
-function computeInstanceDueDate(anchor, offsetDays, goLiveStr) {
+function computeInstanceDueDate(anchor, offsetDays, goLiveStr, startedAtStr = null) {
   if (anchor === 'go_live') {
     if (!goLiveStr) return null; // unknown until go-live is set
     const [y, m, d] = goLiveStr.split('-').map(Number);
     const dt = new Date(Date.UTC(y, m - 1, d));
     dt.setUTCDate(dt.getUTCDate() + (Number(offsetDays) || 0)); // signed offset
+    return dt.toISOString().split('T')[0];
+  }
+  // 2026_118: 'project_start' — offset from when the project actually
+  // started, resolved on leaving draft.
+  //
+  // NULL until then, deliberately. The alternative (falling back to today)
+  // is exactly the bug this anchor exists to fix: a project drafted in July
+  // and started in September would open with every task already overdue
+  // against dates that never meant anything. An empty DUE column is honest;
+  // a wrong date is not.
+  if (anchor === 'project_start') {
+    if (!startedAtStr) return null;
+    const [y, m, d] = startedAtStr.slice(0, 10).split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    dt.setUTCDate(dt.getUTCDate() + (Number(offsetDays) || 0));
     return dt.toISOString().split('T')[0];
   }
   // 'created' (default): forward from today — behaviour unchanged.
@@ -239,7 +254,7 @@ class PlaybookPlayService {
       // from today (unchanged); 'go_live' → backward from go-live once known,
       // else NULL until the go-live trigger schedules it.
       const anchor  = play.due_anchor || 'created';
-      const dueDate = computeInstanceDueDate(anchor, play.due_offset_days, goLiveDate);
+      const dueDate = computeInstanceDueDate(anchor, play.due_offset_days, goLiveDate, null);   // deal path: project_start is a project-only anchor
 
       // Create instance
       const instResult = await db.query(
@@ -479,6 +494,11 @@ class PlaybookPlayService {
     const goLiveDate = handover.go_live_date
       ? new Date(handover.go_live_date).toISOString().slice(0, 10)
       : null;
+    // 2026_118: NULL while the project is still in draft, which leaves
+    // project_start-anchored plays undated until Start.
+    const startedAt = handover.started_at
+      ? new Date(handover.started_at).toISOString().slice(0, 10)
+      : null;
 
     // Context for fire_conditions. Deliberately narrow — it carries only what
     // a project can truthfully answer. daysInStage is absent because
@@ -530,7 +550,7 @@ class PlaybookPlayService {
       }
 
       const anchor  = play.due_anchor || 'created';
-      const dueDate = computeInstanceDueDate(anchor, play.due_offset_days, goLiveDate);
+      const dueDate = computeInstanceDueDate(anchor, play.due_offset_days, goLiveDate, startedAt);
 
       const instResult = await db.query(
         `INSERT INTO project_play_instances (
@@ -684,7 +704,7 @@ class PlaybookPlayService {
       }
 
       const anchor  = play.due_anchor || 'created';
-      const dueDate = computeInstanceDueDate(anchor, play.due_offset_days, goLiveDate);
+      const dueDate = computeInstanceDueDate(anchor, play.due_offset_days, goLiveDate, null);   // deal path: project_start is a project-only anchor
 
       const instResult = await db.query(
         `INSERT INTO deal_play_instances (

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 3knAz7JYgxTYLnFehfEOAc4De9JGkDGQEmLWsHWPuP4gkAkaXpX6bbmaac3RfWM
+\restrict Y5YwHtKF5vDeXqaVO4lbsMyOR2M3ocTwdoGwNHP3WFcSnOvuCdN1cmdydPVBh7P
 
 -- Dumped from database version 17.10 (Debian 17.10-1.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -144,6 +144,20 @@ BEGIN
 
   RETURN NEW;
 END $$;
+
+
+--
+-- Name: project_stages_touch(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.project_stages_touch() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  NEW.updated_at := now();
+  RETURN NEW;
+END;
+$$;
 
 
 --
@@ -4659,10 +4673,27 @@ CREATE TABLE public.project_play_instances (
     parent_instance_id integer,
     baseline_due_date date,
     baseline_source text,
+    depends_on integer[],
     CONSTRAINT project_play_instances_baseline_source_chk CHECK (((baseline_source IS NULL) OR (baseline_source = ANY (ARRAY['original'::text, 'inferred'::text, 'rebaselined'::text])))),
+    CONSTRAINT project_play_instances_depends_not_self CHECK (((depends_on IS NULL) OR (NOT (id = ANY (depends_on))))),
+    CONSTRAINT project_play_instances_due_anchor_check CHECK (((due_anchor)::text = ANY (ARRAY['created'::text, 'go_live'::text, 'project_start'::text]))),
     CONSTRAINT project_play_instances_parent_not_self CHECK (((parent_instance_id IS NULL) OR (parent_instance_id <> id))),
     CONSTRAINT project_play_instances_status_check CHECK ((status = ANY (ARRAY['not_started'::text, 'in_progress'::text, 'blocked'::text, 'snoozed'::text, 'completed'::text, 'skipped'::text, 'cancelled'::text])))
 );
+
+
+--
+-- Name: COLUMN project_play_instances.due_anchor; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.project_play_instances.due_anchor IS 'created = offset from row insertion (legacy; the source of phantom overdue on unstarted projects). go_live = signed offset from the project go-live date. project_start = offset from started_at, resolved when the project leaves draft.';
+
+
+--
+-- Name: COLUMN project_play_instances.depends_on; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.project_play_instances.depends_on IS 'Sibling project_play_instances.id values that must be completed or skipped before this task may start. INSTANCE ids ΓÇö not the play ids in playbook_plays.depends_on. NULL/empty means no prerequisites.';
 
 
 --
@@ -4756,6 +4787,9 @@ CREATE TABLE public.sales_handovers (
     signed_off_at timestamp with time zone,
     signoff_note text,
     media_capture_mode text DEFAULT 'always'::text NOT NULL,
+    started_at timestamp with time zone,
+    baseline_frozen_at timestamp with time zone,
+    evidence_config jsonb,
     CONSTRAINT sales_handovers_budget_internal_chk CHECK (((budget IS NULL) OR (project_kind = 'internal'::text))),
     CONSTRAINT sales_handovers_kind_shape_chk CHECK ((((project_kind = 'internal'::text) AND (account_id IS NULL) AND (deal_id IS NULL)) OR ((project_kind = 'customer'::text) AND ((account_id IS NOT NULL) OR (deal_id IS NOT NULL))))),
     CONSTRAINT sales_handovers_manager_label_chk CHECK (((manager_label IS NULL) OR (btrim(manager_label) <> ''::text))),
@@ -4835,6 +4869,27 @@ COMMENT ON COLUMN public.sales_handovers.signed_off_by IS 'The internal customer
 --
 
 COMMENT ON COLUMN public.sales_handovers.media_capture_mode IS 'always (default) = capture on arrival, no prompt; the team can still Remove. ask = capture, then prompt to Keep/Remove. never = do not capture; the message is marked skipped and stays visible so nothing is lost quietly. Capture is automatic by default because a Cloud API number has no app inbox ΓÇö an attachment GoWarm does not fetch is unreachable by anyone.';
+
+
+--
+-- Name: COLUMN sales_handovers.started_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sales_handovers.started_at IS 'When the project left draft. Anchor date for due_anchor = project_start.';
+
+
+--
+-- Name: COLUMN sales_handovers.baseline_frozen_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sales_handovers.baseline_frozen_at IS 'When the plan stopped being provisional. NULL = still in draft, due date edits move baseline_due_date silently. Set = every later date change is a tracked rebaseline.';
+
+
+--
+-- Name: COLUMN sales_handovers.evidence_config; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sales_handovers.evidence_config IS 'Per-project override of the org default in organizations.settings.evidence. Keys: required (bool), requiredForGates (bool). NULL = inherit the org setting.';
 
 
 --
@@ -6413,7 +6468,7 @@ CREATE TABLE public.playbook_plays (
     created_by integer,
     role_id integer,
     due_anchor character varying(20) DEFAULT 'created'::character varying NOT NULL,
-    CONSTRAINT playbook_plays_due_anchor_check CHECK (((due_anchor)::text = ANY ((ARRAY['created'::character varying, 'go_live'::character varying])::text[]))),
+    CONSTRAINT playbook_plays_due_anchor_check CHECK (((due_anchor)::text = ANY (ARRAY['created'::text, 'go_live'::text, 'project_start'::text]))),
     CONSTRAINT playbook_plays_generation_mode_check CHECK (((generation_mode)::text = ANY ((ARRAY['template'::character varying, 'ai'::character varying, 'hybrid'::character varying])::text[]))),
     CONSTRAINT playbook_plays_trigger_mode_check CHECK (((trigger_mode)::text = ANY ((ARRAY['on_demand'::character varying, 'stage_change'::character varying, 'scheduled'::character varying])::text[])))
 );
@@ -6999,6 +7054,71 @@ CREATE SEQUENCE public.project_play_instances_id_seq
 --
 
 ALTER SEQUENCE public.project_play_instances_id_seq OWNED BY public.project_play_instances.id;
+
+
+--
+-- Name: project_stages; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.project_stages (
+    id integer NOT NULL,
+    handover_id integer NOT NULL,
+    org_id integer NOT NULL,
+    key text NOT NULL,
+    name text NOT NULL,
+    sort_order integer DEFAULT 0 NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    created_by integer,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    source text DEFAULT 'custom'::text NOT NULL,
+    gating text DEFAULT 'none'::text NOT NULL,
+    CONSTRAINT project_stages_gating_chk CHECK ((gating = ANY (ARRAY['none'::text, 'gates'::text, 'strict'::text]))),
+    CONSTRAINT project_stages_key_not_blank CHECK ((btrim(key) <> ''::text)),
+    CONSTRAINT project_stages_name_not_blank CHECK ((btrim(name) <> ''::text)),
+    CONSTRAINT project_stages_source_chk CHECK ((source = ANY (ARRAY['catalogue'::text, 'custom'::text])))
+);
+
+
+--
+-- Name: TABLE project_stages; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.project_stages IS 'Per-project stage definitions. Supplies name + ordering for stage_key values that are not in the project playbook. playbook_stages wins on conflict ΓÇö see COALESCE in handover.service._getPlays().';
+
+
+--
+-- Name: COLUMN project_stages.source; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.project_stages.source IS 'catalogue = materialized from pipeline_stages at project creation; custom = created directly on this project. Provenance only ΓÇö it does not affect resolution, because this table is authoritative either way.';
+
+
+--
+-- Name: COLUMN project_stages.gating; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.project_stages.gating IS 'How this stage is locked by earlier stages. none = never locked (default, so existing projects are unaffected). gates = locked while an earlier stage has an incomplete is_gate task. strict = locked while an earlier stage has ANY incomplete task.';
+
+
+--
+-- Name: project_stages_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.project_stages_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: project_stages_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.project_stages_id_seq OWNED BY public.project_stages.id;
 
 
 --
@@ -11501,6 +11621,13 @@ ALTER TABLE ONLY public.project_play_instances ALTER COLUMN id SET DEFAULT nextv
 
 
 --
+-- Name: project_stages id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_stages ALTER COLUMN id SET DEFAULT nextval('public.project_stages_id_seq'::regclass);
+
+
+--
 -- Name: project_tab_viewers id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -13230,6 +13357,22 @@ ALTER TABLE ONLY public.project_play_assignees
 
 ALTER TABLE ONLY public.project_play_instances
     ADD CONSTRAINT project_play_instances_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: project_stages project_stages_handover_key_uniq; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_stages
+    ADD CONSTRAINT project_stages_handover_key_uniq UNIQUE (handover_id, key);
+
+
+--
+-- Name: project_stages project_stages_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_stages
+    ADD CONSTRAINT project_stages_pkey PRIMARY KEY (id);
 
 
 --
@@ -16670,6 +16813,13 @@ CREATE INDEX idx_ppi_baseline ON public.project_play_instances USING btree (hand
 
 
 --
+-- Name: idx_ppi_depends_on; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppi_depends_on ON public.project_play_instances USING gin (depends_on) WHERE (depends_on IS NOT NULL);
+
+
+--
 -- Name: idx_ppi_display_order; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -16723,6 +16873,13 @@ CREATE INDEX idx_ppi_parent ON public.project_play_instances USING btree (parent
 --
 
 CREATE INDEX idx_ppi_playbook_id ON public.project_play_instances USING btree (playbook_id) WHERE (playbook_id IS NOT NULL);
+
+
+--
+-- Name: idx_ppi_project_start_anchored; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppi_project_start_anchored ON public.project_play_instances USING btree (handover_id) WHERE (((due_anchor)::text = 'project_start'::text) AND (status <> ALL (ARRAY['completed'::text, 'skipped'::text])));
 
 
 --
@@ -16828,6 +16985,13 @@ CREATE INDEX idx_project_members_side ON public.project_members USING btree (con
 --
 
 CREATE INDEX idx_project_members_user ON public.project_members USING btree (org_id, user_id);
+
+
+--
+-- Name: idx_project_stages_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_project_stages_org ON public.project_stages USING btree (org_id, handover_id);
 
 
 --
@@ -18718,6 +18882,13 @@ CREATE TRIGGER trg_product_catalog_updated BEFORE UPDATE ON public.product_catal
 --
 
 CREATE TRIGGER trg_product_groups_updated BEFORE UPDATE ON public.product_groups FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+
+--
+-- Name: project_stages trg_project_stages_touch; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_project_stages_touch BEFORE UPDATE ON public.project_stages FOR EACH ROW EXECUTE FUNCTION public.project_stages_touch();
 
 
 --
@@ -21813,6 +21984,14 @@ ALTER TABLE ONLY public.project_play_instances
 
 
 --
+-- Name: project_stages project_stages_handover_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_stages
+    ADD CONSTRAINT project_stages_handover_id_fkey FOREIGN KEY (handover_id) REFERENCES public.sales_handovers(id) ON DELETE CASCADE;
+
+
+--
 -- Name: prompts prompts_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -23626,5 +23805,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 3knAz7JYgxTYLnFehfEOAc4De9JGkDGQEmLWsHWPuP4gkAkaXpX6bbmaac3RfWM
+\unrestrict Y5YwHtKF5vDeXqaVO4lbsMyOR2M3ocTwdoGwNHP3WFcSnOvuCdN1cmdydPVBh7P
 

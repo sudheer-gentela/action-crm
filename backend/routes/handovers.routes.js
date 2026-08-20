@@ -430,6 +430,29 @@ router.post('/sales/:id/plays', async (req, res) => {
   }
 });
 
+// GET /sales/:id/start-preview — what Start/Submit would do to the dates
+// Query: ?startDate=YYYY-MM-DD (defaults to today)
+router.get('/sales/:id/start-preview', async (req, res) => {
+  try {
+    res.json(await handoverService.getStartPreview(
+      parseInt(req.params.id, 10), req.orgId, req.query.startDate || null));
+  } catch (err) {
+    console.error('Start preview error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// GET /sales/:id/evidence-policy — effective policy (org default + override)
+router.get('/sales/:id/evidence-policy', async (req, res) => {
+  try {
+    res.json(await handoverService.getEvidencePolicy(
+      parseInt(req.params.id, 10), req.orgId));
+  } catch (err) {
+    console.error('Evidence policy error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
 // ── Project stages (2026_115) ────────────────────────────────────────────────
 //
 // Declared BEFORE /plays/* only for readability — these do not collide.

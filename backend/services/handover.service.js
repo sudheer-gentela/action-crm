@@ -270,6 +270,11 @@ function fmtPlay(row) {
     // row without the dependency sub-select, hence the ?? fallbacks.
     dependsOn:       row.depends_on ?? [],
     blockedBy:       row.blocked_by ?? [],
+    // 2026_118. Names of earlier stages holding this one shut. Separate from
+    // blockedBy so the UI can say WHY — "waiting on Core Model Pipeline" reads
+    // very differently from "waiting on task X".
+    stageGating:     row.stage_gating ?? 'none',
+    stageBlockedBy:  row.stage_blocked_by ?? [],
     // Baseline is what the Change-date dialog compares against; without it
     // the dialog cannot show what was originally committed.
     baselineDueDate: row.baseline_due_date ?? null,
@@ -1113,6 +1118,26 @@ async function advanceStatus(handoverId, orgId, userId, toStatus, closureSummary
     params
   );
 
+  // 2026_118: leaving draft freezes the plan.
+  //
+  // Fires on the transition OUT of 'draft' — 'submitted' for customer
+  // projects, 'in_progress' for internal ones — rather than at 'in_progress'
+  // for both. A customer plan sits in submitted/acknowledged while the
+  // delivery team reviews it; that is exactly when the dates must stop moving.
+  //
+  // Awaited, not fire-and-forget: the caller reloads the checklist immediately
+  // and would otherwise race the recompute and render stale dates.
+  if (existing.status === 'draft' && toStatus !== 'draft') {
+    try {
+      await freezePlanOnStart(handoverId, orgId);
+    } catch (err) {
+      // A failed freeze must not strand the project mid-transition — the
+      // status change is the user's intent and has already been written.
+      console.error(
+        `[handover.service] plan freeze failed (handover=${handoverId}):`, err.message);
+    }
+  }
+
   // On terminal transition, resolve any outstanding handover diagnostics so a
   // completed handover stops generating alerts in the rep's action queue.
   if (TERMINAL_STATUSES.has(toStatus)) {
@@ -1564,12 +1589,42 @@ async function completePlay(handoverId, playInstanceId, userId, orgId, data = {}
   // Guarding only the start would leave the rule trivially bypassable — a user
   // who cannot start a task could still mark it complete, which is the more
   // consequential action of the two.
+  const stageBlockers = await _stageBlockers(playInstanceId, orgId);
+  if (stageBlockers.length) {
+    throw Object.assign(
+      new Error(`This stage is locked until ${stageBlockers.join(', ')} clears its gates.`),
+      { status: 409, code: 'STAGE_LOCKED', stageBlockedBy: stageBlockers });
+  }
+
   const outstanding = await _outstandingPrereqs(playInstanceId, orgId);
   if (outstanding.length) {
     throw Object.assign(
       new Error(`Blocked by: ${outstanding.map(p => p.title).join(', ')}. `
               + 'Complete those first, or remove the dependency.'),
       { status: 409, code: 'PREREQ_INCOMPLETE', blockedBy: outstanding });
+  }
+
+  // 2026_118: evidence requirement. Enforced server-side as well as in the UI
+  // — a disabled button is a hint, not a rule, and this endpoint is reachable
+  // directly.
+  //
+  // The evidence REFERENCE is what satisfies the requirement, not the note: a
+  // note is free text anyone can fill with anything, whereas the evidence
+  // field points at the artefact that closed the task.
+  const policy = await _evidencePolicy(handoverId, orgId);
+  const { rows: [gateRow] } = await pool.query(
+    `SELECT is_gate FROM project_play_instances WHERE id = $1 AND org_id = $2`,
+    [playInstanceId, orgId]);
+  const needsEvidence = policy.required
+    || (policy.requiredForGates && gateRow?.is_gate === true);
+  const hasEvidence = Boolean(
+    data?.completionEvidence && String(data.completionEvidence.snippet || '').trim());
+  if (needsEvidence && !hasEvidence) {
+    throw Object.assign(
+      new Error(gateRow?.is_gate
+        ? 'This is a gate task — evidence is required to close it.'
+        : 'Evidence is required to close tasks on this project.'),
+      { status: 400, code: 'EVIDENCE_REQUIRED' });
   }
 
   // Delegate to the project-scoped method. The deal-scoped completePlay()
@@ -2026,6 +2081,203 @@ async function setPlayDependencies(handoverId, orgId, playInstanceId, dependsOn 
 }
 
 /**
+ * Earlier stages holding this task's stage shut.  (2026_118)
+ *
+ * Mirrors the stage_blocked_by sub-select in _getPlays. Both must agree: the
+ * query decides what the button looks like, this decides whether the API
+ * accepts the click.
+ */
+async function _stageBlockers(playInstanceId, orgId) {
+  const { rows } = await pool.query(
+    `SELECT DISTINCT COALESCE(ps2.name, e.stage_key) AS stage_name
+       FROM project_play_instances p
+       JOIN project_stages pst
+             ON pst.handover_id = p.handover_id AND pst.key = p.stage_key
+            AND pst.is_active = TRUE
+       JOIN project_play_instances e ON e.handover_id = p.handover_id
+       LEFT JOIN project_stages ps2
+              ON ps2.handover_id = e.handover_id AND ps2.key = e.stage_key
+             AND ps2.is_active = TRUE
+      WHERE p.id = $1 AND p.org_id = $2
+        AND pst.gating <> 'none'
+        AND e.status NOT IN ('completed', 'skipped')
+        AND ps2.sort_order < pst.sort_order
+        AND (pst.gating = 'strict' OR (pst.gating = 'gates' AND e.is_gate = TRUE))`,
+    [playInstanceId, orgId]);
+  return rows.map(r => r.stage_name);
+}
+
+/**
+ * Effective evidence policy for a project.  (2026_118)
+ *
+ * Org default from organizations.settings.evidence, overridden per project by
+ * sales_handovers.evidence_config. Org-level lives in the same jsonb settings
+ * blob as modules and diagnostic_rules, so it is managed from Org Admin with
+ * no new convention.
+ */
+async function getEvidencePolicy(handoverId, orgId) {
+  return _evidencePolicy(handoverId, orgId);
+}
+
+async function _evidencePolicy(handoverId, orgId) {
+  const { rows: [r] } = await pool.query(
+    `SELECT o.settings->'evidence' AS org_cfg, h.evidence_config AS project_cfg
+       FROM sales_handovers h
+       JOIN organizations o ON o.id = h.org_id
+      WHERE h.id = $1 AND h.org_id = $2`,
+    [handoverId, orgId]);
+
+  const org  = r?.org_cfg || {};
+  const proj = r?.project_cfg || {};
+  return {
+    // Defaults match the migration: not required generally, required on gates.
+    required:         proj.required         ?? org.required         ?? false,
+    requiredForGates: proj.requiredForGates ?? org.requiredForGates ?? true,
+  };
+}
+
+/**
+ * Freeze the plan when a project leaves draft.  (2026_118)
+ *
+ * While baseline_frozen_at is NULL the plan is PROVISIONAL: due-date edits
+ * move baseline_due_date silently, so a project being drafted does not
+ * accumulate imaginary slip. This is the moment that stops.
+ *
+ * Fires on leaving 'draft' — 'submitted' for customer projects, 'in_progress'
+ * for internal ones. Not at 'in_progress' for both: a customer plan sits in
+ * submitted/acknowledged while the delivery team reviews it, and that is
+ * exactly when the dates must stop moving.
+ *
+ * Three things happen, in order:
+ *   1. started_at is recorded (the anchor for due_anchor='project_start')
+ *   2. project_start-anchored plays get real dates for the first time
+ *   3. every provisional baseline is promoted to 'original'
+ *
+ * Idempotent: a project already frozen is left alone, so re-entering draft
+ * and leaving again cannot silently rewrite a committed plan.
+ */
+async function freezePlanOnStart(handoverId, orgId, startDate = null) {
+  const { rows: [h] } = await pool.query(
+    `SELECT id, status, started_at, baseline_frozen_at
+       FROM sales_handovers WHERE id = $1 AND org_id = $2`,
+    [handoverId, orgId]);
+  if (!h) throw Object.assign(new Error('Project not found'), { status: 404 });
+  if (h.baseline_frozen_at) return { alreadyFrozen: true, recomputed: 0, promoted: 0 };
+
+  const started = startDate || new Date().toISOString().slice(0, 10);
+
+  await pool.query(
+    `UPDATE sales_handovers
+        SET started_at = COALESCE(started_at, $2::date),
+            baseline_frozen_at = now(),
+            updated_at = now()
+      WHERE id = $1 AND org_id = $3`,
+    [handoverId, started, orgId]);
+
+  // Resolve project_start-anchored dates. Until now these were NULL because
+  // there was no start date to offset from.
+  const { rowCount: recomputed } = await pool.query(
+    `UPDATE project_play_instances
+        SET due_date = ($2::date + COALESCE(due_offset_days, 0)),
+            updated_at = now()
+      WHERE handover_id = $1 AND org_id = $3
+        AND due_anchor = 'project_start'
+        AND status NOT IN ('completed', 'skipped')`,
+    [handoverId, started, orgId]);
+
+  // Promote provisional baselines to the committed plan.
+  //
+  // Scoped to 'inferred' and NULL. A baseline already marked 'original' or
+  // 'rebaselined' represents a real commitment someone made and must never be
+  // silently overwritten — that is the difference between freezing a plan and
+  // erasing its history.
+  const { rowCount: promoted } = await pool.query(
+    `UPDATE project_play_instances
+        SET baseline_due_date = due_date,
+            baseline_source   = 'original',
+            updated_at = now()
+      WHERE handover_id = $1 AND org_id = $2
+        AND (baseline_source IS NULL OR baseline_source = 'inferred')`,
+    [handoverId, orgId]);
+
+  return { alreadyFrozen: false, startedAt: started, recomputed, promoted };
+}
+
+/**
+ * What Start/Submit would do to the dates, without doing it.  (2026_118)
+ *
+ * Powers the review step. Project 91 is the reason it exists: its tasks carry
+ * 'created'-anchored dates computed weeks before the project started, so
+ * freezing as-is would enshrine ~30 days of phantom slip as the official plan
+ * — and every correction after that becomes a tracked rebaseline needing a
+ * reason. Better to show the dates and let them be fixed first.
+ */
+async function getStartPreview(handoverId, orgId, startDate = null) {
+  const { rows: [h] } = await pool.query(
+    `SELECT id, status, started_at, baseline_frozen_at, go_live_date
+       FROM sales_handovers WHERE id = $1 AND org_id = $2`,
+    [handoverId, orgId]);
+  if (!h) throw Object.assign(new Error('Project not found'), { status: 404 });
+
+  const started = startDate || new Date().toISOString().slice(0, 10);
+
+  const { rows } = await pool.query(
+    `SELECT dpi.id, dpi.title, dpi.stage_key, dpi.due_anchor, dpi.due_offset_days,
+            dpi.due_date, dpi.baseline_source, dpi.is_gate, dpi.status,
+            pst.name AS stage_name, pst.sort_order AS stage_sort_order,
+            CASE WHEN dpi.due_anchor = 'project_start'
+                 THEN ($3::date + COALESCE(dpi.due_offset_days, 0))
+                 ELSE dpi.due_date
+            END AS computed_due_date
+       FROM project_play_instances dpi
+       LEFT JOIN project_stages pst
+              ON pst.handover_id = dpi.handover_id AND pst.key = dpi.stage_key
+             AND pst.is_active = TRUE
+      WHERE dpi.handover_id = $1 AND dpi.org_id = $2
+      ORDER BY pst.sort_order ASC NULLS LAST, dpi.stage_key, dpi.sort_order, dpi.id`,
+    [handoverId, orgId, started]);
+
+  const toStr = d => (d ? new Date(d).toISOString().slice(0, 10) : null);
+
+  const tasks = rows.map(r => {
+    const current  = toStr(r.due_date);
+    const computed = toStr(r.computed_due_date);
+    return {
+      playInstanceId: r.id,
+      title:      r.title,
+      stageKey:   r.stage_key,
+      stageName:  r.stage_name || null,
+      isGate:     r.is_gate,
+      status:     r.status,
+      dueAnchor:  r.due_anchor,
+      offsetDays: r.due_offset_days,
+      currentDueDate:  current,
+      computedDueDate: computed,
+      changes:    current !== computed,
+      // Flags a date that predates the start — the phantom-overdue case the
+      // reviewer most needs to see.
+      staleDate:  Boolean(current) && current < started
+                  && r.due_anchor !== 'project_start',
+    };
+  });
+
+  return {
+    handoverId,
+    status: h.status,
+    startDate: started,
+    alreadyFrozen: Boolean(h.baseline_frozen_at),
+    goLiveDate: toStr(h.go_live_date),
+    counts: {
+      total:    tasks.length,
+      changing: tasks.filter(t => t.changes).length,
+      stale:    tasks.filter(t => t.staleDate).length,
+      undated:  tasks.filter(t => !t.computedDueDate).length,
+    },
+    tasks,
+  };
+}
+
+/**
  * Reposition plays within a project.
  *
  * Takes an ordered list of play instance ids and renumbers them on the sparse
@@ -2381,6 +2633,25 @@ async function updatePlay(handoverId, orgId, playInstanceId, data = {}, userId =
 
   if (has('dueDate')) add('due_date', newDue);
 
+  // 2026_118: while the plan is provisional (project still in draft, so
+  // baseline_frozen_at is NULL) a due-date change moves the baseline with it.
+  //
+  // Without this, every date typed while drafting is recorded as slip against
+  // whatever the row happened to contain first, and Plan vs Actual is wrong
+  // for the project's whole life. Nothing is being hidden: there is no
+  // committed plan to slip against until the project leaves draft.
+  let provisional = false;
+  if (dueChanged && !wantsRebaseline) {
+    const { rows: [hb] } = await pool.query(
+      `SELECT baseline_frozen_at FROM sales_handovers WHERE id = $1 AND org_id = $2`,
+      [handoverId, orgId]);
+    if (hb && !hb.baseline_frozen_at) {
+      provisional = true;
+      add('baseline_due_date', newDue);
+      add('baseline_source', 'inferred');   // still provisional, not committed
+    }
+  }
+
   // A rebaseline is an authorised replan, not an edit. Gated, and it must say
   // why — otherwise it is indistinguishable from quietly covering a slip.
   if (wantsRebaseline) {
@@ -2437,6 +2708,12 @@ async function updatePlay(handoverId, orgId, playInstanceId, data = {}, userId =
     // 'blocked' must always be possible, or a task started before a dependency
     // was added could never be reset.
     if (st === 'in_progress') {
+      const stageBlockers = await _stageBlockers(playInstanceId, orgId);
+      if (stageBlockers.length) {
+        throw Object.assign(
+          new Error(`This stage is locked until ${stageBlockers.join(', ')} clears its gates.`),
+          { status: 409, code: 'STAGE_LOCKED', stageBlockedBy: stageBlockers });
+      }
       const outstanding = await _outstandingPrereqs(playInstanceId, orgId);
       if (outstanding.length) {
         throw Object.assign(
@@ -2671,6 +2948,31 @@ async function _getPlays(handoverId, orgId) {
        pst.name       AS stage_name,
        pst.sort_order AS stage_sort_order,
        dpi.depends_on,
+       pst.gating AS stage_gating,
+       -- 2026_118 stage gating (gate-only by default). A stage is locked while
+       -- an EARLIER stage still has an incomplete gate. Not "any incomplete
+       -- task": one forgotten checklist item should not freeze a project, and
+       -- is_gate already marks the steps that genuinely matter.
+       --
+       -- Evaluated per row rather than per stage so it composes with the
+       -- per-task dependency check in blocked_by — a task is startable only
+       -- when BOTH come back clear.
+       --
+       -- DISTINCT is applied with a plain subquery rather than a derived
+       -- table: a derived table referencing dpi/pst from the outer query
+       -- would need LATERAL, and json_agg(DISTINCT ...) over the correlated
+       -- select achieves the same de-duplication without it.
+       COALESCE((
+         SELECT json_agg(DISTINCT COALESCE(ps2.name, e.stage_key))
+           FROM project_play_instances e
+           LEFT JOIN project_stages ps2
+                  ON ps2.handover_id = e.handover_id AND ps2.key = e.stage_key
+                 AND ps2.is_active = TRUE
+          WHERE e.handover_id = dpi.handover_id
+            AND e.status NOT IN ('completed', 'skipped')
+            AND ps2.sort_order < pst.sort_order
+            AND (pst.gating = 'strict' OR (pst.gating = 'gates' AND e.is_gate = TRUE))
+       ), '[]'::json) AS stage_blocked_by,
        -- 2026_117: the prerequisites that are NOT yet satisfied. Computed
        -- here rather than in the client so the same rule drives the UI, the
        -- API guard, and any future reporting — a task is startable iff this
@@ -3711,6 +4013,9 @@ module.exports = {
   updatePlay,              // checklist item — edit fields
   reorderPlays,            // checklist items — reposition within a stage (A5)
   setPlayDependencies,     // task prerequisites (2026_117)
+  freezePlanOnStart,       // baseline freeze on leaving draft (2026_118)
+  getEvidencePolicy,       // effective evidence policy
+  getStartPreview,         // review-dates step
   listStages,              // project stages — read (2026_115)
   addStage,                // project stages — create
   updateStages,            // project stages — rename / reorder
