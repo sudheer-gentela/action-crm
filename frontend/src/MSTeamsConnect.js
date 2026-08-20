@@ -115,8 +115,6 @@ export default function MSTeamsConnect() {
   const [search,   setSearch]   = useState('');
   const [selected, setSelected] = useState(() => new Set());
 
-  const connected = status?.connected;
-
   const load = useCallback(async () => {
     setError('');
     try {
