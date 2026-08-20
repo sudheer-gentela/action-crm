@@ -1847,7 +1847,7 @@ async function listStages(handoverId, orgId) {
   // with project_stages and deduplicated by precedence in JS — machinery that
   // existed to serve a COALESCE that no longer exists.
   const { rows } = await pool.query(
-    `SELECT pst.key, pst.name, pst.sort_order, pst.source,
+    `SELECT pst.key, pst.name, pst.sort_order, pst.source, pst.gating,
             (SELECT count(*)::int FROM project_play_instances dpi
               WHERE dpi.handover_id = pst.handover_id
                 AND dpi.stage_key = pst.key) AS in_use
@@ -1861,7 +1861,7 @@ async function listStages(handoverId, orgId) {
     // holds a copy, so renaming one cannot affect any other project.
     stages: rows.map(r => ({
       key: r.key, name: r.name, sortOrder: r.sort_order,
-      source: r.source, inUse: r.in_use, canEdit: true,
+      source: r.source, gating: r.gating || 'none', inUse: r.in_use, canEdit: true,
     })),
     hasPlaybook: Boolean(h.playbook_id),
   };
@@ -1941,12 +1941,17 @@ async function updateStages(handoverId, orgId, stages = []) {
       const name = (s.name || '').trim();
       const order = Number.isInteger(s.sortOrder) ? s.sortOrder
                   : (key === 'custom' ? 9000 : (i + 1) * 10);
+      // 2026_118: gating is optional in the payload. NULL leaves it alone, so
+      // a client that predates stage gating can still save names and order
+      // without silently resetting every stage to 'none'.
+      const gating = ['none', 'gates', 'strict'].includes(s.gating) ? s.gating : null;
       await client.query(
         `UPDATE project_stages
             SET name       = COALESCE(NULLIF($4, ''), name),
-                sort_order = $5
+                sort_order = $5,
+                gating     = COALESCE($6, gating)
           WHERE handover_id = $1 AND org_id = $2 AND key = $3`,
-        [handoverId, orgId, key, name, order]);
+        [handoverId, orgId, key, name, order, gating]);
       i++;
     }
     await client.query('COMMIT');

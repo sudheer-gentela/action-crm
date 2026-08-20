@@ -437,7 +437,9 @@ function StageManager({ stages, onSave, onAdd, onRemove, onClose }) {
 
   const save = async () => {
     setBusy(true); setErr('');
-    try { await onSave(rows.map(r => ({ key: r.key, name: r.name, sortOrder: r.sortOrder }))); }
+    try { await onSave(rows.map(r => ({
+      key: r.key, name: r.name, sortOrder: r.sortOrder, gating: r.gating || 'none',
+    }))); }
     catch (e) { setErr(e?.response?.data?.error?.message || 'Could not save stages'); }
     finally { setBusy(false); }
   };
@@ -480,6 +482,20 @@ function StageManager({ stages, onSave, onAdd, onRemove, onClose }) {
           <input value={r.name}
             onChange={e => setRows(rows.map(x => (x.key === r.key ? { ...x, name: e.target.value } : x)))}
             style={{ flex: 1, fontSize: 12, padding: '5px 8px', borderRadius: 4, border: '1px solid #d1d5db' }} />
+          <select
+            value={r.gating || 'none'}
+            onChange={e => setRows(rows.map(x => (x.key === r.key ? { ...x, gating: e.target.value } : x)))}
+            title={i === 0
+              ? 'The first stage has nothing before it, so gating has no effect here.'
+              : 'What locks this stage until earlier stages are done'}
+            disabled={i === 0}
+            style={{ fontSize: 11, padding: '4px 6px', borderRadius: 4,
+                     border: '1px solid #d1d5db', background: i === 0 ? '#f8fafc' : '#fff',
+                     color: i === 0 ? '#9ca3af' : '#374151' }}>
+            <option value="none">Open</option>
+            <option value="gates">Locked by gates</option>
+            <option value="strict">Locked by all tasks</option>
+          </select>
           <span style={{ fontSize: 10, color: '#9ca3af', width: 62, textAlign: 'right' }}>
             {r.inUse} task{r.inUse === 1 ? '' : 's'}
           </span>
@@ -497,6 +513,14 @@ function StageManager({ stages, onSave, onAdd, onRemove, onClose }) {
                      cursor: (busy || r.inUse > 0) ? 'default' : 'pointer', opacity: r.inUse > 0 ? 0.4 : 1 }}>×</button>
         </div>
       ))}
+
+      {editable.length > 1 && (
+        <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 6, lineHeight: 1.5 }}>
+          <strong>Locked by gates</strong> — tasks here can't start until every gate task in an
+          earlier stage is done. <strong>Locked by all tasks</strong> — until every earlier task
+          is done. <strong>Open</strong> — never locked.
+        </div>
+      )}
 
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 10 }}>
         <input value={fresh} onChange={e => setFresh(e.target.value)}

@@ -2128,6 +2128,87 @@ router.patch('/diagnostic-rules', adminOnly, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// EVIDENCE SETTINGS  (2026_118)
+//
+// Org-wide default for whether closing a task requires an evidence reference.
+// Stored in organizations.settings.evidence, matching how settings.modules and
+// settings.diagnostic_rules already work — no new column, no new convention.
+//
+// A project can override this via sales_handovers.evidence_config; the
+// effective policy is resolved by handover.service.getEvidencePolicy().
+//
+// Note the evidence REFERENCE is what satisfies the requirement, not the
+// completion note: a note is free text, whereas the evidence field points at
+// the artefact that closed the task.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const EVIDENCE_DEFAULTS = { required: false, requiredForGates: true };
+
+// GET /api/org/admin/evidence-settings
+router.get('/evidence-settings', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT settings->'evidence' AS evidence FROM organizations WHERE id = $1`,
+      [req.orgId]
+    );
+    const stored = rows[0]?.evidence || {};
+    res.json({
+      config:   { ...EVIDENCE_DEFAULTS, ...stored },
+      defaults: EVIDENCE_DEFAULTS,
+      // Which projects have opted out of the org default, so an admin can see
+      // that changing this will not affect everyone.
+      overrides: (await pool.query(
+        `SELECT count(*)::int AS n FROM sales_handovers
+          WHERE org_id = $1 AND evidence_config IS NOT NULL`, [req.orgId])).rows[0].n,
+    });
+  } catch (err) {
+    console.error('GET /org/admin/evidence-settings error:', err);
+    res.status(500).json({ error: { message: 'Failed to load evidence settings' } });
+  }
+});
+
+// PATCH /api/org/admin/evidence-settings
+// Body: { required?: bool, requiredForGates?: bool }
+router.patch('/evidence-settings', adminOnly, async (req, res) => {
+  try {
+    const updates = {};
+    for (const key of ['required', 'requiredForGates']) {
+      if (req.body[key] === undefined) continue;
+      if (typeof req.body[key] !== 'boolean') {
+        return res.status(400).json({
+          error: { message: `"${key}" must be true or false` },
+        });
+      }
+      updates[key] = req.body[key];
+    }
+    if (!Object.keys(updates).length) {
+      return res.status(400).json({ error: { message: 'Nothing to update' } });
+    }
+
+    // Merge rather than replace, so a partial PATCH cannot silently reset the
+    // other flag to its default.
+    const current = await pool.query(
+      `SELECT settings->'evidence' AS evidence FROM organizations WHERE id = $1`,
+      [req.orgId]
+    );
+    const merged = { ...EVIDENCE_DEFAULTS, ...(current.rows[0]?.evidence || {}), ...updates };
+
+    await pool.query(
+      `UPDATE organizations
+          SET settings   = jsonb_set(COALESCE(settings, '{}'::jsonb), '{evidence}', $1::jsonb),
+              updated_at = NOW()
+        WHERE id = $2`,
+      [JSON.stringify(merged), req.orgId]
+    );
+
+    res.json({ config: merged, updated: updates });
+  } catch (err) {
+    console.error('PATCH /org/admin/evidence-settings error:', err);
+    res.status(500).json({ error: { message: 'Failed to update evidence settings' } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // HIERARCHY CSV IMPORT
 // POST /api/org/admin/hierarchy/import
 //

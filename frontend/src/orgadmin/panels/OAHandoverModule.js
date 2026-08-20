@@ -7,6 +7,7 @@ import { ModuleSubTabs, OAModuleGeneral, OAModuleSeedPanel } from '../shared';
 import OAProjectAccess from './OAProjectAccess';
 import OAContactRoles from './OAContactRoles';
 import OAStorage from './OAStorage';
+import OAEvidenceSettings from './OAEvidenceSettings';
 
 export default function OAHandoverModule() {
   const API    = process.env.REACT_APP_API_URL;
@@ -53,7 +54,7 @@ export default function OAHandoverModule() {
         </div>
       </div>
       <ModuleSubTabs
-        tabs={[['general', 'General'], ['access', 'Access'], ['roles', 'Roles & sign-off'], ['storage', 'File storage'], ['playbook', 'Playbook']]}
+        tabs={[['general', 'General'], ['access', 'Access'], ['roles', 'Roles & sign-off'], ['evidence', 'Evidence'], ['storage', 'File storage'], ['playbook', 'Playbook']]}
         active={subTab}
         onChange={setSubTab}
       />
@@ -73,6 +74,9 @@ export default function OAHandoverModule() {
       {subTab === 'roles'  && <OAContactRoles />}
       {/* Where WhatsApp attachments are written. Without it they are not saved
           at all, and Meta drops them after ~30 days. */}
+      {/* Org-wide default for whether closing a task needs an evidence
+          reference. Projects can override it — the panel says how many do. */}
+      {subTab === 'evidence' && <OAEvidenceSettings />}
       {subTab === 'storage' && <OAStorage />}
       {subTab === 'playbook' && (
         <OAModuleSeedPanel
