@@ -390,6 +390,9 @@ app.use('/api/transcripts',     require('./routes/transcripts.routes'));
 app.use('/api/action-config',   require('./routes/action-config.routes'));
 app.use('/api/extension', require('./routes/extension.routes'));
 
+// server.js — beside the other integration routes
+app.use('/api/msteams', require('./routes/msteams.routes'));
+
 // ── Public org context ────────────────────────────────────────────────────
 const authenticateToken = require('./middleware/auth.middleware');
 const { orgContext }    = require('./middleware/orgContext.middleware');

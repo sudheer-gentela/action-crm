@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict Prev2UoidpbxDesTTjOsoxeoggl71z3B01oGrtPx5fBBXn5ZwBPNgvfdJcAgAsP
+\restrict epJ0HOfKVn17Rz4j9VySNcCNttQcW8pNmzgJZ9qaDoNJZsartfB8reOH8ogfXrv
 
 -- Dumped from database version 17.10 (Debian 17.10-1.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -116,11 +116,40 @@ CREATE FUNCTION public.play_evidence_immutable() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
-  -- Belt and braces. The trigger below is BEFORE UPDATE only, so this
-  -- branch is unreachable today; it exists so that re-attaching DELETE to
-  -- the trigger cannot resurrect the cascade deadlock.
+  -- Unreachable while the trigger is UPDATE-only (2026_121); kept so that
+  -- re-attaching DELETE cannot resurrect the cascade deadlock.
   IF TG_OP = 'DELETE' THEN
     RETURN OLD;
+  END IF;
+
+  -- Referential detach: a cited WhatsApp message or an accepted file is
+  -- going away and its FK is SET NULL. Permitted for the link columns
+  -- only, and only in the set -> NULL direction, so this cannot be used
+  -- to launder an edit. See 2026_121 for the full reasoning.
+  IF ( (OLD.whatsapp_message_id IS NOT NULL AND NEW.whatsapp_message_id IS NULL
+        AND NEW.storage_file_id IS NOT DISTINCT FROM OLD.storage_file_id)
+    OR (OLD.storage_file_id     IS NOT NULL AND NEW.storage_file_id     IS NULL
+        AND NEW.whatsapp_message_id IS NOT DISTINCT FROM OLD.whatsapp_message_id) )
+     AND NEW.id                       IS NOT DISTINCT FROM OLD.id
+     AND NEW.org_id                   IS NOT DISTINCT FROM OLD.org_id
+     AND NEW.project_play_instance_id IS NOT DISTINCT FROM OLD.project_play_instance_id
+     AND NEW.channel                  IS NOT DISTINCT FROM OLD.channel
+     AND NEW.snapshot_body            IS NOT DISTINCT FROM OLD.snapshot_body
+     AND NEW.snapshot_sender          IS NOT DISTINCT FROM OLD.snapshot_sender
+     AND NEW.snapshot_sent_at         IS NOT DISTINCT FROM OLD.snapshot_sent_at
+     AND NEW.snapshot_thread_id       IS NOT DISTINCT FROM OLD.snapshot_thread_id
+     AND NEW.snapshot_file_name       IS NOT DISTINCT FROM OLD.snapshot_file_name
+     AND NEW.snapshot_mime_type       IS NOT DISTINCT FROM OLD.snapshot_mime_type
+     AND NEW.snapshot_file_size       IS NOT DISTINCT FROM OLD.snapshot_file_size
+     AND NEW.snapshot_web_url         IS NOT DISTINCT FROM OLD.snapshot_web_url
+     AND NEW.note                     IS NOT DISTINCT FROM OLD.note
+     AND NEW.accepted_by              IS NOT DISTINCT FROM OLD.accepted_by
+     AND NEW.accepted_at              IS NOT DISTINCT FROM OLD.accepted_at
+     AND NEW.revoked_at               IS NOT DISTINCT FROM OLD.revoked_at
+     AND NEW.revoked_by               IS NOT DISTINCT FROM OLD.revoked_by
+     AND NEW.revoke_reason            IS NOT DISTINCT FROM OLD.revoke_reason
+  THEN
+    RETURN NEW;
   END IF;
 
   IF OLD.revoked_at IS NOT NULL THEN
@@ -131,16 +160,20 @@ BEGIN
     RAISE EXCEPTION 'play_evidence % is immutable; the only permitted update is a revocation', OLD.id;
   END IF;
 
-  -- Every substantive field must be carried through unchanged.
   IF NEW.id                       IS DISTINCT FROM OLD.id
      OR NEW.org_id                IS DISTINCT FROM OLD.org_id
      OR NEW.project_play_instance_id IS DISTINCT FROM OLD.project_play_instance_id
      OR NEW.channel               IS DISTINCT FROM OLD.channel
      OR NEW.whatsapp_message_id   IS DISTINCT FROM OLD.whatsapp_message_id
+     OR NEW.storage_file_id       IS DISTINCT FROM OLD.storage_file_id
      OR NEW.snapshot_body         IS DISTINCT FROM OLD.snapshot_body
      OR NEW.snapshot_sender       IS DISTINCT FROM OLD.snapshot_sender
      OR NEW.snapshot_sent_at      IS DISTINCT FROM OLD.snapshot_sent_at
      OR NEW.snapshot_thread_id    IS DISTINCT FROM OLD.snapshot_thread_id
+     OR NEW.snapshot_file_name    IS DISTINCT FROM OLD.snapshot_file_name
+     OR NEW.snapshot_mime_type    IS DISTINCT FROM OLD.snapshot_mime_type
+     OR NEW.snapshot_file_size    IS DISTINCT FROM OLD.snapshot_file_size
+     OR NEW.snapshot_web_url      IS DISTINCT FROM OLD.snapshot_web_url
      OR NEW.note                  IS DISTINCT FROM OLD.note
      OR NEW.accepted_by           IS DISTINCT FROM OLD.accepted_by
      OR NEW.accepted_at           IS DISTINCT FROM OLD.accepted_at
@@ -6413,10 +6446,29 @@ CREATE TABLE public.play_evidence (
     revoked_at timestamp with time zone,
     revoked_by integer,
     revoke_reason text,
+    storage_file_id integer,
+    snapshot_file_name text,
+    snapshot_mime_type text,
+    snapshot_file_size bigint,
+    snapshot_web_url text,
     CONSTRAINT play_evidence_channel_chk CHECK ((channel = ANY (ARRAY['whatsapp'::text, 'email'::text, 'file'::text, 'manual'::text]))),
     CONSTRAINT play_evidence_revoke_shape_chk CHECK ((((revoked_at IS NULL) AND (revoked_by IS NULL)) OR ((revoked_at IS NOT NULL) AND (revoked_by IS NOT NULL) AND (revoke_reason IS NOT NULL) AND (btrim(revoke_reason) <> ''::text)))),
-    CONSTRAINT play_evidence_whatsapp_shape_chk CHECK (((channel <> 'whatsapp'::text) OR (whatsapp_message_id IS NOT NULL)))
+    CONSTRAINT play_evidence_source_shape_chk CHECK ((((channel <> 'whatsapp'::text) OR (whatsapp_message_id IS NOT NULL)) AND ((channel <> 'file'::text) OR (storage_file_id IS NOT NULL))))
 );
+
+
+--
+-- Name: COLUMN play_evidence.storage_file_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.play_evidence.storage_file_id IS 'The uploaded file accepted as evidence (channel = ''file''), or ΓÇö for channel = ''whatsapp'' ΓÇö the stored copy of that message''s media. Live link only: NULL once the storage_files row is gone. The snapshot_* columns carry what was actually accepted.';
+
+
+--
+-- Name: COLUMN play_evidence.snapshot_web_url; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.play_evidence.snapshot_web_url IS 'Provider URL as it stood at acceptance. Kept alongside storage_file_id because a file can be moved or unshared in Drive/OneDrive afterwards, and the audit record should still say what was approved.';
 
 
 --
@@ -6437,6 +6489,52 @@ CREATE SEQUENCE public.play_evidence_id_seq
 --
 
 ALTER SEQUENCE public.play_evidence_id_seq OWNED BY public.play_evidence.id;
+
+
+--
+-- Name: play_note_attachments; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.play_note_attachments (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    play_note_id integer NOT NULL,
+    storage_file_id integer,
+    file_name text NOT NULL,
+    mime_type text,
+    file_size bigint,
+    web_url text,
+    uploaded_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT play_note_attachments_name_not_blank_chk CHECK ((btrim(file_name) <> ''::text))
+);
+
+
+--
+-- Name: TABLE play_note_attachments; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.play_note_attachments IS 'Files attached to one note on a project checklist task. Content lives in the org''s Drive/OneDrive via storage_files; this row holds the reference plus a snapshot of the file''s identity so a withdrawn or moved file still reads as what was attached. Cascades with its note.';
+
+
+--
+-- Name: play_note_attachments_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.play_note_attachments_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: play_note_attachments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.play_note_attachments_id_seq OWNED BY public.play_note_attachments.id;
 
 
 --
@@ -9207,7 +9305,7 @@ ALTER SEQUENCE public.straps_id_seq OWNED BY public.straps.id;
 
 CREATE TABLE public.super_admin_audit_log (
     id integer NOT NULL,
-    super_admin_id integer NOT NULL,
+    super_admin_id integer,
     action character varying(100) NOT NULL,
     target_type character varying(50),
     target_id integer,
@@ -9215,6 +9313,13 @@ CREATE TABLE public.super_admin_audit_log (
     ip_address inet,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+
+
+--
+-- Name: COLUMN super_admin_audit_log.super_admin_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.super_admin_audit_log.super_admin_id IS 'The super admin who performed the action. NULL once that user has been deleted (2026_123): the audit entry is platform history and outlives the account it names ΓÇö what was done and when survives, only the attribution is lost. Readers must treat NULL as "deleted user", not as "no actor".';
 
 
 --
@@ -11623,6 +11728,13 @@ ALTER TABLE ONLY public.play_evidence ALTER COLUMN id SET DEFAULT nextval('publi
 
 
 --
+-- Name: play_note_attachments id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_note_attachments ALTER COLUMN id SET DEFAULT nextval('public.play_note_attachments_id_seq'::regclass);
+
+
+--
 -- Name: play_notes id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -13272,6 +13384,14 @@ ALTER TABLE ONLY public.play_due_date_revisions
 
 ALTER TABLE ONLY public.play_evidence
     ADD CONSTRAINT play_evidence_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: play_note_attachments play_note_attachments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_note_attachments
+    ADD CONSTRAINT play_note_attachments_pkey PRIMARY KEY (id);
 
 
 --
@@ -16722,6 +16842,27 @@ CREATE INDEX idx_play_assignees_user ON public.deal_play_assignees USING btree (
 --
 
 CREATE INDEX idx_play_evidence_instance ON public.play_evidence USING btree (project_play_instance_id) WHERE (revoked_at IS NULL);
+
+
+--
+-- Name: idx_play_evidence_storage_file; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_play_evidence_storage_file ON public.play_evidence USING btree (storage_file_id) WHERE (storage_file_id IS NOT NULL);
+
+
+--
+-- Name: idx_play_note_attachments_note; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_play_note_attachments_note ON public.play_note_attachments USING btree (play_note_id, created_at);
+
+
+--
+-- Name: idx_play_note_attachments_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_play_note_attachments_org ON public.play_note_attachments USING btree (org_id);
 
 
 --
@@ -21716,6 +21857,46 @@ ALTER TABLE ONLY public.play_evidence
 
 
 --
+-- Name: play_evidence play_evidence_storage_file_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_evidence
+    ADD CONSTRAINT play_evidence_storage_file_id_fkey FOREIGN KEY (storage_file_id) REFERENCES public.storage_files(id) ON DELETE SET NULL;
+
+
+--
+-- Name: play_note_attachments play_note_attachments_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_note_attachments
+    ADD CONSTRAINT play_note_attachments_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: play_note_attachments play_note_attachments_play_note_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_note_attachments
+    ADD CONSTRAINT play_note_attachments_play_note_id_fkey FOREIGN KEY (play_note_id) REFERENCES public.play_notes(id) ON DELETE CASCADE;
+
+
+--
+-- Name: play_note_attachments play_note_attachments_storage_file_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_note_attachments
+    ADD CONSTRAINT play_note_attachments_storage_file_id_fkey FOREIGN KEY (storage_file_id) REFERENCES public.storage_files(id) ON DELETE SET NULL;
+
+
+--
+-- Name: play_note_attachments play_note_attachments_uploaded_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_note_attachments
+    ADD CONSTRAINT play_note_attachments_uploaded_by_fkey FOREIGN KEY (uploaded_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
 -- Name: play_notes play_notes_author_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -22887,7 +23068,7 @@ ALTER TABLE ONLY public.straps
 --
 
 ALTER TABLE ONLY public.super_admin_audit_log
-    ADD CONSTRAINT super_admin_audit_log_super_admin_id_fkey FOREIGN KEY (super_admin_id) REFERENCES public.users(id);
+    ADD CONSTRAINT super_admin_audit_log_super_admin_id_fkey FOREIGN KEY (super_admin_id) REFERENCES public.users(id) ON DELETE SET NULL;
 
 
 --
@@ -24001,5 +24182,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Prev2UoidpbxDesTTjOsoxeoggl71z3B01oGrtPx5fBBXn5ZwBPNgvfdJcAgAsP
+\unrestrict epJ0HOfKVn17Rz4j9VySNcCNttQcW8pNmzgJZ9qaDoNJZsartfB8reOH8ogfXrv
 

@@ -12,6 +12,9 @@ startScheduler();
 // Start notification scheduler
 notificationScheduler.startScheduler();
 
+// jobs/worker.js — beside the other schedulers
+require('./msteamsDiscoveryScheduler').startScheduler();
+
 // Handle graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received, closing worker...');
