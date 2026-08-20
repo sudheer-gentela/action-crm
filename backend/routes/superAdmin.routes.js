@@ -479,6 +479,173 @@ router.delete('/orgs/:orgId', async (req, res) => {
       await client.query(`UPDATE super_admin_audit_log SET super_admin_id = NULL WHERE super_admin_id = ANY($1)`, [ids]);
     }
 
+    // ── Step 2b: rows that CANNOT be detached from a user ───────────────────
+    //
+    // Everything above sets an attribution column to NULL. That only works on
+    // a NULLABLE column, and a schema sweep finds 16 FK columns pointing at
+    // users(id) that are NOT NULL with an on-delete action of NO ACTION or
+    // RESTRICT. Several are already in the list above and throw when they
+    // match a row:
+    //
+    //   UPDATE calls SET user_id = NULL ...
+    //     ERROR: null value in column "user_id" of relation "calls"
+    //            violates not-null constraint
+    //   UPDATE sales_handovers SET created_by = NULL ...      (RESTRICT, NOT NULL)
+    //
+    // So org deletion has been failing for any org with call history, or a
+    // project, or a bill of quantities, or a contract, or a prospect. The BoQ
+    // tables were the visible case because they are newest (2026_113/114) and
+    // were never added to the list at all, but they were not the only one.
+    //
+    // WHY THIS READS THE CATALOGUE INSTEAD OF NAMING TABLES
+    //   The hand-written list above has been wrong twice: a first sweep found
+    //   67 columns and missed 24, and the BoQ module was added afterwards and
+    //   missed again. A literal list cannot stay correct across migrations
+    //   nobody remembers to cross-check. This asks Postgres what the blockers
+    //   are at run time, so a table added next quarter is covered the day it
+    //   ships rather than the day org deletion next breaks.
+    //
+    // WHAT IT DOES WITH THEM
+    //   org-scoped  → delete the ORG's rows. They are inside the organisation
+    //                 being deleted and the org cascade would remove them
+    //                 moments later anyway; this only brings that forward so
+    //                 the users can go first.
+    //   not scoped  → delete only the rows naming these users. deal_value_history
+    //                 is the sole case, and it reaches the org through deals,
+    //                 so its rows are org data too.
+    //
+    //   super_admin_audit_log is deliberately NOT here. It is platform history,
+    //   not org data, and 2026_123 makes its column nullable so the NULLing
+    //   statement above handles it — the entry survives, only the name is lost.
+    //
+    // REQUIRES 2026_121 AND 2026_122. Without them the play_evidence and
+    // boq_progress deletes below are refused by their append-only triggers,
+    // which is the original deadlock.
+    if (userIds.length > 0) {
+      const { rows: blockers } = await client.query(`
+        SELECT c.relname  AS table_name,
+               a.attname  AS column_name,
+               EXISTS (SELECT 1 FROM pg_attribute o
+                        WHERE o.attrelid = c.oid
+                          AND o.attname = 'org_id'
+                          AND NOT o.attisdropped) AS org_scoped
+          FROM pg_constraint con
+          JOIN pg_class     c ON c.oid = con.conrelid
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          JOIN unnest(con.conkey) k(attnum) ON TRUE
+          JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+         WHERE con.contype   = 'f'
+           AND con.confrelid = 'public.users'::regclass
+           AND con.confdeltype IN ('a', 'r')     -- NO ACTION | RESTRICT
+           AND a.attnotnull                      -- ...and cannot be NULLed
+           AND n.nspname = 'public'
+           AND c.relname <> 'super_admin_audit_log'
+         ORDER BY c.relname, a.attname`);
+
+      // Identifiers come from pg_catalog, not from the request, so they cannot
+      // carry an injection. Validated anyway — an identifier that fails this
+      // is a schema surprise worth failing loudly on rather than interpolating.
+      const SAFE_IDENT = /^[a-z_][a-z0-9_]*$/;
+
+      for (const b of blockers) {
+        if (!SAFE_IDENT.test(b.table_name) || !SAFE_IDENT.test(b.column_name)) {
+          throw new Error(`Unexpected identifier in FK sweep: ${b.table_name}.${b.column_name}`);
+        }
+        // Repeats are harmless: contracts appears twice (created_by, owner_id)
+        // and the second delete matches nothing.
+        if (b.org_scoped) {
+          await client.query(`DELETE FROM public.${b.table_name} WHERE org_id = $1`, [orgId]);
+        } else {
+          await client.query(
+            `DELETE FROM public.${b.table_name} WHERE ${b.column_name} = ANY($1)`, [userIds]);
+        }
+      }
+      console.log(`   cleared ${blockers.length} non-nullable user references before deleting users`);
+    }
+
+    // ── Step 2c: org data whose org FK does not cascade ─────────────────────
+    //
+    // Step 4 below says it "cascades everything with ON DELETE CASCADE", and
+    // that is exactly the problem: 33 tables reference organizations(id) with
+    // a plain FK and no on-delete action, so the org row cannot be removed
+    // while any of them holds a row:
+    //
+    //   DELETE FROM organizations WHERE id = 42;
+    //     ERROR: update or delete on table "organizations" violates foreign
+    //            key constraint "fk_deals_org" on table "deals"
+    //
+    // accounts, contacts, deals, emails, meetings, actions, prospects,
+    // oauth_tokens and two dozen more are all in that set — which is to say
+    // org deletion has never completed for an organisation that had done
+    // anything at all.
+    //
+    // Catalogue-driven for the same reason as 2b: the set changes every time
+    // a module ships, and a hard-coded list would be stale within a quarter.
+    // The org column is read from the constraint rather than assumed to be
+    // called org_id — skill_bundles uses owner_org_id.
+    //
+    // ORDERING
+    //   These tables reference each other (deals → contacts → accounts), so a
+    //   single alphabetical pass fails on whichever child is not yet empty.
+    //   Rather than hard-code a dependency order that would also rot, each
+    //   pass deletes what it can inside a SAVEPOINT and retries the rest;
+    //   progress is guaranteed to reduce the set until only genuine cycles
+    //   remain. A savepoint is required because in Postgres one failed
+    //   statement poisons the whole transaction.
+    //
+    //   'users' is excluded deliberately: Step 1 chose which users may be
+    //   removed (org-only ones), and a blanket delete here would take users
+    //   who also belong to another org.
+    {
+      const { rows: orgTables } = await client.query(`
+        SELECT DISTINCT c.relname AS table_name, a.attname AS column_name
+          FROM pg_constraint con
+          JOIN pg_class     c ON c.oid = con.conrelid
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          JOIN unnest(con.conkey) k(attnum) ON TRUE
+          JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
+         WHERE con.contype   = 'f'
+           AND con.confrelid = 'public.organizations'::regclass
+           AND con.confdeltype IN ('a', 'r')
+           AND n.nspname = 'public'
+           AND c.relname <> 'users'
+         ORDER BY 1`);
+
+      const SAFE = /^[a-z_][a-z0-9_]*$/;
+      let remaining = orgTables.filter(t => {
+        if (!SAFE.test(t.table_name) || !SAFE.test(t.column_name)) {
+          throw new Error(`Unexpected identifier in org sweep: ${t.table_name}.${t.column_name}`);
+        }
+        return true;
+      });
+
+      let passes = 0;
+      while (remaining.length > 0) {
+        passes++;
+        const stillBlocked = [];
+        for (const t of remaining) {
+          await client.query('SAVEPOINT org_purge');
+          try {
+            await client.query(
+              `DELETE FROM public.${t.table_name} WHERE ${t.column_name} = $1`, [orgId]);
+            await client.query('RELEASE SAVEPOINT org_purge');
+          } catch (e) {
+            await client.query('ROLLBACK TO SAVEPOINT org_purge');
+            stillBlocked.push(t);
+          }
+        }
+        if (stillBlocked.length === remaining.length) {
+          // No progress this pass — the rest are held by something other than
+          // each other. Name them; a silent partial purge would fail two
+          // statements later with a far less useful message.
+          throw new Error(
+            `Could not clear organisation data from: ${stillBlocked.map(t => t.table_name).join(', ')}`);
+        }
+        remaining = stillBlocked;
+      }
+      console.log(`   cleared ${orgTables.length} non-cascading org tables in ${passes} pass(es)`);
+    }
+
     // ── Step 3: delete the org-only users BEFORE deleting the org ───────────
     // users.org_id is NOT NULL with no cascade, so users must be deleted
     // before the org row, after all FK references to them have been nulled out.

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict cCbkzrdUVaJ6IWWnsnsD9A0bKF8BTLbjqHILv4Oc7mgGGTpNCSzrWaevwXBjTos
+\restrict Prev2UoidpbxDesTTjOsoxeoggl71z3B01oGrtPx5fBBXn5ZwBPNgvfdJcAgAsP
 
 -- Dumped from database version 17.10 (Debian 17.10-1.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -55,9 +55,12 @@ CREATE FUNCTION public.boq_progress_append_only() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
+  -- Unreachable while the trigger below is UPDATE-only; kept so that
+  -- re-attaching DELETE cannot resurrect the cascade deadlock.
   IF TG_OP = 'DELETE' THEN
-    RAISE EXCEPTION 'boq_progress is append-only: post a reversing entry instead of deleting (id %)', OLD.id;
+    RETURN OLD;
   END IF;
+
   RAISE EXCEPTION 'boq_progress is append-only: entry % cannot be edited. Post a reversing entry.', OLD.id;
 END $$;
 
@@ -113,8 +116,11 @@ CREATE FUNCTION public.play_evidence_immutable() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
+  -- Belt and braces. The trigger below is BEFORE UPDATE only, so this
+  -- branch is unreachable today; it exists so that re-attaching DELETE to
+  -- the trigger cannot resurrect the cascade deadlock.
   IF TG_OP = 'DELETE' THEN
-    RAISE EXCEPTION 'play_evidence is append-only: revoke it instead of deleting (id %)', OLD.id;
+    RETURN OLD;
   END IF;
 
   IF OLD.revoked_at IS NOT NULL THEN
@@ -140,6 +146,38 @@ BEGIN
      OR NEW.accepted_at           IS DISTINCT FROM OLD.accepted_at
   THEN
     RAISE EXCEPTION 'play_evidence % is immutable; only the revocation fields may be set', OLD.id;
+  END IF;
+
+  RETURN NEW;
+END $$;
+
+
+--
+-- Name: play_notes_append_only(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.play_notes_append_only() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF OLD.deleted_at IS NOT NULL THEN
+    RAISE EXCEPTION 'play_note % is already deleted and cannot be changed', OLD.id;
+  END IF;
+
+  IF NEW.deleted_at IS NULL THEN
+    RAISE EXCEPTION 'play_note % is append-only; the only permitted update is a deletion. Post a correcting note instead.', OLD.id;
+  END IF;
+
+  IF NEW.id                       IS DISTINCT FROM OLD.id
+     OR NEW.org_id                IS DISTINCT FROM OLD.org_id
+     OR NEW.project_play_instance_id IS DISTINCT FROM OLD.project_play_instance_id
+     OR NEW.author_id             IS DISTINCT FROM OLD.author_id
+     OR NEW.body                  IS DISTINCT FROM OLD.body
+     OR NEW.note_type             IS DISTINCT FROM OLD.note_type
+     OR NEW.is_internal           IS DISTINCT FROM OLD.is_internal
+     OR NEW.created_at            IS DISTINCT FROM OLD.created_at
+  THEN
+    RAISE EXCEPTION 'play_note % is immutable; only deleted_at and deleted_by may be set', OLD.id;
   END IF;
 
   RETURN NEW;
@@ -6402,6 +6440,68 @@ ALTER SEQUENCE public.play_evidence_id_seq OWNED BY public.play_evidence.id;
 
 
 --
+-- Name: play_notes; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.play_notes (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    project_play_instance_id integer NOT NULL,
+    author_id integer,
+    body text NOT NULL,
+    note_type character varying(30) DEFAULT 'comment'::character varying NOT NULL,
+    is_internal boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    deleted_at timestamp with time zone,
+    deleted_by integer,
+    CONSTRAINT play_notes_body_not_blank_chk CHECK ((btrim(body) <> ''::text)),
+    CONSTRAINT play_notes_delete_shape_chk CHECK ((((deleted_at IS NULL) AND (deleted_by IS NULL)) OR ((deleted_at IS NOT NULL) AND (deleted_by IS NOT NULL)))),
+    CONSTRAINT play_notes_note_type_check CHECK (((note_type)::text = ANY (ARRAY[('comment'::character varying)::text, ('blocker'::character varying)::text, ('decision'::character varying)::text, ('system'::character varying)::text])))
+);
+
+
+--
+-- Name: TABLE play_notes; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.play_notes IS 'Append-only running commentary on one project checklist task (project_play_instances). Distinct from project_play_instances.completion_note, which is the single sentence written when the task is closed, and from play_evidence, which is an artefact accepted as proof. Notes may be added to a task in any status, open or closed.';
+
+
+--
+-- Name: COLUMN play_notes.is_internal; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.play_notes.is_internal IS 'TRUE = delivery side only. Hidden from project members whose project_members.side is ''internal_customer'' ΓÇö the person who signs the work off. Has no effect on a customer project: external stakeholders have no login and never read this table.';
+
+
+--
+-- Name: COLUMN play_notes.deleted_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.play_notes.deleted_at IS 'Soft delete. The row is retained so that a withdrawn note is still attributable; reads exclude it. Set by the author or by someone who can manage the project.';
+
+
+--
+-- Name: play_notes_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.play_notes_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: play_notes_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.play_notes_id_seq OWNED BY public.play_notes.id;
+
+
+--
 -- Name: playbook_play_roles; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -11523,6 +11623,13 @@ ALTER TABLE ONLY public.play_evidence ALTER COLUMN id SET DEFAULT nextval('publi
 
 
 --
+-- Name: play_notes id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_notes ALTER COLUMN id SET DEFAULT nextval('public.play_notes_id_seq'::regclass);
+
+
+--
 -- Name: playbook_play_roles id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -13165,6 +13272,14 @@ ALTER TABLE ONLY public.play_due_date_revisions
 
 ALTER TABLE ONLY public.play_evidence
     ADD CONSTRAINT play_evidence_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: play_notes play_notes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_notes
+    ADD CONSTRAINT play_notes_pkey PRIMARY KEY (id);
 
 
 --
@@ -16610,6 +16725,27 @@ CREATE INDEX idx_play_evidence_instance ON public.play_evidence USING btree (pro
 
 
 --
+-- Name: idx_play_notes_author; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_play_notes_author ON public.play_notes USING btree (author_id);
+
+
+--
+-- Name: idx_play_notes_instance; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_play_notes_instance ON public.play_notes USING btree (project_play_instance_id, created_at DESC) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_play_notes_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_play_notes_org ON public.play_notes USING btree (org_id);
+
+
+--
 -- Name: idx_play_roles_play; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -18783,7 +18919,7 @@ CREATE TRIGGER trg_baseline_snapshots_freeze BEFORE DELETE OR UPDATE ON public.b
 -- Name: boq_progress trg_boq_progress_append_only; Type: TRIGGER; Schema: public; Owner: -
 --
 
-CREATE TRIGGER trg_boq_progress_append_only BEFORE DELETE OR UPDATE ON public.boq_progress FOR EACH ROW EXECUTE FUNCTION public.boq_progress_append_only();
+CREATE TRIGGER trg_boq_progress_append_only BEFORE UPDATE ON public.boq_progress FOR EACH ROW EXECUTE FUNCTION public.boq_progress_append_only();
 
 
 --
@@ -18874,7 +19010,14 @@ CREATE TRIGGER trg_organizations_updated_at BEFORE UPDATE ON public.organization
 -- Name: play_evidence trg_play_evidence_immutable; Type: TRIGGER; Schema: public; Owner: -
 --
 
-CREATE TRIGGER trg_play_evidence_immutable BEFORE DELETE OR UPDATE ON public.play_evidence FOR EACH ROW EXECUTE FUNCTION public.play_evidence_immutable();
+CREATE TRIGGER trg_play_evidence_immutable BEFORE UPDATE ON public.play_evidence FOR EACH ROW EXECUTE FUNCTION public.play_evidence_immutable();
+
+
+--
+-- Name: play_notes trg_play_notes_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_play_notes_append_only BEFORE UPDATE ON public.play_notes FOR EACH ROW EXECUTE FUNCTION public.play_notes_append_only();
 
 
 --
@@ -19476,6 +19619,13 @@ ALTER TABLE ONLY public.boq_items
 
 ALTER TABLE ONLY public.boq_progress
     ADD CONSTRAINT boq_progress_item_fkey FOREIGN KEY (boq_item_id) REFERENCES public.boq_items(id) ON DELETE CASCADE;
+
+
+--
+-- Name: CONSTRAINT boq_progress_item_fkey ON boq_progress; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON CONSTRAINT boq_progress_item_fkey ON public.boq_progress IS 'ON DELETE CASCADE, and now actually reachable (2026_122). Scoped to the deleted item: progress against any other bill item is untouched.';
 
 
 --
@@ -21535,6 +21685,13 @@ ALTER TABLE ONLY public.play_evidence
 
 
 --
+-- Name: CONSTRAINT play_evidence_instance_fkey ON play_evidence; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON CONSTRAINT play_evidence_instance_fkey ON public.play_evidence IS 'ON DELETE CASCADE, and now actually reachable (2026_121). Scoped to the deleted task: the same message accepted as evidence on another task is a separate row with a different project_play_instance_id and is not touched. The whatsapp_messages row is never affected ΓÇö evidence is a citation, not the thing cited.';
+
+
+--
 -- Name: play_evidence play_evidence_message_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -21556,6 +21713,38 @@ ALTER TABLE ONLY public.play_evidence
 
 ALTER TABLE ONLY public.play_evidence
     ADD CONSTRAINT play_evidence_revoked_by_fkey FOREIGN KEY (revoked_by) REFERENCES public.users(id);
+
+
+--
+-- Name: play_notes play_notes_author_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_notes
+    ADD CONSTRAINT play_notes_author_id_fkey FOREIGN KEY (author_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: play_notes play_notes_deleted_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_notes
+    ADD CONSTRAINT play_notes_deleted_by_fkey FOREIGN KEY (deleted_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: play_notes play_notes_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_notes
+    ADD CONSTRAINT play_notes_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: play_notes play_notes_project_play_instance_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_notes
+    ADD CONSTRAINT play_notes_project_play_instance_id_fkey FOREIGN KEY (project_play_instance_id) REFERENCES public.project_play_instances(id) ON DELETE CASCADE;
 
 
 --
@@ -23812,5 +24001,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict cCbkzrdUVaJ6IWWnsnsD9A0bKF8BTLbjqHILv4Oc7mgGGTpNCSzrWaevwXBjTos
+\unrestrict Prev2UoidpbxDesTTjOsoxeoggl71z3B01oGrtPx5fBBXn5ZwBPNgvfdJcAgAsP
 

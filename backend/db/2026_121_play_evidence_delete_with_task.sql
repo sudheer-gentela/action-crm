@@ -94,6 +94,57 @@ BEGIN
     RETURN OLD;
   END IF;
 
+  -- THE SAME TRAP AGAIN, ONE TABLE OVER — PARTIALLY.
+  --   play_evidence_message_fkey is ON DELETE SET NULL, and Postgres
+  --   performs that as an UPDATE on this table. So deleting a WhatsApp
+  --   message that had been accepted as evidence fired this trigger and
+  --   was rejected — "is immutable; the only permitted update is a
+  --   revocation" — the same shape of failure as the DELETE arm above.
+  --
+  --   This branch stops the TRIGGER from being the thing that refuses a
+  --   referential action, which is the right layering: a trigger guarding
+  --   user edits should not stand in front of the FK's own semantics.
+  --
+  --   IT DOES NOT MAKE THE MESSAGE DELETABLE, and deliberately so. The
+  --   row must still satisfy play_evidence_whatsapp_shape_chk:
+  --
+  --     CHECK (channel <> 'whatsapp' OR whatsapp_message_id IS NOT NULL)
+  --
+  --   so a whatsapp-channel evidence row cannot lose its message id, and
+  --   the delete is now refused by that CHECK with a message that names
+  --   the real constraint instead of by an immutability rule that had
+  --   nothing to do with it.
+  --
+  --   Whether a cited message SHOULD be deletable is an open product
+  --   question, not something to settle inside a trigger: either the FK
+  --   becomes ON DELETE RESTRICT (making "you cannot delete a message
+  --   that is evidence — revoke the evidence first" explicit), or the
+  --   CHECK relaxes so the snapshot alone carries the proof. Nothing
+  --   deletes whatsapp_messages today, so neither is urgent; a retention
+  --   sweep or an erasure request would force the choice.
+  --
+  --   Narrowly scoped either way — the ONLY change permitted here is the
+  --   message id going from set to NULL, so it cannot launder an edit.
+  IF OLD.whatsapp_message_id IS NOT NULL
+     AND NEW.whatsapp_message_id IS NULL
+     AND NEW.id                       IS NOT DISTINCT FROM OLD.id
+     AND NEW.org_id                   IS NOT DISTINCT FROM OLD.org_id
+     AND NEW.project_play_instance_id IS NOT DISTINCT FROM OLD.project_play_instance_id
+     AND NEW.channel                  IS NOT DISTINCT FROM OLD.channel
+     AND NEW.snapshot_body            IS NOT DISTINCT FROM OLD.snapshot_body
+     AND NEW.snapshot_sender          IS NOT DISTINCT FROM OLD.snapshot_sender
+     AND NEW.snapshot_sent_at         IS NOT DISTINCT FROM OLD.snapshot_sent_at
+     AND NEW.snapshot_thread_id       IS NOT DISTINCT FROM OLD.snapshot_thread_id
+     AND NEW.note                     IS NOT DISTINCT FROM OLD.note
+     AND NEW.accepted_by              IS NOT DISTINCT FROM OLD.accepted_by
+     AND NEW.accepted_at              IS NOT DISTINCT FROM OLD.accepted_at
+     AND NEW.revoked_at               IS NOT DISTINCT FROM OLD.revoked_at
+     AND NEW.revoked_by               IS NOT DISTINCT FROM OLD.revoked_by
+     AND NEW.revoke_reason            IS NOT DISTINCT FROM OLD.revoke_reason
+  THEN
+    RETURN NEW;
+  END IF;
+
   IF OLD.revoked_at IS NOT NULL THEN
     RAISE EXCEPTION 'play_evidence % is already revoked and cannot be changed', OLD.id;
   END IF;
