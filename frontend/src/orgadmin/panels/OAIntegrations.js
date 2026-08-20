@@ -1,9 +1,21 @@
 /* Extracted from OrgAdminView.js — Phase 4 refactor (2026-06).
  * Verbatim move; no logic changes.
- * Panel: OAIntegrations. */
+ * Panel: OAIntegrations.
+ *
+ * CHANGED IN THIS VERSION — Microsoft Teams sub-tab added (three lines: the
+ * import below, one entry in SUB_TABS, one render line at the foot). Everything
+ * else is identical.
+ *
+ * NOTE ON PLACEMENT — the Teams tab is a PER-REP screen sitting in an org-admin
+ * panel, which is the same shape as the WhatsApp capture tabs beside it: an
+ * admin opening it connects their OWN Teams account and triages their OWN
+ * conversations. That is not an oversight of the delegated design, it is the
+ * design — a rep's token can only ever see what that rep can see, so there is
+ * no org-wide view to render here. */
 import React, { useState, useEffect } from 'react';
 import OAMeetingSettings from '../../OAMeetingSettings';
 import SlackConnect from '../../SlackConnect';
+import MSTeamsConnect from '../../MSTeamsConnect';
 import WhatsAppConnect from '../../WhatsAppConnect';
 import WhatsAppSessionConnect from '../../WhatsAppSessionConnect';
 import WhatsAppSessionTriage from '../../WhatsAppSessionTriage';
@@ -112,6 +124,10 @@ export default function OAIntegrations({ orgId }) {
     { id: 'email-calendar', label: '📧 Email & Calendar' },
     { id: 'meeting',        label: '🎙️ Meeting & Transcripts' },
     { id: 'slack',          label: '💬 Slack Notifications' },
+    // Sits before the WhatsApp entries so the three WhatsApp tabs stay
+    // contiguous — they are one story told across three screens and splitting
+    // them reads as though something is missing.
+    { id: 'msteams',        label: '🟦 Microsoft Teams' },
     { id: 'whatsapp',       label: '💚 WhatsApp Business' },
     // Session capture is a SEPARATE transport on a separate number: unofficial,
     // read-only, and able to see groups created on a phone. Kept as its own
@@ -321,6 +337,9 @@ export default function OAIntegrations({ orgId }) {
           <SlackConnect />
         </div>
       )}
+
+      {/* ── Microsoft Teams tab ─────────────────────────────────────── */}
+      {subTab === 'msteams' && <MSTeamsConnect />}
 
       {/* ── WhatsApp Business tab ───────────────────────────────────── */}
       {subTab === 'whatsapp' && <WhatsAppConnect />}

@@ -2,6 +2,11 @@
  * apiService.js — DROP-IN REPLACEMENT
  *
  * Added in this version:
+ *   msteams.*                           — Microsoft Teams connect, discovery
+ *                                         and triage (phase 0; captures nothing
+ *                                         yet). Sits ABOVE the WhatsApp block.
+ *
+ * Added previously, kept for reference:
  *   prospectingActions.outreachSend()   — new send endpoint
  *   prospectingSenders.*                — sender account management
  *   outreachLimits.*                    — org ceiling GET/PUT
@@ -950,6 +955,53 @@ twilio: {
     addOrgDomain:   (domain)      => api.post('/project-members/domains', { domain }),
     removeOrgDomain:(did)         => api.delete(`/project-members/domains/${did}`),
     toggleModule: (enabled) => api.patch('/handovers/admin/module', { enabled }),
+  },
+
+  // ══════════════════════════════════════════════════════════
+  // Microsoft Teams channel
+  // ══════════════════════════════════════════════════════════
+
+  // Delegated and READ-ONLY: every call runs as the signed-in rep and sees
+  // exactly the chats and channels that rep is already in. There is no send
+  // endpoint here and the OAuth scopes cannot send.
+  //
+  // Named msteams and not teams because /api/org/admin already serves
+  // teams.routes.js — the SALES TEAM hierarchy. Two different things called
+  // "teams" is a bug waiting for a tired evening.
+  //
+  // Phase 0 discovers and triages; it captures nothing. Message search arrives
+  // through whatsappMessages.search()'s channel registry, not here.
+  msteams: {
+    status:          ()        => api.get('/msteams/status'),
+    connect:         ()        => api.get('/msteams/connect'),
+    // The URL a TENANT ADMIN opens once to approve the app org-wide. Needed
+    // because reading Teams channels cannot be consented to by a normal user —
+    // ChannelMessage.Read.All is admin-consent-required even as a delegated
+    // scope. Admin-only server-side.
+    adminConsentUrl: ()        => api.get('/msteams/admin-consent-url'),
+    disconnect:      ()        => api.post('/msteams/disconnect'),
+
+    // Discovery normally runs hourly on the worker, because nothing in Graph
+    // notifies us that a rep joined a channel. This is the "I was added to
+    // that channel two minutes ago" button.
+    discover:        ()        => api.post('/msteams/discover'),
+
+    // params: { status, watched, q, limit }. Scoped server-side to the
+    // CALLER'S OWN connection — two reps in the same channel each see and
+    // decide on their own row.
+    conversations:   (params = {}) =>
+      api.get(`/msteams/conversations?${new URLSearchParams(params).toString()}`),
+
+    // Both take { conversationIds: number[] } plus watched / ignored.
+    // Bulk by design: a rep in forty channels triages in sweeps, not one
+    // dialog at a time.
+    watch:           (body)    => api.post('/msteams/conversations/watch', body),
+    ignore:          (body)    => api.post('/msteams/conversations/ignore', body),
+
+    // Pauses capture WITHOUT tearing down the connection — deliberately not
+    // the same thing as disconnecting, so a freeze window does not cost a
+    // re-consent. body: { enabled: boolean }
+    capture:         (body)    => api.post('/msteams/capture', body),
   },
 
   // ══════════════════════════════════════════════════════════
