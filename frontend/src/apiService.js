@@ -825,6 +825,9 @@ twilio: {
 
     completePlay: (id, instanceId, data) => api.post(`/handovers/sales/${id}/plays/${instanceId}/complete`, data || {}),
     addPlay:    (id, data)       => api.post(`/handovers/sales/${id}/plays`, data),
+    // Task prerequisites (2026_117). Instance ids on the same project; [] clears.
+    setPlayDependencies: (id, instanceId, dependsOn) =>
+      api.put(`/handovers/sales/${id}/plays/${instanceId}/dependencies`, { dependsOn }),
     // Project stages (2026_116). project_stages is authoritative, so these
     // read/write the project's own stage list — not an org-wide catalogue.
     listStages:   (id)        => api.get(`/handovers/sales/${id}/stages`),

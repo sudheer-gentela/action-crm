@@ -512,6 +512,26 @@ function StatusAction({ play, canEdit, onSetStatus, compact = false }) {
   const next  = play.status === 'in_progress' ? 'not_started' : 'in_progress';
   const label = play.status === 'in_progress' ? 'Pause' : 'Start';
 
+  // 2026_117: prerequisites block starting, not warning. Pausing an already
+  // started task stays available — a task started before a dependency was
+  // added must still be resettable.
+  const blocked = (play.blockedBy || []).length > 0 && play.status !== 'in_progress';
+  if (blocked) {
+    const names = play.blockedBy.map(b => b.title).join(', ');
+    return (
+      <span
+        title={`Blocked by: ${names}. Complete those first, or remove the dependency.`}
+        style={{
+          fontSize: compact ? 10 : 11, padding: compact ? '2px 7px' : '3px 10px',
+          borderRadius: 5, fontWeight: 600, whiteSpace: 'nowrap',
+          border: '1px solid #e5e7eb', background: '#f8fafc', color: '#9ca3af',
+          cursor: 'not-allowed',
+        }}>
+        🔒 Blocked
+      </span>
+    );
+  }
+
   return (
     <button
       onClick={(e) => { e.stopPropagation(); onSetStatus(play.playInstanceId, next); }}
@@ -555,7 +575,7 @@ function OwnerChip({ name, compact = false }) {
 
 // ── PlaySection ───────────────────────────────────────────────────────────────
 
-function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus, users, stages }) {
+function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus, onSetDeps, siblings, users, stages }) {
   // Done-state mirrors the backend gate, which treats a play as satisfied when
   // its status is 'completed' OR 'skipped' — not merely when completedAt is set.
   // (A skipped play has no completedAt but still clears the gate.)
@@ -578,6 +598,7 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
   const [eDue,   setEDue]   = useState('');
   const [eGate,  setEGate]  = useState(false);
   const [eStage, setEStage] = useState('');
+  const [eDeps,  setEDeps]  = useState([]);
   const [eSaving, setESaving] = useState(false);
 
   const openEdit = () => {
@@ -589,6 +610,7 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
     // 'custom' maps to the empty option — the picker labels it
     // "Added on this project" rather than exposing the raw key.
     setEStage(play.stageKey && play.stageKey !== 'custom' ? play.stageKey : '');
+    setEDeps(play.dependsOn || []);
     setEditing(true);
   };
   const saveEdit = async () => {
@@ -608,6 +630,14 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
         stageName: (eStage.trim() && !(stages || []).some(st => st.key === eStage.trim()))
           ? eStage.trim() : undefined,
       });
+      // Dependencies go through their own endpoint: cycle detection and the
+      // same-project check live there, and a rejected dependency must not
+      // silently roll back the title/owner/date edits above.
+      if (onSetDeps) {
+        const before = [...(play.dependsOn || [])].sort().join(',');
+        const after  = [...eDeps].sort().join(',');
+        if (before !== after) await onSetDeps(play.playInstanceId, eDeps);
+      }
       setEditing(false);
     } finally { setESaving(false); }
   };
@@ -700,7 +730,7 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
           {!isDone && canEdit && !capturing && onSetStatus && (
             <StatusAction play={play} canEdit={canEdit} onSetStatus={onSetStatus} />
           )}
-          {!isDone && canEdit && !capturing && (
+          {!isDone && canEdit && !capturing && (play.blockedBy || []).length === 0 && (
             <button onClick={() => setCapturing(true)} style={{
               fontSize: 11, padding: '3px 10px', borderRadius: 4,
               background: '#0369a1', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600,
@@ -738,6 +768,12 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
       )}
 
       {/* Manual completion capture: note + how it was closed */}
+      {(play.blockedBy || []).length > 0 && (
+        <div style={{ marginTop: 6, fontSize: 11, color: '#92400e', background: '#fffbeb',
+                      border: '1px solid #fde68a', borderRadius: 6, padding: '5px 9px' }}>
+          🔒 Waiting on: {play.blockedBy.map(b => b.title).join(', ')}
+        </div>
+      )}
       {capturing && (
         <div style={{ marginTop: 8, padding: 10, background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 6 }}>
           <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 6 }}>How was this closed out?</div>
@@ -791,6 +827,36 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
               <input type="checkbox" checked={eGate} onChange={e => setEGate(e.target.checked)} /> Gate (blocks go-live)
             </label>
           </div>
+
+          {onSetDeps && (siblings || []).length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 4 }}>
+                Depends on <span style={{ color: '#9ca3af' }}>· this task can't start until these are done</span>
+              </div>
+              <div style={{ maxHeight: 130, overflowY: 'auto', border: '1px solid #d1d5db',
+                            borderRadius: 4, padding: '6px 8px', background: '#fff' }}>
+                {siblings.map(sib => (
+                  <label key={sib.playInstanceId}
+                    style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12,
+                             padding: '2px 0', color: '#374151' }}>
+                    <input
+                      type="checkbox"
+                      checked={eDeps.includes(sib.playInstanceId)}
+                      onChange={() => setEDeps(d => d.includes(sib.playInstanceId)
+                        ? d.filter(x => x !== sib.playInstanceId)
+                        : [...d, sib.playInstanceId])}
+                    />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {sib.title}
+                    </span>
+                    {['completed', 'skipped'].includes(sib.status) && (
+                      <span style={{ fontSize: 10, color: '#059669' }}>✓</span>
+                    )}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 8 }}>
             <button onClick={saveEdit} disabled={eSaving || !eTitle.trim()} style={{ fontSize: 12, padding: '5px 14px', borderRadius: 4,
               background: (eSaving || !eTitle.trim()) ? '#9ca3af' : '#0369a1', color: '#fff', border: 'none', fontWeight: 600,
@@ -1607,6 +1673,16 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
 
   // Start / pause. Separate from handleUpdatePlay so a status flip does not
   // reload the stage list — nothing about stages changes.
+  const handleSetPlayDeps = async (playInstanceId, dependsOn) => {
+    try {
+      await apiService.handovers.setPlayDependencies(h.id, playInstanceId, dependsOn);
+      await load();
+    } catch (err) {
+      flash('error', err?.response?.data?.error?.message || 'Could not save dependencies');
+      throw err;   // let saveEdit know not to close the form on failure
+    }
+  };
+
   const handleSetPlayStatus = async (playInstanceId, status) => {
     try {
       await apiService.handovers.updatePlay(h.id, playInstanceId, { status });
@@ -2012,7 +2088,9 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                           </div>
                           {isOpen && (
                             <div style={{ paddingBottom: 8 }}>
-                              <PlaySection play={play} canEdit={salesCanEdit} onComplete={handleCompletePlay} onRemove={handleRemovePlay} onEdit={handleUpdatePlay} onSetStatus={handleSetPlayStatus} users={users} stages={stages} />
+                              <PlaySection play={play} canEdit={salesCanEdit} onComplete={handleCompletePlay} onRemove={handleRemovePlay} onEdit={handleUpdatePlay} onSetStatus={handleSetPlayStatus} onSetDeps={handleSetPlayDeps}
+                                siblings={plays.filter(x => x.playInstanceId !== play.playInstanceId)}
+                                users={users} stages={stages} />
                             </div>
                           )}
                         </div>
@@ -2100,7 +2178,9 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                               <tr>
                                 <td colSpan={5} style={{ padding: '0 10px 8px', background: '#f8fafc', borderTop: 'none' }}>
                                   <PlaySection play={play} canEdit={salesCanEdit} onComplete={handleCompletePlay}
-                                    onRemove={handleRemovePlay} onEdit={handleUpdatePlay} onSetStatus={handleSetPlayStatus} users={users} stages={stages} />
+                                    onRemove={handleRemovePlay} onEdit={handleUpdatePlay} onSetStatus={handleSetPlayStatus} onSetDeps={handleSetPlayDeps}
+                                siblings={plays.filter(x => x.playInstanceId !== play.playInstanceId)}
+                                users={users} stages={stages} />
                                 </td>
                               </tr>
                             )}
@@ -2152,6 +2232,8 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                         onRemove={handleRemovePlay}
                         onEdit={handleUpdatePlay}
                         onSetStatus={handleSetPlayStatus}
+                        onSetDeps={handleSetPlayDeps}
+                        siblings={plays.filter(x => x.playInstanceId !== play.playInstanceId)}
                         users={users}
                         stages={stages}
                       />

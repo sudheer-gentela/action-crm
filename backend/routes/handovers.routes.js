@@ -481,6 +481,20 @@ router.delete('/sales/:id/stages/:stageKey', async (req, res) => {
   }
 });
 
+// PUT /sales/:id/plays/:instanceId/dependencies — set task prerequisites
+// Body: { dependsOn: [12, 15] }  (instance ids on this same project; [] clears)
+router.put('/sales/:id/plays/:instanceId/dependencies', async (req, res) => {
+  try {
+    res.json(await handoverService.setPlayDependencies(
+      parseInt(req.params.id, 10), req.orgId,
+      parseInt(req.params.instanceId, 10), req.body?.dependsOn || []));
+  } catch (err) {
+    console.error('Set play dependencies error:', err);
+    res.status(err.status || 500).json({
+      error: { message: err.message, code: err.code, blockedBy: err.blockedBy } });
+  }
+});
+
 // ── PATCH /sales/:id/plays/reorder  — reposition plays within one stage ───────
 //
 // Body: { stageKey: 'mobilise', orderedIds: [12, 9, 30] }

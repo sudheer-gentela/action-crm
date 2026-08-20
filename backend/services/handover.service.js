@@ -265,6 +265,11 @@ function fmtPlay(row) {
     // keeps its own label fallback rather than rendering blank.
     stageName:       row.stage_name ?? null,
     stageSortOrder:  row.stage_sort_order ?? null,
+    // 2026_117. dependsOn is the stored prerequisite list; blockedBy is the
+    // subset still outstanding. Both undefined on callers that build a play
+    // row without the dependency sub-select, hence the ?? fallbacks.
+    dependsOn:       row.depends_on ?? [],
+    blockedBy:       row.blocked_by ?? [],
     // Baseline is what the Change-date dialog compares against; without it
     // the dialog cannot show what was originally committed.
     baselineDueDate: row.baseline_due_date ?? null,
@@ -1555,6 +1560,18 @@ async function completePlay(handoverId, playInstanceId, userId, orgId, data = {}
     throw Object.assign(new Error('Play does not belong to this handover'), { status: 404 });
   }
 
+  // 2026_117: the same prerequisite rule that blocks Start also blocks Done.
+  // Guarding only the start would leave the rule trivially bypassable — a user
+  // who cannot start a task could still mark it complete, which is the more
+  // consequential action of the two.
+  const outstanding = await _outstandingPrereqs(playInstanceId, orgId);
+  if (outstanding.length) {
+    throw Object.assign(
+      new Error(`Blocked by: ${outstanding.map(p => p.title).join(', ')}. `
+              + 'Complete those first, or remove the dependency.'),
+      { status: 409, code: 'PREREQ_INCOMPLETE', blockedBy: outstanding });
+  }
+
   // Delegate to the project-scoped method. The deal-scoped completePlay()
   // reads deal_play_instances and would no longer find this row.
   const { instance } = await PlaybookPlayService.completePlayForProject(
@@ -1917,6 +1934,95 @@ async function removeStage(handoverId, orgId, stageKey) {
   if (!rowCount) throw Object.assign(new Error('Stage not found on this project.'), { status: 404 });
 
   return listStages(handoverId, orgId);
+}
+
+/**
+ * Prerequisites of a task that are not yet satisfied.
+ *
+ * Shared by the start guard and the completion guard so both answer the
+ * question identically. Returns [] when the task is startable.
+ */
+async function _outstandingPrereqs(playInstanceId, orgId) {
+  const { rows } = await pool.query(
+    `SELECT d.id, d.title, d.status
+       FROM project_play_instances p
+       JOIN project_play_instances d ON d.id = ANY(p.depends_on)
+      WHERE p.id = $1 AND p.org_id = $2
+        AND d.status NOT IN ('completed', 'skipped')
+      ORDER BY d.id`,
+    [playInstanceId, orgId]);
+  return rows;
+}
+
+/**
+ * Set a task's prerequisites.
+ *
+ * Rejects, in order:
+ *   - prerequisites that are not tasks on the same project (cross-project
+ *     dependencies would let one project's status changes silently gate
+ *     another's)
+ *   - self-reference (also enforced by a CHECK constraint)
+ *   - cycles, found by walking the proposed graph. The DB constraint only
+ *     catches the length-1 case; A->B->A needs traversal.
+ *
+ * Setting dependencies does NOT change the dependent task's status. It stays
+ * 'not_started' and is merely un-startable until its prerequisites are done —
+ * so a plan can be wired up while it is still being drafted.
+ */
+async function setPlayDependencies(handoverId, orgId, playInstanceId, dependsOn = []) {
+  const ids = [...new Set((dependsOn || [])
+    .map(n => parseInt(n, 10))
+    .filter(Number.isInteger))];
+
+  const { rows: [self] } = await pool.query(
+    `SELECT id FROM project_play_instances
+      WHERE id = $1 AND handover_id = $2 AND org_id = $3`,
+    [playInstanceId, handoverId, orgId]);
+  if (!self) throw Object.assign(new Error('Task not found on this project.'), { status: 404 });
+
+  if (ids.includes(playInstanceId)) {
+    throw Object.assign(new Error('A task cannot depend on itself.'), { status: 400 });
+  }
+
+  if (ids.length) {
+    const { rows: valid } = await pool.query(
+      `SELECT id FROM project_play_instances
+        WHERE id = ANY($1::int[]) AND handover_id = $2 AND org_id = $3`,
+      [ids, handoverId, orgId]);
+    if (valid.length !== ids.length) {
+      const found = new Set(valid.map(r => r.id));
+      throw Object.assign(
+        new Error(`Not tasks on this project: ${ids.filter(i => !found.has(i)).join(', ')}`),
+        { status: 400, code: 'PREREQ_NOT_ON_PROJECT' });
+    }
+
+    // Cycle check. Walk upward from each proposed prerequisite through the
+    // dependency graph; if this task is reachable, the edge would close a loop.
+    const { rows: cyc } = await pool.query(
+      `WITH RECURSIVE up(id) AS (
+         SELECT unnest($1::int[])
+         UNION
+         SELECT unnest(p.depends_on)
+           FROM project_play_instances p
+           JOIN up ON up.id = p.id
+          WHERE p.depends_on IS NOT NULL
+       )
+       SELECT 1 FROM up WHERE id = $2 LIMIT 1`,
+      [ids, playInstanceId]);
+    if (cyc.length) {
+      throw Object.assign(
+        new Error('That would create a circular dependency.'),
+        { status: 409, code: 'DEPENDENCY_CYCLE' });
+    }
+  }
+
+  await pool.query(
+    `UPDATE project_play_instances
+        SET depends_on = $1, updated_at = now()
+      WHERE id = $2 AND org_id = $3`,
+    [ids.length ? ids : null, playInstanceId, orgId]);
+
+  return { playInstanceId, dependsOn: ids, blockedBy: await _outstandingPrereqs(playInstanceId, orgId) };
 }
 
 /**
@@ -2323,6 +2429,23 @@ async function updatePlay(handoverId, orgId, playInstanceId, data = {}, userId =
         new Error(`status must be one of: ${ALLOWED.join(', ')}. Use the complete endpoint to finish a task.`),
         { status: 400, code: 'STATUS_NOT_SETTABLE' });
     }
+    // 2026_117: a task cannot be started while prerequisites are outstanding.
+    // Enforced here and not only in the UI — a disabled button is a hint, not
+    // a rule, and the PATCH is reachable directly.
+    //
+    // Only 'in_progress' is guarded: moving back to 'not_started' or flagging
+    // 'blocked' must always be possible, or a task started before a dependency
+    // was added could never be reset.
+    if (st === 'in_progress') {
+      const outstanding = await _outstandingPrereqs(playInstanceId, orgId);
+      if (outstanding.length) {
+        throw Object.assign(
+          new Error(`Blocked by: ${outstanding.map(p => p.title).join(', ')}. `
+                  + 'Complete those first, or remove the dependency.'),
+          { status: 409, code: 'PREREQ_INCOMPLETE', blockedBy: outstanding });
+      }
+    }
+
     // Moving a finished play back to an in-flight status has to clear the
     // completion trail too, or the row claims both.
     add('status', st);
@@ -2546,7 +2669,24 @@ async function _getPlays(handoverId, orgId) {
        -- write endpoint returns 400 unconditionally) and duplicating
        -- precedence logic across readers is what let ordering drift before.
        pst.name       AS stage_name,
-       pst.sort_order AS stage_sort_order
+       pst.sort_order AS stage_sort_order,
+       dpi.depends_on,
+       -- 2026_117: the prerequisites that are NOT yet satisfied. Computed
+       -- here rather than in the client so the same rule drives the UI, the
+       -- API guard, and any future reporting — a task is startable iff this
+       -- comes back empty.
+       --
+       -- 'skipped' counts as satisfied: skipping is a deliberate decision that
+       -- the step will not happen, and PlaybookPlayService.skipPlayForProject
+       -- already resolves downstream dependencies the same way completion does.
+       COALESCE((
+         SELECT json_agg(json_build_object(
+                  'id', d.id, 'title', d.title, 'status', d.status)
+                  ORDER BY d.id)
+           FROM project_play_instances d
+          WHERE d.id = ANY(dpi.depends_on)
+            AND d.status NOT IN ('completed', 'skipped')
+       ), '[]'::json) AS blocked_by
      FROM project_play_instances dpi
      LEFT JOIN users ou     ON ou.id = dpi.owner_user_id
      LEFT JOIN users cu     ON cu.id = dpi.completed_by
@@ -3570,6 +3710,7 @@ module.exports = {
   removePlay,              // ad-hoc checklist item — remove
   updatePlay,              // checklist item — edit fields
   reorderPlays,            // checklist items — reposition within a stage (A5)
+  setPlayDependencies,     // task prerequisites (2026_117)
   listStages,              // project stages — read (2026_115)
   addStage,                // project stages — create
   updateStages,            // project stages — rename / reorder
