@@ -2185,8 +2185,13 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
             actionLabel={isInternal ? '▶️ Start project' : '📤 Submit project'}
             onCancel={() => setStartReview(null)}
             onConfirm={async (startDate) => {
+              // Never commit without a preview on screen. The button is disabled
+              // while loading, but that is a UI guard only — this is the rule.
+              // Committing blind would freeze the baseline the review exists to
+              // let the user check.
+              if (!startReview.preview) return;
               // Re-preview if the date moved, so the user confirms what they saw.
-              if (startReview.preview && startDate !== startReview.preview.startDate) {
+              if (startDate !== startReview.preview.startDate) {
                 await refreshPreview(startDate);
                 return;
               }

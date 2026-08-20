@@ -1142,7 +1142,7 @@ async function advanceStatus(handoverId, orgId, userId, toStatus, closureSummary
   // completed handover stops generating alerts in the rep's action queue.
   if (TERMINAL_STATUSES.has(toStatus)) {
     ActionPersister.resolveStaleDiagnostics(
-      { orgId, entityType: 'handover', entityId: existing.dealId, firedRules: [] }
+      { orgId, entityType: 'project', entityId: handoverId, firedRules: [] }
     ).catch(err => console.error(
       `[handover.service] diagnostic cleanup failed (handover=${handoverId}):`, err.message
     ));
@@ -3174,13 +3174,19 @@ async function runNightlySweep(orgId) {
       const fired = HandoverRulesEngine.evaluate(ctx, handoverConfig);
 
       // Upsert each fired alert.
-      // entityType='handover', entityId=deal_id — ActionPersister routes this
-      // to the deal_id FK column in the actions table.
+      //
+      // 2026_119: entityType='project', entityId=handover.id. This was
+      // 'handover' with deal_id, which meant INTERNAL projects — where
+      // sales_handovers_kind_shape_chk forces deal_id NULL — could not be
+      // persisted at all: the partial index did not apply and ON CONFLICT
+      // matched nothing. dealId is still passed so customer projects keep
+      // their deal link and anything reading by deal keeps working.
       const firedSourceRules = [];
       for (const alert of fired) {
         const id = await ActionPersister.upsertDiagnosticAlert({
-          entityType: 'handover',
-          entityId:   handoverRow.deal_id,   // deal_id, not handover.id
+          entityType: 'project',
+          entityId:   handoverRow.id,
+          dealId:     handoverRow.deal_id || null,
           sourceRule: alert.sourceRule,
           title:      alert.title,
           description: alert.description,
@@ -3195,11 +3201,11 @@ async function runNightlySweep(orgId) {
         }
       }
 
-      // Resolve stale diagnostics.
-      // Pass deal_id as entityId — matches how ActionPersister queries the FK.
+      // Resolve stale diagnostics. Must key the same way the upsert did, or
+      // alerts written against handover_id would never be cleared.
       const resolvedCount = await ActionPersister.resolveStaleDiagnostics({
-        entityType: 'handover',
-        entityId:   handoverRow.deal_id,
+        entityType: 'project',
+        entityId:   handoverRow.id,
         firedRules: firedSourceRules,
         orgId:      orgId,
       });
@@ -3320,8 +3326,8 @@ async function generateForHandoverEvent(handoverId, orgId, eventType) {
     }
 
     const totalResolved = await ActionPersister.resolveStaleDiagnostics({
-      entityType: 'handover',
-      entityId:   handoverRow.deal_id,   // deal_id, not handover.id
+      entityType: 'project',
+      entityId:   handoverRow.id,
       firedRules: firedSourceRules,
       orgId,
     });

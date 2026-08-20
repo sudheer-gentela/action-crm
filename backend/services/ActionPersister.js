@@ -41,7 +41,14 @@ const ActionWriter = require('./ActionWriter');
 // ── FK column map — actions table ─────────────────────────────────────────────
 const FK_COLUMN = {
   deal:      'deal_id',
-  handover:  'deal_id',   // handover actions stored against deal_id
+  // 2026_119: 'project' keys on handover_id, which is the only thing an
+  // INTERNAL project has — sales_handovers_kind_shape_chk forces deal_id NULL
+  // for those, so the legacy 'handover' mapping below could never persist one.
+  // Mirrors what PlaybookPlayService already does for play-derived actions.
+  project:   'handover_id',
+  // DEPRECATED. Kept so existing callers passing 'handover' keep working
+  // against deal_id exactly as before; migrate them to 'project'.
+  handover:  'deal_id',
   contract:  'contract_id',
   case:      'case_id',
 };
@@ -50,6 +57,8 @@ const FK_COLUMN = {
 // Must match the indexes created in migration_upsert_constraints.sql exactly.
 const UPSERT_CONFLICT_COLS = {
   deal:      '(deal_id, source_rule)     WHERE deal_id IS NOT NULL AND source_rule IS NOT NULL',
+  // uq_actions_handover_rule — added by 2026_119.
+  project:   '(handover_id, source_rule) WHERE handover_id IS NOT NULL AND source_rule IS NOT NULL',
   handover:  '(deal_id, source_rule)     WHERE deal_id IS NOT NULL AND source_rule IS NOT NULL',
   contract:  '(contract_id, source_rule) WHERE contract_id IS NOT NULL AND source_rule IS NOT NULL',
   case:      '(case_id, source_rule)     WHERE case_id IS NOT NULL AND source_rule IS NOT NULL',
@@ -57,6 +66,8 @@ const UPSERT_CONFLICT_COLS = {
 
 const PLAY_CONFLICT_COLS = {
   deal:      '(deal_id, playbook_play_id)      WHERE deal_id IS NOT NULL AND playbook_play_id IS NOT NULL',
+  // uq_actions_handover_play — added by 2026_110.
+  project:   '(handover_id, playbook_play_id)  WHERE handover_id IS NOT NULL AND playbook_play_id IS NOT NULL',
   handover:  '(deal_id, playbook_play_id)      WHERE deal_id IS NOT NULL AND playbook_play_id IS NOT NULL',
   contract:  '(contract_id, playbook_play_id)  WHERE contract_id IS NOT NULL AND playbook_play_id IS NOT NULL',
   case:      '(case_id, playbook_play_id)      WHERE case_id IS NOT NULL AND playbook_play_id IS NOT NULL',
@@ -158,7 +169,14 @@ class ActionPersister {
     }
 
     const fkCol        = FK_COLUMN[entityType];
-    const fkValue      = explicitDealId || entityId;
+    // explicitDealId is a legacy override for entityType='handover', where the
+    // caller passes the project's deal_id as the FK. It must NOT apply to
+    // 'project': there entityId IS the handover id, and letting dealId win
+    // wrote the deal id into handover_id — pointing the alert at whichever
+    // project happened to share that number, or at nothing.
+    const fkValue      = (entityType === 'project')
+      ? entityId
+      : (explicitDealId || entityId);
     const safeNext     = VALID_NEXT_STEPS.has(nextStep) ? nextStep : 'email';
     const conflictCols = UPSERT_CONFLICT_COLS[entityType];
 
@@ -178,17 +196,27 @@ class ActionPersister {
     //   entityType='handover'  → deal_id = fkValue,    contract_id = null, case_id = null
     //   entityType='contract'  → deal_id = params.dealId or null, contract_id = fkValue, case_id = null
     //   entityType='case'      → deal_id = params.dealId or null, contract_id = null, case_id = fkValue
+    //   entityType='project'   → handover_id = fkValue, deal_id = params.dealId or null
     const dealId = (entityType === 'deal' || entityType === 'handover')
       ? fkValue
       : (params.dealId || null);
     const contractId = (entityType === 'contract') ? fkValue : null;
     const caseId     = (entityType === 'case')     ? fkValue : null;
+    // 2026_119. handover_id was never written by this INSERT — the column has
+    // existed since 2026_109 and PlaybookPlayService populates it, but the
+    // diagnostic path did not, so uq_actions_handover_rule had nothing to key
+    // on. A 'project' entity may also carry a deal (customer projects do), so
+    // params.handoverId is honoured for any entityType rather than only this
+    // one; that lets a deal-keyed caller start tagging the project too.
+    const handoverId = (entityType === 'project')
+      ? fkValue
+      : (params.handoverId || null);
 
     try {
       const result = await db.query(
         `INSERT INTO actions (
            org_id, user_id,
-           deal_id, contract_id, case_id,
+           deal_id, contract_id, case_id, handover_id,
            account_id, contact_id,
            type, action_type,
            title, description,
@@ -199,7 +227,7 @@ class ActionPersister {
            status, created_at, updated_at
          ) VALUES (
            $1, $2,
-           $3, $4, $5,
+           $3, $4, $5, $19,
            $6, $7,
            $8, $8,
            $9, $10,
@@ -230,6 +258,7 @@ class ActionPersister {
           safeNext, isInternal,        // $13, $14
           sourceRule,                  // $15
           suggestedAction, healthParam, dealStage,  // $16, $17, $18
+          handoverId,                  // $19
         ]
       );
       return result.rows[0]?.id ?? null;

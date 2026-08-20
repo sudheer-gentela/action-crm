@@ -11,7 +11,7 @@ import React, { useState, useEffect } from 'react';
 import { apiService } from '../../apiService';
 
 const LABELS = {
-  prospecting: 'Prospecting', contracts: 'Contracts', handovers: 'Handovers',
+  prospecting: 'Prospecting', contracts: 'Contracts', handovers: 'Projects',
   service: 'Service', agency: 'Agency',
 };
 
