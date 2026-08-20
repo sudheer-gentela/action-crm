@@ -2397,13 +2397,19 @@ async function reorderPlays(handoverId, orgId, stageKey, orderedIds) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Attach a WhatsApp message to a play as evidence of completion.
+ * Accept evidence for a play. TWO SOURCES, one row shape (2026_124).
  *
- * Stores BOTH a live FK to the message and a snapshot of its content. The
- * snapshot is not redundancy: conversation bindings exist because messages get
- * re-filed between projects, so a message accepted as proof for this project
- * can later belong to another. The FK keeps the thread openable; the snapshot
- * preserves what the approver actually saw when they signed off.
+ *   whatsappMessageId → channel 'whatsapp'. A message already captured on
+ *                       this org, plus a snapshot of its content AND, new in
+ *                       2026_124, of its stored media.
+ *   storageFileId     → channel 'file'. A document already in the org's
+ *                       Drive/OneDrive, normally one this project just
+ *                       uploaded via uploadPlayEvidenceFile().
+ *
+ * Stores a live link AND a snapshot in both cases. The snapshot is not
+ * redundancy: conversation bindings re-file messages between projects, and a
+ * file can be moved or unshared in Drive. The link keeps it openable; the
+ * snapshot preserves what the approver actually saw when they signed off.
  *
  * The row is immutable once written (trg_play_evidence_immutable). A mistake
  * is corrected by revoking, never by editing.
@@ -2419,16 +2425,74 @@ async function addPlayEvidence(handoverId, orgId, playInstanceId, userId, data =
   }
 
   const messageId = data.whatsappMessageId ? parseInt(data.whatsappMessageId, 10) : null;
-  if (!messageId) {
-    throw Object.assign(new Error('A WhatsApp message is required as evidence.'), { status: 400 });
+  const fileId    = data.storageFileId     ? parseInt(data.storageFileId, 10)     : null;
+
+  if (!messageId && !fileId) {
+    throw Object.assign(
+      new Error('Attach a WhatsApp message or a file as evidence.'), { status: 400 });
+  }
+  if (messageId && fileId) {
+    // One row, one artefact. Two would make "what was accepted" ambiguous and
+    // revocation would withdraw both together whether or not that was meant.
+    throw Object.assign(
+      new Error('Attach either a message or a file, not both. Add a second piece of evidence instead.'),
+      { status: 400 });
   }
 
+  const warnings = [];
+  const note = (data.note || '').trim() || null;
+
+  // ── File evidence ──────────────────────────────────────────────────────
+  if (fileId) {
+    // Org-scoped, and scoped to THIS project. storage_files.handover_id is the
+    // effective project; without the second predicate a caller could cite a
+    // document belonging to another project by guessing an id.
+    const { rows: [f] } = await pool.query(
+      `SELECT id, file_name, mime_type, file_size, web_url, handover_id
+         FROM storage_files
+        WHERE id = $1 AND org_id = $2`,
+      [fileId, orgId]
+    );
+    if (!f) throw Object.assign(new Error('File not found.'), { status: 404 });
+    if (f.handover_id && f.handover_id !== handoverId) {
+      throw Object.assign(
+        new Error('That file is filed against a different project.'), { status: 400 });
+    }
+    if (!f.handover_id) {
+      // Not fatal — an untagged document is still a real file the approver
+      // chose. Recorded so the UI can say the link is looser than it looks.
+      warnings.push('That file is not tagged to this project.');
+    }
+
+    const { rows: [row] } = await pool.query(
+      `INSERT INTO play_evidence
+         (org_id, project_play_instance_id, channel, storage_file_id,
+          snapshot_file_name, snapshot_mime_type, snapshot_file_size,
+          snapshot_web_url, note, accepted_by)
+       VALUES ($1, $2, 'file', $3, $4, $5, $6, $7, $8, $9)
+       RETURNING id, accepted_at`,
+      [orgId, playInstanceId, fileId,
+       f.file_name || null, f.mime_type || null, f.file_size || null,
+       f.web_url || null, note, userId]
+    );
+    return { evidenceId: row.id, acceptedAt: row.accepted_at, warnings };
+  }
+
+  // ── WhatsApp evidence ──────────────────────────────────────────────────
   // Org-scoped read. Without this a caller could snapshot a message belonging
   // to another tenant by guessing an id.
+  //
+  // 2026_124 adds the media columns: accepting a photo used to record the
+  // caption and nothing about the picture, and media is reaped on a retention
+  // schedule (media_expires_at / media_removed_at), so proof of completion
+  // quietly decayed into a caption.
   const { rows: [msg] } = await pool.query(
-    `SELECT id, thread_id, body, from_name, from_phone, sent_at, handover_id
-       FROM whatsapp_messages
-      WHERE id = $1 AND org_id = $2`,
+    `SELECT m.id, m.thread_id, m.body, m.from_name, m.from_phone, m.sent_at,
+            m.handover_id, m.storage_file_id, m.media_mime_type, m.media_filename,
+            sf.file_size AS media_file_size, sf.web_url AS media_web_url
+       FROM whatsapp_messages m
+       LEFT JOIN storage_files sf ON sf.id = m.storage_file_id
+      WHERE m.id = $1 AND m.org_id = $2`,
     [messageId, orgId]
   );
   if (!msg) {
@@ -2438,7 +2502,6 @@ async function addPlayEvidence(handoverId, orgId, playInstanceId, userId, data =
   // Not an error: a message may legitimately predate the project being tagged,
   // and refusing would make evidence unusable for exactly the historic threads
   // this feature exists to surface. Recorded as a warning so the UI can say so.
-  const warnings = [];
   if (msg.handover_id && msg.handover_id !== handoverId) {
     warnings.push('That message is currently filed against a different project.');
   }
@@ -2447,19 +2510,58 @@ async function addPlayEvidence(handoverId, orgId, playInstanceId, userId, data =
     `INSERT INTO play_evidence
        (org_id, project_play_instance_id, channel, whatsapp_message_id,
         snapshot_body, snapshot_sender, snapshot_sent_at, snapshot_thread_id,
+        storage_file_id, snapshot_file_name, snapshot_mime_type,
+        snapshot_file_size, snapshot_web_url,
         note, accepted_by)
-     VALUES ($1, $2, 'whatsapp', $3, $4, $5, $6, $7, $8, $9)
+     VALUES ($1, $2, 'whatsapp', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      RETURNING id, accepted_at`,
     [orgId, playInstanceId, messageId,
      msg.body || null,
      msg.from_name || msg.from_phone || null,
      msg.sent_at || null,
      msg.thread_id || null,
-     (data.note || '').trim() || null,
+     msg.storage_file_id || null,
+     msg.media_filename || null,
+     msg.media_mime_type || null,
+     msg.media_file_size || null,
+     msg.media_web_url || null,
+     note,
      userId]
   );
 
   return { evidenceId: row.id, acceptedAt: row.accepted_at, warnings };
+}
+
+/**
+ * Upload a file straight onto a task as evidence.
+ *
+ * The bytes never touch Postgres. This delegates to
+ * projectFiles.uploadLocalFile(), which pushes to the org's Google Drive or
+ * OneDrive through StorageProviderFactory and writes the storage_files row —
+ * the same path, folder and credential as any other project attachment. All
+ * this adds is the play_evidence row pointing at the result.
+ *
+ * If the project has no upload folder the underlying call refuses with an
+ * actionable message rather than falling back to a blob table. That is a
+ * deliberate choice: site photos in the database would land in every nightly
+ * backup and every restore, and "storage is configured" is a one-time setup
+ * problem, not a per-upload one.
+ */
+async function uploadPlayEvidenceFile(handoverId, orgId, playInstanceId, userId, file = {}) {
+  await _requirePlayOnProject(handoverId, orgId, playInstanceId);
+
+  const projectFiles = require('./projectFiles.service');
+  const { file: stored, folderName } = await projectFiles.uploadLocalFile(
+    handoverId, orgId, userId,
+    { fileName: file.fileName, mimeType: file.mimeType, buffer: file.buffer }
+  );
+
+  const result = await addPlayEvidence(handoverId, orgId, playInstanceId, userId, {
+    storageFileId: stored.id,
+    note: file.note,
+  });
+
+  return { ...result, file: stored, folderName };
 }
 
 /**
@@ -2472,16 +2574,21 @@ async function listPlayEvidence(handoverId, orgId, playInstanceId) {
     `SELECT e.id, e.channel, e.whatsapp_message_id,
             e.snapshot_body, e.snapshot_sender, e.snapshot_sent_at,
             e.snapshot_thread_id, e.note,
+            e.storage_file_id, e.snapshot_file_name, e.snapshot_mime_type,
+            e.snapshot_file_size, e.snapshot_web_url,
             e.accepted_at, e.revoked_at, e.revoke_reason,
             au.first_name || ' ' || au.last_name AS accepted_by_name,
             ru.first_name || ' ' || ru.last_name AS revoked_by_name,
             -- has the message since been re-filed elsewhere?
-            m.handover_id AS message_handover_id
+            m.handover_id AS message_handover_id,
+            -- is the underlying file still there to open?
+            sf.id IS NOT NULL AS file_live
        FROM play_evidence e
        JOIN project_play_instances p ON p.id = e.project_play_instance_id
        LEFT JOIN users au ON au.id = e.accepted_by
        LEFT JOIN users ru ON ru.id = e.revoked_by
        LEFT JOIN whatsapp_messages m ON m.id = e.whatsapp_message_id
+       LEFT JOIN storage_files sf    ON sf.id = e.storage_file_id
       WHERE e.project_play_instance_id = $1
         AND e.org_id = $2
         AND p.handover_id = $3
@@ -2499,6 +2606,17 @@ async function listPlayEvidence(handoverId, orgId, playInstanceId) {
       sender:        r.snapshot_sender,
       sentAt:        r.snapshot_sent_at,
       note:          r.note,
+      // ── file / media (2026_124) ──
+      // Present on channel 'file', and on 'whatsapp' when the message carried
+      // media. fileLive says whether the live link still resolves; the
+      // snapshot fields are always what was accepted.
+      storageFileId: r.storage_file_id,
+      fileName:      r.snapshot_file_name,
+      mimeType:      r.snapshot_mime_type,
+      fileSize:      r.snapshot_file_size != null ? Number(r.snapshot_file_size) : null,
+      webUrl:        r.snapshot_web_url,
+      isImage:       /^image\//i.test(r.snapshot_mime_type || ''),
+      fileLive:      !!r.file_live,
       acceptedAt:    r.accepted_at,
       acceptedBy:    r.accepted_by_name,
       revoked:       r.revoked_at != null,
@@ -2703,6 +2821,13 @@ function fmtNote(row, viewerId, canManage) {
     // attributed to nobody, rather than disappearing with them.
     authorName: row.author_name || null,
     createdAt:  row.created_at,
+    // 2026_124. Files live in the org's Drive/OneDrive; these are references
+    // plus a snapshot of the file's identity. isImage drives thumbnailing.
+    attachments: (row.attachments || []).map(a => ({
+      ...a,
+      fileSize: a.fileSize != null ? Number(a.fileSize) : null,
+      isImage:  /^image\//i.test(a.mimeType || ''),
+    })),
     // Computed here rather than in the client so the delete rule lives in one
     // place and the button cannot drift from what the API will actually allow.
     canDelete:  canManage || (row.author_id != null && row.author_id === viewerId),
@@ -2775,7 +2900,24 @@ async function listPlayNotes(handoverId, orgId, playInstanceId, userId) {
 
   const { rows } = await pool.query(
     `SELECT n.id, n.body, n.note_type, n.is_internal, n.author_id, n.created_at,
-            u.first_name || ' ' || u.last_name AS author_name
+            u.first_name || ' ' || u.last_name AS author_name,
+            -- 2026_124. Attachments come back with the note rather than on a
+            -- second call: a note with a photo is one thing to read, and a
+            -- per-note round trip would make a ten-note thread eleven requests.
+            COALESCE((
+              SELECT json_agg(json_build_object(
+                       'id',            a.id,
+                       'storageFileId', a.storage_file_id,
+                       'fileName',      a.file_name,
+                       'mimeType',      a.mime_type,
+                       'fileSize',      a.file_size,
+                       'webUrl',        a.web_url,
+                       'fileLive',      (sf.id IS NOT NULL))
+                     ORDER BY a.created_at, a.id)
+                FROM play_note_attachments a
+                LEFT JOIN storage_files sf ON sf.id = a.storage_file_id
+               WHERE a.play_note_id = n.id AND a.org_id = n.org_id
+            ), '[]'::json) AS attachments
        FROM play_notes n
        JOIN project_play_instances p ON p.id = n.project_play_instance_id
        LEFT JOIN users u ON u.id = n.author_id
@@ -2797,6 +2939,68 @@ async function listPlayNotes(handoverId, orgId, playInstanceId, userId) {
     canAdd:         ctx.canNote,
     canMarkInternal: !ctx.isInternalCustomer,
   };
+}
+
+/**
+ * Attach a file to an existing note (2026_124).
+ *
+ * Same storage path as evidence and as any other project attachment — the
+ * bytes go to the org's Drive/OneDrive via projectFiles.uploadLocalFile() and
+ * never into Postgres.
+ *
+ * Deliberately a second step rather than part of addPlayNote: a multipart
+ * upload can fail on the network long after the sentence was typed, and losing
+ * the note because the photo failed would be the wrong trade. The note is
+ * written first and stands on its own; the photo joins it.
+ *
+ * Anyone who could write the note can attach to it — including a manager
+ * adding a photo to someone else's note during a review. Attachments are
+ * additive and attributed, so this cannot be used to alter what was said.
+ */
+async function addPlayNoteAttachment(handoverId, orgId, noteId, userId, file = {}) {
+  const ctx = await _projectNoteContext(handoverId, orgId, userId);
+  if (!ctx) throw Object.assign(new Error('Project not found'), { status: 404 });
+  if (!ctx.canNote) {
+    throw Object.assign(
+      new Error('Only people on this project, or their manager, can attach files here'),
+      { status: 403 });
+  }
+
+  // The note must be live and on THIS project. Attaching to a withdrawn note
+  // would put a file somewhere nobody can see it.
+  const { rows: [note] } = await pool.query(
+    `SELECT n.id, n.is_internal
+       FROM play_notes n
+       JOIN project_play_instances p ON p.id = n.project_play_instance_id
+      WHERE n.id = $1 AND n.org_id = $2 AND p.handover_id = $3
+        AND n.deleted_at IS NULL`,
+    [noteId, orgId, handoverId]
+  );
+  if (!note) throw Object.assign(new Error('Note not found'), { status: 404 });
+  if (note.is_internal && ctx.isInternalCustomer) {
+    // Belt and braces: the acceptor cannot see this note, so they cannot be
+    // attaching to it. Reaching here means a stale id, not a legitimate act.
+    throw Object.assign(new Error('Note not found'), { status: 404 });
+  }
+
+  const projectFiles = require('./projectFiles.service');
+  const { file: stored, folderName } = await projectFiles.uploadLocalFile(
+    handoverId, orgId, userId,
+    { fileName: file.fileName, mimeType: file.mimeType, buffer: file.buffer }
+  );
+
+  const { rows: [row] } = await pool.query(
+    `INSERT INTO play_note_attachments
+       (org_id, play_note_id, storage_file_id, file_name, mime_type,
+        file_size, web_url, uploaded_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     RETURNING id, created_at`,
+    [orgId, noteId, stored.id, stored.file_name || file.fileName || 'upload',
+     file.mimeType || null, (file.buffer && file.buffer.length) || null,
+     stored.web_url || null, userId]
+  );
+
+  return { attachmentId: row.id, createdAt: row.created_at, file: stored, folderName };
 }
 
 /**
@@ -4358,6 +4562,8 @@ module.exports = {
   addPlayEvidence,         // evidence — attach a WhatsApp message (2026_111)
   listPlayEvidence,        // evidence — list, including withdrawn
   revokePlayEvidence,      // evidence — withdraw, never delete
+  uploadPlayEvidenceFile,  // evidence — upload a file to Drive/OneDrive (2026_124)
+  addPlayNoteAttachment,   // notes — attach a file to a note (2026_124)
   addPlayNote,             // notes — add to a task in any status (2026_120)
   listPlayNotes,           // notes — list live notes, newest first
   deletePlayNote,          // notes — soft delete by author or project manager

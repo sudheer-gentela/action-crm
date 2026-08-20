@@ -11,7 +11,7 @@
 // — an inline field invites them to happen by accident, and an accidental
 // re-baseline silently erases a slip.
 // ─────────────────────────────────────────────────────────────────────────────
-import { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
 
 const C = {
@@ -166,6 +166,59 @@ export function PlayDateModal({ handoverId, play, onClose, onSaved }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// EvidenceFile — one attached file, thumbnailed when it is an image (2026_124)
+//
+// The file itself lives in the org's Drive/OneDrive. snapshot_web_url is what
+// the provider returned at acceptance, so it is what we link to; fileLive says
+// whether the storage_files row still exists behind it.
+//
+// A dead link is shown, not hidden. "This was accepted and the file has since
+// gone" is the thing an auditor needs to see — silently dropping the row would
+// make the trail read as though nothing was ever attached.
+// ─────────────────────────────────────────────────────────────────────────────
+function prettySize(bytes) {
+  if (bytes == null) return null;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function EvidenceFile({ e }) {
+  const size = prettySize(e.fileSize);
+  const body = (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <span>{e.isImage ? '🖼' : '📎'}</span>
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {e.fileName || 'file'}
+      </span>
+      {size && <span style={{ color: C.muted, fontSize: 11 }}>{size}</span>}
+    </span>
+  );
+  return (
+    <div>
+      {e.isImage && e.webUrl && e.fileLive && (
+        <a href={e.webUrl} target="_blank" rel="noopener noreferrer">
+          <img src={e.webUrl} alt={e.fileName || 'evidence'}
+               style={{ maxWidth: 190, maxHeight: 130, borderRadius: 6,
+                        border: `1px solid ${C.line}`, display: 'block', marginBottom: 5,
+                        objectFit: 'cover' }}
+               // Drive thumbnails need a session the browser may not have.
+               // Falling back to the filename link is better than a broken icon.
+               onError={ev => { ev.currentTarget.style.display = 'none'; }} />
+        </a>
+      )}
+      {e.webUrl && e.fileLive
+        ? <a href={e.webUrl} target="_blank" rel="noopener noreferrer"
+             style={{ fontSize: 12, color: '#0369a1', textDecoration: 'none' }}>{body}</a>
+        : <span style={{ fontSize: 12, color: C.muted }}>
+            {body}
+            <span style={{ marginLeft: 8, color: C.warn }}>· file no longer available</span>
+          </span>}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // PlayEvidenceModal
 // ─────────────────────────────────────────────────────────────────────────────
 export function PlayEvidenceModal({ handoverId, play, onClose, onSaved }) {
@@ -178,6 +231,12 @@ export function PlayEvidenceModal({ handoverId, play, onClose, onSaved }) {
   const [busy,     setBusy]     = useState(false);
   const [error,    setError]    = useState(null);
   const [warn,     setWarn]     = useState(null);
+  // 2026_124: evidence has two sources now. Tabs rather than one merged list,
+  // because "pick a message we already have" and "upload what's on my phone"
+  // are different acts with different affordances.
+  const [tab,      setTab]      = useState('message');   // 'message' | 'upload'
+  const [file,     setFile]     = useState(null);
+  const fileInput = React.useRef(null);
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -227,6 +286,25 @@ export function PlayEvidenceModal({ handoverId, play, onClose, onSaved }) {
     }
   };
 
+  const uploadFile = async () => {
+    if (!file) return;
+    setBusy(true); setError(null); setWarn(null);
+    try {
+      const r = await apiService.handovers.uploadPlayEvidence(
+        handoverId, play.id, file, note.trim() || undefined);
+      const w = r.data?.warnings;
+      if (Array.isArray(w) && w.length) setWarn(w.join(' '));
+      setFile(null); setNote('');
+      if (fileInput.current) fileInput.current.value = '';
+      await load();
+      onSaved && onSaved();
+    } catch (err) {
+      setError(err?.response?.data?.error?.message || err.message || 'Could not upload that file');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const revoke = async (evidenceId) => {
     // Required by the server too — evidence is append-only and a withdrawal is
     // itself recorded, so it must say why.
@@ -270,13 +348,26 @@ export function PlayEvidenceModal({ handoverId, play, onClose, onSaved }) {
             <div key={e.id} style={{ border: `1px solid ${C.line}`, borderRadius: 6,
                                      padding: '8px 10px', marginBottom: 6, opacity: e.revoked ? 0.55 : 1 }}>
               <div style={{ fontSize: 11, color: C.muted, marginBottom: 3 }}>
-                {e.sender || 'unknown'} · {fmtDate(e.sentAt)}
+                {e.channel === 'file'
+                  ? <>Uploaded by {e.acceptedBy || 'unknown'} · {fmtDate(e.acceptedAt)}</>
+                  : <>{e.sender || 'unknown'} · {fmtDate(e.sentAt)}</>}
                 {e.revoked && <span style={{ color: C.danger, marginLeft: 8 }}>withdrawn</span>}
                 {e.messageMoved && !e.revoked && (
                   <span style={{ color: C.warn, marginLeft: 8 }}>message re-filed elsewhere</span>
                 )}
               </div>
-              <div style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>{e.body || '(no text)'}</div>
+              {e.channel === 'file' ? (
+                <div style={{ fontSize: 12 }}>
+                  <EvidenceFile e={e} />
+                </div>
+              ) : (
+                <>
+                  <div style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>{e.body || '(no text)'}</div>
+                  {/* A photo sent over WhatsApp: the picture is the proof, and
+                      before 2026_124 only its caption was recorded. */}
+                  {e.fileName && <div style={{ marginTop: 6 }}><EvidenceFile e={e} /></div>}
+                </>
+              )}
               {!e.revoked && (
                 <button onClick={() => revoke(e.id)} disabled={busy}
                         style={{ marginTop: 6, fontSize: 11, padding: '3px 8px', borderRadius: 5,
@@ -292,6 +383,58 @@ export function PlayEvidenceModal({ handoverId, play, onClose, onSaved }) {
         </>
       )}
 
+      {/* Two sources (2026_124). Message evidence proves it was communicated;
+          an upload proves it was done. Both are first-class. */}
+      <div style={{ display: 'inline-flex', border: `1px solid ${C.line}`, borderRadius: 6,
+                    overflow: 'hidden', marginBottom: 10 }}>
+        {[['message', 'Pick a WhatsApp message'], ['upload', 'Upload a file']].map(([k, label]) => (
+          <button key={k} onClick={() => { setTab(k); setError(null); setWarn(null); }}
+            style={{ fontSize: 12, padding: '5px 12px', border: 'none', cursor: 'pointer',
+                     fontWeight: tab === k ? 600 : 400,
+                     background: tab === k ? C.accent : '#fff',
+                     color: tab === k ? '#fff' : '#374151' }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'upload' && (
+        <div>
+          <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, lineHeight: 1.5 }}>
+            The file is uploaded to this project's folder in your organisation's Drive or
+            OneDrive — never stored in the database. If the project has no attachment folder
+            mapped yet, an admin needs to set one on the Files tab first.
+          </div>
+          <input ref={fileInput} type="file"
+                 onChange={ev => setFile(ev.target.files?.[0] || null)}
+                 style={{ fontSize: 12, marginBottom: 8, display: 'block' }} />
+          {file && (
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>
+              {file.name} · {prettySize(file.size)}
+            </div>
+          )}
+          <input value={note} onChange={ev => setNote(ev.target.value)}
+                 placeholder="Note (optional) — what does this prove?"
+                 style={{ width: '100%', padding: '6px 9px', border: `1px solid ${C.line}`,
+                          borderRadius: 6, fontSize: 12, marginBottom: 10 }} />
+          <div style={{ fontSize: 11, color: C.muted, marginBottom: 10, lineHeight: 1.5 }}>
+            The file's name and location are copied into the record when you attach it, so the
+            trail survives even if the file is later moved or removed. Attached evidence cannot
+            be edited — only withdrawn, with a reason.
+          </div>
+          <button onClick={uploadFile} disabled={!file || busy}
+            style={{ fontSize: 12, padding: '6px 14px', borderRadius: 6, border: 'none',
+                     fontWeight: 600,
+                     background: (!file || busy) ? '#e5e7eb' : C.accent,
+                     color: (!file || busy) ? C.muted : '#fff',
+                     cursor: (!file || busy) ? 'not-allowed' : 'pointer' }}>
+            {busy ? 'Uploading…' : 'Upload as evidence'}
+          </button>
+        </div>
+      )}
+
+      {tab === 'message' && (
+      <>
       <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>
         Attach a WhatsApp message from this project
       </div>
@@ -352,6 +495,8 @@ export function PlayEvidenceModal({ handoverId, play, onClose, onSaved }) {
             </button>
           </div>
         </>
+      )}
+      </>
       )}
     </Shell>
   );

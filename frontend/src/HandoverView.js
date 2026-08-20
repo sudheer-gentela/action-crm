@@ -816,6 +816,12 @@ function TaskNotes({ handoverId, play, canAddNotes, canMarkInternal, onCountChan
   const [kind,    setKind]    = useState('comment');
   const [internal, setInternal] = useState(false);
   const [saving,  setSaving]  = useState(false);
+  // 2026_124. Attaching is a second step after the note exists: a multipart
+  // upload can fail on the network long after the sentence was typed, and
+  // losing the note because the photo failed would be the wrong trade.
+  const [uploadingFor, setUploadingFor] = useState(null);  // note id being attached to
+  const fileInputRef = React.useRef(null);
+  const pendingNoteRef = React.useRef(null);
   // The server has the final say on both of these; these mirror what it
   // returned for this task so the composer matches what will be accepted.
   const [srvCanAdd, setSrvCanAdd] = useState(canAddNotes);
@@ -864,6 +870,28 @@ function TaskNotes({ handoverId, play, canAddNotes, canMarkInternal, onCountChan
     }
   };
 
+  const pickFileFor = (noteId) => {
+    pendingNoteRef.current = noteId;
+    fileInputRef.current?.click();
+  };
+
+  const onFilePicked = async (ev) => {
+    const picked = ev.target.files?.[0];
+    const noteId = pendingNoteRef.current;
+    ev.target.value = '';                 // so the same file can be picked again
+    if (!picked || !noteId) return;
+    setUploadingFor(noteId); setError('');
+    try {
+      await apiService.handovers.addPlayNoteAttachment(handoverId, noteId, picked);
+      await load();
+    } catch (err) {
+      setError(err?.response?.data?.error?.message || 'Could not attach that file');
+    } finally {
+      setUploadingFor(null);
+      pendingNoteRef.current = null;
+    }
+  };
+
   // Ctrl/Cmd+Enter posts. Plain Enter inserts a newline — these are sentences,
   // not chat messages, and losing a half-written paragraph to a stray Enter is
   // the kind of thing that stops people writing notes at all.
@@ -878,6 +906,11 @@ function TaskNotes({ handoverId, play, canAddNotes, canMarkInternal, onCountChan
                     textTransform: 'uppercase', marginBottom: 7 }}>
         Notes
       </div>
+
+      {/* One input for the whole thread; pendingNoteRef says which note the
+          pick belongs to. One per note would mount a DOM node per row for a
+          control used once in a while. */}
+      <input ref={fileInputRef} type="file" onChange={onFilePicked} style={{ display: 'none' }} />
 
       {error && (
         <div style={{ fontSize: 11, color: '#991b1b', background: '#fef2f2',
@@ -930,6 +963,43 @@ function TaskNotes({ handoverId, play, canAddNotes, canMarkInternal, onCountChan
                             whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                 {n.body}
               </div>
+              {/* Attachments (2026_124). Images thumbnail; anything else is a
+                  link. A dead link is shown rather than hidden — "this was
+                  attached and has since gone" is what an auditor needs. */}
+              {(n.attachments || []).length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                  {n.attachments.map(a => (
+                    a.isImage && a.webUrl && a.fileLive ? (
+                      <a key={a.id} href={a.webUrl} target="_blank" rel="noopener noreferrer"
+                         title={a.fileName}>
+                        <img src={a.webUrl} alt={a.fileName}
+                             onError={e => { e.currentTarget.style.display = 'none'; }}
+                             style={{ width: 78, height: 78, objectFit: 'cover', borderRadius: 6,
+                                      border: '1px solid #e5e7eb', display: 'block' }} />
+                      </a>
+                    ) : (
+                      <a key={a.id}
+                         href={a.fileLive && a.webUrl ? a.webUrl : undefined}
+                         target="_blank" rel="noopener noreferrer"
+                         style={{ fontSize: 11, padding: '3px 8px', borderRadius: 4,
+                                  border: '1px solid #e5e7eb', background: '#f9fafb',
+                                  color: a.fileLive ? '#0369a1' : '#9ca3af',
+                                  textDecoration: 'none',
+                                  cursor: a.fileLive ? 'pointer' : 'default' }}>
+                        📎 {a.fileName}{a.fileLive ? '' : ' · unavailable'}
+                      </a>
+                    )
+                  ))}
+                </div>
+              )}
+              {srvCanAdd && (
+                <button onClick={() => pickFileFor(n.id)} disabled={uploadingFor === n.id}
+                  style={{ marginTop: 5, fontSize: 10, padding: '2px 7px', borderRadius: 4,
+                           background: 'none', border: '1px solid #e5e7eb', color: '#6b7280',
+                           cursor: uploadingFor === n.id ? 'default' : 'pointer' }}>
+                  {uploadingFor === n.id ? 'Uploading…' : '📎 Attach a file'}
+                </button>
+              )}
             </div>
             {n.canDelete && (
               <button onClick={() => remove(n.id)} title="Remove this note"

@@ -853,6 +853,24 @@ twilio: {
     // resolves to one task.
     deletePlayNote: (id, noteId) => api.delete(`/handovers/sales/${id}/notes/${noteId}`),
 
+    // ── File attachments (2026_124) ──
+    // multipart/form-data. The Content-Type header is deliberately NOT set:
+    // the browser must add its own multipart boundary, and naming the type
+    // by hand omits it and the request fails to parse server-side.
+    //
+    // The bytes go to the org's Drive/OneDrive, never to the database.
+    uploadPlayEvidence: (id, instanceId, file, note) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      if (note) fd.append('note', note);
+      return api.post(`/handovers/sales/${id}/plays/${instanceId}/evidence/upload`, fd);
+    },
+    addPlayNoteAttachment: (id, noteId, file) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      return api.post(`/handovers/sales/${id}/notes/${noteId}/attachments`, fd);
+    },
+
     // ── Plan vs actual (2026_111) ──
     variance:       (id) => api.get(`/handovers/sales/${id}/variance`),
     canRebaseline:  (id) => api.get(`/handovers/sales/${id}/can-rebaseline`),

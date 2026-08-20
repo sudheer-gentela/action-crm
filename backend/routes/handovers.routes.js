@@ -22,6 +22,9 @@
 // GET    /handovers/sales/:id/plays/:instanceId/notes      notes on a task
 // POST   /handovers/sales/:id/plays/:instanceId/notes      add a note (any status)
 // DELETE /handovers/sales/:id/notes/:noteId                withdraw a note
+// POST   /handovers/sales/:id/notes/:noteId/attachments    attach a file to a note
+//
+// POST   /handovers/sales/:id/plays/:instanceId/evidence/upload   file as evidence
 // ─────────────────────────────────────────────────────────────────────────────
 
 const express         = require('express');
@@ -30,6 +33,16 @@ const router          = express.Router();
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext }    = require('../middleware/orgContext.middleware');
 const handoverService   = require('../services/handover.service');
+
+// Multipart for file evidence and note attachments (2026_124).
+// memoryStorage because the buffer is handed straight to the Drive/OneDrive
+// provider and never written to this container's disk — the same arrangement
+// projectFiles.routes.js uses, and the same 100 MB ceiling.
+const multer  = require('multer');
+const upload  = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 100 * 1024 * 1024 },
+});
 
 const projectSettings = require('../services/projectSettings.service');
 const planVariance    = require('../services/planVariance.service');   // 2026_111
@@ -622,6 +635,38 @@ router.post('/sales/:id/plays/:instanceId/evidence', async (req, res) => {
   }
 });
 
+// POST /sales/:id/plays/:instanceId/evidence/upload — a file as evidence
+//
+// multipart: file, and optionally note.
+//
+// The bytes go to the org's Google Drive or OneDrive, never to Postgres. A
+// project with no mapped upload folder is refused with the message from
+// projectFiles.uploadLocalFile(), which names the setting to change — there is
+// deliberately no database fallback.
+router.post('/sales/:id/plays/:instanceId/evidence/upload', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: { message: 'No file received' } });
+    res.status(201).json(await handoverService.uploadPlayEvidenceFile(
+      parseInt(req.params.id), req.orgId, parseInt(req.params.instanceId),
+      req.user.userId,
+      {
+        fileName: req.file.originalname,
+        mimeType: req.file.mimetype,
+        buffer:   req.file.buffer,
+        note:     (req.body || {}).note,
+      }
+    ));
+  } catch (err) {
+    // multer rejects an oversized file before the handler runs, so surface
+    // that as a size problem rather than a generic 500.
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ error: { message: 'That file is over the 100 MB limit.' } });
+    }
+    console.error('Upload play evidence error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
 // POST /sales/:id/evidence/:evidenceId/revoke — withdraw, never delete
 router.post('/sales/:id/evidence/:evidenceId/revoke', async (req, res) => {
   try {
@@ -685,6 +730,31 @@ router.delete('/sales/:id/notes/:noteId', async (req, res) => {
     ));
   } catch (err) {
     console.error('Delete play note error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// POST /sales/:id/notes/:noteId/attachments — attach a file to a note
+//
+// multipart: file. Same storage path as evidence; same refusal when the
+// project has no upload folder.
+//
+// A second step rather than part of the note POST on purpose: a multipart
+// upload can fail long after the sentence was typed, and losing the note
+// because the photo failed would be the wrong trade.
+router.post('/sales/:id/notes/:noteId/attachments', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: { message: 'No file received' } });
+    res.status(201).json(await handoverService.addPlayNoteAttachment(
+      parseInt(req.params.id), req.orgId, parseInt(req.params.noteId),
+      req.user.userId,
+      { fileName: req.file.originalname, mimeType: req.file.mimetype, buffer: req.file.buffer }
+    ));
+  } catch (err) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ error: { message: 'That file is over the 100 MB limit.' } });
+    }
+    console.error('Add note attachment error:', err);
     res.status(err.status || 500).json({ error: { message: err.message } });
   }
 });
