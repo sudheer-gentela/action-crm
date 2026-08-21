@@ -125,9 +125,37 @@ function redact(value, pseudo, guidAlias, key = null) {
   if (Array.isArray(value)) return value.map(v => redact(v, pseudo, guidAlias));
 
   if (typeof value === 'object') {
-    if (typeof value.content === 'string' && 'contentType' in value) {
+    // A message BODY is { contentType: 'html'|'text', content: '<p>...' }.
+    // An ATTACHMENT is { id, contentType: 'reference'|'application/vnd...',
+    // content, contentUrl, name } — same two key names, completely different
+    // thing. v2 treated both as bodies, so adaptive-card JSON came back
+    // described as HTML ("tagSkeleton: <notifications@github.com>") and the
+    // contentUrl of a real file reference would have been hidden by the very
+    // redactor meant to preserve it. Only html/text is a body.
+    const looksLikeBody = typeof value.content === 'string'
+      && (value.contentType === 'html' || value.contentType === 'text');
+
+    if (looksLikeBody) {
       return { contentType: value.contentType, content: describeBody(value.content) };
     }
+
+    // An attachment's `content` is a JSON blob (adaptive card) or null. Describe
+    // its shape; never reproduce it. contentType and contentUrl are the fields
+    // that actually matter and they pass through the normal string rules —
+    // contentUrl hits the /url$/i test and becomes '<url>', which still tells
+    // us it was present.
+    if (typeof value.content === 'string' && 'contentType' in value) {
+      let keys = null;
+      try { keys = Object.keys(JSON.parse(value.content)).slice(0, 12); } catch { /* not JSON */ }
+      const out = {};
+      for (const [k, v] of Object.entries(value)) {
+        out[k] = k === 'content'
+          ? { __redacted: true, length: v.length, jsonTopLevelKeys: keys }
+          : redact(v, pseudo, guidAlias, k);
+      }
+      return out;
+    }
+
     const out = {};
     for (const [k, v] of Object.entries(value)) {
       // Metadata URLs are long, carry ids, and say nothing about payload shape.
@@ -298,6 +326,17 @@ router.get('/probe', async (req, res) => {
           continue;
         }
 
+        // v2 reported three bare "UnknownError"s with no way to tell which
+        // channels they came from. Private and shared channels are the likely
+        // culprits — delegated ChannelMessage.Read.All does not reach them —
+        // and that is a Phase 1 scoping fact, not a transient error, so the
+        // membershipType is recorded alongside every failure.
+        chanHunt.membershipTypes = chanHunt.membershipTypes || {};
+        for (const ch of channels) {
+          const t = ch.membershipType || 'unknown';
+          chanHunt.membershipTypes[t] = (chanHunt.membershipTypes[t] || 0) + 1;
+        }
+
         for (const ch of channels) {
           if (chanHunt.samples.length >= 3 && chanHunt.replySamples.length >= 2) break;
           try {
@@ -325,7 +364,12 @@ router.get('/probe', async (req, res) => {
               }
             }
           } catch (err) {
-            chanHunt.errors.push((err.message || '').slice(0, 160));
+            chanHunt.errors.push({
+              membershipType: ch.membershipType || 'unknown',
+              status:  err.status ?? null,
+              code:    err.code ?? null,
+              message: (err.message || '').slice(0, 160),
+            });
           }
         }
       }
