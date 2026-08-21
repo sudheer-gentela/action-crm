@@ -79,11 +79,10 @@ const STATUS_COPY = {
     title: 'Access to Teams was withdrawn',
     body:  'Microsoft no longer accepts this connection — usually a password change, or an administrator revoking app access. Reconnect to restore it.',
   },
-  disconnected: {
-    tone: 'info',
-    title: 'Teams is disconnected',
-    body:  'Your conversations, and what you chose to capture, have been kept. Reconnecting picks up where you left off.',
-  },
+  // No 'disconnected' entry. That state gets its own view rather than a banner
+  // over the connected card, because unlike the three above it has no token,
+  // no fetched list, and nothing to act on except reconnecting. Adding it back
+  // here would resurrect the bug where the card below claimed to be connected.
 };
 
 const TONE = {
@@ -413,6 +412,20 @@ export default function MSTeamsConnect() {
   const statusCopy = status?.status && status.status !== 'connected' ? STATUS_COPY[status.status] : null;
   const meetingsHidden = !kinds.length && counts ? counts.meetings : 0;
 
+  // 'disconnected' is a truthy status, which is why gating the card below on
+  // `status?.status` alone rendered the connected view — counts, Refresh and
+  // Disconnect — underneath a banner saying the opposite.
+  //
+  // It is its own state, not merely "degraded". consent_required, token_expired
+  // and revoked all still have a usable connection row and a conversation list
+  // worth showing; disconnected has no token at all, so Refresh would fail and
+  // the list was never fetched. Everything except the reconnect prompt is
+  // hidden, and what was RETAINED is stated — because the whole point of
+  // keeping those rows is that the rep does not lose their triage, and they can
+  // only be reassured of that if somebody tells them.
+  const isDisconnected = status?.status === 'disconnected';
+  const isLive = !!status?.status && !isDisconnected;
+
   return (
     <div>
       <p style={{ fontSize: 14, color: '#6b7280', marginBottom: 20, lineHeight: 1.6 }}>
@@ -458,7 +471,28 @@ export default function MSTeamsConnect() {
         </div>
       )}
 
-      {status?.status && (
+      {isDisconnected && (
+        <div style={{ ...CARD, padding: 20 }}>
+          <div style={{ fontSize: 15, fontWeight: 600, color: '#111827', marginBottom: 6 }}>
+            Teams is disconnected
+          </div>
+          <div style={{ fontSize: 13, color: '#6b7280', lineHeight: 1.6, marginBottom: 4 }}>
+            Nothing is being captured. Your conversations and what you chose to capture have
+            been kept, so reconnecting picks up exactly where you left off.
+          </div>
+          {(status.chatCount > 0 || status.channelCount > 0) && (
+            <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 16 }}>
+              {status.chatCount || 0} chats and {status.channelCount || 0} channels are still on file
+              from {status.displayName || status.upn || 'your last connection'}.
+            </div>
+          )}
+          <button style={PRIMARY} onClick={connect} disabled={busy}>
+            {busy ? 'Opening…' : 'Reconnect Teams'}
+          </button>
+        </div>
+      )}
+
+      {isLive && (
         <>
           {statusCopy && (
             <div style={{ ...CARD, padding: 14, marginBottom: 16, background: TONE[statusCopy.tone].bg, borderColor: TONE[statusCopy.tone].border }}>
