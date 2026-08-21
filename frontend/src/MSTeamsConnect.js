@@ -101,6 +101,32 @@ function timeAgo(iso) {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
+/**
+ * Pull a displayable string out of whatever an API error turns out to be.
+ *
+ * This exists because getting it wrong crashes the app rather than showing a
+ * message. The backend uses two shapes — {error: 'text'} from the msteams
+ * service and {error: {message: 'text'}} from the route's catch — and a naive
+ *
+ *     d?.error || d?.error?.message || err.message
+ *
+ * short-circuits on the OBJECT in the second shape, because an object is
+ * truthy. That object then reaches JSX as a child and React throws #31,
+ * swallowing the very server message that would have explained the failure.
+ */
+function errText(err, fallback = 'Something went wrong.') {
+  const d = err?.response?.data;
+  const candidates = [
+    typeof d?.error === 'string' ? d.error : null,
+    d?.error?.message,
+    d?.message,
+    typeof d === 'string' ? d : null,
+    err?.message,
+  ];
+  const found = candidates.find(v => typeof v === 'string' && v.trim());
+  return found || fallback;
+}
+
 /* ── Bind dialog ─────────────────────────────────────────────────────────── */
 
 function BindDialog({ conversation, projects, vendors, onClose, onDone }) {
@@ -127,8 +153,8 @@ function BindDialog({ conversation, projects, vendors, onClose, onDone }) {
       onDone(data);
     } catch (err) {
       const d = err.response?.data;
-      if (d?.code === 'NEEDS_FORCE') { setConfirm(d.error); setBusy(false); return; }
-      setError(d?.error || d?.error?.message || err.message);
+      if (d?.code === 'NEEDS_FORCE') { setConfirm(errText(err)); setBusy(false); return; }
+      setError(errText(err, 'Could not link this conversation.'));
       setBusy(false);
     }
   };
@@ -273,7 +299,7 @@ export default function MSTeamsConnect() {
       }
     } catch (err) {
       if (err.response?.status === 404) { setStatus({ connected: false }); setConvs([]); }
-      else setError(err.response?.data?.error?.message || err.message);
+      else setError(errText(err));
     } finally {
       setLoading(false);
     }
@@ -321,7 +347,7 @@ export default function MSTeamsConnect() {
   const run = async (fn, ok) => {
     setBusy(true); setError(''); setNotice('');
     try { const r = await fn(); if (ok) setNotice(ok(r)); await load(); }
-    catch (err) { setError(err.response?.data?.error?.message || err.response?.data?.error || err.message); }
+    catch (err) { setError(errText(err)); }
     finally { setBusy(false); }
   };
 
@@ -330,7 +356,7 @@ export default function MSTeamsConnect() {
     try {
       const { data } = await apiService.msteams.connect();
       window.location.href = data.authUrl;
-    } catch (err) { setError(err.message); setBusy(false); }
+    } catch (err) { setError(errText(err)); setBusy(false); }
   };
 
   const adminConsent = () => run(

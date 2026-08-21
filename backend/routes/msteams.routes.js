@@ -273,8 +273,24 @@ router.post('/conversations/:id/bind', async (req, res) => {
     }
     res.json(result);
   } catch (err) {
-    console.error('[msteams] bind:', err.message);
-    res.status(err.status || 500).json({ error: { message: err.message } });
+    // Full stack, not just err.message. A bind touches conversation_bindings,
+    // conversation_project_candidates, msteams_threads, msteams_messages and
+    // msteams_conversations inside one transaction — five tables with their own
+    // constraints — and "null value violates not-null constraint" without a
+    // stack tells you nothing about which one.
+    console.error('[msteams] bind failed:', err.stack || err.message);
+    res.status(err.status || 500).json({
+      error: {
+        message: err.message,
+        // Postgres puts the useful part here. Surfacing it means the next
+        // failure is diagnosable from the browser rather than needing a log
+        // grep, and none of these fields carry row data.
+        detail:     err.detail     || undefined,
+        constraint: err.constraint || undefined,
+        table:      err.table      || undefined,
+        pgCode:     err.code       || undefined,
+      },
+    });
   }
 });
 
