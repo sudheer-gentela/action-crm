@@ -155,6 +155,13 @@ function classify(err) {
   else if (status === 403) kind = /consent|Authorization_RequestDenied/i.test(text) ? 'consent' : 'auth';
   else if (status === 404) kind = 'notfound';
   else if (status === 429 || status === 503) kind = 'throttled';
+  // Confirmed against a real tenant: /me/joinedTeams answers a $top with
+  // 400 "Query option 'Top' is not allowed". Classified separately from a
+  // generic 400 so the caller can strip the parameter and retry rather than
+  // treating a fixable request as a dead end.
+  else if (status === 400 && /Query option '?\w+'? is not allowed|AllowedQueryOptions/i.test(text)) {
+    kind = 'unsupported_query';
+  }
 
   return new GraphError(body.message || err.message, { status, code, kind });
 }
@@ -167,7 +174,7 @@ function classify(err) {
  * hundred conversations will hit it. One retry, because the caller is a
  * scheduled poll that will simply come round again rather than a user waiting.
  */
-async function graphGet(accessToken, url, { retried = false } = {}) {
+async function graphGet(accessToken, url, { retried = false, stripped = false } = {}) {
   const full = url.startsWith('http') ? url : `${GRAPH_BASE}${url}`;
   try {
     const { data } = await axios.get(full, {
@@ -177,11 +184,29 @@ async function graphGet(accessToken, url, { retried = false } = {}) {
     return data;
   } catch (err) {
     const e = classify(err);
+
     if (e.kind === 'throttled' && !retried) {
       const wait = parseInt(err.response?.headers?.['retry-after'], 10);
       await new Promise(r => setTimeout(r, (Number.isFinite(wait) ? wait : 5) * 1000));
-      return graphGet(accessToken, url, { retried: true });
+      return graphGet(accessToken, url, { retried: true, stripped });
     }
+
+    // Not every Graph collection accepts $top. /me/joinedTeams rejects it
+    // outright with a 400 — "Query option 'Top' is not allowed" — and there is
+    // no way to know which endpoints do from the schema. Rather than maintain a
+    // list that goes stale the next time Microsoft adds a collection, strip the
+    // offending parameter once and retry. Costs one wasted call the first time
+    // an endpoint is touched, and never fails for this reason again.
+    if (e.kind === 'unsupported_query' && !stripped) {
+      const cleaned = full.replace(/[?&]\$top=\d+/, m => (m[0] === '?' ? '?' : ''))
+                          .replace(/\?&/, '?')
+                          .replace(/[?&]$/, '');
+      if (cleaned !== full) {
+        console.warn(`[msteams] endpoint rejected $top, retrying without it: ${url}`);
+        return graphGet(accessToken, cleaned, { retried, stripped: true });
+      }
+    }
+
     throw e;
   }
 }
@@ -217,12 +242,20 @@ async function getMe(accessToken) {
 /**
  * Every chat the signed-in user is in.
  *
- * lastMessagePreview is expanded because it carries createdDateTime, which is
- * the only real activity signal available before capture exists — a chat's own
+ * lastMessagePreview is expanded because it carries createdDateTime, the only
+ * real activity signal available before capture exists — a chat's own
  * lastUpdatedDateTime moves when the TOPIC or membership changes, not when
- * somebody speaks, so ordering triage by it puts renamed dead chats above busy
- * ones. The preview body is deliberately not read or stored: phase 0 captures
- * nothing, and a message preview is a message.
+ * somebody speaks. The preview body is deliberately never read or stored:
+ * phase 0 captures nothing, and a message preview is a message.
+ *
+ * WHAT A REAL TENANT ACTUALLY RETURNS (measured, one rep, Aug 2026):
+ *   475 chats — 405 meeting, 38 group, 28 oneOnOne, 4 unknownFutureValue.
+ *
+ * Two consequences the documentation does not prepare you for. Meeting chats,
+ * auto-created one per Teams call, outnumber real conversations by better than
+ * ten to one, so anything rendering this list unfiltered is unusable. And
+ * lastMessagePreview came back populated for only 296 of the 475, so ordering
+ * has to fall back rather than assume it — see chatActivityAt.
  */
 async function listChats(accessToken) {
   const { items, truncated } = await graphGetAll(
@@ -242,9 +275,16 @@ async function listChatMembers(accessToken, chatId) {
   return items;
 }
 
-/** Teams the signed-in user has joined. */
+/**
+ * Teams the signed-in user has joined.
+ *
+ * No $top. This endpoint rejects it with a 400 — confirmed against a real
+ * tenant, where it was the reason channel discovery silently produced nothing.
+ * graphGet would now strip it and retry, but sending it at all costs a wasted
+ * round trip on every discovery pass.
+ */
 async function listJoinedTeams(accessToken) {
-  const { items } = await graphGetAll(accessToken, '/me/joinedTeams?$top=50');
+  const { items } = await graphGetAll(accessToken, '/me/joinedTeams');
   return items;
 }
 
@@ -252,13 +292,16 @@ async function listJoinedTeams(accessToken) {
  * Channels within a team.
  *
  * Private and shared channels come back here too, but a rep only sees the ones
- * they are actually a member of — which is the delegated guarantee this whole
- * design rests on, and the reason we never call the tenant-wide equivalent.
+ * they are actually a member of — the delegated guarantee this whole design
+ * rests on, and the reason we never call the tenant-wide equivalent.
+ *
+ * Also no $top: this sits behind the same Teams query-option restriction as
+ * joinedTeams, and a team with more channels than one page is not a thing.
  */
 async function listChannels(accessToken, teamId) {
   const { items } = await graphGetAll(
     accessToken,
-    `/teams/${encodeURIComponent(teamId)}/channels?$top=50`,
+    `/teams/${encodeURIComponent(teamId)}/channels`,
     { maxPages: 10 }
   );
   return items;
