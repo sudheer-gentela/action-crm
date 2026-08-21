@@ -605,7 +605,12 @@ async function setWatch(orgId, userId, conversationIds = [], watched = true) {
   const { rows } = await pool.query(
     `UPDATE msteams_conversations
         SET is_watched     = $4,
-            watched_by     = CASE WHEN $4 THEN $3 ELSE watched_by END,
+            -- Cast for the same reason as msteams_threads.attributed_by below.
+            -- This one happens to be safe because the ELSE branch is an integer
+            -- column, which gives Postgres something to infer from — but that
+            -- is luck, not design, and it breaks the moment somebody rewrites
+            -- the ELSE.
+            watched_by     = CASE WHEN $4 THEN $3::integer ELSE watched_by END,
             watched_at     = CASE WHEN $4 THEN now() ELSE watched_at END,
             binding_status = CASE
               WHEN $4 = false AND binding_status <> 'ignored' THEN 'unbound'
@@ -809,14 +814,33 @@ async function bindConversation(orgId, userId, conversationId, opts = {}) {
     // project sets it; account and pool CLEAR it. Only thread defaults move —
     // msteams_messages.handover_id values already set are decisions somebody
     // made and are left exactly alone.
+    //
+    // NO `CASE` HERE, DELIBERATELY. The obvious way to write this is
+    //
+    //   attributed_by = CASE WHEN $1 IS NULL THEN NULL ELSE $4 END
+    //
+    // and it does not work. Both branches are untyped — NULL is unknown and a
+    // bare parameter has nothing to infer from — so Postgres resolves the CASE
+    // to text and refuses to assign it to an integer column. Casting $4 only
+    // moves the failure to $1, which then cannot be inferred either, because
+    // node-postgres sends parameters with no declared types and lets the server
+    // work them out. Computing the four values in JS and casting each one
+    // removes the inference question entirely, and reads better besides.
+    const isProject   = mode === 'project';
+    const threadHid   = isProject ? handoverId : null;
+    const threadSrc   = isProject ? 'binding'  : null;
+    const threadWhen  = isProject ? new Date() : null;
+    const threadWho   = isProject ? (userId || null) : null;
+
     await client.query(
-      `UPDATE msteams_threads SET handover_id = $1,
-              attribution_source = CASE WHEN $1 IS NULL THEN NULL ELSE 'binding' END,
-              attributed_at = CASE WHEN $1 IS NULL THEN NULL ELSE now() END,
-              attributed_by = CASE WHEN $1 IS NULL THEN NULL ELSE $4 END,
-              updated_at = now()
-        WHERE conversation_id = $2 AND org_id = $3`,
-      [mode === 'project' ? handoverId : null, conv.id, orgId, userId || null]
+      `UPDATE msteams_threads
+          SET handover_id        = $1::integer,
+              attribution_source = $2::text,
+              attributed_at      = $3::timestamptz,
+              attributed_by      = $4::integer,
+              updated_at         = now()
+        WHERE conversation_id = $5 AND org_id = $6`,
+      [threadHid, threadSrc, threadWhen, threadWho, conv.id, orgId]
     );
 
     if (shouldBackfill) {
