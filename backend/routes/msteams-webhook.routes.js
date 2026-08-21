@@ -175,20 +175,61 @@ async function processNotification(note) {
     `${result.isSystemEvent ? ', system event — hidden from timelines' : ''})`);
 }
 
+/**
+ * Get the notification array out of the request.
+ *
+ * WHY THIS IS NOT JUST `req.body.value`.
+ *   server.js has a raw-body middleware for /webhooks/* that reads the stream
+ *   and sets req.rawBody AND req.body. express.json() then runs further down.
+ *   Body-parser does not error on an already-drained stream — it reads zero
+ *   bytes and sets req.body = {}, silently discarding what the raw middleware
+ *   parsed.
+ *
+ *   So a webhook mounted ABOVE express.json() works, and one mounted BELOW it
+ *   receives an empty object with no error and nothing in the logs beyond
+ *   "received 0 notification(s)". The WhatsApp webhook is mounted above and has
+ *   therefore never hit this.
+ *
+ *   The mount SHOULD be above express.json() — that is the real fix, and this
+ *   file's header says so. But req.rawBody survives the clobbering either way,
+ *   so falling back to it makes the route correct wherever somebody mounts it.
+ *   A positional dependency this quiet does not deserve to be load-bearing.
+ */
+function notificationsFrom(req) {
+  if (Array.isArray(req.body?.value)) return { notes: req.body.value, source: 'body' };
+
+  if (typeof req.rawBody === 'string' && req.rawBody.trim()) {
+    try {
+      const parsed = JSON.parse(req.rawBody);
+      if (Array.isArray(parsed?.value)) {
+        console.warn('[msteams-webhook] req.body was empty; recovered from rawBody. ' +
+          'Move the /webhooks/msteams mount ABOVE express.json() in server.js.');
+        return { notes: parsed.value, source: 'rawBody' };
+      }
+    } catch { /* fall through to empty */ }
+  }
+
+  return { notes: [], source: 'none' };
+}
+
 router.post('/', async (req, res) => {
   if (handleValidation(req, res)) return;
 
-  const notes = Array.isArray(req.body?.value) ? req.body.value : [];
+  const { notes, source } = notificationsFrom(req);
 
   // Log ARRIVAL before anything else. This is the line that distinguishes
   // "Graph is not calling us" from "Graph is calling us and we are dropping
   // it" — two problems with nothing in common, and without this line they look
   // identical from the outside.
-  console.log(`[msteams-webhook] received ${notes.length} notification(s)`);
-  if (!notes.length && req.body) {
-    // An empty value array with a body present means Graph sent us something in
-    // a shape we did not expect. Worth seeing once rather than discarding.
-    console.log(`[msteams-webhook] non-notification body: ${JSON.stringify(req.body).slice(0, 300)}`);
+  console.log(`[msteams-webhook] received ${notes.length} notification(s) [via ${source}]`);
+
+  if (!notes.length) {
+    // Empty means the body never arrived, not that Graph sent nothing — Graph
+    // does not post empty batches. Print what we DID get, so the next reader
+    // can tell a body-parsing problem from an unexpected payload shape.
+    console.log('[msteams-webhook] empty batch. ' +
+      `body=${JSON.stringify(req.body || {}).slice(0, 200)} ` +
+      `rawBody=${(req.rawBody || '').slice(0, 200) || '<absent>'}`);
   }
 
   // Acknowledge BEFORE processing. Graph allows about 10 seconds and drops
@@ -248,7 +289,12 @@ router.get('/health', async (req, res) => {
 router.post('/lifecycle', async (req, res) => {
   if (handleValidation(req, res)) return;
 
-  const notes = Array.isArray(req.body?.value) ? req.body.value : [];
+  // Same recovery as the notification handler, and it matters more here: a
+  // silently ignored reauthorizationRequired does not fail loudly, it just
+  // means the subscription dies at expiry an hour later and capture stops with
+  // no error anywhere.
+  const { notes, source } = notificationsFrom(req);
+  console.log(`[msteams-webhook] lifecycle: ${notes.length} event(s) [via ${source}]`);
   res.status(202).send();
 
   for (const note of notes) {
