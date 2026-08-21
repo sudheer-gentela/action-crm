@@ -218,18 +218,56 @@ async function accessTokenFor(conn) {
 // Discovery
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** A chat frequently has no topic. Fall back to the other members' names. */
+/**
+ * A chat frequently has no topic. Fall back to the other members' names.
+ *
+ * Graph returns each member as an aadUserConversationMember carrying userId and
+ * displayName. Anyone without a userId is a non-user participant — an app or a
+ * phone participant — and contributes no name.
+ */
 function chatDisplayName(chat, members, selfObjectId) {
-  if (chat.topic) return chat.topic;
-
   const others = (members || [])
     .filter(m => m.userId && m.userId !== selfObjectId)
     .map(m => m.displayName)
     .filter(Boolean);
 
-  if (!others.length) return chat.chatType === 'oneOnOne' ? 'Direct chat' : 'Group chat';
+  // A one-to-one chat IS the other person. Their name beats any topic, and a
+  // topic on a oneOnOne is vanishingly rare anyway.
+  if (chat.chatType === 'oneOnOne' && others.length) return others[0];
+
+  if (chat.topic) return chat.topic;
+
+  if (!others.length) {
+    // Reached only when the members call failed or returned nobody. Naming the
+    // shape is still better than an empty cell, but this is a degraded result,
+    // not a normal one — see the warning logged at the call site.
+    return chat.chatType === 'oneOnOne' ? 'Direct chat'
+         : chat.chatType === 'meeting'  ? 'Meeting chat'
+         : 'Group chat';
+  }
   if (others.length <= 3) return others.join(', ');
   return `${others.slice(0, 3).join(', ')} +${others.length - 3}`;
+}
+
+/**
+ * Should we spend a members call on this chat?
+ *
+ * Members cost one extra Graph call each, and a rep can be in hundreds of
+ * chats, so this is not free. The rule that falls out of the measured tenant —
+ * 475 chats, 405 of them meetings, 415 with a topic:
+ *
+ *   oneOnOne  ALWAYS. The other person's name is the only sane label, and
+ *             there are only ~28 of them.
+ *   group     Only when there is no topic. A named group chat is already
+ *             better labelled than a list of members would be.
+ *   meeting   Never. They almost always carry the meeting subject as a topic,
+ *             they are hidden from triage by default, and at 405 per rep they
+ *             are exactly where a per-chat call would hurt.
+ */
+function needsMembers(chat) {
+  if (chat.chatType === 'oneOnOne') return true;
+  if (chat.chatType === 'meeting')  return false;
+  return !chat.topic;
 }
 
 /**
@@ -292,6 +330,7 @@ async function discoverForConnection(conn) {
   const warnings = [];
   let chatCount = 0;
   let channelCount = 0;
+  let memberFailures = 0;
 
   const client = await pool.connect();
   try {
@@ -312,15 +351,21 @@ async function discoverForConnection(conn) {
         console.warn(`[msteams] unrecognised chatType '${rawKind}' → group (${chat.id})`);
       }
 
-      // Members are one extra call per chat, so only fetch them when there is
-      // no topic and we would otherwise have nothing to show. A named chat
-      // costs nothing.
+      // Members cost a Graph call each. needsMembers encodes when that is
+      // worth it — always for one-to-ones, never for meeting chats.
       let members = null;
-      if (!chat.topic) {
+      if (needsMembers(chat)) {
         try {
           members = await graph.listChatMembers(accessToken, chat.id);
-        } catch {
-          members = null;   // a name is not worth failing discovery over
+        } catch (err) {
+          // Previously swallowed entirely, which is how a whole tenant's chats
+          // ended up labelled "Direct chat" with no indication anything had
+          // failed. Still non-fatal — a name is not worth failing discovery
+          // over — but it is now counted and reported.
+          memberFailures += 1;
+          if (memberFailures === 1) {
+            warnings.push(`chat members: ${err.message}`);
+          }
         }
       }
 
@@ -390,7 +435,7 @@ async function discoverForConnection(conn) {
     [conn.id, warnings.length ? warnings.join('; ').slice(0, 1000) : null, chatCount, channelCount]
   );
 
-  return { ok: true, chatCount, channelCount, warnings };
+  return { ok: true, chatCount, channelCount, memberFailures, warnings };
 }
 
 /** Every connection due for a discovery pass. Used by the scheduler. */
@@ -419,13 +464,37 @@ async function connectionsDueForDiscovery(staleMinutes = 60, limit = 100) {
  * follows straight from the delegated design: the rows exist because that
  * person's token could see them. An org-wide view is a Phase 2 question with an
  * entitlement attached, not a default.
+ *
+ * MEETING CHATS ARE HIDDEN UNLESS ASKED FOR. Teams creates one chat per call,
+ * and in the measured pilot tenant that was 405 of 475 — the ~66 conversations
+ * a rep would actually want to capture were unfindable underneath them. They
+ * are still stored and still reachable via kinds='meeting'; they are just not
+ * what a triage screen should open on. `counts` reports how many are hidden so
+ * the UI can say so rather than appearing to have lost them.
  */
-async function listTriage(orgId, userId, { status = 'all', watched = null, q = null, limit = 200 } = {}) {
+async function listTriage(orgId, userId, {
+  status = 'all', watched = null, q = null, limit = 200, kinds = null, includeMeetings = false,
+} = {}) {
   const conn = await getConnection(orgId, userId);
   if (!conn) return { ok: false, code: 'NOT_CONNECTED' };
 
   const params = [orgId, conn.id];
   const where  = ['c.org_id = $1', 'c.connection_id = $2'];
+
+  // An explicit kinds list always wins — asking for meetings is asking for
+  // meetings, and the default must not override a deliberate request.
+  const kindList = Array.isArray(kinds) && kinds.length
+    ? kinds.filter(k => ['oneOnOne', 'group', 'meeting', 'channel'].includes(k))
+    : null;
+
+  if (kindList && kindList.length) {
+    params.push(kindList);
+    where.push(`c.kind = ANY($${params.length}::text[])`);
+  } else if (!includeMeetings) {
+    // A meeting chat someone deliberately watched stays visible. Hiding a
+    // decision a human already made would look like the decision was lost.
+    where.push(`(c.kind <> 'meeting' OR c.is_watched = true)`);
+  }
 
   if (status && status !== 'all') {
     params.push(status);
@@ -453,9 +522,23 @@ async function listTriage(orgId, userId, { status = 'all', watched = null, q = n
     params
   );
 
+  // Counted over the whole connection, not the filtered page, so the UI can
+  // honestly say "405 meeting chats hidden" rather than implying they vanished.
+  const { rows: [tally] } = await pool.query(
+    `SELECT count(*)::int AS total,
+            count(*) FILTER (WHERE kind = 'meeting')::int   AS meetings,
+            count(*) FILTER (WHERE kind = 'channel')::int   AS channels,
+            count(*) FILTER (WHERE is_watched)::int         AS watched,
+            count(*) FILTER (WHERE binding_status = 'ignored')::int AS ignored
+       FROM msteams_conversations
+      WHERE org_id = $1 AND connection_id = $2`,
+    [orgId, conn.id]
+  );
+
   return {
     ok: true,
     conversations: rows,
+    counts: tally,
     connection: {
       status:            conn.status,
       statusDetail:      conn.status_detail,

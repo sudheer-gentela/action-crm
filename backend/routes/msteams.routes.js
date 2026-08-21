@@ -216,6 +216,10 @@ router.get('/conversations', async (req, res) => {
       watched: req.query.watched === undefined ? null : req.query.watched === 'true',
       q:       req.query.q || null,
       limit:   req.query.limit,
+      // Comma-separated, e.g. ?kinds=group,oneOnOne. An explicit list overrides
+      // the meeting-chat default in listTriage.
+      kinds:   req.query.kinds ? String(req.query.kinds).split(',').map(s => s.trim()) : null,
+      includeMeetings: req.query.includeMeetings === 'true',
     });
     if (!result.ok) return res.status(result.code === 'NOT_CONNECTED' ? 404 : 400).json(result);
     res.json(result);
