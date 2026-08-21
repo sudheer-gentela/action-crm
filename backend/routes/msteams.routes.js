@@ -254,6 +254,43 @@ router.post('/conversations/ignore', async (req, res) => {
 });
 
 /**
+ * Bind a conversation to a project, a vendor, or a pool of projects.
+ *
+ * body: { mode, handoverId?, accountId?, candidateIds?, force? }
+ *
+ * A 409 with code NEEDS_FORCE is not an error — it is the server asking the
+ * user to confirm a transition that loses something, and the client is expected
+ * to show the message and retry with force: true.
+ */
+router.post('/conversations/:id/bind', async (req, res) => {
+  try {
+    const result = await msteams.bindConversation(
+      req.orgId, req.userId, parseInt(req.params.id, 10), req.body || {});
+    if (!result.ok) {
+      const status = result.code === 'NEEDS_FORCE' ? 409
+                   : result.code === 'NOT_FOUND'   ? 404 : 400;
+      return res.status(status).json(result);
+    }
+    res.json(result);
+  } catch (err) {
+    console.error('[msteams] bind:', err.message);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+router.post('/conversations/:id/unbind', async (req, res) => {
+  try {
+    const result = await msteams.unbindConversation(
+      req.orgId, req.userId, parseInt(req.params.id, 10));
+    if (!result.ok) return res.status(result.code === 'NOT_FOUND' ? 404 : 400).json(result);
+    res.json(result);
+  } catch (err) {
+    console.error('[msteams] unbind:', err.message);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
+/**
  * Run discovery immediately.
  *
  * The scheduler covers the normal case; this exists because "I was added to the

@@ -4064,6 +4064,52 @@ async function getCommunications(handoverId, orgId) {
     [orgId, handoverId]
   );
 
+  // ── Microsoft Teams ──────────────────────────────────────────────────────
+  //
+  // Same precedence rule as WhatsApp, for the same reason: the MESSAGE says
+  // which project it belongs to, and the thread's project is only the fallback
+  // for a message that never got one. A channel covering several projects has
+  // per-thread attribution, so reading the conversation's project instead would
+  // pull every thread in that channel into whichever project asked.
+  //
+  // is_system_event is excluded here, not just indexed against. "Call started"
+  // and "member removed" are not communications — they are Teams describing
+  // itself, and a handover timeline that shows them buries the commitments it
+  // exists to surface.
+  //
+  // deleted_at is excluded too, but the ROW is not deleted — see 2026_126. A
+  // message removed in Teams stops appearing here while any play evidence
+  // pointing at it still resolves to the body frozen at capture.
+  const teams = await pool.query(
+    `SELECT m.id, m.body_current, m.body_text, m.from_display_name, m.from_user_id,
+            m.sent_at, m.edited_at, m.message_type, m.mentions,
+            m.handover_id, m.attribution_source, m.thread_id,
+            su.first_name || ' ' || su.last_name AS sender_name,
+            c.display_name AS conversation_name, c.kind, c.team_name,
+            t.subject AS thread_subject,
+            (SELECT jsonb_agg(jsonb_build_object(
+                      'name', p.display_name, 'external', p.is_external)
+                             ORDER BY p.display_name)
+               FROM msteams_conversation_participants p
+              WHERE p.conversation_id = c.id) AS participants,
+            (SELECT jsonb_agg(jsonb_build_object(
+                      'name', a.snapshot_file_name, 'url', a.content_url,
+                      'status', a.media_status))
+               FROM msteams_message_attachments a
+              WHERE a.message_id = m.id AND a.media_status <> 'skipped') AS attachments
+       FROM msteams_messages m
+       JOIN msteams_conversations c ON c.id = m.conversation_id
+       JOIN msteams_threads t       ON t.id = m.thread_id
+       LEFT JOIN users su ON su.id = m.from_user_id
+      WHERE m.org_id = $1
+        AND m.excluded_at IS NULL
+        AND m.deleted_at  IS NULL
+        AND m.is_system_event = false
+        AND ( m.handover_id = $2
+           OR (m.handover_id IS NULL AND t.handover_id = $2) )`,
+    [orgId, handoverId]
+  );
+
   const outbound = d => d === 'sent' || d === 'outbound';
   const items = [
     ...emails.rows.map(e => ({
@@ -4097,6 +4143,41 @@ async function getCommunications(handoverId, orgId) {
       // so the panel can show whether it is worth second-guessing.
       waMessageId: m.id, threadId: m.thread_id || null,
       handoverId: m.handover_id || null, handoverSource: m.handover_source || null,
+    })),
+    ...teams.rows.map(m => ({
+      id: `teams-${m.id}`, channel: 'teams',
+      // Teams has no inbound/outbound: everyone in a chat is a peer, and unlike
+      // email or a WhatsApp business number there is no "our side" endpoint to
+      // measure against. Direction is derived from whether the sender resolved
+      // to a GoWarmCRM user, which is the closest honest equivalent — and it
+      // degrades to 'inbound' for a colleague who has not connected Teams,
+      // which is the safer error of the two.
+      direction: m.from_user_id ? 'outbound' : 'inbound',
+      from: m.from_display_name || m.sender_name || 'Unknown',
+      // A channel thread's subject is the nearest thing Teams has to a subject
+      // line. Chats have none, hence the null.
+      subject: m.thread_subject || null,
+      // body_current, not body_original: the timeline shows what the message
+      // says NOW. Play evidence resolves to body_original instead, which is the
+      // whole point of holding both.
+      body: m.body_current,
+      bodyText: m.body_text,
+      at: m.sent_at, isAutomated: false,
+      to: null, cc: [],
+      groupSubject: m.conversation_name || null,
+      participants: m.participants || [],
+      contactId: null, contactName: null,
+      senderUserId: m.from_user_id || null, senderName: m.sender_name || null,
+      // Needed by the UI to move a misfiled message, same as WhatsApp.
+      // attributionSource says how it got here — 'binding' and 'thread_root'
+      // are inherited, 'manual' is somebody's decision — so the panel can show
+      // whether it is worth second-guessing.
+      teamsMessageId: m.id, threadId: m.thread_id || null,
+      handoverId: m.handover_id || null, attributionSource: m.attribution_source || null,
+      conversationKind: m.kind || null, teamName: m.team_name || null,
+      editedAt: m.edited_at || null,
+      attachments: m.attachments || [],
+      mentions: m.mentions || [],
     })),
   ].sort((a, b) => new Date(a.at) - new Date(b.at));
 

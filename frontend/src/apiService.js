@@ -998,6 +998,15 @@ twilio: {
     watch:           (body)    => api.post('/msteams/conversations/watch', body),
     ignore:          (body)    => api.post('/msteams/conversations/ignore', body),
 
+    // body: { mode: 'project'|'account'|'pool', handoverId?, accountId?,
+    //         candidateIds?, force? }
+    //
+    // A 409 with code NEEDS_FORCE is not a failure — it is the server asking to
+    // confirm a transition that loses something (dropping a project link, or
+    // declining to back-fill). Show the message, then retry with force: true.
+    bind:            (id, body) => api.post(`/msteams/conversations/${id}/bind`, body),
+    unbind:          (id)       => api.post(`/msteams/conversations/${id}/unbind`),
+
     // Pauses capture WITHOUT tearing down the connection — deliberately not
     // the same thing as disconnecting, so a freeze window does not cost a
     // re-consent. body: { enabled: boolean }

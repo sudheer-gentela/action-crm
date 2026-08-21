@@ -523,8 +523,29 @@ async function listTriage(orgId, userId, {
     `SELECT c.id, c.kind, c.graph_id, c.team_id, c.topic, c.display_name,
             c.team_name, c.member_count, c.web_url,
             c.is_watched, c.binding_status, c.watched_at, c.bound_at,
-            c.first_seen_at, c.last_discovered_at, c.last_activity_at
+            c.first_seen_at, c.last_discovered_at, c.last_activity_at,
+            c.membership_type, c.is_readable, c.readability_error,
+            c.message_count, c.last_message_at, c.capture_started_at,
+            -- Watched is the human's decision; capturing is whether Graph is
+            -- actually sending us anything. They come apart — a private channel
+            -- the rep is not in, a subscription that failed to renew — and
+            -- showing only the first is how a conversation sits ticked and
+            -- silently empty for a fortnight.
+            (s.id IS NOT NULL) AS is_capturing,
+            s.expires_at AS subscription_expires_at,
+            s.status     AS subscription_status,
+            b.binding_mode, b.handover_id AS bound_handover_id,
+            h.name AS bound_project_name,
+            b.bound_account_id, a.name AS bound_account_name,
+            (SELECT count(*)::int FROM conversation_project_candidates cc
+              WHERE cc.binding_id = b.id) AS candidate_count
        FROM msteams_conversations c
+       LEFT JOIN msteams_subscriptions s
+              ON s.conversation_id = c.id AND s.status IN ('active','expiring')
+       LEFT JOIN conversation_bindings b
+              ON b.org_id = c.org_id AND b.channel = 'teams' AND b.thread_ref = c.graph_id
+       LEFT JOIN sales_handovers h ON h.id = b.handover_id
+       LEFT JOIN accounts a ON a.id = b.bound_account_id
       WHERE ${where.join(' AND ')}
       ORDER BY c.is_watched DESC, c.last_activity_at DESC NULLS LAST, c.display_name
       LIMIT $${params.length}`,
@@ -658,6 +679,224 @@ async function setIgnored(orgId, userId, conversationIds = [], ignored = true) {
   return { ok: true, updated: rows };
 }
 
+/**
+ * Bind a conversation to a project, a vendor account, or a pool of projects.
+ *
+ * Deliberately a sibling of whatsappSession.bindGroup rather than a shared
+ * helper: the two differ in what a bind is allowed to back-fill, and forcing
+ * them together would mean a flag doing the differing. The shared part —
+ * conversation_bindings and its candidate set — IS shared, via
+ * conversationBindings.service.
+ *
+ * THE TWO TRANSITIONS THAT NEED CONFIRMATION are the same as WhatsApp's, for
+ * the same reason: silently dropping a project link, or silently declining to
+ * back-fill, both leave somebody looking at a screen that does not match what
+ * they believe they did.
+ *
+ * BACK-FILL, AND WHEN IT IS SUPPRESSED
+ *   Binding to a project files the conversation's existing unattributed
+ *   messages to it. That is right when nothing had a project before. It is
+ *   WRONG coming from account or pool mode, where messages deliberately span
+ *   several projects — sweeping them all into one would misfile the lot. So the
+ *   back-fill runs only on a first project bind, never on a re-bind away from
+ *   an entity mode.
+ */
+async function bindConversation(orgId, userId, conversationId, opts = {}) {
+  const bindings = require('./conversationBindings.service');
+
+  const mode         = opts.mode || 'project';
+  const handoverId   = opts.handoverId != null ? parseInt(opts.handoverId, 10) : null;
+  const accountId    = opts.accountId  != null ? parseInt(opts.accountId, 10)  : null;
+  const candidateIds = Array.isArray(opts.candidateIds) ? opts.candidateIds : [];
+  const force        = !!opts.force;
+
+  if (!bindings.MODES.includes(mode)) {
+    return { ok: false, code: 'BAD_MODE', error: `mode must be one of: ${bindings.MODES.join(', ')}` };
+  }
+
+  const conn = await getConnection(orgId, userId);
+  if (!conn) return { ok: false, code: 'NOT_CONNECTED' };
+
+  const { rows: [conv] } = await pool.query(
+    `SELECT * FROM msteams_conversations
+      WHERE id = $1 AND org_id = $2 AND connection_id = $3`,
+    [conversationId, orgId, conn.id]
+  );
+  if (!conv) return { ok: false, code: 'NOT_FOUND' };
+
+  // A channel the rep cannot read can be bound in principle, but binding it
+  // creates an expectation of content that will never arrive. Refuse with the
+  // actionable reason instead.
+  if (conv.is_readable === false) {
+    return { ok: false, code: 'NOT_READABLE', error: conv.readability_error ||
+      'This channel cannot be read with your account, so nothing would be captured.' };
+  }
+
+  // thread_ref is the GRAPH id, never our integer — see conversation_bindings.
+  const threadRef = conv.graph_id;
+  const existing  = await bindings.forThread(orgId, 'teams', threadRef);
+  const wasEntity = !!existing && bindings.isEntityMode(existing.binding_mode);
+  const isEntity  = bindings.isEntityMode(mode);
+
+  let derived = [];
+
+  if (mode === 'project') {
+    if (!handoverId) return { ok: false, code: 'INVALID_HANDOVER', error: 'Pick a project.' };
+    const { rows: [h] } = await pool.query(
+      `SELECT id FROM sales_handovers WHERE id = $1 AND org_id = $2`, [handoverId, orgId]);
+    if (!h) return { ok: false, code: 'INVALID_HANDOVER' };
+
+  } else if (mode === 'account') {
+    if (!accountId) return { ok: false, code: 'INVALID_ACCOUNT', error: 'Pick a vendor or partner.' };
+    const { rows: [rel] } = await pool.query(
+      `SELECT r.id FROM account_relationships r
+         JOIN accounts a ON a.id = r.account_id AND a.org_id = r.org_id
+        WHERE r.org_id = $1 AND r.account_id = $2
+          AND r.relationship IN ('vendor','partner') AND r.status = 'active' LIMIT 1`,
+      [orgId, accountId]);
+    if (!rel) {
+      return { ok: false, code: 'NOT_A_VENDOR',
+        error: 'That account is not an approved vendor or partner. Add the relationship first.' };
+    }
+    const accountRels = require('./accountRelationships.service');
+    derived = await accountRels.projectsForRelationship(orgId, accountId);
+
+  } else { // pool
+    const ids = [...new Set(candidateIds.map(n => parseInt(n, 10)).filter(Number.isInteger))];
+    if (!ids.length) {
+      return { ok: false, code: 'NO_CANDIDATES',
+        error: 'Name at least one project this conversation covers.' };
+    }
+    const { rows: found } = await pool.query(
+      `SELECT id FROM sales_handovers WHERE org_id = $1 AND id = ANY($2::int[])`, [orgId, ids]);
+    if (found.length !== ids.length) return { ok: false, code: 'INVALID_HANDOVER' };
+    derived = found.map(r => ({ handoverId: r.id }));
+  }
+
+  const { rows: [threadRow] } = await pool.query(
+    `SELECT id, handover_id FROM msteams_threads
+      WHERE conversation_id = $1 AND root_graph_id = $2`,
+    [conv.id, conv.graph_id]
+  );
+
+  if (isEntity && threadRow?.handover_id != null && !force) {
+    return { ok: false, code: 'NEEDS_FORCE', currentHandoverId: threadRow.handover_id,
+      error: 'This conversation is already linked to a project. Confirm the change — the link will be removed, though messages already filed to it stay where they are.' };
+  }
+  if (mode === 'project' && wasEntity && !force) {
+    return { ok: false, code: 'NEEDS_FORCE',
+      error: 'This conversation is currently organised around a vendor or a set of projects. Confirm the change — earlier messages will NOT be filed to the project automatically.' };
+  }
+
+  const shouldBackfill = mode === 'project' && !wasEntity;
+
+  const client = await pool.connect();
+  let backfilled = 0;
+  let bindingRow;
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL app.current_org_id = '${parseInt(orgId, 10)}'`);
+
+    bindingRow = await bindings.bind(orgId, userId, 'teams', threadRef,
+      { mode, handoverId, accountId, client });
+
+    await bindings.setCandidates(
+      orgId, bindingRow.id,
+      mode === 'project' ? [] : derived.map(d => d.handoverId),
+      { source: mode === 'account' ? 'derived' : 'declared', declaredBy: userId, client }
+    );
+
+    // project sets it; account and pool CLEAR it. Only thread defaults move —
+    // msteams_messages.handover_id values already set are decisions somebody
+    // made and are left exactly alone.
+    await client.query(
+      `UPDATE msteams_threads SET handover_id = $1,
+              attribution_source = CASE WHEN $1 IS NULL THEN NULL ELSE 'binding' END,
+              attributed_at = CASE WHEN $1 IS NULL THEN NULL ELSE now() END,
+              attributed_by = CASE WHEN $1 IS NULL THEN NULL ELSE $4 END,
+              updated_at = now()
+        WHERE conversation_id = $2 AND org_id = $3`,
+      [mode === 'project' ? handoverId : null, conv.id, orgId, userId || null]
+    );
+
+    if (shouldBackfill) {
+      ({ rowCount: backfilled } = await client.query(
+        `UPDATE msteams_messages
+            SET handover_id = $1, attribution_source = 'binding', updated_at = now()
+          WHERE org_id = $2 AND conversation_id = $3
+            AND handover_id IS NULL AND is_system_event = false`,
+        [handoverId, orgId, conv.id]
+      ));
+    }
+
+    const status = mode === 'project' ? 'bound'
+                 : mode === 'account' ? 'bound_account'
+                 : 'bound_pool';
+
+    await client.query(
+      `UPDATE msteams_conversations
+          SET binding_status = $3, bound_by = $1, bound_at = now(),
+              -- Any binding is an unambiguous statement that this conversation
+              -- belongs in the CRM, so all three modes imply watching.
+              is_watched = true,
+              watched_by = COALESCE(watched_by, $1),
+              watched_at = COALESCE(watched_at, now()),
+              updated_at = now()
+        WHERE id = $2`,
+      [userId || null, conv.id, status]
+    );
+
+    await client.query('COMMIT');
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* already failed */ }
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  // Binding implies watching, so a conversation bound before it was watched
+  // needs its subscription creating. After COMMIT on purpose: a Graph hiccup
+  // must not roll back a binding somebody just made.
+  let capturing = true;
+  if (!conv.is_watched) {
+    const subs = require('./msteamsSubscriptions.service');
+    const created = await subs.subscribe({ ...conv, is_watched: true }, conn);
+    capturing = created.ok;
+  }
+
+  return { ok: true, mode, backfilled, capturing, bindingId: bindingRow.id };
+}
+
+/** Remove a binding, leaving already-filed messages where they are. */
+async function unbindConversation(orgId, userId, conversationId) {
+  const bindings = require('./conversationBindings.service');
+  const conn = await getConnection(orgId, userId);
+  if (!conn) return { ok: false, code: 'NOT_CONNECTED' };
+
+  const { rows: [conv] } = await pool.query(
+    `SELECT * FROM msteams_conversations
+      WHERE id = $1 AND org_id = $2 AND connection_id = $3`,
+    [conversationId, orgId, conn.id]);
+  if (!conv) return { ok: false, code: 'NOT_FOUND' };
+
+  await bindings.unbind(orgId, 'teams', conv.graph_id);
+
+  await pool.query(
+    `UPDATE msteams_threads SET handover_id = NULL, attribution_source = NULL,
+            attributed_at = NULL, updated_at = now()
+      WHERE conversation_id = $1 AND org_id = $2`, [conv.id, orgId]);
+
+  await pool.query(
+    `UPDATE msteams_conversations SET binding_status = 'unbound',
+            bound_by = NULL, bound_at = NULL, updated_at = now()
+      WHERE id = $1`, [conv.id]);
+
+  // Messages keep their handover_id. Each was a decision — automatic or
+  // human — and unbinding says "stop filing NEW messages here", not "pretend
+  // the old ones were never filed".
+  return { ok: true };
+}
+
 module.exports = {
   PROVIDER,
   getConnection,
@@ -672,4 +911,6 @@ module.exports = {
   listTriage,
   setWatch,
   setIgnored,
+  bindConversation,
+  unbindConversation,
 };

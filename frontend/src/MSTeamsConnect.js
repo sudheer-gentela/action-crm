@@ -3,33 +3,33 @@
  *
  * DROP-IN LOCATION: frontend/src/MSTeamsConnect.js
  *
- * Microsoft Teams, phase 0: connect an account, then decide what is worth
- * capturing. Nothing is captured yet — 2026_126 is what makes "watched" mean
- * something.
+ * Connect Microsoft Teams, then decide what is captured and where it files.
  *
- * WHY TRIAGE EXISTS BEFORE CAPTURE DOES
- *   The alternative is shipping capture and triage together, which means the
- *   day it goes live every message from every chat arrives at once into an
- *   untriaged pile. Letting people decide first means the watchlist is already
- *   right when capture starts. The copy in this screen says plainly that
- *   nothing is being stored yet, because a screen with a "Watch" button that
- *   silently does nothing is worse than no screen.
+ * WHAT CHANGED FROM THE PHASE 0 VERSION
+ *   Capture is real now, so the screen has to show three things it previously
+ *   could not, and each exists because of something measured in a live tenant:
  *
- * WHY THIS IS PER-REP AND NOT AN ADMIN GRID
- *   A rep's Teams token can see exactly what that rep can see. Two people in
- *   the same channel each get their own row and each decides for themselves —
- *   that follows from the delegated design rather than being a policy choice.
- *   Consequently this screen shows YOUR conversations, and an admin looking at
- *   it sees their own, not the org's.
+ *   KIND FILTER + HIDDEN COUNT. The pilot tenant returned 475 chats, 405 of
+ *   them auto-created meeting chats. Rendering that unfiltered buried the ~66
+ *   conversations anybody cares about. Meetings are hidden by default and the
+ *   count is stated, because a list that silently drops 85% of its rows is
+ *   worse than one that says so.
  *
- * TWO KINDS OF DECISION, same as the WhatsApp triage screen:
- *   WATCH  — retain what is said here (once capture exists).
- *   IGNORE — this is not project traffic; stop showing it to me.
+ *   WATCHED IS NOT CAPTURING. A rep can tick a channel and have nothing arrive:
+ *   a private channel they are not a member of, a subscription that failed to
+ *   renew. Those are separate columns from the backend and separate badges
+ *   here. Showing only the tick is how a conversation sits ticked and silently
+ *   empty for a fortnight.
  *
- * Binding — "is this ONE project, a vendor, or SEVERAL projects" — is
- * deliberately absent here. It arrives with capture in phase 1, because binding
- * a conversation nothing is captured from would be a decision with no effect,
- * displayed as though it had one.
+ *   BINDING. Watching says "keep this"; binding says "and it belongs to THIS".
+ *   Three modes, same vocabulary as the WhatsApp triage screen, because they
+ *   are the same decision on a different transport.
+ *
+ * WHY THE BIND DIALOG ASKS RATHER THAN GUESSES
+ *   A conversation covering several projects is common and 2026_108 handles it
+ *   explicitly — pool mode attributes on reply context and then STOPS rather
+ *   than guessing. That only works if a human declares which projects are in
+ *   play, which is what the pool option collects.
  */
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
@@ -40,6 +40,7 @@ const BTN     = { padding: '6px 12px', borderRadius: 6, fontSize: 13, fontWeight
 const PRIMARY = { ...BTN, background: '#E8630A', color: '#fff' };
 const GHOST   = { ...BTN, background: '#fff', color: '#374151', border: '1px solid #d1d5db' };
 const INPUT   = { padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, boxSizing: 'border-box' };
+const PILL    = { fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 10, whiteSpace: 'nowrap' };
 
 const KIND = {
   oneOnOne: { label: 'Direct',  bg: '#f3f4f6', fg: '#6b7280' },
@@ -48,22 +49,20 @@ const KIND = {
   channel:  { label: 'Channel', bg: '#ecfdf5', fg: '#065f46' },
 };
 
-const FILTERS = [
+const STATUS_FILTERS = [
   { key: 'all',       label: 'All' },
-  { key: 'watched',   label: 'Watching' },
-  { key: 'unwatched', label: 'Not watching' },
+  { key: 'watching',  label: 'Capturing' },
+  { key: 'unwatched', label: 'Not capturing' },
   { key: 'ignored',   label: 'Dismissed' },
 ];
 
-/**
- * Connection states the rep can actually do something about.
- *
- * Each carries its own remedy sentence rather than a generic "reconnect",
- * because the three failures need different actions: a withdrawn consent needs
- * the tenant admin, an expired token needs nothing but time, and a revoked
- * grant needs the rep. Telling everyone to reconnect sends two-thirds of them
- * down a path that cannot fix their problem.
- */
+const KIND_FILTERS = [
+  { key: 'group',    label: 'Group chats' },
+  { key: 'oneOnOne', label: 'Direct' },
+  { key: 'channel',  label: 'Channels' },
+  { key: 'meeting',  label: 'Meetings' },
+];
+
 const STATUS_COPY = {
   consent_required: {
     tone: 'warn',
@@ -83,7 +82,7 @@ const STATUS_COPY = {
   disconnected: {
     tone: 'info',
     title: 'Teams is disconnected',
-    body:  'Your chats and channels, and what you chose to watch, have been kept. Reconnecting picks up where you left off.',
+    body:  'Your conversations, and what you chose to capture, have been kept. Reconnecting picks up where you left off.',
   },
 };
 
@@ -96,182 +95,312 @@ const TONE = {
 function timeAgo(iso) {
   if (!iso) return null;
   const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
-  if (mins < 1)   return 'just now';
-  if (mins < 60)  return `${mins}m ago`;
+  if (mins < 1)  return 'just now';
+  if (mins < 60) return `${mins}m ago`;
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24)   return `${hrs}h ago`;
+  if (hrs < 24)  return `${hrs}h ago`;
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
+/* ── Bind dialog ─────────────────────────────────────────────────────────── */
+
+function BindDialog({ conversation, projects, vendors, onClose, onDone }) {
+  const [mode, setMode]         = useState('project');
+  const [handoverId, setH]      = useState('');
+  const [accountId, setA]       = useState('');
+  const [candidates, setCands]  = useState([]);
+  const [busy, setBusy]         = useState(false);
+  const [error, setError]       = useState('');
+  // NEEDS_FORCE is not a failure — it is the server asking to confirm a
+  // transition that loses something. Held separately so the retry carries
+  // force: true rather than the user wondering why nothing happened.
+  const [confirm, setConfirm]   = useState('');
+
+  const submit = async (force = false) => {
+    setBusy(true); setError('');
+    try {
+      const body = { mode, force };
+      if (mode === 'project') body.handoverId = parseInt(handoverId, 10);
+      if (mode === 'account') body.accountId  = parseInt(accountId, 10);
+      if (mode === 'pool')    body.candidateIds = candidates;
+
+      const { data } = await apiService.msteams.bind(conversation.id, body);
+      onDone(data);
+    } catch (err) {
+      const d = err.response?.data;
+      if (d?.code === 'NEEDS_FORCE') { setConfirm(d.error); setBusy(false); return; }
+      setError(d?.error || d?.error?.message || err.message);
+      setBusy(false);
+    }
+  };
+
+  const canSubmit = mode === 'project' ? !!handoverId
+                  : mode === 'account' ? !!accountId
+                  : candidates.length > 0;
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(17,24,39,0.45)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+    }}>
+      <div style={{ ...CARD, width: 520, maxWidth: '92vw', maxHeight: '86vh', overflowY: 'auto', padding: 20 }}>
+        <div style={{ fontSize: 15, fontWeight: 600, color: '#111827' }}>
+          What is this conversation about?
+        </div>
+        <div style={{ fontSize: 13, color: '#6b7280', marginTop: 4, marginBottom: 16 }}>
+          {conversation.display_name}
+        </div>
+
+        {confirm && (
+          <div style={{ ...CARD, padding: 12, marginBottom: 14, background: TONE.warn.bg, borderColor: TONE.warn.border, color: TONE.warn.fg, fontSize: 13, lineHeight: 1.6 }}>
+            {confirm}
+            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+              <button style={PRIMARY} disabled={busy} onClick={() => submit(true)}>Yes, change it</button>
+              <button style={GHOST} onClick={() => setConfirm('')}>Cancel</button>
+            </div>
+          </div>
+        )}
+
+        {error && (
+          <div style={{ ...CARD, padding: 10, marginBottom: 12, background: TONE.error.bg, borderColor: TONE.error.border, color: TONE.error.fg, fontSize: 13 }}>
+            {error}
+          </div>
+        )}
+
+        {!confirm && (
+          <>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}>
+              {[
+                { key: 'project', title: 'One project',
+                  hint: 'Everything said here belongs to that project, including what was said before now.' },
+                { key: 'account', title: 'A vendor or partner',
+                  hint: 'Organised around a company rather than a project. Messages file per-thread, not all to one project.' },
+                { key: 'pool', title: 'Several projects',
+                  hint: 'An internal conversation covering more than one. Messages that cannot be placed confidently stay unassigned rather than being guessed at.' },
+              ].map(o => (
+                <label key={o.key} style={{
+                  display: 'flex', gap: 10, padding: 10, borderRadius: 6, cursor: 'pointer',
+                  border: `1px solid ${mode === o.key ? '#E8630A' : '#e5e7eb'}`,
+                  background: mode === o.key ? '#fff7ed' : '#fff',
+                }}>
+                  <input type="radio" checked={mode === o.key} onChange={() => setMode(o.key)} style={{ marginTop: 3 }} />
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>{o.title}</div>
+                    <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2, lineHeight: 1.5 }}>{o.hint}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+
+            {mode === 'project' && (
+              <select style={{ ...INPUT, width: '100%' }} value={handoverId} onChange={e => setH(e.target.value)}>
+                <option value="">Pick a project…</option>
+                {projects.map(p => <option key={p.id} value={p.id}>{p.name || `Project ${p.id}`}</option>)}
+              </select>
+            )}
+
+            {mode === 'account' && (
+              <select style={{ ...INPUT, width: '100%' }} value={accountId} onChange={e => setA(e.target.value)}>
+                <option value="">Pick a vendor or partner…</option>
+                {vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+              </select>
+            )}
+
+            {mode === 'pool' && (
+              <div style={{ ...CARD, maxHeight: 200, overflowY: 'auto', padding: 8 }}>
+                {projects.length === 0 && (
+                  <div style={{ fontSize: 13, color: '#9ca3af', padding: 8 }}>No projects available.</div>
+                )}
+                {projects.map(p => (
+                  <label key={p.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '5px 4px', fontSize: 13, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={candidates.includes(p.id)}
+                      onChange={() => setCands(c => c.includes(p.id) ? c.filter(x => x !== p.id) : [...c, p.id])}
+                    />
+                    {p.name || `Project ${p.id}`}
+                  </label>
+                ))}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: 8, marginTop: 18, justifyContent: 'flex-end' }}>
+              <button style={GHOST} onClick={onClose} disabled={busy}>Cancel</button>
+              <button style={PRIMARY} onClick={() => submit(false)} disabled={busy || !canSubmit}>
+                {busy ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── Main ────────────────────────────────────────────────────────────────── */
+
 export default function MSTeamsConnect() {
-  const [status,   setStatus]   = useState(null);
-  const [convs,    setConvs]    = useState([]);
-  const [loading,  setLoading]  = useState(true);
-  const [busy,     setBusy]     = useState(false);
-  const [error,    setError]    = useState('');
-  const [notice,   setNotice]   = useState('');
+  const [status,  setStatus]  = useState(null);
+  const [convs,   setConvs]   = useState([]);
+  const [counts,  setCounts]  = useState(null);
+  const [projects, setProjects] = useState([]);
+  const [vendors,  setVendors]  = useState([]);
 
-  const [filter,   setFilter]   = useState('all');
-  const [search,   setSearch]   = useState('');
-  const [selected, setSelected] = useState(() => new Set());
+  const [loading, setLoading] = useState(true);
+  const [busy,    setBusy]    = useState(false);
+  const [error,   setError]   = useState('');
+  const [notice,  setNotice]  = useState('');
 
-  const load = useCallback(async () => {
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [kinds,        setKinds]        = useState([]);   // empty = default (meetings hidden)
+  const [search,       setSearch]       = useState('');
+  const [selected,     setSelected]     = useState(() => new Set());
+  const [binding,      setBinding]      = useState(null);
+
+  const load = useCallback(async (kindList = kinds) => {
     setError('');
     try {
       const s = await apiService.msteams.status();
       setStatus(s.data);
 
       if (s.data?.status && s.data.status !== 'disconnected') {
-        const c = await apiService.msteams.conversations({});
+        const params = {};
+        if (kindList.length) params.kinds = kindList.join(',');
+        const c = await apiService.msteams.conversations(params);
         setConvs(c.data?.conversations || []);
+        setCounts(c.data?.counts || null);
       } else {
-        setConvs([]);
+        setConvs([]); setCounts(null);
       }
     } catch (err) {
-      // A 404 means "never connected", which is the normal first visit and not
-      // an error worth showing in red.
-      if (err.response?.status === 404) {
-        setStatus({ connected: false });
-        setConvs([]);
-      } else {
-        setError(err.response?.data?.error?.message || err.message);
-      }
+      if (err.response?.status === 404) { setStatus({ connected: false }); setConvs([]); }
+      else setError(err.response?.data?.error?.message || err.message);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [kinds]);
 
   useEffect(() => { load(); }, [load]);
 
-  // The OAuth round trip lands back on the app root with a query flag rather
-  // than here, because the callback has no idea which screen started it. Read
-  // it once, say something, and strip it so a refresh does not repeat the
-  // message.
+  // Projects and vendors are only needed by the bind dialog, so they load once
+  // and quietly. A failure here must not break triage — you can still capture
+  // and dismiss without ever linking anything.
+  useEffect(() => {
+    (async () => {
+      try {
+        // Positional args: (scope, status, kind). Default scope 'mine' is what
+        // a rep should be linking to — binding a conversation to a project they
+        // cannot see would produce a row they then cannot open.
+        const p = await apiService.handovers.list();
+        const rows = p?.data?.handovers || p?.data?.items || p?.data || [];
+        setProjects(Array.isArray(rows) ? rows : []);
+      } catch { /* bind dialog degrades to an empty list */ }
+      try {
+        const v = await apiService.accountRelationships.vendors();
+        const rows = v?.data?.vendors || v?.data || [];
+        setVendors(Array.isArray(rows) ? rows : []);
+      } catch { /* same */ }
+    })();
+  }, []);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('msteams_connected')) {
-      setNotice('Teams connected. Finding your chats and channels…');
+      setNotice('Teams connected. Finding your conversations…');
       params.delete('msteams_connected');
     } else if (params.get('msteams_admin_consent') === 'granted') {
       setNotice('Your organisation approved the Teams integration. Reps can connect now.');
-      params.delete('msteams_admin_consent');
-      params.delete('tenant');
+      params.delete('msteams_admin_consent'); params.delete('tenant');
     } else if (params.get('msteams_error')) {
       setError(params.get('message') || `Teams connection failed: ${params.get('msteams_error')}`);
-      params.delete('msteams_error');
-      params.delete('message');
-    } else {
-      return;
-    }
+      params.delete('msteams_error'); params.delete('message');
+    } else return;
     const qs = params.toString();
     window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : ''));
   }, []);
+
+  const run = async (fn, ok) => {
+    setBusy(true); setError(''); setNotice('');
+    try { const r = await fn(); if (ok) setNotice(ok(r)); await load(); }
+    catch (err) { setError(err.response?.data?.error?.message || err.response?.data?.error || err.message); }
+    finally { setBusy(false); }
+  };
 
   const connect = async () => {
     setBusy(true); setError('');
     try {
       const { data } = await apiService.msteams.connect();
       window.location.href = data.authUrl;
-    } catch (err) {
-      setError(err.response?.data?.error?.message || err.message);
-      setBusy(false);
-    }
+    } catch (err) { setError(err.message); setBusy(false); }
   };
 
-  const adminConsent = async () => {
-    setBusy(true); setError('');
-    try {
+  const adminConsent = () => run(
+    async () => {
       const { data } = await apiService.msteams.adminConsentUrl();
       window.open(data.url, '_blank', 'noopener');
-      setNotice('Opened the approval page. Your Microsoft 365 administrator signs in there and approves once for the whole organisation.');
-    } catch (err) {
-      setError(err.response?.data?.error?.message || err.message);
-    } finally {
-      setBusy(false);
-    }
-  };
+    },
+    () => 'Opened the approval page. Your Microsoft 365 administrator signs in there and approves once for the whole organisation.'
+  );
 
-  const discover = async () => {
-    setBusy(true); setError(''); setNotice('');
-    try {
-      const { data } = await apiService.msteams.discover();
-      setNotice(
-        `Found ${data.chatCount} chat${data.chatCount === 1 ? '' : 's'} and ` +
-        `${data.channelCount} channel${data.channelCount === 1 ? '' : 's'}.` +
-        (data.warnings?.length ? ` Some could not be read — see below.` : '')
-      );
-      await load();
-    } catch (err) {
-      setError(err.response?.data?.error?.message || err.message);
-    } finally {
-      setBusy(false);
-    }
-  };
+  const discover = () => run(
+    () => apiService.msteams.discover(),
+    (r) => `Found ${r.data.chatCount} chats and ${r.data.channelCount} channels.` +
+           (r.data.warnings?.length ? ' Some could not be read — see below.' : '')
+  );
 
-  const disconnect = async () => {
-    if (!window.confirm('Disconnect Teams? What you chose to watch is kept, and reconnecting picks up where you left off.')) return;
-    setBusy(true); setError('');
-    try {
-      await apiService.msteams.disconnect();
-      setNotice('Teams disconnected.');
-      await load();
-    } catch (err) {
-      setError(err.response?.data?.error?.message || err.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const applyWatch = async (watched) => {
-    if (!selected.size) return;
-    setBusy(true); setError('');
-    try {
-      await apiService.msteams.watch({ conversationIds: [...selected], watched });
+  const applyWatch = (watched) => run(
+    async () => {
+      const { data } = await apiService.msteams.watch({ conversationIds: [...selected], watched });
       setSelected(new Set());
-      setNotice(watched
-        ? 'Marked for capture. Nothing is stored yet — this takes effect when message capture ships.'
-        : 'No longer marked for capture.');
-      await load();
-    } catch (err) {
-      setError(err.response?.data?.error?.message || err.message);
-    } finally {
-      setBusy(false);
+      return data;
+    },
+    (r) => {
+      const failed = (r.updated || []).filter(u => u.is_watched && u.capturing === false);
+      if (!watched) return 'Capture stopped.';
+      if (failed.length) {
+        // Never claim capture started when it did not. The most common cause is
+        // a private channel the rep is not a member of, and the remedy is
+        // theirs to action.
+        return `Capture started for ${(r.updated || []).length - failed.length}. ` +
+               `${failed.length} could not start: ${failed[0].error || 'see the row for details'}`;
+      }
+      return 'Capture started.';
     }
-  };
+  );
 
-  const applyIgnore = async (ignored) => {
-    if (!selected.size) return;
-    setBusy(true); setError('');
-    try {
-      await apiService.msteams.ignore({ conversationIds: [...selected], ignored });
+  const applyIgnore = (ignored) => run(
+    async () => {
+      const { data } = await apiService.msteams.ignore({ conversationIds: [...selected], ignored });
       setSelected(new Set());
-      setNotice(ignored ? 'Dismissed.' : 'Restored to the list.');
-      await load();
-    } catch (err) {
-      setError(err.response?.data?.error?.message || err.message);
-    } finally {
-      setBusy(false);
-    }
+      return data;
+    },
+    () => (ignored ? 'Dismissed.' : 'Restored to the list.')
+  );
+
+  const unbind = (id) => run(
+    () => apiService.msteams.unbind(id),
+    () => 'Link removed. Messages already filed to a project stay where they are.'
+  );
+
+  const toggleKind = (k) => {
+    const next = kinds.includes(k) ? kinds.filter(x => x !== k) : [...kinds, k];
+    setKinds(next);
+    setSelected(new Set());
+    load(next);
   };
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
     return convs.filter(c => {
-      if (filter === 'watched'   && !c.is_watched) return false;
-      if (filter === 'unwatched' && (c.is_watched || c.binding_status === 'ignored')) return false;
-      if (filter === 'ignored'   && c.binding_status !== 'ignored') return false;
-      if (filter !== 'ignored'   && c.binding_status === 'ignored' && filter !== 'all') return false;
+      if (statusFilter === 'watching'  && !c.is_watched) return false;
+      if (statusFilter === 'unwatched' && (c.is_watched || c.binding_status === 'ignored')) return false;
+      if (statusFilter === 'ignored'   && c.binding_status !== 'ignored') return false;
+      if (statusFilter === 'all'       && c.binding_status === 'ignored') return false;
       if (!q) return true;
       return [c.display_name, c.topic, c.team_name].filter(Boolean)
         .some(s => s.toLowerCase().includes(q));
     });
-  }, [convs, filter, search]);
-
-  const counts = useMemo(() => ({
-    total:   convs.length,
-    watched: convs.filter(c => c.is_watched).length,
-    ignored: convs.filter(c => c.binding_status === 'ignored').length,
-  }), [convs]);
+  }, [convs, statusFilter, search]);
 
   const toggle = (id) => setSelected(prev => {
     const next = new Set(prev);
@@ -279,13 +408,10 @@ export default function MSTeamsConnect() {
     return next;
   });
 
-  if (loading) {
-    return <div style={{ padding: 24, fontSize: 13, color: '#6b7280' }}>Loading Teams…</div>;
-  }
+  if (loading) return <div style={{ padding: 24, fontSize: 13, color: '#6b7280' }}>Loading Teams…</div>;
 
-  const statusCopy = status?.status && status.status !== 'connected'
-    ? STATUS_COPY[status.status]
-    : null;
+  const statusCopy = status?.status && status.status !== 'connected' ? STATUS_COPY[status.status] : null;
+  const meetingsHidden = !kinds.length && counts ? counts.meetings : 0;
 
   return (
     <div>
@@ -306,7 +432,6 @@ export default function MSTeamsConnect() {
         </div>
       )}
 
-      {/* ── Not connected ─────────────────────────────────────────────── */}
       {!status?.status && (
         <div style={{ ...CARD, padding: 20 }}>
           <div style={{ fontSize: 15, fontWeight: 600, color: '#111827', marginBottom: 6 }}>
@@ -333,37 +458,24 @@ export default function MSTeamsConnect() {
         </div>
       )}
 
-      {/* ── Connected, or connected-but-degraded ──────────────────────── */}
       {status?.status && (
         <>
           {statusCopy && (
-            <div style={{
-              ...CARD, padding: 14, marginBottom: 16,
-              background: TONE[statusCopy.tone].bg,
-              borderColor: TONE[statusCopy.tone].border,
-            }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: TONE[statusCopy.tone].fg }}>
-                {statusCopy.title}
-              </div>
-              <div style={{ fontSize: 13, color: TONE[statusCopy.tone].fg, marginTop: 4, lineHeight: 1.6 }}>
-                {statusCopy.body}
-              </div>
+            <div style={{ ...CARD, padding: 14, marginBottom: 16, background: TONE[statusCopy.tone].bg, borderColor: TONE[statusCopy.tone].border }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: TONE[statusCopy.tone].fg }}>{statusCopy.title}</div>
+              <div style={{ fontSize: 13, color: TONE[statusCopy.tone].fg, marginTop: 4, lineHeight: 1.6 }}>{statusCopy.body}</div>
               <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
                 <button style={PRIMARY} onClick={connect} disabled={busy}>Reconnect</button>
                 {status.status === 'consent_required' && (
-                  <button style={GHOST} onClick={adminConsent} disabled={busy}>
-                    Get administrator approval
-                  </button>
+                  <button style={GHOST} onClick={adminConsent} disabled={busy}>Get administrator approval</button>
                 )}
               </div>
             </div>
           )}
 
           <div style={{ ...CARD, padding: 16, marginBottom: 16, display: 'flex', flexWrap: 'wrap', gap: 20, alignItems: 'center' }}>
-            <div style={{ flex: '1 1 220px' }}>
-              <div style={{ fontSize: 11, textTransform: 'uppercase', color: '#94a3b8', fontWeight: 600, letterSpacing: 0.3 }}>
-                Connected as
-              </div>
+            <div style={{ flex: '1 1 200px' }}>
+              <div style={{ fontSize: 11, textTransform: 'uppercase', color: '#94a3b8', fontWeight: 600 }}>Connected as</div>
               <div style={{ fontSize: 14, fontWeight: 600, color: '#374151', marginTop: 2 }}>
                 {status.displayName || status.upn || '—'}
               </div>
@@ -371,32 +483,26 @@ export default function MSTeamsConnect() {
                 <div style={{ fontSize: 12, color: '#9ca3af' }}>{status.upn}</div>
               )}
             </div>
-
             <div>
-              <div style={{ fontSize: 11, textTransform: 'uppercase', color: '#94a3b8', fontWeight: 600, letterSpacing: 0.3 }}>
-                Found
-              </div>
+              <div style={{ fontSize: 11, textTransform: 'uppercase', color: '#94a3b8', fontWeight: 600 }}>Found</div>
               <div style={{ fontSize: 14, fontWeight: 600, color: '#374151', marginTop: 2 }}>
                 {status.chatCount || 0} chats · {status.channelCount || 0} channels
               </div>
               <div style={{ fontSize: 12, color: '#9ca3af' }}>
-                {status.lastDiscoveryAt
-                  ? `Refreshed ${timeAgo(status.lastDiscoveryAt)}`
-                  : 'Not refreshed yet'}
+                {status.lastDiscoveryAt ? `Refreshed ${timeAgo(status.lastDiscoveryAt)}` : 'Not refreshed yet'}
               </div>
             </div>
-
             <div style={{ display: 'flex', gap: 8, marginLeft: 'auto' }}>
               <button style={GHOST} onClick={discover} disabled={busy}>
                 {busy ? 'Refreshing…' : 'Refresh list'}
               </button>
-              <button style={GHOST} onClick={disconnect} disabled={busy}>Disconnect</button>
+              <button style={GHOST} disabled={busy}
+                onClick={() => { if (window.confirm('Disconnect Teams? What you chose to capture is kept, and reconnecting picks up where you left off.')) run(() => apiService.msteams.disconnect(), () => 'Teams disconnected.'); }}>
+                Disconnect
+              </button>
             </div>
           </div>
 
-          {/* Discovery is a poll on an hourly schedule, so a rep added to a
-              channel minutes ago genuinely will not see it until they press
-              Refresh. Saying so is cheaper than fielding the question. */}
           {status.lastDiscoveryError && (
             <div style={{ ...CARD, padding: 12, marginBottom: 16, background: TONE.warn.bg, borderColor: TONE.warn.border, color: TONE.warn.fg, fontSize: 13, lineHeight: 1.6 }}>
               <strong>Some conversations could not be read.</strong> The rest of the list is complete.
@@ -406,52 +512,55 @@ export default function MSTeamsConnect() {
             </div>
           )}
 
-          <div style={{ ...CARD, padding: 12, marginBottom: 16, background: '#eff6ff', borderColor: '#bfdbfe', color: '#1e40af', fontSize: 13, lineHeight: 1.6 }}>
-            <strong>Nothing is being captured yet.</strong> Marking a conversation here records
-            your decision — messages start being retained when Teams capture ships. Choosing now
-            means the right conversations are already selected on day one instead of everything
-            arriving at once.
-          </div>
-
-          {/* ── Triage ──────────────────────────────────────────────── */}
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-            {FILTERS.map(f => (
-              <button
-                key={f.key}
-                onClick={() => setFilter(f.key)}
-                style={{
-                  ...BTN,
-                  background:  filter === f.key ? '#1A3A5C' : '#fff',
-                  color:       filter === f.key ? '#fff' : '#374151',
-                  border: `1px solid ${filter === f.key ? '#1A3A5C' : '#d1d5db'}`,
-                }}
-              >
-                {f.label}
-              </button>
+          {/* ── Filters ─────────────────────────────────────────────── */}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
+            {STATUS_FILTERS.map(f => (
+              <button key={f.key} onClick={() => setStatusFilter(f.key)} style={{
+                ...BTN,
+                background: statusFilter === f.key ? '#1A3A5C' : '#fff',
+                color:      statusFilter === f.key ? '#fff' : '#374151',
+                border: `1px solid ${statusFilter === f.key ? '#1A3A5C' : '#d1d5db'}`,
+              }}>{f.label}</button>
             ))}
-            <input
-              style={{ ...INPUT, marginLeft: 'auto', minWidth: 220 }}
-              placeholder="Search chats, channels, teams…"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-            />
+            <input style={{ ...INPUT, marginLeft: 'auto', minWidth: 220 }}
+                   placeholder="Search conversations, teams…"
+                   value={search} onChange={e => setSearch(e.target.value)} />
           </div>
 
-          <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 10 }}>
-            {counts.total} conversation{counts.total === 1 ? '' : 's'} ·{' '}
-            {counts.watched} marked for capture · {counts.ignored} dismissed
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+            <span style={{ fontSize: 12, color: '#9ca3af', marginRight: 4 }}>Show:</span>
+            {KIND_FILTERS.map(f => (
+              <button key={f.key} onClick={() => toggleKind(f.key)} style={{
+                ...BTN, padding: '4px 10px', fontSize: 12,
+                background: kinds.includes(f.key) ? '#fff7ed' : '#fff',
+                color:      kinds.includes(f.key) ? '#9a3412' : '#6b7280',
+                border: `1px solid ${kinds.includes(f.key) ? '#fdba74' : '#e5e7eb'}`,
+              }}>{f.label}</button>
+            ))}
           </div>
+
+          {/* Saying how many are hidden, rather than quietly dropping 85% of
+              the list. Clicking through is one tap. */}
+          {meetingsHidden > 0 && (
+            <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 10 }}>
+              {counts.total} conversations · {counts.watched} capturing · {counts.ignored} dismissed ·{' '}
+              <button onClick={() => toggleKind('meeting')} style={{
+                background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                color: '#2563eb', fontSize: 12, textDecoration: 'underline',
+              }}>
+                {meetingsHidden} meeting chats hidden
+              </button>
+            </div>
+          )}
 
           {selected.size > 0 && (
-            <div style={{ ...CARD, padding: 12, marginBottom: 12, display: 'flex', gap: 8, alignItems: 'center', background: '#f9fafb' }}>
-              <span style={{ fontSize: 13, color: '#374151', fontWeight: 500 }}>
-                {selected.size} selected
-              </span>
-              <div style={{ display: 'flex', gap: 8, marginLeft: 'auto' }}>
-                <button style={PRIMARY} onClick={() => applyWatch(true)}  disabled={busy}>Capture these</button>
-                <button style={GHOST}   onClick={() => applyWatch(false)} disabled={busy}>Do not capture</button>
+            <div style={{ ...CARD, padding: 12, marginBottom: 12, display: 'flex', gap: 8, alignItems: 'center', background: '#f9fafb', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13, color: '#374151', fontWeight: 500 }}>{selected.size} selected</span>
+              <div style={{ display: 'flex', gap: 8, marginLeft: 'auto', flexWrap: 'wrap' }}>
+                <button style={PRIMARY} onClick={() => applyWatch(true)}  disabled={busy}>Start capturing</button>
+                <button style={GHOST}   onClick={() => applyWatch(false)} disabled={busy}>Stop capturing</button>
                 <button style={GHOST}   onClick={() => applyIgnore(true)} disabled={busy}>Dismiss</button>
-                {filter === 'ignored' && (
+                {statusFilter === 'ignored' && (
                   <button style={GHOST} onClick={() => applyIgnore(false)} disabled={busy}>Restore</button>
                 )}
                 <button style={GHOST} onClick={() => setSelected(new Set())}>Clear</button>
@@ -459,74 +568,119 @@ export default function MSTeamsConnect() {
             </div>
           )}
 
+          {/* ── Rows ────────────────────────────────────────────────── */}
           <div style={{ ...CARD, overflow: 'hidden' }}>
             {visible.length === 0 ? (
               <div style={{ padding: 24, fontSize: 13, color: '#9ca3af', textAlign: 'center' }}>
-                {convs.length === 0
-                  ? 'No chats or channels found yet. Press Refresh list.'
-                  : 'Nothing matches that filter.'}
+                {convs.length === 0 ? 'No conversations found yet. Press Refresh list.' : 'Nothing matches that filter.'}
               </div>
             ) : visible.map((c, i) => {
               const kind = KIND[c.kind] || KIND.group;
-              const isIgnored = c.binding_status === 'ignored';
-              return (
-                <div
-                  key={c.id}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 12,
-                    padding: '10px 14px',
-                    borderTop: i === 0 ? 'none' : '1px solid #f3f4f6',
-                    opacity: isIgnored ? 0.55 : 1,
-                    background: selected.has(c.id) ? '#fff7ed' : '#fff',
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={selected.has(c.id)}
-                    onChange={() => toggle(c.id)}
-                    style={{ cursor: 'pointer' }}
-                  />
+              const unreadable = c.is_readable === false;
+              const stalled = c.is_watched && !c.is_capturing;
 
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 500, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {c.display_name || c.topic || c.graph_id}
+              return (
+                <div key={c.id} style={{
+                  borderTop: i === 0 ? 'none' : '1px solid #f3f4f6',
+                  padding: '10px 14px',
+                  opacity: c.binding_status === 'ignored' ? 0.55 : 1,
+                  background: selected.has(c.id) ? '#fff7ed' : '#fff',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <input type="checkbox" checked={selected.has(c.id)}
+                           onChange={() => toggle(c.id)} disabled={unreadable}
+                           style={{ cursor: unreadable ? 'not-allowed' : 'pointer' }} />
+
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 500, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {c.display_name || c.topic || c.graph_id}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 2 }}>
+                        {c.member_count ? `${c.member_count} members · ` : ''}
+                        {c.message_count ? `${c.message_count} captured · ` : ''}
+                        {c.last_activity_at ? `active ${timeAgo(c.last_activity_at)}` : 'no recent activity'}
+                      </div>
                     </div>
-                    <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 2 }}>
-                      {c.member_count ? `${c.member_count} members · ` : ''}
-                      {c.last_activity_at ? `active ${timeAgo(c.last_activity_at)}` : 'no recent activity'}
-                    </div>
+
+                    <span style={{ ...PILL, background: kind.bg, color: kind.fg }}>{kind.label}</span>
+                    {c.membership_type === 'private' && (
+                      <span style={{ ...PILL, background: '#f3f4f6', color: '#6b7280' }}>Private</span>
+                    )}
+
+                    {/* Watched and capturing are separate facts. A row that is
+                        ticked but not receiving says so plainly. */}
+                    {c.is_capturing && (
+                      <span style={{ ...PILL, background: '#ecfdf5', color: '#065f46' }}>Capturing</span>
+                    )}
+                    {stalled && (
+                      <span style={{ ...PILL, background: '#fffbeb', color: '#92400e' }}>Not receiving</span>
+                    )}
+
+                    {c.bound_handover_id && (
+                      <span style={{ ...PILL, background: '#eff6ff', color: '#1e40af' }}>
+                        {c.bound_project_name || 'Project'}
+                      </span>
+                    )}
+                    {c.binding_mode === 'account' && (
+                      <span style={{ ...PILL, background: '#fdf4ff', color: '#6b21a8' }}>
+                        {c.bound_account_name || 'Vendor'}
+                      </span>
+                    )}
+                    {c.binding_mode === 'pool' && (
+                      <span style={{ ...PILL, background: '#fdf4ff', color: '#6b21a8' }}>
+                        {c.candidate_count || 0} projects
+                      </span>
+                    )}
+
+                    {!unreadable && (
+                      <button style={{ ...GHOST, padding: '4px 10px', fontSize: 12 }} disabled={busy}
+                              onClick={() => setBinding(c)}>
+                        {c.binding_mode ? 'Change' : 'Link'}
+                      </button>
+                    )}
+                    {c.binding_mode && (
+                      <button style={{ ...GHOST, padding: '4px 8px', fontSize: 12 }} disabled={busy}
+                              onClick={() => unbind(c.id)}>Unlink</button>
+                    )}
+                    {c.web_url && (
+                      <a href={c.web_url} target="_blank" rel="noopener noreferrer"
+                         style={{ fontSize: 12, color: '#2563eb', textDecoration: 'none' }}>Open</a>
+                    )}
                   </div>
 
-                  <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 10, background: kind.bg, color: kind.fg }}>
-                    {kind.label}
-                  </span>
-
-                  {c.is_watched && (
-                    <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 10, background: '#fff7ed', color: '#9a3412' }}>
-                      Capture
-                    </span>
-                  )}
-                  {isIgnored && (
-                    <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 10, background: '#f3f4f6', color: '#6b7280' }}>
-                      Dismissed
-                    </span>
-                  )}
-
-                  {c.web_url && (
-                    <a
-                      href={c.web_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{ fontSize: 12, color: '#2563eb', textDecoration: 'none' }}
-                    >
-                      Open
-                    </a>
+                  {/* The reason, not just the greyed-out row. The remedy —
+                      ask a channel owner to add you — is only actionable if
+                      somebody is told what it is. */}
+                  {unreadable && (
+                    <div style={{ fontSize: 12, color: '#92400e', background: TONE.warn.bg,
+                                  border: `1px solid ${TONE.warn.border}`, borderRadius: 6,
+                                  padding: '6px 10px', marginTop: 8, lineHeight: 1.5 }}>
+                      {c.readability_error || 'This conversation cannot be read with your account.'}
+                    </div>
                   )}
                 </div>
               );
             })}
           </div>
         </>
+      )}
+
+      {binding && (
+        <BindDialog
+          conversation={binding}
+          projects={projects}
+          vendors={vendors}
+          onClose={() => setBinding(null)}
+          onDone={(r) => {
+            setBinding(null);
+            setNotice(
+              r.backfilled
+                ? `Linked. ${r.backfilled} earlier message${r.backfilled === 1 ? '' : 's'} filed to the project.`
+                : 'Linked.'
+            );
+            load();
+          }}
+        />
       )}
     </div>
   );
