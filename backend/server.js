@@ -237,6 +237,9 @@ app.use('/api/reporting',     require('./routes/reporting.routes'));
 
 // ── External integrations ────────────────────────────────────────────────
 app.use('/api/outlook',       require('./routes/outlook.routes'));
+// server.js — beside the other integration routes
+app.use('/api/msteams', require('./routes/msteams.routes'));
+app.use('/api/msteams-debug', require('./routes/msteamsDebug.routes'));
 app.use('/api/google',        require('./routes/google.routes'));
 app.use('/api/sync',          require('./routes/sync.routes'));
 app.use('/api/ai',            require('./routes/ai.routes'));
@@ -390,9 +393,6 @@ app.use('/api/transcripts',     require('./routes/transcripts.routes'));
 app.use('/api/action-config',   require('./routes/action-config.routes'));
 app.use('/api/extension', require('./routes/extension.routes'));
 
-// server.js — beside the other integration routes
-app.use('/api/msteams', require('./routes/msteams.routes'));
-app.use('/api/msteams-debug', require('./routes/msteamsDebug.routes'));
 
 // ── Public org context ────────────────────────────────────────────────────
 const authenticateToken = require('./middleware/auth.middleware');
