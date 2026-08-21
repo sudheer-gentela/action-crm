@@ -15,6 +15,9 @@ notificationScheduler.startScheduler();
 // jobs/worker.js — beside the other schedulers
 require('./msteamsDiscoveryScheduler').startScheduler();
 
+// jobs/worker.js, beside the discovery scheduler
+require('./msteamsSubscriptionRenewal').startScheduler();
+
 // Handle graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received, closing worker...');

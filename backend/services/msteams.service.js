@@ -295,8 +295,9 @@ async function upsertConversation(client, orgId, connectionId, row) {
   await client.query(
     `INSERT INTO msteams_conversations
        (org_id, connection_id, kind, graph_id, team_id, topic, display_name,
-        team_name, member_count, web_url, last_activity_at, last_discovered_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now())
+        team_name, member_count, web_url, last_activity_at, membership_type,
+        last_discovered_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now())
      ON CONFLICT (connection_id, graph_id) DO UPDATE
        SET topic              = EXCLUDED.topic,
            display_name       = EXCLUDED.display_name,
@@ -304,12 +305,14 @@ async function upsertConversation(client, orgId, connectionId, row) {
            member_count       = COALESCE(EXCLUDED.member_count, msteams_conversations.member_count),
            web_url            = EXCLUDED.web_url,
            last_activity_at   = COALESCE(EXCLUDED.last_activity_at, msteams_conversations.last_activity_at),
+           membership_type    = COALESCE(EXCLUDED.membership_type, msteams_conversations.membership_type),
            last_discovered_at = now(),
            updated_at         = now()`,
     [
       orgId, connectionId, row.kind, row.graphId, row.teamId || null,
       row.topic || null, row.displayName || null, row.teamName || null,
       row.memberCount ?? null, row.webUrl || null, row.lastActivityAt || null,
+      row.membershipType || null,
     ]
   );
 }
@@ -414,8 +417,14 @@ async function discoverForConnection(conn) {
           webUrl:      ch.webUrl || null,
           // Channels expose no cheap last-activity field. Ordering falls back
           // to whatever a previous run recorded, and to real message times once
-          // 126 is capturing.
+          // capture is running.
           lastActivityAt: null,
+          // Measured in the pilot tenant: 3 of 7 channels were private and all
+          // three returned 403 on a message read, because a private channel's
+          // membership is separate from its team's. Recording the type here
+          // lets the UI warn before somebody watches a channel that would
+          // capture nothing. Actual readability is probed at watch time.
+          membershipType: ch.membershipType || 'unknown',
         });
         channelCount += 1;
       }
@@ -554,16 +563,16 @@ async function listTriage(orgId, userId, {
 /**
  * Watch or unwatch conversations.
  *
- * Phase 0 only RECORDS the decision — no subscription is created or destroyed,
- * because there is nothing yet to subscribe with. 2026_126 reads is_watched and
- * makes it mean something. Letting people triage before capture exists is
- * deliberate: it means the day capture ships, the watchlist is already right
- * instead of everything arriving at once into an untriaged pile.
+ * PHASE 1: this now has an effect. Watching probes readability, creates a Graph
+ * subscription, and capture begins; unwatching tears it down. The decision is
+ * still recorded first and the subscription attempted second, so a Graph
+ * failure leaves a visible watched-but-not-capturing row rather than silently
+ * discarding what the human chose.
  *
  * Unwatching resets binding_status to 'unbound' when it was a bound_* value,
  * because msteams_conversations_decided_chk forbids an unwatched row from
- * sitting in a bound state — and more to the point, a conversation nobody is
- * watching is not bound to anything in any useful sense.
+ * sitting in a bound state — and a conversation nobody watches is not bound to
+ * anything in any useful sense.
  */
 async function setWatch(orgId, userId, conversationIds = [], watched = true) {
   const conn = await getConnection(orgId, userId);
@@ -583,11 +592,43 @@ async function setWatch(orgId, userId, conversationIds = [], watched = true) {
             END,
             updated_at     = now()
       WHERE org_id = $1 AND connection_id = $2 AND id = ANY($5::int[])
-      RETURNING id, is_watched, binding_status`,
+      RETURNING *`,
     [orgId, conn.id, userId, !!watched, ids]
   );
 
-  return { ok: true, updated: rows };
+  // Required lazily. msteamsSubscriptions requires this module back for
+  // accessTokenFor and getConnectionById, and a top-level require would be a
+  // cycle that leaves one of the two exporting an empty object depending on
+  // which loaded first.
+  const subs = require('./msteamsSubscriptions.service');
+  const results = [];
+
+  for (const row of rows) {
+    if (!watched) {
+      try {
+        await subs.unsubscribe(row.id);
+        results.push({ id: row.id, is_watched: false, binding_status: row.binding_status });
+      } catch (err) {
+        console.error(`[msteams] unsubscribe failed for conversation ${row.id}: ${err.message}`);
+        results.push({ id: row.id, is_watched: false, warning: 'Capture stopped locally, but Teams may still be sending notifications. It will be cleaned up on the next sweep.' });
+      }
+      continue;
+    }
+
+    const created = await subs.subscribe(row, conn);
+    results.push({
+      id: row.id,
+      is_watched: true,
+      binding_status: row.binding_status,
+      capturing: created.ok,
+      // A private channel the rep is not a member of fails here with a reason
+      // they can act on — ask a channel owner to add you — rather than sitting
+      // watched and permanently empty.
+      error: created.ok ? undefined : (created.error || created.code),
+    });
+  }
+
+  return { ok: true, updated: results };
 }
 
 /**

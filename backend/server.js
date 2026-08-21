@@ -157,6 +157,8 @@ app.use((req, res, next) => {
 // middleware above is the only thing that touches the stream (signature
 // verification needs the exact bytes). Meta calls this unauthenticated.
 app.use('/webhooks/whatsapp', require('./routes/whatsapp-webhook.routes'));
+// server.js, next to app.use('/webhooks/whatsapp', ...) at ~line 159
+app.use('/webhooks/msteams', require('./routes/msteams-webhook.routes'));
 
 // Body parsers — raised to 5MB to support bulk CSV import (the prospects/bulk
 // endpoint accepts up to 500 prospects per call, which can exceed Express's
