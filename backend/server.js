@@ -392,6 +392,7 @@ app.use('/api/extension', require('./routes/extension.routes'));
 
 // server.js — beside the other integration routes
 app.use('/api/msteams', require('./routes/msteams.routes'));
+app.use('/api/msteams-debug', require('./routes/msteamsDebug.routes'));
 
 // ── Public org context ────────────────────────────────────────────────────
 const authenticateToken = require('./middleware/auth.middleware');
