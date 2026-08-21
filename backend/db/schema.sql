@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict epJ0HOfKVn17Rz4j9VySNcCNttQcW8pNmzgJZ9qaDoNJZsartfB8reOH8ogfXrv
+\restrict kxmUoGVlmMDgF20Hm9oA9bgY35Ie9BoKaQlghSlAo7ko0sDzIvjcBIfR120kjua
 
 -- Dumped from database version 17.10 (Debian 17.10-1.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -5444,6 +5444,558 @@ ALTER SEQUENCE public.module_access_requests_id_seq OWNED BY public.module_acces
 
 
 --
+-- Name: msteams_connections; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.msteams_connections (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    user_id integer NOT NULL,
+    entra_tenant_id text,
+    entra_object_id text,
+    entra_upn text,
+    display_name text,
+    status text DEFAULT 'connected'::text NOT NULL,
+    status_detail text,
+    capture_enabled boolean DEFAULT true NOT NULL,
+    last_discovery_at timestamp with time zone,
+    last_discovery_error text,
+    discovered_chat_count integer DEFAULT 0 NOT NULL,
+    discovered_channel_count integer DEFAULT 0 NOT NULL,
+    connected_at timestamp with time zone DEFAULT now() NOT NULL,
+    disconnected_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT msteams_connections_status_chk CHECK ((status = ANY (ARRAY['connected'::text, 'consent_required'::text, 'token_expired'::text, 'revoked'::text, 'disconnected'::text])))
+);
+
+
+--
+-- Name: TABLE msteams_connections; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.msteams_connections IS 'A rep who has connected Microsoft Teams via delegated OAuth. Read-only by design: no send-side columns. Access and refresh tokens live in oauth_tokens under provider ''teams''; this table holds Entra identity, discovery state and the capture switch.';
+
+
+--
+-- Name: COLUMN msteams_connections.entra_object_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_connections.entra_object_id IS 'The signed-in user''s Entra object id from /me. chatMessage.from.user.id carries the same value on every message, so this is how a sender resolves to a GoWarmCRM user without name matching. Nullable only between row creation and the first /me call.';
+
+
+--
+-- Name: COLUMN msteams_connections.status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_connections.status IS 'connected = token refreshing normally. consent_required = a scope was added or withdrawn at the tenant and the user must re-approve. token_expired = refresh failed but not identifiably revoked; retryable. revoked = access withdrawn, needs fresh consent. disconnected = the user or an admin switched it off here.';
+
+
+--
+-- Name: COLUMN msteams_connections.capture_enabled; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_connections.capture_enabled IS 'Pauses capture without tearing down the connection. Deliberately separate from status so a freeze window does not cost a re-consent.';
+
+
+--
+-- Name: COLUMN msteams_connections.last_discovery_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_connections.last_discovery_at IS 'Teams membership changes silently ΓÇö nothing notifies us that a rep joined a channel. Discovery is a poll, and the age of this column is how the UI knows the triage list may be incomplete.';
+
+
+--
+-- Name: msteams_connections_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.msteams_connections_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: msteams_connections_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.msteams_connections_id_seq OWNED BY public.msteams_connections.id;
+
+
+--
+-- Name: msteams_conversation_participants; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.msteams_conversation_participants (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    conversation_id integer NOT NULL,
+    entra_object_id text NOT NULL,
+    user_id integer,
+    display_name text,
+    email text,
+    is_external boolean DEFAULT false NOT NULL,
+    joined_at timestamp with time zone,
+    left_at timestamp with time zone,
+    first_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: TABLE msteams_conversation_participants; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.msteams_conversation_participants IS 'Who is in each captured conversation, time-bounded. joined_at and left_at bound what a person may read: being added last week must not grant three months of history. is_external flags a guest or cross-tenant participant, who is recorded and rendered but never linked to a GoWarmCRM user.';
+
+
+--
+-- Name: msteams_conversation_participants_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.msteams_conversation_participants_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: msteams_conversation_participants_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.msteams_conversation_participants_id_seq OWNED BY public.msteams_conversation_participants.id;
+
+
+--
+-- Name: msteams_conversations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.msteams_conversations (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    connection_id integer NOT NULL,
+    kind text NOT NULL,
+    graph_id text NOT NULL,
+    team_id text,
+    topic text,
+    display_name text,
+    team_name text,
+    member_count integer,
+    web_url text,
+    is_watched boolean DEFAULT false NOT NULL,
+    binding_status text DEFAULT 'unbound'::text NOT NULL,
+    watched_by integer,
+    watched_at timestamp with time zone,
+    bound_by integer,
+    bound_at timestamp with time zone,
+    first_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_discovered_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_activity_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    capture_started_at timestamp with time zone,
+    capture_stopped_at timestamp with time zone,
+    message_count integer DEFAULT 0 NOT NULL,
+    last_message_at timestamp with time zone,
+    CONSTRAINT msteams_conversations_binding_chk CHECK ((binding_status = ANY (ARRAY['unbound'::text, 'bound'::text, 'bound_account'::text, 'bound_pool'::text, 'ignored'::text]))),
+    CONSTRAINT msteams_conversations_decided_chk CHECK (((is_watched = true) OR (binding_status = ANY (ARRAY['unbound'::text, 'ignored'::text])))),
+    CONSTRAINT msteams_conversations_kind_chk CHECK ((kind = ANY (ARRAY['oneOnOne'::text, 'group'::text, 'meeting'::text, 'channel'::text]))),
+    CONSTRAINT msteams_conversations_shape_chk CHECK ((((kind = 'channel'::text) AND (team_id IS NOT NULL)) OR ((kind <> 'channel'::text) AND (team_id IS NULL))))
+);
+
+
+--
+-- Name: TABLE msteams_conversations; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.msteams_conversations IS 'Chats and channels a connected rep belongs to, as found by discovery. One row per (connection, conversation) ΓÇö two reps in the same channel is two rows, because watching is a per-rep decision. Phase 0 WRITES this table and captures nothing; 2026_126 reads is_watched to decide what to subscribe to.';
+
+
+--
+-- Name: COLUMN msteams_conversations.graph_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_conversations.graph_id IS 'The chat id for a chat, or the channel id for a channel ΓÇö as Graph returns it, never a local id. This is the value that goes into conversation_bindings.thread_ref.';
+
+
+--
+-- Name: COLUMN msteams_conversations.team_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_conversations.team_id IS 'The team owning a channel. NULL for chats. Required for channels because addressing one takes both ids: /teams/{team_id}/channels/{graph_id}/messages.';
+
+
+--
+-- Name: COLUMN msteams_conversations.binding_status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_conversations.binding_status IS 'unbound = discovered, nobody has said how this is organised (shows in triage). bound = one project; messages inherit it. bound_account = organised around a vendor/partner. bound_pool = several declared projects. ignored = a human said this is not project traffic. Same vocabulary as whatsapp_session_groups so one triage component serves both channels.';
+
+
+--
+-- Name: COLUMN msteams_conversations.last_activity_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_conversations.last_activity_at IS 'Graph''s own last-activity stamp for the conversation, not ours. It is the only ordering signal triage has before capture exists.';
+
+
+--
+-- Name: COLUMN msteams_conversations.capture_started_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_conversations.capture_started_at IS 'When watching began. Capture runs forward from here and never backwards: there is no backfill, and a message predating this is one nobody consented to retain. Set on watch, left in place on unwatch so a re-watch shows the original start.';
+
+
+--
+-- Name: msteams_conversations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.msteams_conversations_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: msteams_conversations_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.msteams_conversations_id_seq OWNED BY public.msteams_conversations.id;
+
+
+--
+-- Name: msteams_message_attachments; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.msteams_message_attachments (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    message_id integer NOT NULL,
+    graph_attachment_id text,
+    attachment_type text,
+    file_name text,
+    mime_type text,
+    content_url text,
+    snapshot_file_name text,
+    snapshot_mime_type text,
+    snapshot_web_url text,
+    storage_file_id integer,
+    media_status text DEFAULT 'linked'::text NOT NULL,
+    last_checked_at timestamp with time zone,
+    removed_by integer,
+    removed_at timestamp with time zone,
+    removed_reason text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT msteams_attachments_status_chk CHECK ((media_status = ANY (ARRAY['linked'::text, 'stored'::text, 'unreachable'::text, 'skipped'::text, 'removed'::text])))
+);
+
+
+--
+-- Name: TABLE msteams_message_attachments; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.msteams_message_attachments IS 'Teams attachments as REFERENCES into OneDrive or SharePoint. Phase 1 stores the pointer and fetches no bytes, which is why config/teamsScopes.js deliberately does not request Files.Read.All.';
+
+
+--
+-- Name: COLUMN msteams_message_attachments.media_status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_message_attachments.media_status IS 'linked = we hold a reference and it last resolved. stored = bytes copied into storage_files (not phase 1). unreachable = the pointer stopped resolving ΓÇö moved, unshared, or the owner left. This replaces WhatsApp''s ''expired'', which existed because Meta reaps media on a schedule; nobody reaps a customer''s SharePoint. skipped = deliberately not captured. removed = a human took it out.';
+
+
+--
+-- Name: msteams_message_attachments_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.msteams_message_attachments_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: msteams_message_attachments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.msteams_message_attachments_id_seq OWNED BY public.msteams_message_attachments.id;
+
+
+--
+-- Name: msteams_messages; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.msteams_messages (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    conversation_id integer NOT NULL,
+    thread_id integer NOT NULL,
+    graph_message_id text NOT NULL,
+    reply_to_graph_id text,
+    from_entra_id text,
+    from_user_id integer,
+    from_display_name text,
+    message_type text DEFAULT 'message'::text NOT NULL,
+    body_original text,
+    body_current text,
+    body_text text,
+    content_type text,
+    mentions jsonb,
+    importance text,
+    has_attachments boolean DEFAULT false NOT NULL,
+    sent_at timestamp with time zone NOT NULL,
+    captured_at timestamp with time zone DEFAULT now() NOT NULL,
+    edited_at timestamp with time zone,
+    deleted_at timestamp with time zone,
+    handover_id integer,
+    attribution_source text,
+    moved_by integer,
+    moved_at timestamp with time zone,
+    excluded_at timestamp with time zone,
+    excluded_by integer,
+    exclude_reason text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT msteams_messages_attribution_chk CHECK (((attribution_source IS NULL) OR (attribution_source = ANY (ARRAY['binding'::text, 'thread_root'::text, 'mention'::text, 'subject'::text, 'manual'::text])))),
+    CONSTRAINT msteams_messages_attribution_shape_chk CHECK ((((handover_id IS NULL) AND (attribution_source IS NULL)) OR ((handover_id IS NOT NULL) AND (attribution_source IS NOT NULL)))),
+    CONSTRAINT msteams_messages_exclude_shape_chk CHECK ((((excluded_at IS NULL) AND (excluded_by IS NULL)) OR ((excluded_at IS NOT NULL) AND (excluded_by IS NOT NULL) AND (exclude_reason IS NOT NULL) AND (btrim(exclude_reason) <> ''::text)))),
+    CONSTRAINT msteams_messages_type_chk CHECK ((message_type = ANY (ARRAY['message'::text, 'systemEventMessage'::text, 'unknown'::text])))
+);
+
+
+--
+-- Name: TABLE msteams_messages; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.msteams_messages IS 'Captured Teams messages. Both bodies are kept: body_original is frozen at capture and is what play evidence resolves to; body_current follows edits and is what the timeline renders. A Teams delete marks deleted_at and stops rendering but keeps the row, so evidence pointing at it still resolves.';
+
+
+--
+-- Name: COLUMN msteams_messages.from_user_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_messages.from_user_id IS 'The resolved GoWarmCRM user, matched via from_entra_id. NULL for external participants, who are recorded and rendered but not linked.';
+
+
+--
+-- Name: COLUMN msteams_messages.body_original; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_messages.body_original IS 'The body as first captured, never updated. Same principle as 2026_124''s snapshot_* columns on play_evidence: what was ACCEPTED, not what it later became. Evidence resolves here.';
+
+
+--
+-- Name: COLUMN msteams_messages.body_current; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_messages.body_current IS 'Follows changeType=updated notifications. What the timeline renders, with an edited marker when edited_at is set.';
+
+
+--
+-- Name: COLUMN msteams_messages.mentions; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_messages.mentions IS 'Graph''s mentions array, stored whole. Carries resolved user and tag ids, which makes mention-based project matching deterministic rather than a regex over free text ΓÇö the main attribution advantage Teams has over WhatsApp.';
+
+
+--
+-- Name: COLUMN msteams_messages.deleted_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_messages.deleted_at IS 'Set on changeType=deleted. Stops timeline rendering; does NOT remove the row, because evidence referencing it must still resolve. Genuine removal is a human act via excluded_at.';
+
+
+--
+-- Name: msteams_messages_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.msteams_messages_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: msteams_messages_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.msteams_messages_id_seq OWNED BY public.msteams_messages.id;
+
+
+--
+-- Name: msteams_subscriptions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.msteams_subscriptions (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    connection_id integer NOT NULL,
+    conversation_id integer NOT NULL,
+    subscription_id text NOT NULL,
+    resource_path text NOT NULL,
+    client_state text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    last_renewed_at timestamp with time zone,
+    renewal_failures integer DEFAULT 0 NOT NULL,
+    last_error text,
+    status text DEFAULT 'active'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    graph_id text,
+    owner_connection_id integer,
+    failed_over_from integer,
+    failover_count integer DEFAULT 0 NOT NULL,
+    last_failover_at timestamp with time zone,
+    CONSTRAINT msteams_subscriptions_status_chk CHECK ((status = ANY (ARRAY['active'::text, 'expiring'::text, 'expired'::text, 'failed'::text, 'deleted'::text])))
+);
+
+
+--
+-- Name: TABLE msteams_subscriptions; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.msteams_subscriptions IS 'Graph change-notification subscriptions, one per watched conversation. Created empty by 2026_125; written by 2026_126. Mirrored locally rather than listed from Graph because a silently dropped subscription does not appear in a list ΓÇö you find it by noticing messages stopped.';
+
+
+--
+-- Name: COLUMN msteams_subscriptions.resource_path; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_subscriptions.resource_path IS 'The resource we subscribed to, stored rather than rebuilt. If a channel moves between teams, the subscription to DELETE is the one at the OLD path; a rebuilt path would leak it.';
+
+
+--
+-- Name: COLUMN msteams_subscriptions.client_state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_subscriptions.client_state IS 'Secret echoed by Graph on every notification. A notification that does not match it is discarded ΓÇö the only thing protecting the webhook from anyone who learns the URL.';
+
+
+--
+-- Name: COLUMN msteams_subscriptions.status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_subscriptions.status IS 'active = live. expiring = inside the renewal window, the sweep will extend it. expired = lapsed, needs recreating not renewing. failed = renewal_failures exhausted, a human should look. deleted = torn down on unwatch, kept briefly for audit.';
+
+
+--
+-- Name: COLUMN msteams_subscriptions.graph_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_subscriptions.graph_id IS 'Denormalised from msteams_conversations so the uniqueness rule Graph actually enforces ΓÇö one subscription per app-and-conversation ΓÇö can be a unique index. A unique index cannot reach through a join, and the conversation_id key it replaces could not see two reps watching the same channel.';
+
+
+--
+-- Name: COLUMN msteams_subscriptions.owner_connection_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_subscriptions.owner_connection_id IS 'Whose delegated token holds this subscription and is used to renew it. May differ from connection_id after a failover; connection_id records who originally created it.';
+
+
+--
+-- Name: COLUMN msteams_subscriptions.failed_over_from; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_subscriptions.failed_over_from IS 'The connection that owned this before a renewal failure moved it. Kept so the original rep''s broken connection still gets fixed rather than being silently papered over by the failover.';
+
+
+--
+-- Name: msteams_subscriptions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.msteams_subscriptions_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: msteams_subscriptions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.msteams_subscriptions_id_seq OWNED BY public.msteams_subscriptions.id;
+
+
+--
+-- Name: msteams_threads; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.msteams_threads (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    conversation_id integer NOT NULL,
+    root_graph_id text NOT NULL,
+    subject text,
+    handover_id integer,
+    attribution_source text,
+    attributed_at timestamp with time zone,
+    attributed_by integer,
+    first_message_at timestamp with time zone,
+    last_message_at timestamp with time zone,
+    message_count integer DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT msteams_threads_attribution_chk CHECK (((attribution_source IS NULL) OR (attribution_source = ANY (ARRAY['binding'::text, 'thread_root'::text, 'mention'::text, 'subject'::text, 'manual'::text])))),
+    CONSTRAINT msteams_threads_attribution_shape_chk CHECK ((((handover_id IS NULL) AND (attribution_source IS NULL)) OR ((handover_id IS NOT NULL) AND (attribution_source IS NOT NULL))))
+);
+
+
+--
+-- Name: TABLE msteams_threads; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.msteams_threads IS 'A rooted reply chain in a channel, or the single flat thread of a chat. Channel threading is the strongest attribution signal in this integration and has no WhatsApp equivalent: attribute the root once and every reply inherits deterministically, which is what makes a multi-project channel workable.';
+
+
+--
+-- Name: COLUMN msteams_threads.attribution_source; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_threads.attribution_source IS 'binding = inherited from a project-bound conversation. thread_root = inherited from this thread''s root message. mention = matched a structured mention. subject = matched the thread subject. manual = a human moved it. Never NULL when handover_id is set.';
+
+
+--
+-- Name: msteams_threads_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.msteams_threads_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: msteams_threads_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.msteams_threads_id_seq OWNED BY public.msteams_threads.id;
+
+
+--
 -- Name: notification_deliveries; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -6451,9 +7003,10 @@ CREATE TABLE public.play_evidence (
     snapshot_mime_type text,
     snapshot_file_size bigint,
     snapshot_web_url text,
-    CONSTRAINT play_evidence_channel_chk CHECK ((channel = ANY (ARRAY['whatsapp'::text, 'email'::text, 'file'::text, 'manual'::text]))),
+    msteams_message_id integer,
+    CONSTRAINT play_evidence_channel_chk CHECK ((channel = ANY (ARRAY['whatsapp'::text, 'email'::text, 'file'::text, 'manual'::text, 'teams'::text]))),
     CONSTRAINT play_evidence_revoke_shape_chk CHECK ((((revoked_at IS NULL) AND (revoked_by IS NULL)) OR ((revoked_at IS NOT NULL) AND (revoked_by IS NOT NULL) AND (revoke_reason IS NOT NULL) AND (btrim(revoke_reason) <> ''::text)))),
-    CONSTRAINT play_evidence_source_shape_chk CHECK ((((channel <> 'whatsapp'::text) OR (whatsapp_message_id IS NOT NULL)) AND ((channel <> 'file'::text) OR (storage_file_id IS NOT NULL))))
+    CONSTRAINT play_evidence_source_shape_chk CHECK ((((channel <> 'whatsapp'::text) OR (whatsapp_message_id IS NOT NULL)) AND ((channel <> 'file'::text) OR (storage_file_id IS NOT NULL)) AND ((channel <> 'teams'::text) OR (msteams_message_id IS NOT NULL))))
 );
 
 
@@ -6469,6 +7022,13 @@ COMMENT ON COLUMN public.play_evidence.storage_file_id IS 'The uploaded file acc
 --
 
 COMMENT ON COLUMN public.play_evidence.snapshot_web_url IS 'Provider URL as it stood at acceptance. Kept alongside storage_file_id because a file can be moved or unshared in Drive/OneDrive afterwards, and the audit record should still say what was approved.';
+
+
+--
+-- Name: COLUMN play_evidence.msteams_message_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.play_evidence.msteams_message_id IS 'The Teams message backing this evidence. Resolves to msteams_messages.body_original ΓÇö the body frozen at capture ΓÇö so a later edit in Teams cannot change what a play was built on.';
 
 
 --
@@ -11588,6 +12148,55 @@ ALTER TABLE ONLY public.module_access_requests ALTER COLUMN id SET DEFAULT nextv
 
 
 --
+-- Name: msteams_connections id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_connections ALTER COLUMN id SET DEFAULT nextval('public.msteams_connections_id_seq'::regclass);
+
+
+--
+-- Name: msteams_conversation_participants id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_conversation_participants ALTER COLUMN id SET DEFAULT nextval('public.msteams_conversation_participants_id_seq'::regclass);
+
+
+--
+-- Name: msteams_conversations id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_conversations ALTER COLUMN id SET DEFAULT nextval('public.msteams_conversations_id_seq'::regclass);
+
+
+--
+-- Name: msteams_message_attachments id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_message_attachments ALTER COLUMN id SET DEFAULT nextval('public.msteams_message_attachments_id_seq'::regclass);
+
+
+--
+-- Name: msteams_messages id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_messages ALTER COLUMN id SET DEFAULT nextval('public.msteams_messages_id_seq'::regclass);
+
+
+--
+-- Name: msteams_subscriptions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_subscriptions ALTER COLUMN id SET DEFAULT nextval('public.msteams_subscriptions_id_seq'::regclass);
+
+
+--
+-- Name: msteams_threads id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_threads ALTER COLUMN id SET DEFAULT nextval('public.msteams_threads_id_seq'::regclass);
+
+
+--
 -- Name: notification_deliveries id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -13099,6 +13708,62 @@ ALTER TABLE ONLY public.module_access_requests
 
 
 --
+-- Name: msteams_connections msteams_connections_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_connections
+    ADD CONSTRAINT msteams_connections_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: msteams_conversation_participants msteams_conversation_participants_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_conversation_participants
+    ADD CONSTRAINT msteams_conversation_participants_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: msteams_conversations msteams_conversations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_conversations
+    ADD CONSTRAINT msteams_conversations_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: msteams_message_attachments msteams_message_attachments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_message_attachments
+    ADD CONSTRAINT msteams_message_attachments_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: msteams_messages msteams_messages_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_messages
+    ADD CONSTRAINT msteams_messages_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: msteams_subscriptions msteams_subscriptions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_subscriptions
+    ADD CONSTRAINT msteams_subscriptions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: msteams_threads msteams_threads_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_threads
+    ADD CONSTRAINT msteams_threads_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: notification_deliveries notification_deliveries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -14072,6 +14737,22 @@ ALTER TABLE ONLY public.deal_health_config
 
 ALTER TABLE ONLY public.email_threads
     ADD CONSTRAINT uq_email_threads UNIQUE (org_id, conversation_id);
+
+
+--
+-- Name: msteams_connections uq_msteams_connection_user; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_connections
+    ADD CONSTRAINT uq_msteams_connection_user UNIQUE (org_id, user_id);
+
+
+--
+-- Name: msteams_subscriptions uq_msteams_subscription_graph; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_subscriptions
+    ADD CONSTRAINT uq_msteams_subscription_graph UNIQUE (subscription_id);
 
 
 --
@@ -16502,6 +17183,118 @@ CREATE INDEX idx_module_req_org_status ON public.module_access_requests USING bt
 
 
 --
+-- Name: idx_msteams_attachments_message; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_msteams_attachments_message ON public.msteams_message_attachments USING btree (message_id);
+
+
+--
+-- Name: idx_msteams_connections_entra; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_msteams_connections_entra ON public.msteams_connections USING btree (org_id, entra_object_id) WHERE (entra_object_id IS NOT NULL);
+
+
+--
+-- Name: idx_msteams_connections_stale; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_msteams_connections_stale ON public.msteams_connections USING btree (org_id, last_discovery_at) WHERE ((status = 'connected'::text) AND (capture_enabled = true));
+
+
+--
+-- Name: idx_msteams_conversations_graph_lookup; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_msteams_conversations_graph_lookup ON public.msteams_conversations USING btree (org_id, graph_id);
+
+
+--
+-- Name: idx_msteams_conversations_triage; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_msteams_conversations_triage ON public.msteams_conversations USING btree (org_id, binding_status, last_activity_at DESC);
+
+
+--
+-- Name: idx_msteams_conversations_watched; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_msteams_conversations_watched ON public.msteams_conversations USING btree (org_id, is_watched) WHERE (is_watched = true);
+
+
+--
+-- Name: idx_msteams_messages_conversation; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_msteams_messages_conversation ON public.msteams_messages USING btree (conversation_id, sent_at DESC);
+
+
+--
+-- Name: idx_msteams_messages_handover; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_msteams_messages_handover ON public.msteams_messages USING btree (org_id, handover_id, sent_at DESC) WHERE ((handover_id IS NOT NULL) AND (excluded_at IS NULL) AND (deleted_at IS NULL));
+
+
+--
+-- Name: idx_msteams_messages_sender; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_msteams_messages_sender ON public.msteams_messages USING btree (org_id, from_entra_id);
+
+
+--
+-- Name: idx_msteams_messages_thread; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_msteams_messages_thread ON public.msteams_messages USING btree (thread_id, sent_at DESC);
+
+
+--
+-- Name: idx_msteams_messages_unassigned; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_msteams_messages_unassigned ON public.msteams_messages USING btree (org_id, sent_at DESC) WHERE ((handover_id IS NULL) AND (excluded_at IS NULL) AND (deleted_at IS NULL));
+
+
+--
+-- Name: idx_msteams_participants_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_msteams_participants_user ON public.msteams_conversation_participants USING btree (org_id, user_id) WHERE (user_id IS NOT NULL);
+
+
+--
+-- Name: idx_msteams_subscriptions_owner; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_msteams_subscriptions_owner ON public.msteams_subscriptions USING btree (owner_connection_id) WHERE (status = ANY (ARRAY['active'::text, 'expiring'::text]));
+
+
+--
+-- Name: idx_msteams_subscriptions_renewal; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_msteams_subscriptions_renewal ON public.msteams_subscriptions USING btree (expires_at) WHERE (status = ANY (ARRAY['active'::text, 'expiring'::text]));
+
+
+--
+-- Name: idx_msteams_threads_handover; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_msteams_threads_handover ON public.msteams_threads USING btree (org_id, handover_id) WHERE (handover_id IS NOT NULL);
+
+
+--
+-- Name: idx_msteams_threads_unassigned; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_msteams_threads_unassigned ON public.msteams_threads USING btree (org_id, last_message_at DESC) WHERE (handover_id IS NULL);
+
+
+--
 -- Name: idx_notif_deliveries_notification; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -16842,6 +17635,13 @@ CREATE INDEX idx_play_assignees_user ON public.deal_play_assignees USING btree (
 --
 
 CREATE INDEX idx_play_evidence_instance ON public.play_evidence USING btree (project_play_instance_id) WHERE (revoked_at IS NULL);
+
+
+--
+-- Name: idx_play_evidence_msteams; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_play_evidence_msteams ON public.play_evidence USING btree (msteams_message_id) WHERE (msteams_message_id IS NOT NULL);
 
 
 --
@@ -18711,6 +19511,41 @@ CREATE UNIQUE INDEX uq_list_signal_mappings_org_name ON public.list_signal_mappi
 --
 
 CREATE UNIQUE INDEX uq_module_req_pending ON public.module_access_requests USING btree (org_id, user_id, module_key) WHERE (status = 'pending'::text);
+
+
+--
+-- Name: uq_msteams_conversations_graph; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_msteams_conversations_graph ON public.msteams_conversations USING btree (connection_id, graph_id);
+
+
+--
+-- Name: uq_msteams_messages_graph; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_msteams_messages_graph ON public.msteams_messages USING btree (org_id, graph_message_id);
+
+
+--
+-- Name: uq_msteams_participants; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_msteams_participants ON public.msteams_conversation_participants USING btree (conversation_id, entra_object_id);
+
+
+--
+-- Name: uq_msteams_subscription_resource; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_msteams_subscription_resource ON public.msteams_subscriptions USING btree (org_id, graph_id) WHERE (status = ANY (ARRAY['active'::text, 'expiring'::text]));
+
+
+--
+-- Name: uq_msteams_threads_root; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_msteams_threads_root ON public.msteams_threads USING btree (conversation_id, root_graph_id);
 
 
 --
@@ -21506,6 +22341,238 @@ ALTER TABLE ONLY public.module_access_requests
 
 
 --
+-- Name: msteams_connections msteams_connections_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_connections
+    ADD CONSTRAINT msteams_connections_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: msteams_connections msteams_connections_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_connections
+    ADD CONSTRAINT msteams_connections_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: msteams_conversation_participants msteams_conversation_participants_conversation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_conversation_participants
+    ADD CONSTRAINT msteams_conversation_participants_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.msteams_conversations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: msteams_conversation_participants msteams_conversation_participants_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_conversation_participants
+    ADD CONSTRAINT msteams_conversation_participants_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: msteams_conversation_participants msteams_conversation_participants_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_conversation_participants
+    ADD CONSTRAINT msteams_conversation_participants_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: msteams_conversations msteams_conversations_bound_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_conversations
+    ADD CONSTRAINT msteams_conversations_bound_by_fkey FOREIGN KEY (bound_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: msteams_conversations msteams_conversations_connection_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_conversations
+    ADD CONSTRAINT msteams_conversations_connection_id_fkey FOREIGN KEY (connection_id) REFERENCES public.msteams_connections(id) ON DELETE CASCADE;
+
+
+--
+-- Name: msteams_conversations msteams_conversations_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_conversations
+    ADD CONSTRAINT msteams_conversations_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: msteams_conversations msteams_conversations_watched_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_conversations
+    ADD CONSTRAINT msteams_conversations_watched_by_fkey FOREIGN KEY (watched_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: msteams_message_attachments msteams_message_attachments_message_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_message_attachments
+    ADD CONSTRAINT msteams_message_attachments_message_id_fkey FOREIGN KEY (message_id) REFERENCES public.msteams_messages(id) ON DELETE CASCADE;
+
+
+--
+-- Name: msteams_message_attachments msteams_message_attachments_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_message_attachments
+    ADD CONSTRAINT msteams_message_attachments_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: msteams_message_attachments msteams_message_attachments_removed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_message_attachments
+    ADD CONSTRAINT msteams_message_attachments_removed_by_fkey FOREIGN KEY (removed_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: msteams_message_attachments msteams_message_attachments_storage_file_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_message_attachments
+    ADD CONSTRAINT msteams_message_attachments_storage_file_id_fkey FOREIGN KEY (storage_file_id) REFERENCES public.storage_files(id) ON DELETE SET NULL;
+
+
+--
+-- Name: msteams_messages msteams_messages_conversation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_messages
+    ADD CONSTRAINT msteams_messages_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.msteams_conversations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: msteams_messages msteams_messages_excluded_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_messages
+    ADD CONSTRAINT msteams_messages_excluded_by_fkey FOREIGN KEY (excluded_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: msteams_messages msteams_messages_from_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_messages
+    ADD CONSTRAINT msteams_messages_from_user_id_fkey FOREIGN KEY (from_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: msteams_messages msteams_messages_handover_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_messages
+    ADD CONSTRAINT msteams_messages_handover_id_fkey FOREIGN KEY (handover_id) REFERENCES public.sales_handovers(id) ON DELETE SET NULL;
+
+
+--
+-- Name: msteams_messages msteams_messages_moved_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_messages
+    ADD CONSTRAINT msteams_messages_moved_by_fkey FOREIGN KEY (moved_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: msteams_messages msteams_messages_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_messages
+    ADD CONSTRAINT msteams_messages_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: msteams_messages msteams_messages_thread_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_messages
+    ADD CONSTRAINT msteams_messages_thread_id_fkey FOREIGN KEY (thread_id) REFERENCES public.msteams_threads(id) ON DELETE CASCADE;
+
+
+--
+-- Name: msteams_subscriptions msteams_subscriptions_connection_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_subscriptions
+    ADD CONSTRAINT msteams_subscriptions_connection_id_fkey FOREIGN KEY (connection_id) REFERENCES public.msteams_connections(id) ON DELETE CASCADE;
+
+
+--
+-- Name: msteams_subscriptions msteams_subscriptions_conversation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_subscriptions
+    ADD CONSTRAINT msteams_subscriptions_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.msteams_conversations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: msteams_subscriptions msteams_subscriptions_failed_over_from_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_subscriptions
+    ADD CONSTRAINT msteams_subscriptions_failed_over_from_fkey FOREIGN KEY (failed_over_from) REFERENCES public.msteams_connections(id) ON DELETE SET NULL;
+
+
+--
+-- Name: msteams_subscriptions msteams_subscriptions_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_subscriptions
+    ADD CONSTRAINT msteams_subscriptions_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: msteams_subscriptions msteams_subscriptions_owner_connection_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_subscriptions
+    ADD CONSTRAINT msteams_subscriptions_owner_connection_id_fkey FOREIGN KEY (owner_connection_id) REFERENCES public.msteams_connections(id) ON DELETE SET NULL;
+
+
+--
+-- Name: msteams_threads msteams_threads_attributed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_threads
+    ADD CONSTRAINT msteams_threads_attributed_by_fkey FOREIGN KEY (attributed_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: msteams_threads msteams_threads_conversation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_threads
+    ADD CONSTRAINT msteams_threads_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.msteams_conversations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: msteams_threads msteams_threads_handover_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_threads
+    ADD CONSTRAINT msteams_threads_handover_id_fkey FOREIGN KEY (handover_id) REFERENCES public.sales_handovers(id) ON DELETE SET NULL;
+
+
+--
+-- Name: msteams_threads msteams_threads_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.msteams_threads
+    ADD CONSTRAINT msteams_threads_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
 -- Name: notifications notifications_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -21838,6 +22905,14 @@ COMMENT ON CONSTRAINT play_evidence_instance_fkey ON public.play_evidence IS 'ON
 
 ALTER TABLE ONLY public.play_evidence
     ADD CONSTRAINT play_evidence_message_fkey FOREIGN KEY (whatsapp_message_id) REFERENCES public.whatsapp_messages(id) ON DELETE SET NULL;
+
+
+--
+-- Name: play_evidence play_evidence_msteams_message_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_evidence
+    ADD CONSTRAINT play_evidence_msteams_message_id_fkey FOREIGN KEY (msteams_message_id) REFERENCES public.msteams_messages(id) ON DELETE SET NULL;
 
 
 --
@@ -23864,6 +24939,97 @@ ALTER TABLE public.meeting_transcripts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.meetings ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: msteams_message_attachments msteams_attachments_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY msteams_attachments_org_isolation ON public.msteams_message_attachments USING ((org_id = (current_setting('app.current_org_id'::text, true))::integer));
+
+
+--
+-- Name: msteams_connections; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.msteams_connections ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: msteams_connections msteams_connections_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY msteams_connections_org_isolation ON public.msteams_connections USING ((org_id = (current_setting('app.current_org_id'::text, true))::integer));
+
+
+--
+-- Name: msteams_conversation_participants; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.msteams_conversation_participants ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: msteams_conversations; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.msteams_conversations ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: msteams_conversations msteams_conversations_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY msteams_conversations_org_isolation ON public.msteams_conversations USING ((org_id = (current_setting('app.current_org_id'::text, true))::integer));
+
+
+--
+-- Name: msteams_message_attachments; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.msteams_message_attachments ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: msteams_messages; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.msteams_messages ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: msteams_messages msteams_messages_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY msteams_messages_org_isolation ON public.msteams_messages USING ((org_id = (current_setting('app.current_org_id'::text, true))::integer));
+
+
+--
+-- Name: msteams_conversation_participants msteams_participants_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY msteams_participants_org_isolation ON public.msteams_conversation_participants USING ((org_id = (current_setting('app.current_org_id'::text, true))::integer));
+
+
+--
+-- Name: msteams_subscriptions; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.msteams_subscriptions ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: msteams_subscriptions msteams_subscriptions_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY msteams_subscriptions_org_isolation ON public.msteams_subscriptions USING ((org_id = (current_setting('app.current_org_id'::text, true))::integer));
+
+
+--
+-- Name: msteams_threads; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.msteams_threads ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: msteams_threads msteams_threads_org_isolation; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY msteams_threads_org_isolation ON public.msteams_threads USING ((org_id = (current_setting('app.current_org_id'::text, true))::integer));
+
+
+--
 -- Name: oauth_tokens; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -24182,5 +25348,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict epJ0HOfKVn17Rz4j9VySNcCNttQcW8pNmzgJZ9qaDoNJZsartfB8reOH8ogfXrv
+\unrestrict kxmUoGVlmMDgF20Hm9oA9bgY35Ie9BoKaQlghSlAo7ko0sDzIvjcBIfR120kjua
 
