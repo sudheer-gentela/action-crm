@@ -26,6 +26,7 @@ const PlaybookPlayService          = require('./PlaybookPlayService');
 const ActionPersister              = require('./ActionPersister');
 const HandoverRulesEngine          = require('./HandoverRulesEngine');
 const projectMembers               = require('./projectMembers.service');
+const playReview      = require('./playReview.service');   // 2026_130 review loop
 
 async function _isOrgAdmin(orgId, userId) {
   const { rows } = await pool.query(
@@ -245,7 +246,12 @@ function fmtPlay(row) {
   // _getPlays() nor mapped here, so the instance's due_date — which the
   // playbook engine has been populating all along — was invisible to the
   // handover UI. Every deliverable looked undated.
-  const isDone    = ['completed', 'skipped'].includes(row.play_status);
+  // 2026_130: 'cancelled' joins the terminal set here. It was already a legal
+  // status but unreachable, so nothing had to account for it; the review loop
+  // makes it reachable, and a cancelled task must not be reported overdue.
+  // 'in_review' is deliberately NOT terminal — the work is not accepted yet,
+  // and a task that slips while awaiting review is still slipping.
+  const isDone    = ['completed', 'skipped', 'cancelled'].includes(row.play_status);
   const isOverdue = !isDone
     && row.due_date != null
     && new Date(row.due_date) < new Date(new Date().toDateString());
@@ -291,6 +297,13 @@ function fmtPlay(row) {
     // ── ownership + provenance ──
     ownerUserId:     row.owner_user_id ?? null,
     ownerName:       row.owner_name    ?? null,
+    // ── review state (2026_130) ──
+    // All null unless status === 'in_review'.
+    reviewTargetStatus:   row.review_target_status ?? null,
+    reviewSubmittedAt:    row.review_submitted_at  ?? null,
+    reviewSubmittedBy:    row.review_submitted_by  ?? null,
+    reviewSubmittedByName: row.review_submitted_by_name ?? null,
+    reviewEvidence:       row.review_evidence ?? null,
     playbookName:    row.playbook_name ?? null,
     // Ad-hoc items are added directly on the handover — no playbook, no template.
     isCustom:        row.play_id == null && row.playbook_id == null,
@@ -520,6 +533,17 @@ async function createProject(orgId, userId, data = {}) {
        ON CONFLICT (context_type, context_id, user_id) DO NOTHING`,
       [orgId, h.id, userId]
     );
+
+    // 2026_130: copy the org's default review watchers onto this project.
+    //
+    // Copied, not read through: a project running for three months must not
+    // have its alert list silently re-pointed because an admin edited an org
+    // setting. Outside the transaction's failure path on purpose — a project
+    // that exists with no watchers is a fixable inconvenience, whereas failing
+    // creation over a notification default is not a trade worth making.
+    Promise.resolve(playReview.seedWatchersFromOrgDefault(h.id, orgId, userId))
+      .catch(err => console.warn(
+        `[handover] review watcher seed failed for project ${h.id}:`, err.message));
 
     return fmt(h);
   });
@@ -876,6 +900,21 @@ async function getById(handoverId, orgId, userId = null) {
     isProjectAdmin:        userId ? await _isOrgAdmin(orgId, userId) : false,
     canSeeCommercial:      userId ? await canSeeTab(handoverId, orgId, userId, 'commercial') : false,
     canManageTabAccess:    userId ? await canManageTabAccess(handoverId, orgId, userId) : false,
+    // 2026_130. Drives the review controls: only a manager may approve a
+    // submission or reopen a closed task. Resolved once here rather than
+    // per-row in the checklist — it is a property of the project, not of the
+    // task, and asking per row would be N identical queries.
+    canReviewPlays:        userId ? await projectMembers.canManageProject(handoverId, orgId, userId) : false,
+    // Sent so the checklist can work out, per row, whether the VIEWER is that
+    // task's assignee. The alternative — a canAct flag computed per play on the
+    // server — would mean re-resolving project authority once per row for a
+    // fact the client can derive from one integer.
+    viewerUserId:          userId ?? null,
+    // Whether the viewer may move a task's due date without being a manager.
+    // Sent so the Table view can render the date read-only rather than offer
+    // an inline editor that fails on save.
+    allowAssigneeDueDateChange:
+      (await projectSettings.get(orgId)).allow_assignee_due_date_change === true,
     // 2026_120. Deliberately NOT salesCanEdit, which is `isDraft && …` — notes
     // are most useful once a project is running, which is exactly when that
     // flag is false.
@@ -1357,7 +1396,7 @@ async function canSubmit(handoverId, orgId) {
      FROM project_play_instances ppi
      WHERE ppi.handover_id = $1 AND ppi.org_id = $2
        AND ppi.is_gate = TRUE
-       AND ppi.status NOT IN ('completed', 'skipped')`,
+       AND ppi.status NOT IN ('completed', 'skipped', 'cancelled')`,
     [handoverId, orgId]
   );
 
@@ -2077,13 +2116,22 @@ async function removeStage(handoverId, orgId, stageKey) {
  * Shared by the start guard and the completion guard so both answer the
  * question identically. Returns [] when the task is startable.
  */
+// 2026_130: 'cancelled' joins 'completed' and 'skipped' as a status that
+// SATISFIES a dependency and clears a gate, everywhere in this file.
+//
+// It was already a legal value but unreachable — nothing in the product could
+// set it — so treating it as outstanding cost nothing. The review loop makes
+// it reachable, and the old predicate would have left a cancelled task
+// blocking its dependents permanently, with no way to clear it short of
+// un-cancelling. PlaybookPlayService._areDependenciesCompleteForProject and
+// checkGates already read it this way; this brings the rest into line.
 async function _outstandingPrereqs(playInstanceId, orgId) {
   const { rows } = await pool.query(
     `SELECT d.id, d.title, d.status
        FROM project_play_instances p
        JOIN project_play_instances d ON d.id = ANY(p.depends_on)
       WHERE p.id = $1 AND p.org_id = $2
-        AND d.status NOT IN ('completed', 'skipped')
+        AND d.status NOT IN ('completed', 'skipped', 'cancelled')
       ORDER BY d.id`,
     [playInstanceId, orgId]);
   return rows;
@@ -2180,7 +2228,7 @@ async function _stageBlockers(playInstanceId, orgId) {
              AND ps2.is_active = TRUE
       WHERE p.id = $1 AND p.org_id = $2
         AND pst.gating <> 'none'
-        AND e.status NOT IN ('completed', 'skipped')
+        AND e.status NOT IN ('completed', 'skipped', 'cancelled')
         AND ps2.sort_order < pst.sort_order
         AND (pst.gating = 'strict' OR (pst.gating = 'gates' AND e.is_gate = TRUE))`,
     [playInstanceId, orgId]);
@@ -2308,7 +2356,7 @@ async function freezePlanOnStart(handoverId, orgId, startDate = null) {
         WHERE pp.id = ppi.play_id
           AND ppi.handover_id = $1 AND ppi.org_id = $3
           AND ppi.due_anchor = 'project_start'
-          AND ppi.status NOT IN ('completed', 'skipped')`,
+          AND ppi.status NOT IN ('completed', 'skipped', 'cancelled')`,
       [handoverId, started, orgId]);
 
     // Promote provisional baselines to the committed plan.
@@ -3248,7 +3296,8 @@ async function updatePlay(handoverId, orgId, playInstanceId, data = {}, userId =
   // where it moved FROM, and a rebaseline has to record the baseline it
   // replaced. Reading after the UPDATE would lose both.
   const { rows: link } = await pool.query(
-    `SELECT ppi.id, ppi.due_date, ppi.baseline_due_date, ppi.baseline_source
+    `SELECT ppi.id, ppi.due_date, ppi.baseline_due_date, ppi.baseline_source,
+            ppi.status
        FROM project_play_instances ppi
       WHERE ppi.handover_id = $1 AND ppi.id = $2 AND ppi.org_id = $3`,
     [handoverId, playInstanceId, orgId]
@@ -3257,6 +3306,42 @@ async function updatePlay(handoverId, orgId, playInstanceId, data = {}, userId =
     throw Object.assign(new Error('Play does not belong to this handover'), { status: 404 });
   }
   const current = link[0];
+
+  // ── 2026_130: who may edit a task ────────────────────────────────────────
+  //
+  // This endpoint previously had NO per-task authorisation: any authenticated
+  // user who could reach the project could retitle, re-date, reassign or
+  // restatus any task on it. owner_user_id existed but was decoration.
+  //
+  // The rule is now: the assignee, the Project Manager, the project creator,
+  // or an org admin/owner. An UNASSIGNED task (owner_user_id NULL) resolves to
+  // manager-only — nobody inherits a task by being nearby.
+  //
+  // Note this TIGHTENS existing behaviour. Anyone relying on open editing will
+  // start seeing 403s; that is the intent, but it is the change most likely to
+  // generate support noise on the first day.
+  let actorRole = null;
+  if (userId) {
+    ({ role: actorRole } = await playReview.resolveActorRole(
+      handoverId, playInstanceId, orgId, userId));
+    if (!actorRole) {
+      throw Object.assign(
+        new Error('Only the person this task is assigned to, or the project manager, can change it.'),
+        { status: 403, code: 'NOT_PERMITTED' });
+    }
+  }
+
+  // A task under review is frozen for its assignee. A submission that can
+  // still be edited underneath the reviewer is not a submission — the manager
+  // would be approving something other than what they read. Notes stay open to
+  // everyone: they are the channel for "one more thing" while a review is
+  // pending.
+  if (current.status === 'in_review' && actorRole && actorRole !== 'manager') {
+    throw Object.assign(
+      new Error('This task is with the project manager for review. '
+              + 'Add a note if something needs to change.'),
+      { status: 409, code: 'REVIEW_PENDING' });
+  }
 
   const has = k => Object.prototype.hasOwnProperty.call(data, k);
   const sets = [];
@@ -3342,11 +3427,18 @@ async function updatePlay(handoverId, orgId, playInstanceId, data = {}, userId =
     // unlocks dependent plays. Letting a plain PATCH write 'completed' would
     // skip all of that and leave completed_at NULL, which the checklist reads
     // as "done but with no completion date".
+    //
+    // 2026_130: 'in_review' is likewise NOT settable here, for the same reason
+    // and a stronger one. Submission is the moment someone else is asked to
+    // trust the work, so it is the moment the guards matter most — evidence,
+    // gates, prerequisites, and a recorded statement of what is being asked
+    // for. Route it through POST /plays/:id/transition.
     const ALLOWED = ['not_started', 'in_progress', 'blocked'];
     const st = String(data.status || '').trim();
     if (!ALLOWED.includes(st)) {
       throw Object.assign(
-        new Error(`status must be one of: ${ALLOWED.join(', ')}. Use the complete endpoint to finish a task.`),
+        new Error(`status must be one of: ${ALLOWED.join(', ')}. `
+                + 'Use the review controls to submit, approve or send back a task.'),
         { status: 400, code: 'STATUS_NOT_SETTABLE' });
     }
     // 2026_117: a task cannot be started while prerequisites are outstanding.
@@ -3401,6 +3493,27 @@ async function updatePlay(handoverId, orgId, playInstanceId, data = {}, userId =
   if (dueChanged && !userId) {
     throw Object.assign(
       new Error('A date change must be attributed to a user.'), { status: 400 });
+  }
+
+  // 2026_130: who may move a planned date.
+  //
+  // This used to be open to anyone, deliberately — the comment above argues
+  // that recording the move matters more than restricting it, and that still
+  // holds for the people accountable for the plan. It does not hold for the
+  // person the task is measured against: a date the assignee can move at will
+  // is not a commitment, and Plan vs Actual is measuring against it.
+  //
+  // Managers, the project creator and org admins are unaffected. Orgs that
+  // want the old behaviour set allow_assignee_due_date_change.
+  if (dueChanged && userId && actorRole !== 'manager') {
+    const cfg = await projectSettings.get(orgId);
+    const mayMove = cfg.allow_assignee_due_date_change === true;
+    if (!mayMove) {
+      throw Object.assign(
+        new Error('Only the project manager can change this date. '
+                + 'Add a note explaining the slip, or ask them to move it.'),
+        { status: 403, code: 'DUE_DATE_LOCKED' });
+    }
   }
 
   if (sets.length > 0) {
@@ -3594,6 +3707,13 @@ async function _getPlays(handoverId, orgId, hideInternalNotes = false) {
        dpi.baseline_due_date, dpi.baseline_source,
        dpi.completion_note, dpi.completion_evidence,
        dpi.play_id, dpi.playbook_id, dpi.owner_user_id,
+       -- 2026_130 review state. Sent on every play so the checklist can render
+       -- the right control without a second round-trip per row: a task in
+       -- review needs to show WHAT was asked for and WHO asked, not just that
+       -- it is under review.
+       dpi.review_target_status, dpi.review_submitted_at,
+       dpi.review_submitted_by, dpi.review_evidence,
+       ru.first_name || ' ' || ru.last_name AS review_submitted_by_name,
        ou.first_name || ' ' || ou.last_name AS owner_name,
        cu.first_name || ' ' || cu.last_name AS completed_by_name,
        pb.name AS playbook_name,
@@ -3627,7 +3747,7 @@ async function _getPlays(handoverId, orgId, hideInternalNotes = false) {
                   ON ps2.handover_id = e.handover_id AND ps2.key = e.stage_key
                  AND ps2.is_active = TRUE
           WHERE e.handover_id = dpi.handover_id
-            AND e.status NOT IN ('completed', 'skipped')
+            AND e.status NOT IN ('completed', 'skipped', 'cancelled')
             AND ps2.sort_order < pst.sort_order
             AND (pst.gating = 'strict' OR (pst.gating = 'gates' AND e.is_gate = TRUE))
        ), '[]'::json) AS stage_blocked_by,
@@ -3645,7 +3765,7 @@ async function _getPlays(handoverId, orgId, hideInternalNotes = false) {
                   ORDER BY d.id)
            FROM project_play_instances d
           WHERE d.id = ANY(dpi.depends_on)
-            AND d.status NOT IN ('completed', 'skipped')
+            AND d.status NOT IN ('completed', 'skipped', 'cancelled')
        ), '[]'::json) AS blocked_by,
        -- 2026_120: how many live notes sit on this task, so the checklist can
        -- show that an explanation exists without fetching every note on every
@@ -3657,6 +3777,7 @@ async function _getPlays(handoverId, orgId, hideInternalNotes = false) {
            AND ($3::boolean IS NOT TRUE OR n.is_internal = FALSE))::int AS note_count
      FROM project_play_instances dpi
      LEFT JOIN users ou     ON ou.id = dpi.owner_user_id
+     LEFT JOIN users ru     ON ru.id = dpi.review_submitted_by
      LEFT JOIN users cu     ON cu.id = dpi.completed_by
      LEFT JOIN playbooks pb ON pb.id = dpi.playbook_id
      LEFT JOIN project_stages pst ON pst.handover_id = dpi.handover_id

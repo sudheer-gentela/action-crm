@@ -81,6 +81,27 @@ const SYSTEM_DEFAULTS = {
   // Default 'soft' so turning this on is a deliberate act and nothing currently
   // in flight is caught by it.
   closure_signoff_mode: 'soft',
+
+  // ── Task review loop (2026_130) ────────────────────────────────────────
+  // Whether a task assignee can move their own task's due date.
+  //
+  // Historically anyone could, deliberately: updatePlay argues that recording
+  // the move matters more than restricting it. That reasoning holds for the
+  // people accountable for the plan. It does not hold for the person the task
+  // is measured against — a date the assignee can move at will is not a
+  // commitment, and Plan vs Actual is measuring against it.
+  //
+  // Off by default. Managers, the creator and org admins are never affected.
+  allow_assignee_due_date_change: false,
+
+  // Users seeded as review watchers on a NEW project — the people alerted
+  // alongside the Project Manager when a task moves through review.
+  //
+  // Copied into project_play_watchers at project creation rather than read
+  // through at alert time: a project that has been running for three months
+  // should not have its alert list silently re-pointed because an admin edited
+  // an org setting. Per-project is the real home; this is only the seed.
+  review_watcher_user_ids: [],
 };
 
 const VALID_ROLES  = ['owner', 'admin', 'member', 'viewer'];
@@ -98,6 +119,9 @@ function merge(stored) {
     org_scope_roles: Array.isArray(s.org_scope_roles) && s.org_scope_roles.length
       ? s.org_scope_roles.filter(r => VALID_ROLES.includes(r))
       : SYSTEM_DEFAULTS.org_scope_roles,
+    review_watcher_user_ids: Array.isArray(s.review_watcher_user_ids)
+      ? s.review_watcher_user_ids.filter(Number.isInteger)
+      : [],
   };
 }
 
@@ -161,8 +185,23 @@ async function update(orgId, patch = {}) {
     next.closure_signoff_mode = patch.closure_signoff_mode;
   }
 
+  if (patch.review_watcher_user_ids !== undefined) {
+    if (!Array.isArray(patch.review_watcher_user_ids)) {
+      const e = new Error('review_watcher_user_ids must be an array'); e.status = 400; throw e;
+    }
+    // Coerced and de-duplicated here rather than trusted: this list is fanned
+    // out to email, and a malformed id would fail per-recipient at send time
+    // where nobody would see it.
+    next.review_watcher_user_ids = [...new Set(
+      patch.review_watcher_user_ids
+        .map(n => parseInt(n, 10))
+        .filter(Number.isInteger)
+    )];
+  }
+
   for (const k of ['team_scope_enabled', 'show_unassigned_in_team_scope',
-                   'commercial_follows_hierarchy', 'show_from_my_deals_tab']) {
+                   'commercial_follows_hierarchy', 'show_from_my_deals_tab',
+                   'allow_assignee_due_date_change']) {
     if (patch[k] !== undefined) {
       if (typeof patch[k] !== 'boolean') {
         const e = new Error(`${k} must be a boolean`); e.status = 400; throw e;

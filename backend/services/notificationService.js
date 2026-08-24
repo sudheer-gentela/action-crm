@@ -418,6 +418,13 @@ const DEFAULT_PREFS = {
   channels: {
     slack_enabled:    false,
     slack_categories: { immediate: true, escalation: true, revisit: true, digest: false },
+    // Email (2026_130). Defaults ON, unlike Slack: email is the only channel
+    // that reaches someone who is not currently in the app, and a submission
+    // sitting unreviewed because email silently defaulted off is the failure
+    // the review loop exists to prevent. Only the 'review' category is
+    // dispatched today.
+    email_enabled:    true,
+    email_categories: { review: true },
   },
 };
 
@@ -440,6 +447,10 @@ async function getUserNotificationPrefs(userId, orgId) {
     slack_categories: {
       ...DEFAULT_PREFS.channels.slack_categories,
       ...(savedCh.slack_categories || {}),
+    },
+    email_categories: {
+      ...DEFAULT_PREFS.channels.email_categories,
+      ...(savedCh.email_categories || {}),
     },
   };
   return merged;

@@ -34,6 +34,7 @@ import ProjectFilesPanel from './ProjectFilesPanel';
 import ProjectPeoplePanel from './ProjectPeoplePanel';
 import ProjectPlanVsActual from './ProjectPlanVsActual';
 import { PlayDateModal, PlayEvidenceModal } from './ProjectPlayModals';
+import { PlayReviewModal } from './PlayReviewModal';   // 2026_130
 import ProjectBoQ from './ProjectBoQ';
 import ProjectEmailThreads from './ProjectEmailThreads';
 import ProjectAttachments from './ProjectAttachments';
@@ -687,10 +688,20 @@ function StagePicker({ value, onChange, stages, label = 'Stage' }) {
 const PLAY_STATUS = {
   completed:   { label: 'Done',        color: '#065f46', bg: '#ecfdf5', bd: '#a7f3d0' },
   skipped:     { label: 'Skipped',     color: '#6b7280', bg: '#f3f4f6', bd: '#e5e7eb' },
+  // 2026_130. Amber, and visually unlike both In progress and Done: the whole
+  // point of making review a status rather than a flag is that these are
+  // countable and scannable apart from the work still in flight.
+  in_review:   { label: 'In review',   color: '#92400e', bg: '#fffbeb', bd: '#fde68a' },
+  cancelled:   { label: 'Cancelled',   color: '#6b7280', bg: '#f3f4f6', bd: '#e5e7eb' },
   in_progress: { label: 'In progress', color: '#1d4ed8', bg: '#eff6ff', bd: '#bfdbfe' },
   blocked:     { label: 'Blocked',     color: '#991b1b', bg: '#fef2f2', bd: '#fecaca' },
   not_started: { label: 'Not started', color: '#6b7280', bg: '#f8fafc', bd: '#e5e7eb' },
 };
+
+// Terminal statuses. Kept as one list so a status added later does not have to
+// be found in six separate inline arrays.
+const PLAY_DONE_STATUSES = ['completed', 'skipped', 'cancelled'];
+const isPlayDone = st => PLAY_DONE_STATUSES.includes(st);
 
 function PlayStatusPill({ status }) {
   const s = PLAY_STATUS[status] || PLAY_STATUS.not_started;
@@ -709,10 +720,70 @@ function PlayStatusPill({ status }) {
 // 'in_progress' was a valid status in the schema and was already read by
 // PlaybookPlayService, but nothing in the product ever SET it: a task could
 // only be "Not started" or done. This is the missing transition.
-function StatusAction({ play, canEdit, onSetStatus, compact = false }) {
-  if (!canEdit) return null;
-  const done = ['completed', 'skipped'].includes(play.status);
-  if (done) return null;
+// canEdit vs canAct, and why they are two props:
+//
+//   canEdit — may this person reshape the PLAN? It is `isDraft && …`, so it is
+//             false for every project that is actually running.
+//   canAct  — may this person work THIS task? assignee, project manager,
+//             creator or org admin — and true throughout delivery, which is
+//             the entire period the review loop operates in.
+//
+// Gating the review controls on canEdit would have hidden them on every live
+// project, which is the only kind of project that has anything to review.
+function StatusAction({ play, canAct, onSetStatus, onReview, isManager = false, compact = false }) {
+  const btn = (label, title, onClick, tone) => (
+    <button
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      title={title}
+      style={{
+        fontSize: compact ? 10 : 11, padding: compact ? '2px 7px' : '3px 10px',
+        borderRadius: 5, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap',
+        border: `1px solid ${tone.bd}`, background: tone.bg, color: tone.fg,
+      }}>
+      {label}
+    </button>
+  );
+  const TONE = {
+    amber: { bg: '#fffbeb', fg: '#92400e', bd: '#fde68a' },
+    blue:  { bg: '#eff6ff', fg: '#1d4ed8', bd: '#bfdbfe' },
+    grey:  { bg: '#fff',    fg: '#6b7280', bd: '#e5e7eb' },
+  };
+
+  // 2026_130. A task under review shows the review control to whoever can act
+  // on it, and a plain waiting badge to everyone else. Rendered before the
+  // canEdit gate below because the assignee CANNOT edit a task in review — but
+  // they should still see that it is sitting with someone, not that it has
+  // vanished from their control for no visible reason.
+  if (play.status === 'in_review') {
+    if (isManager && onReview) {
+      return btn('Review', 'Approve this, or send it back', () => onReview(play, 'approve'), TONE.amber);
+    }
+    return (
+      <span title={play.reviewSubmittedByName
+                    ? `Submitted by ${play.reviewSubmittedByName}`
+                    : 'Waiting on the project manager'}
+        style={{
+          fontSize: compact ? 10 : 11, padding: compact ? '2px 7px' : '3px 10px',
+          borderRadius: 5, fontWeight: 600, whiteSpace: 'nowrap',
+          border: `1px solid ${TONE.amber.bd}`, background: TONE.amber.bg, color: TONE.amber.fg,
+        }}>
+        Awaiting review
+      </span>
+    );
+  }
+
+  if (!canAct) return null;
+
+  // A closed task can be reopened by the manager — that is the fifth step of
+  // the loop, and without a control here it would only be reachable from the
+  // review modal, which a closed task never opens.
+  if (isPlayDone(play.status)) {
+    if (isManager && onReview) {
+      return btn('Send back', 'Reopen this task and tell the assignee why',
+                 () => onReview(play, 'reject'), TONE.grey);
+    }
+    return null;
+  }
 
   const next  = play.status === 'in_progress' ? 'not_started' : 'in_progress';
   const label = play.status === 'in_progress' ? 'Pause' : 'Start';
@@ -1065,11 +1136,12 @@ function NoteCountBadge({ count }) {
 // ── PlaySection ───────────────────────────────────────────────────────────────
 
 function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus, onSetDeps, siblings, users, stages, evidencePolicy,
-                       handoverId, canAddNotes, canMarkNotesInternal, onNoteCountChange }) {
+                       handoverId, canAddNotes, canMarkNotesInternal, onNoteCountChange,
+                       onReview, isManager = false, canAct = false }) {
   // Done-state mirrors the backend gate, which treats a play as satisfied when
   // its status is 'completed' OR 'skipped' — not merely when completedAt is set.
   // (A skipped play has no completedAt but still clears the gate.)
-  const isDone   = ['completed', 'skipped'].includes(play.status);
+  const isDone   = isPlayDone(play.status);
   const isSkipped = play.status === 'skipped';
   const isGate   = play.isGate;
 
@@ -1249,15 +1321,30 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
               {showNotes ? 'Hide notes' : `Notes${noteCount ? ` (${noteCount})` : ''}`}
             </button>
           )}
-          {!isDone && canEdit && !capturing && onSetStatus && (
-            <StatusAction play={play} canEdit={canEdit} onSetStatus={onSetStatus} />
+          {/* 2026_130: no longer gated on !isDone. StatusAction decides for
+              itself what a closed or in-review task should offer — a manager
+              needs "Send back" on a task that is already done, which is
+              exactly the case the old !isDone gate removed. */}
+          {!capturing && (onSetStatus || onReview) && (
+            <StatusAction play={play} canAct={canAct} onSetStatus={onSetStatus}
+              onReview={onReview} isManager={isManager} />
           )}
-          {!isDone && canEdit && !capturing && (play.blockedBy || []).length === 0 && (
-            <button onClick={() => setCapturing(true)} style={{
-              fontSize: 11, padding: '3px 10px', borderRadius: 4,
-              background: '#0369a1', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600,
-            }}>
-              Mark done
+          {/* 2026_130: submission replaces "Mark done" for everyone who is not
+              a manager. A manager keeps the direct close — they are the person
+              who would have approved it anyway, and routing them through a
+              review addressed to themselves is ceremony. */}
+          {!isDone && play.status !== 'in_review' && canAct && !capturing
+            && (play.blockedBy || []).length === 0 && (
+            <button
+              onClick={() => (isManager ? setCapturing(true) : onReview?.(play, 'submit'))}
+              title={isManager
+                ? 'Close this task'
+                : 'Send this to the project manager with evidence'}
+              style={{
+                fontSize: 11, padding: '3px 10px', borderRadius: 4,
+                background: '#0369a1', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600,
+              }}>
+              {isManager ? 'Mark done' : 'Send for review'}
             </button>
           )}
           {canEdit && onEdit && !editing && !capturing && (
@@ -1398,7 +1485,7 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {sib.title}
                     </span>
-                    {['completed', 'skipped'].includes(sib.status) && (
+                    {isPlayDone(sib.status) && (
                       <span style={{ fontSize: 10, color: '#059669' }}>✓</span>
                     )}
                   </label>
@@ -1459,7 +1546,7 @@ function groupPlaysByStage(plays) {
     items,
     stageSort: items.find(i => i.stageSortOrder != null)?.stageSortOrder ?? null,
     minSort: Math.min(...items.map(i => i.sortOrder ?? 9999)),
-    done: items.filter(i => ['completed', 'skipped'].includes(i.status)).length,
+    done: items.filter(i => isPlayDone(i.status)).length,
   }));
   groups.sort((a, b) => {
     if (a.key === 'custom') return 1;
@@ -2523,6 +2610,36 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     }
   };
 
+  // ── Review loop (2026_130) ────────────────────────────────────────────────
+  // One piece of state for all three modes. The modal decides what to render;
+  // this only decides which task and which mode.
+  const [reviewModal, setReviewModal] = useState(null);   // { play, mode }
+
+  // May the viewer work THIS task? Mirrors playReview.resolveActorRole on the
+  // server, which is the actual enforcement — this only decides whether to
+  // render a control or a read-only row. An unassigned task
+  // (ownerUserId null) is manager-only, so the null check is load-bearing:
+  // without it every unassigned task would look actionable to everyone.
+  const canReviewPlays = detail.canReviewPlays === true;
+  const viewerUserId   = detail.viewerUserId ?? readCurrentUserId();
+  const canActOnPlay   = (play) =>
+    canReviewPlays
+    || (play?.ownerUserId != null && Number(play.ownerUserId) === Number(viewerUserId));
+
+  const openReview = (play, mode) => setReviewModal({ play, mode });
+
+  // The Approve view offers "Send back", which is a different mode on the same
+  // task. Swapping mode in place keeps the task selected rather than closing
+  // and asking the manager to find the row again.
+  const handleReviewDone = (next) => {
+    if (next === 'reject') {
+      setReviewModal(m => (m ? { ...m, mode: 'reject' } : null));
+      return;
+    }
+    setReviewModal(null);
+    load();
+  };
+
   const handleUpdatePlay = async (playInstanceId, data) => {
     try {
       await apiService.handovers.updatePlay(h.id, playInstanceId, data);
@@ -2601,7 +2718,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
 
   const gatePlays  = plays.filter(p => p.isGate);
   const gatesTotal = gatePlays.length;
-  const gatesDone  = gatePlays.filter(p => ['completed', 'skipped'].includes(p.status)).length;
+  const gatesDone  = gatePlays.filter(p => isPlayDone(p.status)).length;
 
   const canComplete   = isServiceView && isInProgress && !!closeInfo?.canClose;
   const completeBlocked = isServiceView && isInProgress && !closeInfo?.canClose;
@@ -2934,7 +3051,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                   <div key={group.key} style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 14, background: '#fff' }}>
                     <StageHeader group={group} />
                     {group.items.map(play => {
-                      const done = ['completed', 'skipped'].includes(play.status);
+                      const done = isPlayDone(play.status);
                       const icon = play.status === 'skipped' ? '⊘' : done ? '✅' : play.isGate ? '🔒' : play.status === 'in_progress' ? '🔄' : '⬜';
                       const isOpen = !!expandedPlays[play.id];
                       return (
@@ -2955,6 +3072,8 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                                 users={users} stages={stages}
                                 handoverId={h.id} canAddNotes={detail.canAddNotes}
                                 canMarkNotesInternal={detail.canMarkNotesInternal}
+                                onReview={openReview} isManager={canReviewPlays}
+                                canAct={canActOnPlay(play)}
                                 onNoteCountChange={noteCountChanged} />
                             </div>
                           )}
@@ -3000,7 +3119,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                     </thead>
                     <tbody>
                       {group.items.map(play => {
-                        const done = ['completed', 'skipped'].includes(play.status);
+                        const done = isPlayDone(play.status);
                         const isOpen = !!expandedPlays[play.id];
                         // whiteSpace: nowrap on the metadata cells — with
                         // tableLayout: 'fixed' a too-narrow cell silently clips
@@ -3059,8 +3178,11 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                               <td style={td}>
                                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                                   <PlayStatusPill status={play.status} />
-                                  <StatusAction play={play} canEdit={salesCanEdit}
-                                    onSetStatus={handleSetPlayStatus} compact />
+                                  <StatusAction play={play} canAct={canActOnPlay(play)}
+                                    onSetStatus={handleSetPlayStatus}
+                                    onReview={openReview}
+                                    isManager={detail.canReviewPlays === true}
+                                    compact />
                                 </span>
                               </td>
                               <td style={td}>
@@ -3090,6 +3212,8 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                                 users={users} stages={stages}
                                 handoverId={h.id} canAddNotes={detail.canAddNotes}
                                 canMarkNotesInternal={detail.canMarkNotesInternal}
+                                onReview={openReview} isManager={canReviewPlays}
+                                canAct={canActOnPlay(play)}
                                 onNoteCountChange={noteCountChanged} />
                                 </td>
                               </tr>
@@ -3151,6 +3275,9 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                         canAddNotes={detail.canAddNotes}
                         canMarkNotesInternal={detail.canMarkNotesInternal}
                         onNoteCountChange={noteCountChanged}
+                        onReview={openReview}
+                        isManager={canReviewPlays}
+                        canAct={canActOnPlay(play)}
                       />
                       {salesCanEdit && (
                         <div style={{ display: 'flex', gap: 10, margin: '-4px 0 10px 2px' }}>
@@ -3234,6 +3361,24 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
           play={evidModal}
           onClose={() => setEvidModal(null)}
           onSaved={load}
+        />
+      )}
+
+      {/* 2026_130 review loop. Mounted alongside the other play modals so all
+          three write paths on a task live in one place.
+
+          play is re-read from `plays` on every render rather than held in the
+          modal's own state: approving reloads the project, and a modal holding
+          a stale copy would still show the evidence of a submission that has
+          already been actioned. */}
+      {reviewModal && (
+        <PlayReviewModal
+          handoverId={detail.id}
+          play={plays.find(p => p.playInstanceId === reviewModal.play.playInstanceId)
+                || reviewModal.play}
+          mode={reviewModal.mode}
+          onClose={() => setReviewModal(null)}
+          onDone={handleReviewDone}
         />
       )}
 
@@ -4168,7 +4313,7 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onG
   const doneItems  = allCommits.filter(c => ['met', 'waived', 'breached'].includes(c.status));
   const onTimeCount = doneItems.filter(c => c.closedAt && lateDays(c) === 0).length;
   const gatePlays = (detail.plays || []).filter(p => p.isGate);
-  const gatesDone = gatePlays.filter(p => ['completed', 'skipped'].includes(p.status)).length;
+  const gatesDone = gatePlays.filter(p => isPlayDone(p.status)).length;
 
   const [openMember, setOpenMember] = useState(null);
   const [openCommitment, setOpenCommitment] = useState(null);

@@ -27,6 +27,8 @@ const notificationQueue = new Queue('team-notifications', process.env.REDIS_URL,
 // ── Job processor ─────────────────────────────────────────────────────────────
 notificationQueue.process(async (job) => {
   const { type, orgId, actionId, userId, overdueActions, prospectId, accountId, meta, targetTier, notificationId } = job.data;
+  // email_delivery carries { to, subject, html, text } as well; deliverEmail
+  // reads them off job.data directly rather than through this destructure.
 
   console.log(`[notifications] Processing job ${job.id}: type=${type} org=${orgId}`);
 
@@ -95,6 +97,15 @@ notificationQueue.process(async (job) => {
       body:  job.data.body,
       url:   job.data.url || '/',
     });
+    job.progress(100);
+    return result;
+
+  } else if (type === 'email_delivery') {
+    // Best-effort transactional email (2026_130). Queued rather than sent
+    // inline so SMTP latency never sits inside the request that moved a task,
+    // and so a transient failure gets this queue's retry and backoff.
+    job.progress(20);
+    const result = await notificationDelivery.deliverEmail(orgId, job.data);
     job.progress(100);
     return result;
 

@@ -122,4 +122,55 @@ async function deliverSlack(orgId, notificationId) {
   return { notificationId, delivered: results.filter((r) => r.ok).length, results };
 }
 
-module.exports = { deliverSlack, getActiveInstall, TYPE_TO_CATEGORY };
+/**
+ * Deliver one notification as an email.
+ *
+ * Called by the notificationQueue 'email_delivery' job. Best-effort, exactly
+ * like deliverSlack above: the in-app notification row is the source of truth
+ * and an SMTP failure never affects it.
+ *
+ * NOT wired into createNotification()'s fan-out. Only playReviewNotifier
+ * enqueues this today, because switching email on centrally would light it up
+ * for every notification type in the product at once — digests, escalations,
+ * revisit nudges — and that is a product decision, not a side effect of
+ * shipping the review loop. When email should become a general channel, add
+ * the enqueue to createNotification alongside slack_delivery; nothing here
+ * needs to change.
+ *
+ * The preference gate mirrors Slack's: master switch, then category. It
+ * defaults ON, unlike slack_enabled — a review sitting unread because email
+ * silently defaulted off is the failure this feature exists to prevent, and
+ * the recipient can turn it off.
+ */
+async function deliverEmail(orgId, payload = {}) {
+  const { userId, notificationId, to, subject, html, text } = payload;
+  if (!to)      return { skipped: true, reason: 'no_recipient' };
+  if (!subject) return { skipped: true, reason: 'no_subject' };
+
+  if (userId) {
+    const prefs = await notificationService.getUserNotificationPrefs(userId, orgId);
+    const ch    = prefs.channels || {};
+    if (ch.email_enabled === false) return { skipped: true, reason: 'email_disabled' };
+    if (ch.email_categories && ch.email_categories.review === false) {
+      return { skipped: true, reason: 'category_off:review' };
+    }
+  }
+
+  const { sendSystemEmail } = require('./systemMailer');
+  const result = await sendSystemEmail({ to, subject, html, text });
+
+  // Record the outcome on the notification row so a "did they get told?"
+  // question is answerable without reading logs. Contained: an observability
+  // write must not turn a delivered email into a failed job.
+  if (notificationId) {
+    await pool.query(
+      `UPDATE notifications SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb
+        WHERE id = $1`,
+      [notificationId, JSON.stringify({ email_delivery: result })]
+    ).catch(() => {});
+  }
+
+  return { notificationId, ...result };
+}
+
+module.exports = { deliverSlack, deliverEmail, getActiveInstall, TYPE_TO_CATEGORY };

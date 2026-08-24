@@ -25,6 +25,13 @@
 // POST   /handovers/sales/:id/notes/:noteId/attachments    attach a file to a note
 //
 // POST   /handovers/sales/:id/plays/:instanceId/evidence/upload   file as evidence
+//
+// ── Review loop (2026_130) ───────────────────────────────────────────────────
+// POST   /handovers/sales/:id/plays/:instanceId/transition   submit / approve / send back
+// GET    /handovers/sales/:id/plays/:instanceId/transitions  status history for a task
+// GET    /handovers/sales/:id/review-queue                   everything awaiting review
+// GET    /handovers/sales/:id/review-watchers                who is alerted
+// PUT    /handovers/sales/:id/review-watchers                set who is alerted
 // ─────────────────────────────────────────────────────────────────────────────
 
 const express         = require('express');
@@ -47,6 +54,7 @@ const upload  = multer({
 const projectSettings = require('../services/projectSettings.service');
 const planVariance    = require('../services/planVariance.service');   // 2026_111
 const boq             = require('../services/boq.service');            // 2026_113/114
+const playReview      = require('../services/playReview.service');     // 2026_130
 router.use(authenticateToken);
 router.use(orgContext);
 
@@ -385,6 +393,94 @@ router.post('/sales/:id/plays/:instanceId/complete', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('Complete handover play error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// REVIEW LOOP (2026_130)
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── POST /sales/:id/plays/:instanceId/transition ──────────────────────────────
+//
+// One endpoint for the whole loop rather than four, because the permission
+// rules, evidence rules and audit write are shared and splitting them would
+// mean four places to keep in step.
+//
+//   { to: 'in_review',   targetStatus, evidence }  submit for review
+//   { to: 'completed'|'skipped'|'cancelled', evidence? }  approve, or close direct
+//   { to: 'in_progress', reason }                  send back for rework
+//
+// Authorisation lives in the service, not here: the same rules have to hold
+// for any future caller (a bulk approve screen, the mobile app), and a check
+// in the route protects only the route.
+router.post('/sales/:id/plays/:instanceId/transition', async (req, res) => {
+  try {
+    const result = await playReview.transition(
+      parseInt(req.params.id), parseInt(req.params.instanceId),
+      req.orgId, req.user.userId, req.body || {}
+    );
+    res.json(result);
+  } catch (err) {
+    console.error('Play transition error:', err);
+    res.status(err.status || 500).json({
+      error: {
+        message: err.message,
+        code:    err.code || null,
+        // Pass the structured detail through so the UI can name what is in the
+        // way instead of repeating a sentence the user cannot act on.
+        blockedBy:      err.blockedBy      || undefined,
+        stageBlockedBy: err.stageBlockedBy || undefined,
+      },
+    });
+  }
+});
+
+// ── GET /sales/:id/plays/:instanceId/transitions ──────────────────────────────
+// Status history for one task. A status that can move backwards needs this:
+// without it, in_progress → in_review → in_progress reads in the database as
+// though the task had never left in_progress.
+router.get('/sales/:id/plays/:instanceId/transitions', async (req, res) => {
+  try {
+    res.json(await playReview.history(
+      parseInt(req.params.id), parseInt(req.params.instanceId), req.orgId));
+  } catch (err) {
+    console.error('Play transition history error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── GET /sales/:id/review-queue ───────────────────────────────────────────────
+// Everything on this project awaiting review — the question 'in_review' was
+// made a first-class status in order to answer.
+router.get('/sales/:id/review-queue', async (req, res) => {
+  try {
+    res.json(await playReview.reviewQueue(parseInt(req.params.id), req.orgId));
+  } catch (err) {
+    console.error('Review queue error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── GET / PUT /sales/:id/review-watchers ──────────────────────────────────────
+// The designated people alerted alongside the Project Manager. The PM and the
+// creator are always notified and never appear here — a list that can be
+// emptied must not be able to silence them.
+router.get('/sales/:id/review-watchers', async (req, res) => {
+  try {
+    res.json(await playReview.listWatchers(parseInt(req.params.id), req.orgId));
+  } catch (err) {
+    console.error('List review watchers error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+router.put('/sales/:id/review-watchers', async (req, res) => {
+  try {
+    res.json(await playReview.setWatchers(
+      parseInt(req.params.id), req.orgId, req.user.userId, req.body?.userIds || []));
+  } catch (err) {
+    console.error('Set review watchers error:', err);
     res.status(err.status || 500).json({ error: { message: err.message } });
   }
 });

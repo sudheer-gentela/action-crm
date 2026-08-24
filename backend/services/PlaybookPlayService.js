@@ -952,9 +952,13 @@ class PlaybookPlayService {
    */
   static async completePlayForProject(instanceId, userId, orgId) {
     const result = await db.query(
+      // 2026_130: 'in_review' admitted. Approving a submission calls straight
+      // through to here, and without it the UPDATE matched zero rows and raised
+      // "Play instance not found or already completed" on every approval.
       `UPDATE project_play_instances
        SET status = 'completed', completed_at = NOW(), completed_by = $1, updated_at = NOW()
-       WHERE id = $2 AND org_id = $3 AND status IN ('not_started', 'in_progress', 'blocked', 'snoozed')
+       WHERE id = $2 AND org_id = $3
+         AND status IN ('not_started', 'in_progress', 'blocked', 'snoozed', 'in_review')
        RETURNING *`,
       [userId, instanceId, orgId]
     );
@@ -983,9 +987,12 @@ class PlaybookPlayService {
 
   static async skipPlayForProject(instanceId, userId, orgId) {
     const result = await db.query(
+      // 2026_130: 'in_review' admitted — a skip can be submitted for approval
+      // just as a completion can, and approval lands here.
       `UPDATE project_play_instances
        SET status = 'skipped', overridden_by = $1, updated_at = NOW()
-       WHERE id = $2 AND org_id = $3 AND status IN ('not_started', 'in_progress', 'blocked', 'snoozed')
+       WHERE id = $2 AND org_id = $3
+         AND status IN ('not_started', 'in_progress', 'blocked', 'snoozed', 'in_review')
        RETURNING *`,
       [userId, instanceId, orgId]
     );
@@ -1086,11 +1093,24 @@ class PlaybookPlayService {
       );
       const instance = inst.rows[0];
 
+      // 2026_130 BUGFIX. This read project_play_assignees, which is empty in
+      // every live org: its only writer, reassignPlayForProject(), is not
+      // reachable from any route (only scripts/phase109_acceptance.js calls
+      // it). So the lookup always returned zero rows, no action was created,
+      // and an unblocked play flipped to 'not_started' in nobody's queue —
+      // silently, because the surrounding try/catch only guards action
+      // CREATION, and creation was never attempted.
+      //
+      // owner_user_id is the assignment the product actually maintains: it is
+      // what the checklist renders as the owner chip and what the inline owner
+      // control writes. Reading it here makes the unblocked play land on the
+      // person the UI has been showing as its owner all along.
       const assigneeResult = await db.query(
-        `SELECT ppa.user_id, u.first_name || ' ' || u.last_name AS name
-         FROM project_play_assignees ppa
-         JOIN users u ON u.id = ppa.user_id
-         WHERE ppa.instance_id = $1
+        `SELECT ppi.owner_user_id AS user_id,
+                u.first_name || ' ' || u.last_name AS name
+         FROM project_play_instances ppi
+         JOIN users u ON u.id = ppi.owner_user_id
+         WHERE ppi.id = $1 AND ppi.owner_user_id IS NOT NULL
          LIMIT 1`,
         [pending.id]
       );

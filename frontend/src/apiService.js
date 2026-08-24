@@ -844,6 +844,20 @@ twilio: {
     updateStages: (id, stages) => api.patch(`/handovers/sales/${id}/stages`, { stages }),
     removeStage:  (id, stageKey) => api.delete(`/handovers/sales/${id}/stages/${encodeURIComponent(stageKey)}`),
     updatePlay: (id, instanceId, data) => api.patch(`/handovers/sales/${id}/plays/${instanceId}`, data),
+
+    // ── Review loop (2026_130) ──
+    // One endpoint for submit / approve / send back. `to` decides which:
+    //   { to: 'in_review',   targetStatus, evidence }
+    //   { to: 'completed' | 'skipped' | 'cancelled', evidence? }
+    //   { to: 'in_progress', reason }
+    transitionPlay: (id, instanceId, data) =>
+      api.post(`/handovers/sales/${id}/plays/${instanceId}/transition`, data),
+    playTransitions: (id, instanceId) =>
+      api.get(`/handovers/sales/${id}/plays/${instanceId}/transitions`),
+    reviewQueue:     (id) => api.get(`/handovers/sales/${id}/review-queue`),
+    reviewWatchers:  (id) => api.get(`/handovers/sales/${id}/review-watchers`),
+    setReviewWatchers: (id, userIds) =>
+      api.put(`/handovers/sales/${id}/review-watchers`, { userIds }),
     removePlay: (id, instanceId) => api.delete(`/handovers/sales/${id}/plays/${instanceId}`),
     reorderPlays: (id, stageKey, orderedIds) =>
       api.patch(`/handovers/sales/${id}/plays/reorder`, { stageKey, orderedIds }),
