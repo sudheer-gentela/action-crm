@@ -109,6 +109,15 @@ notificationQueue.process(async (job) => {
     job.progress(100);
     return result;
 
+  } else if (type === 'review_email_digest') {
+    // One user's batched review alerts (2026_130). Enqueued by the scheduler
+    // sweep, not by createNotification — the whole point is that it fires on a
+    // clock rather than per event.
+    job.progress(20);
+    const result = await notificationDelivery.sendReviewDigest(orgId, userId);
+    job.progress(100);
+    return result;
+
   } else {
     console.warn(`[notifications] Unknown job type: ${type}`);
     return { skipped: true, reason: 'unknown_type' };

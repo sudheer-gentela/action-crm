@@ -425,6 +425,12 @@ const DEFAULT_PREFS = {
     // dispatched today.
     email_enabled:    true,
     email_categories: { review: true },
+    // 'immediate' sends on every review event; 'digest' batches them into
+    // one mail per sweep. On a large project immediate is a lot of mail,
+    // which is how a channel gets filtered to a folder and stops working.
+    // Immediate is still the default: a review sitting unseen is the
+    // failure this feature exists to prevent, and batching adds latency.
+    review_email_mode: 'immediate',
   },
 };
 

@@ -759,6 +759,79 @@ async function reviewQueue(handoverId, orgId) {
   }));
 }
 
+/**
+ * Everything awaiting THIS user's review, across every project they are
+ * accountable for.
+ *
+ * reviewQueue() above answers "what is waiting on this project". That is the
+ * right question when you are already looking at a project, and the wrong one
+ * when you run six of them — the person who has to clear these does not know
+ * which project to open, which is precisely the failure that makes reviews sit.
+ *
+ * SCOPE mirrors canManageProject, expressed as one query rather than N calls:
+ *   • org admin/owner  → every project in the org
+ *   • everyone else    → projects where they are the service owner or creator
+ *
+ * Watchers are deliberately NOT in scope. Being told about a review is not the
+ * same as being able to act on one, and a queue that lists work you cannot
+ * clear is a worse instrument than no queue.
+ *
+ * Ordered oldest-submission-first: the thing that has been waiting longest is
+ * the thing most likely to be blocking someone.
+ */
+async function myReviewQueue(orgId, userId, { limit = 100 } = {}) {
+  if (!userId) return [];
+
+  const { rows: [me] } = await pool.query(
+    `SELECT role FROM org_users WHERE org_id = $1 AND user_id = $2 AND is_active = TRUE`,
+    [orgId, userId]);
+  if (!me) return [];
+  const isOrgAdmin = ['admin', 'owner'].includes(me.role);
+
+  const { rows } = await pool.query(
+    `SELECT p.id                AS play_instance_id,
+            p.title,
+            p.stage_key,
+            p.due_date,
+            p.review_target_status,
+            p.review_submitted_at,
+            p.handover_id,
+            COALESCE(NULLIF(btrim(h.name), ''), d.name, a.name, 'Untitled project') AS project_name,
+            su.first_name || ' ' || su.last_name AS submitted_by_name,
+            ou.first_name || ' ' || ou.last_name AS owner_name
+       FROM project_play_instances p
+       JOIN sales_handovers h ON h.id = p.handover_id AND h.org_id = p.org_id
+       LEFT JOIN deals    d  ON d.id = h.deal_id
+       LEFT JOIN accounts a  ON a.id = h.account_id
+       LEFT JOIN users   su  ON su.id = p.review_submitted_by
+       LEFT JOIN users   ou  ON ou.id = p.owner_user_id
+      WHERE p.org_id = $1
+        AND p.status = 'in_review'
+        -- A cancelled or completed PROJECT should not surface tasks to review.
+        -- Its checklist is history, and anything left in review on it is a
+        -- loose end to clean up, not work to action.
+        AND h.status NOT IN ('cancelled', 'completed')
+        AND ($3::boolean IS TRUE
+             OR h.assigned_service_owner_id = $2
+             OR h.created_by = $2)
+      ORDER BY p.review_submitted_at ASC NULLS LAST, p.id
+      LIMIT $4`,
+    [orgId, userId, isOrgAdmin, limit]);
+
+  return rows.map(r => ({
+    playInstanceId:   r.play_instance_id,
+    handoverId:       r.handover_id,
+    projectName:      r.project_name,
+    title:            r.title,
+    stageKey:         r.stage_key,
+    dueDate:          r.due_date,
+    targetStatus:     r.review_target_status,
+    submittedAt:      r.review_submitted_at,
+    submittedByName:  r.submitted_by_name,
+    ownerName:        r.owner_name,
+  }));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // WATCHERS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -840,6 +913,7 @@ module.exports = {
   canChangeDueDate,
   history,
   reviewQueue,
+  myReviewQueue,
   dependentsInFlight,
   listWatchers,
   setWatchers,

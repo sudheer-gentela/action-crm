@@ -394,6 +394,48 @@ async function enqueueProspectingEscalations() {
 }
 
 /**
+ * Sweep users who have review alerts waiting in digest mode (2026_130).
+ *
+ * Finds the distinct (org, user) pairs with stamped-but-undigested review
+ * notifications and enqueues one digest job each. Doing the grouping here in
+ * one query — rather than iterating orgs and then users — keeps this O(1)
+ * queries regardless of how many orgs run the review loop.
+ *
+ * Runs hourly. A user in digest mode therefore waits at most an hour, which is
+ * the trade they opted into by choosing digest over immediate.
+ */
+async function enqueueReviewDigests() {
+  try {
+    const { rows } = await db.query(
+      `SELECT DISTINCT org_id, user_id
+         FROM notifications
+        WHERE type LIKE 'play_review_%'
+          AND metadata->>'email_deferred' = 'true'
+          AND metadata->>'email_digested' IS NULL
+          -- Bound the scan. Anything older than a week is stale enough that
+          -- mailing it would confuse rather than help, and it stays readable
+          -- in-app either way.
+          AND created_at > now() - interval '7 days'`);
+
+    for (const r of rows) {
+      await notificationQueue.add(
+        { type: 'review_email_digest', orgId: r.org_id, userId: r.user_id },
+        // One job per user per hour. The jobId collapses duplicates if a sweep
+        // overlaps the previous one.
+        { jobId: `review-digest-${r.org_id}-${r.user_id}-${new Date().toISOString().slice(0, 13)}` }
+      ).catch(() => {});
+    }
+    if (rows.length) {
+      console.log(`[notifications] enqueued ${rows.length} review digest(s)`);
+    }
+    return { enqueued: rows.length };
+  } catch (err) {
+    console.error('[notifications] enqueueReviewDigests failed:', err.message);
+    return { enqueued: 0 };
+  }
+}
+
+/**
  * Start the notification cron schedules.
  * Called from worker.js on startup.
  */
@@ -445,7 +487,14 @@ function startScheduler() {
     );
   }, { timezone: 'UTC' });
 
-  console.log('✅ Notification scheduler started (deal: immediate 2h, digest 09:00 UTC, revisit 08:00 UTC | prospecting: immediate 2h+30m, digest hourly+org-filtered, escalation 4h+15m)');
+  // Review digests: hourly at :45, clear of every other sweep above.
+  cron.schedule('45 * * * *', () => {
+    enqueueReviewDigests().catch(err =>
+      console.error('[notifications] Review digest cron error:', err.message)
+    );
+  }, { timezone: 'UTC' });
+
+  console.log('✅ Notification scheduler started (deal: immediate 2h, digest 09:00 UTC, revisit 08:00 UTC | prospecting: immediate 2h+30m, digest hourly+org-filtered, escalation 4h+15m | review digest hourly+45m)');
 }
 
 module.exports = {
@@ -456,4 +505,5 @@ module.exports = {
   enqueueProspectingImmediateNotifications,
   enqueueProspectingDailyDigests,
   enqueueProspectingEscalations,
+  enqueueReviewDigests,
 };

@@ -29,7 +29,8 @@
 // ── Review loop (2026_130) ───────────────────────────────────────────────────
 // POST   /handovers/sales/:id/plays/:instanceId/transition   submit / approve / send back
 // GET    /handovers/sales/:id/plays/:instanceId/transitions  status history for a task
-// GET    /handovers/sales/:id/review-queue                   everything awaiting review
+// GET    /handovers/review-queue                             awaiting MY review, all projects
+// GET    /handovers/sales/:id/review-queue                   everything awaiting review on one project
 // GET    /handovers/sales/:id/review-watchers                who is alerted
 // PUT    /handovers/sales/:id/review-watchers                set who is alerted
 // ─────────────────────────────────────────────────────────────────────────────
@@ -446,6 +447,21 @@ router.get('/sales/:id/plays/:instanceId/transitions', async (req, res) => {
       parseInt(req.params.id), parseInt(req.params.instanceId), req.orgId));
   } catch (err) {
     console.error('Play transition history error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── GET /review-queue ─────────────────────────────────────────────────────────
+// Everything awaiting THIS user's review, across every project they run.
+//
+// Declared at the router root, not under /sales/:id — it is not scoped to a
+// project, and that is the whole point of it. Express matches by path, so
+// there is no ordering hazard against the /sales/* routes.
+router.get('/review-queue', async (req, res) => {
+  try {
+    res.json(await playReview.myReviewQueue(req.orgId, req.user.userId));
+  } catch (err) {
+    console.error('My review queue error:', err);
     res.status(err.status || 500).json({ error: { message: err.message } });
   }
 });

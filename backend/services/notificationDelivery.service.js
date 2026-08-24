@@ -154,6 +154,25 @@ async function deliverEmail(orgId, payload = {}) {
     if (ch.email_categories && ch.email_categories.review === false) {
       return { skipped: true, reason: 'category_off:review' };
     }
+
+    // ── Digest deferral ──────────────────────────────────────────────────
+    // On a large project every submission would otherwise be its own email.
+    // In digest mode the send is skipped and the notification row is STAMPED
+    // instead; sendReviewDigests() below sweeps the stamps and sends one mail.
+    //
+    // The stamp lives in metadata rather than a new column deliberately: it is
+    // per-notification bookkeeping with a lifetime of hours, and a column on a
+    // hot table is a poor trade for that. Requires notificationId — a deferral
+    // we cannot stamp is a mail we would silently lose, so it falls through
+    // and sends immediately instead.
+    if (ch.review_email_mode === 'digest' && notificationId) {
+      await pool.query(
+        `UPDATE notifications SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb
+          WHERE id = $1`,
+        [notificationId, JSON.stringify({ email_deferred: true })]
+      ).catch(() => {});
+      return { skipped: true, reason: 'deferred_to_digest' };
+    }
   }
 
   const { sendSystemEmail } = require('./systemMailer');
@@ -173,4 +192,66 @@ async function deliverEmail(orgId, payload = {}) {
   return { notificationId, ...result };
 }
 
-module.exports = { deliverSlack, deliverEmail, getActiveInstall, TYPE_TO_CATEGORY };
+/**
+ * Send one user their pending review digest, and clear the stamps.
+ *
+ * Collects every play_review_* notification stamped email_deferred that has
+ * not yet been digested, groups it into one mail, and marks the rows so a
+ * second sweep cannot send them twice.
+ *
+ * Ordering matters: the stamp is cleared only AFTER a successful send. A
+ * failed send leaves the rows pending, so the next sweep retries them rather
+ * than dropping a day of alerts on a transient SMTP error.
+ */
+async function sendReviewDigest(orgId, userId) {
+  const { rows } = await pool.query(
+    `SELECT id, title, body, created_at, metadata
+       FROM notifications
+      WHERE org_id = $1 AND user_id = $2
+        AND type LIKE 'play_review_%'
+        AND metadata->>'email_deferred' = 'true'
+        AND metadata->>'email_digested' IS NULL
+      ORDER BY created_at ASC
+      LIMIT 200`,
+    [orgId, userId]);
+
+  if (!rows.length) return { skipped: true, reason: 'nothing_pending' };
+
+  const { rows: [u] } = await pool.query(
+    `SELECT email, first_name FROM users WHERE id = $1`, [userId]);
+  if (!u?.email) return { skipped: true, reason: 'no_recipient' };
+
+  const esc = (x) => String(x ?? '').replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  const subject = rows.length === 1
+    ? rows[0].title
+    : `${rows.length} task reviews need you`;
+
+  const text = rows.map(r => `• ${r.title}\n  ${r.body}`).join('\n\n');
+  const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;color:#111827;line-height:1.5">
+  <p style="margin:0 0 14px">Since your last update:</p>
+  ${rows.map(r => `<div style="margin:0 0 14px;padding-left:10px;border-left:3px solid #fde68a">
+    <div style="font-weight:600">${esc(r.title)}</div>
+    <div style="color:#4b5563">${esc(r.body)}</div>
+  </div>`).join('')}
+</div>`;
+
+  const { sendSystemEmail } = require('./systemMailer');
+  const result = await sendSystemEmail({ to: u.email, subject, html, text });
+
+  if (result.sent) {
+    await pool.query(
+      `UPDATE notifications
+          SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+                'email_digested', to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SSZ'))
+        WHERE id = ANY($1)`,
+      [rows.map(r => r.id)]).catch(() => {});
+  }
+
+  return { userId, items: rows.length, ...result };
+}
+
+module.exports = {
+  deliverSlack, deliverEmail, sendReviewDigest, getActiveInstall, TYPE_TO_CATEGORY,
+};
