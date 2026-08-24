@@ -53,6 +53,7 @@ export default function OAProjectAccess() {
   const [msg, setMsg]         = useState('');
   const [err, setErr]         = useState('');
   const [domainsOk, setDomainsOk] = useState(null);   // null = still loading
+  const [orgUsers, setOrgUsers]   = useState([]);     // 2026_130 watcher picker
 
   const load = useCallback(() => {
     apiService.handovers.projectAccess()
@@ -70,6 +71,13 @@ export default function OAProjectAccess() {
     apiService.handovers.orgDomains()
       .then(r => setDomainsOk((r.data?.domains || []).length > 0))
       .catch(() => setDomainsOk(null));
+  }, []);
+
+  // 2026_130: the default review-watcher picker needs names, not ids.
+  useEffect(() => {
+    apiService.handovers.assignableUsers()
+      .then(r => setOrgUsers(r.data?.users || []))
+      .catch(() => setOrgUsers([]));
   }, []);
 
   const save = async (patch) => {
@@ -199,6 +207,82 @@ export default function OAProjectAccess() {
         <Switch on={cfg.commercial_follows_hierarchy} disabled={readOnly || saving}
                 onChange={v => save({ commercial_follows_hierarchy: v })} />
       </Row>
+
+      <Row
+        title="Task owners can move their own due dates"
+        desc="A task's assignee changing the date it is measured against is the single act that decides whether Plan vs Actual means anything. Off by default: the project manager, the creator and org admins can always move a date, and every move is recorded with who made it either way. Turn it on if your teams are trusted to manage their own dates."
+      >
+        <Switch on={cfg.allow_assignee_due_date_change === true} disabled={readOnly || saving}
+                onChange={v => save({ allow_assignee_due_date_change: v })} />
+      </Row>
+
+      <div style={{ padding: '16px 0', borderBottom: '1px solid #f1f5f9' }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: '#1a202c', marginBottom: 3 }}>
+          Default review watchers on a new project
+        </div>
+        <div style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.55, marginBottom: 10 }}>
+          Copied onto each project as it is created, then owned by that project — editing
+          this list never changes a project already running. The project manager and the
+          creator are always alerted and do not need to be listed. Leave empty if alerts
+          should be set per project.
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+          {(cfg.review_watcher_user_ids || []).length === 0 && (
+            <span style={{ fontSize: 12, color: '#9ca3af' }}>Nobody set.</span>
+          )}
+          {(cfg.review_watcher_user_ids || []).map(id => {
+            const u = orgUsers.find(x => x.id === id);
+            return (
+              <span key={id} style={{
+                display: 'inline-flex', alignItems: 'center', gap: 8,
+                minHeight: 36, padding: '6px 8px 6px 14px', borderRadius: 999,
+                border: '1px solid #bae6fd', background: '#e0f2fe',
+                color: '#0369a1', fontSize: 13,
+              }}>
+                {u ? (u.name || `${u.firstName || ''} ${u.lastName || ''}`.trim() || u.email)
+                   : `User #${id}`}
+                {!readOnly && (
+                  <button type="button" disabled={saving}
+                    onClick={() => save({
+                      review_watcher_user_ids:
+                        (cfg.review_watcher_user_ids || []).filter(x => x !== id),
+                    })}
+                    aria-label="Remove"
+                    style={{ border: 'none', background: 'none', color: '#0369a1',
+                             fontSize: 16, lineHeight: 1, cursor: 'pointer', padding: '0 4px' }}>
+                    ×
+                  </button>
+                )}
+              </span>
+            );
+          })}
+        </div>
+        {!readOnly && (
+          <select
+            value=""
+            disabled={saving}
+            onChange={e => {
+              const id = parseInt(e.target.value, 10);
+              if (!Number.isInteger(id)) return;
+              save({
+                review_watcher_user_ids:
+                  [...new Set([...(cfg.review_watcher_user_ids || []), id])],
+              });
+              e.target.value = '';
+            }}
+            style={{ fontSize: 14, padding: '10px 12px', borderRadius: 8,
+                     border: '1px solid #d1d5db', minHeight: 44, minWidth: 220 }}>
+            <option value="">Add someone…</option>
+            {orgUsers
+              .filter(u => !(cfg.review_watcher_user_ids || []).includes(u.id))
+              .map(u => (
+                <option key={u.id} value={u.id}>
+                  {u.name || `${u.firstName || ''} ${u.lastName || ''}`.trim() || u.email}
+                </option>
+              ))}
+          </select>
+        )}
+      </div>
 
       <div style={{ padding: '16px 0' }}>
         <div style={{ fontSize: 14, fontWeight: 600, color: '#1a202c', marginBottom: 3 }}>

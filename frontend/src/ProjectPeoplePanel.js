@@ -19,6 +19,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
+import ProjectReviewWatchers from './ProjectReviewWatchers';   // 2026_130
 
 const SIDES = [
   { key: 'customer', label: 'Customer team', icon: '🏛️' },
@@ -347,7 +348,7 @@ function ContactPolicy({ handoverId, onClose }) {
 
 // ── Panel ────────────────────────────────────────────────────────────────────
 
-export default function ProjectPeoplePanel({ detail, onRefresh, onOpenContact, currentUserId }) {
+export default function ProjectPeoplePanel({ detail, onRefresh, onOpenContact, currentUserId, managerLabel = 'Project Manager' }) {
   const [adding, setAdding] = useState(false);
   const [policyOpen, setPolicyOpen] = useState(false);
   const [err,    setErr]    = useState('');
@@ -413,6 +414,18 @@ export default function ProjectPeoplePanel({ detail, onRefresh, onOpenContact, c
 
       <InternalCustomers acceptors={acceptors} signoff={signoff}
         canEdit={canEdit && !busy} onRemove={removeMember} />
+
+      {/* 2026_130. Sits with the other "who is involved" lists rather than in
+          project settings: this is a question about people, and the person
+          adding a site engineer to a project is the person who knows whether
+          that engineer should hear about reviews. Read-only for anyone who
+          cannot manage the project — seeing who gets alerted is useful even
+          when you cannot change it. */}
+      <ProjectReviewWatchers
+        handoverId={handoverId}
+        canManage={detail?.canReviewPlays === true}
+        managerLabel={managerLabel}
+      />
 
       {iAmAcceptor && (
         <div style={{ marginTop: 10 }}>

@@ -703,6 +703,10 @@ const PLAY_STATUS = {
 const PLAY_DONE_STATUSES = ['completed', 'skipped', 'cancelled'];
 const isPlayDone = st => PLAY_DONE_STATUSES.includes(st);
 
+// How a submission's requested end state reads inside a sentence.
+// PLAY_STATUS labels are noun-ish pills ('Done'); these are the verb form.
+const TARGET_WORD = { completed: 'done', skipped: 'skipped', cancelled: 'cancelled' };
+
 function PlayStatusPill({ status }) {
   const s = PLAY_STATUS[status] || PLAY_STATUS.not_started;
   return (
@@ -828,6 +832,122 @@ function StatusAction({ play, canAct, onSetStatus, onReview, isManager = false, 
       }}>
       {label}
     </button>
+  );
+}
+
+// ── Status history for one task (2026_130) ───────────────────────────────────
+//
+// A status that can move backwards needs this. Without it, a task that went
+// in_progress → in_review → in_progress → in_review reads in the database as
+// though it never left in_progress, and the reason the manager gave the first
+// time is nowhere.
+//
+// Fetched on mount rather than with the checklist: most tasks have no history
+// worth reading, and shipping a transitions array on every row of every
+// project to serve the few that do is the wrong default.
+function PlayTransitionHistory({ handoverId, play }) {
+  const [rows, setRows] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    apiService.handovers.playTransitions(handoverId, play.playInstanceId)
+      .then(r => { if (alive) setRows(r.data || []); })
+      .catch(() => { if (alive) setRows([]); });
+    return () => { alive = false; };
+  }, [handoverId, play.playInstanceId]);
+
+  if (!rows || rows.length === 0) return null;
+
+  const label = (t) => {
+    if (t.to === 'in_review') {
+      return `sent for review, asking to mark it ${TARGET_WORD[t.targetStatus] || 'done'}`;
+    }
+    if (t.to === 'in_progress' && ['in_review', ...PLAY_DONE_STATUSES].includes(t.from)) {
+      return 'sent back for rework';
+    }
+    if (t.from === 'in_review') return `approved as ${TARGET_WORD[t.to] || t.to}`;
+    return `marked ${TARGET_WORD[t.to] || t.to}`;
+  };
+
+  return (
+    <div style={{ marginTop: 8, borderTop: '1px dashed #e5e7eb', paddingTop: 8 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', marginBottom: 6 }}>
+        Review history
+      </div>
+      {rows.map(t => (
+        <div key={t.id} style={{ display: 'flex', gap: 8, padding: '3px 0', fontSize: 11.5 }}>
+          <span style={{ color: '#9ca3af', whiteSpace: 'nowrap', flexShrink: 0 }}>
+            {fmtDate(t.at)}
+          </span>
+          <span style={{ color: '#374151', minWidth: 0 }}>
+            <strong style={{ fontWeight: 600 }}>{t.actorName || 'Someone'}</strong>
+            {' '}{label(t)}
+            {t.reason && (
+              <span style={{ display: 'block', color: '#92400e', marginTop: 2 }}>
+                “{t.reason}”
+              </span>
+            )}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Awaiting review banner (2026_130) ────────────────────────────────────────
+//
+// The reason 'in_review' was made a status rather than a flag on top of
+// in_progress: this count is a filter over one column, and the tasks are
+// scannable apart from the work still in flight.
+function ReviewQueueBanner({ plays, isManager, onOpen }) {
+  const [open, setOpen] = useState(false);
+  const queue = (plays || []).filter(p => p.status === 'in_review');
+  if (!queue.length) return null;
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 7,
+          fontSize: 12, fontWeight: 600, padding: '5px 11px', borderRadius: 999,
+          border: '1px solid #fde68a', background: '#fffbeb', color: '#92400e',
+          cursor: 'pointer', fontFamily: 'inherit',
+        }}>
+        <span>{queue.length} awaiting review</span>
+        <span style={{ fontSize: 10, opacity: 0.8 }}>{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div style={{
+          marginTop: 8, border: '1px solid #fde68a', borderRadius: 8,
+          background: '#fffbeb', padding: '6px 4px', maxWidth: 680,
+        }}>
+          {queue.map(p => (
+            <div key={p.playInstanceId} style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              padding: '6px 10px', fontSize: 12, color: '#78350f',
+            }}>
+              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden',
+                             textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {p.title}
+                <span style={{ opacity: 0.75 }}>
+                  {' — '}{p.reviewSubmittedByName || p.ownerName || 'someone'}
+                  {' asked to mark it '}{TARGET_WORD[p.reviewTargetStatus] || 'done'}
+                </span>
+              </span>
+              {isManager && onOpen && (
+                <button onClick={() => onOpen(p)} style={{
+                  fontSize: 11, fontWeight: 600, padding: '3px 10px', borderRadius: 5,
+                  border: '1px solid #fcd34d', background: '#fff', color: '#92400e',
+                  cursor: 'pointer', whiteSpace: 'nowrap', fontFamily: 'inherit',
+                }}>Review</button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1388,6 +1508,13 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
             onNoteCountChange?.(id, n);
           }}
         />
+      )}
+
+      {/* 2026_130. Rides the same disclosure as the notes: someone opening the
+          thread to work out what happened wants both, and a second toggle for
+          a list that is empty on most tasks would be one control too many. */}
+      {showNotes && handoverId != null && (
+        <PlayTransitionHistory handoverId={handoverId} play={play} />
       )}
 
       {/* Manual completion capture: note + how it was closed */}
@@ -2788,6 +2915,21 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
           {detail.completedAt    && <span>Completed {fmtDate(detail.completedAt)}</span>}
           {detail.cancelledAt    && <span>Cancelled {fmtDate(detail.cancelledAt)}</span>}
         </div>
+
+        {/* ── Awaiting review (2026_130) ─────────────────────────────────
+            Derived from `plays`, which the page already holds, rather than
+            calling GET /review-queue. The endpoint exists for callers that do
+            not have the checklist loaded; here a second fetch would only
+            introduce a way for the banner and the checklist to disagree.
+
+            Shown to everyone, actionable only for a manager. A site engineer
+            seeing "3 awaiting review" knows their submission is queued behind
+            others, which is worth more than hiding it from them. */}
+        <ReviewQueueBanner
+          plays={plays}
+          isManager={canReviewPlays}
+          onOpen={(play) => openReview(play, 'approve')}
+        />
 
         {/* Closure summary (esp. cancellation reason, which is required) */}
         {isTerminal && detail.closureSummary && (
@@ -4430,6 +4572,7 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onG
                 onOpenContact={(contactId) => setOpenContact(
                   (detail.stakeholders || []).find(x => x.contactId === contactId) || null)}
                 currentUserId={currentUserId}
+                managerLabel={managerLabel}
               />
             </div>
           ),
