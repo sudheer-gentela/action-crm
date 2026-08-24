@@ -266,16 +266,28 @@ async function resolveThread(client, orgId, conversation, n) {
     source = 'binding';
   }
 
+  // attributed_at is computed here rather than with
+  //   CASE WHEN $5 IS NULL THEN NULL ELSE now() END
+  // because that made $5 appear both as a column value and inside an untyped
+  // CASE, and Postgres could not unify the two — "could not determine data type
+  // of parameter $5". Same failure as the bind path hit. Every parameter that
+  // could be NULL is cast explicitly for the same reason: node-postgres sends
+  // parameters with no declared types and leaves inference to the server.
+  const attributedAt = handoverId ? new Date() : null;
+
   const { rows: [created] } = await client.query(
     `INSERT INTO msteams_threads
        (org_id, conversation_id, root_graph_id, subject,
         handover_id, attribution_source, attributed_at,
         first_message_at, last_message_at, message_count)
-     VALUES ($1,$2,$3,$4,$5,$6, CASE WHEN $5 IS NULL THEN NULL ELSE now() END, $7,$7,0)
+     VALUES ($1::integer, $2::integer, $3::text, $4::text,
+             $5::integer, $6::text, $7::timestamptz,
+             $8::timestamptz, $8::timestamptz, 0)
      ON CONFLICT (conversation_id, root_graph_id) DO UPDATE
        SET subject = COALESCE(EXCLUDED.subject, msteams_threads.subject)
      RETURNING *`,
-    [orgId, conversation.id, n.rootGraphId, n.subject, handoverId, source, n.sentAt]
+    [orgId, conversation.id, n.rootGraphId, n.subject,
+     handoverId, source, attributedAt, n.sentAt]
   );
   return created;
 }
