@@ -3290,7 +3290,7 @@ function PersonPanel({ member, onClose, onOpenProject, handoverId, canManage }) 
   const projects = data?.projects || [];
   const comms    = data?.communications || [];
   const pending  = (data?.deliverables || []).filter(d => d.pending);
-  const CH = { email: { label: 'Email', color: '#7c3aed' }, whatsapp: { label: 'WhatsApp', color: '#059669' } };
+  const CH = CHANNEL_META;   // shared, so Teams gets a real badge here too
   const first = (member.name || '').split(' ')[0];
 
   // Distinct projects present in this person's comms, for the project filter.
@@ -3590,11 +3590,74 @@ function MoveMessageControl({ message, onMoved }) {
   );
 }
 
+/* ── Channels ────────────────────────────────────────────────────────────────
+ *
+ * CHAT groups Microsoft Teams with Google Chat rather than giving each its own
+ * tab. They are the same KIND of communication from a project's point of view —
+ * short, threaded, many-participant — and the question anyone actually asks is
+ * "what was said in chat", not "what was said in Teams specifically". Two tabs
+ * that each show a handful of messages are worse than one that shows the
+ * conversation. The per-message badge still names the actual channel, so
+ * nothing is lost.
+ *
+ * gchat has no backend yet; listing it here costs nothing and means the tab
+ * does not have to be rebuilt when it arrives.
+ */
+const CHANNEL_META = {
+  email:    { label: 'Email',    color: '#7c3aed', bg: '#f5f3ff' },
+  whatsapp: { label: 'WhatsApp', color: '#059669', bg: '#ecfdf5' },
+  teams:    { label: 'Teams',    color: '#4f46e5', bg: '#eef2ff' },
+  gchat:    { label: 'Chat',     color: '#0f766e', bg: '#f0fdfa' },
+};
+
+const CHAT_CHANNELS = ['teams', 'gchat'];
+
+/** Which tab does a message belong under? */
+function channelGroup(channel) {
+  return CHAT_CHANNELS.includes(channel) ? 'chat' : channel;
+}
+
+/**
+ * Render a message body with @mentions highlighted.
+ *
+ * The backend sends `body` already flattened to text — mention inner text kept,
+ * markup gone — so the naive render is correct but loses the fact that somebody
+ * was ADDRESSED. In a multi-project channel a mention is often the only signal
+ * of who a message is actually for, so it is worth surfacing.
+ *
+ * Matching is by the mention's own display text against the flattened body,
+ * NOT by re-parsing HTML. The normalizer already resolved which names are real
+ * mentions; guessing again here from raw text would highlight anyone whose name
+ * merely appeared. Longest-first so "Srujana Dogga" wins over "Srujana".
+ */
+function MessageBody({ text, mentions }) {
+  const names = React.useMemo(() => {
+    const list = (mentions || [])
+      .map(m => m.mentionText || m.displayName)
+      .filter(n => typeof n === 'string' && n.trim().length > 1);
+    return [...new Set(list)].sort((a, b) => b.length - a.length);
+  }, [mentions]);
+
+  if (!text) return <span style={{ color: '#9ca3af' }}>(No message body.)</span>;
+  if (!names.length) return <>{text}</>;
+
+  const escaped = names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const parts = text.split(new RegExp(`(${escaped.join('|')})`, 'g'));
+
+  return (
+    <>
+      {parts.map((part, i) =>
+        names.includes(part)
+          ? <span key={i} style={{ color: '#4f46e5', fontWeight: 600, background: '#eef2ff',
+                                   borderRadius: 3, padding: '0 3px' }}>@{part}</span>
+          : <React.Fragment key={i}>{part}</React.Fragment>
+      )}
+    </>
+  );
+}
+
 function CommMessageModal({ message, onClose, onOpenContact, onMoved }) {
-  const CH = {
-    email:    { label: 'Email',    color: '#7c3aed', bg: '#f5f3ff' },
-    whatsapp: { label: 'WhatsApp', color: '#059669', bg: '#ecfdf5' },
-  };
+  const CH = CHANNEL_META;
   const ch  = CH[message.channel] || { label: message.channel, color: '#6b7280', bg: '#f3f4f6' };
   const out = message.direction === 'outbound';
   const meta = [message.account, message.from ? `from ${message.from}` : null].filter(Boolean).join(' · ');
@@ -3643,8 +3706,50 @@ function CommMessageModal({ message, onClose, onOpenContact, onMoved }) {
             </div>
           )}
 
+          {CHAT_CHANNELS.includes(message.channel) && (message.groupSubject || (message.participants && message.participants.length > 0)) && (
+            <div style={{ fontSize: 12, marginBottom: 14, padding: '8px 10px', background: '#f8fafc', borderRadius: 6, border: '1px solid #eef2f7' }}>
+              {message.groupSubject && (
+                <div style={{ color: '#374151', marginBottom: (message.participants && message.participants.length) ? 6 : 0 }}>
+                  <span style={{ color: '#9ca3af' }}>
+                    {message.conversationKind === 'channel' ? 'Channel ' : 'Chat '}
+                  </span>
+                  {message.teamName ? `${message.teamName} › ` : ''}{message.groupSubject}
+                </div>
+              )}
+              {message.participants && message.participants.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                  {message.participants.map((p, i) => (
+                    <span key={i} style={{ fontSize: 11, padding: '1px 7px', borderRadius: 10,
+                      background: p.external ? '#fef3c7' : '#e0f2fe',
+                      color: p.external ? '#92400e' : '#0369a1' }}>{p.name}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {message.subject && <div style={{ fontSize: 15, fontWeight: 600, color: '#111827', marginBottom: 10 }}>{message.subject}</div>}
-          <div style={{ fontSize: 13, lineHeight: 1.6, color: '#374151', whiteSpace: 'pre-wrap' }}>{message.body || '(No message body.)'}</div>
+          <div style={{ fontSize: 13, lineHeight: 1.6, color: '#374151', whiteSpace: 'pre-wrap' }}>
+            <MessageBody text={message.body} mentions={message.mentions} />
+          </div>
+          {message.editedAt && (
+            <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 6 }}>
+              Edited {new Date(message.editedAt).toLocaleString()} — shown as it reads now.
+              Evidence attached to this message keeps the original wording.
+            </div>
+          )}
+          {message.attachments && message.attachments.length > 0 && (
+            <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {message.attachments.map((a, i) => (
+                <a key={i} href={a.url || '#'} target="_blank" rel="noopener noreferrer"
+                   style={{ fontSize: 12, color: a.status === 'unreachable' ? '#9ca3af' : '#2563eb',
+                            textDecoration: 'none' }}>
+                  📎 {a.name || 'Attachment'}
+                  {a.status === 'unreachable' && ' (no longer reachable)'}
+                </a>
+              ))}
+            </div>
+          )}
 
           {onOpenContact && message.contactId && (
             <button onClick={() => onOpenContact({ contactId: message.contactId, name: message.contactName })}
@@ -3703,7 +3808,7 @@ function CustomerContactPanel({ stakeholder, onClose }) {
     finally { setSaving(false); }
   };
 
-  const CH = { email: { label: 'Email', color: '#7c3aed' }, whatsapp: { label: 'WhatsApp', color: '#059669' } };
+  const CH = CHANNEL_META;   // shared, so Teams gets a real badge here too
   const comms = data?.communications || [];
   const first = (stakeholder.name || '').split(' ')[0];
   const roleLabel = STAKE_ROLE[stakeholder.handoverRole] || stakeholder.handoverRole || 'Customer contact';
@@ -4325,10 +4430,7 @@ function CommunicationsPanel({ handoverId, accountId }) {
 
   if (items === null) return <div style={{ color: '#9ca3af', fontSize: 13 }}>Loading communications…</div>;
 
-  const CH = {
-    email:    { label: 'Email',    color: '#7c3aed', bg: '#f5f3ff' },
-    whatsapp: { label: 'WhatsApp', color: '#059669', bg: '#ecfdf5' },
-  };
+  const CH = CHANNEL_META;
 
   const addParticipant = async (p, as) => {
     setAddMsg('');
@@ -4347,7 +4449,9 @@ function CommunicationsPanel({ handoverId, accountId }) {
 
   const unknownPeople = people.filter(p => !p.onProject);
   const filterItems = (list) => (list || [])
-    .filter(m => channelFilter === 'all' || m.channel === channelFilter)
+    // channelGroup(), not a bare equality: the Chat tab covers teams AND gchat,
+    // so filtering on m.channel would show nothing under it.
+    .filter(m => channelFilter === 'all' || channelGroup(m.channel) === channelFilter)
     .filter(m => !personFilter || (m.participantKeys || []).includes(personFilter));
 
   return (
@@ -4362,11 +4466,18 @@ function CommunicationsPanel({ handoverId, accountId }) {
           what needs a person — a saved file is not news. */}
       <ProjectAttachments handoverId={handoverId} />
 
-      {/* Channel filter — All / Email / WhatsApp (Phone later) */}
+      {/* Channel filter — All / Email / WhatsApp / Chat.
+          Chat groups Teams and Google Chat: see channelGroup(). */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
-        {[['all', 'All'], ['email', 'Email'], ['whatsapp', 'WhatsApp']].map(([k, label]) => {
+        {[['all', 'All'], ['email', 'Email'], ['whatsapp', 'WhatsApp'], ['chat', 'Chat']].map(([k, label]) => {
           const on = channelFilter === k;
-          const count = k === 'all' ? (items || []).length : (items || []).filter(m => m.channel === k).length;
+          const count = k === 'all'
+            ? (items || []).length
+            : (items || []).filter(m => channelGroup(m.channel) === k).length;
+          // Hide an empty Chat tab rather than showing a permanent zero. Every
+          // other tab corresponds to a channel the org has configured; Chat only
+          // exists once something is actually captured from Teams.
+          if (k === 'chat' && count === 0) return null;
           return (
             <button key={k} onClick={() => setChannelFilter(k)} style={{ padding: '5px 12px', fontSize: 12, fontWeight: on ? 600 : 400, borderRadius: 6,
               border: `1px solid ${on ? '#0369a1' : '#e5e7eb'}`, background: on ? '#eff6ff' : '#fff', color: on ? '#0369a1' : '#374151', cursor: 'pointer' }}>
@@ -4422,7 +4533,7 @@ function CommunicationsPanel({ handoverId, accountId }) {
               <div style={{ padding: '8px 11px', borderRadius: 10, fontSize: 13, lineHeight: 1.45,
                 background: out ? '#dcf8c6' : '#fff', border: `1px solid ${out ? '#c5eeae' : '#e5e7eb'}`, color: '#111827' }}>
                 {m.subject && <div style={{ fontWeight: 600, marginBottom: 2 }}>{m.subject}</div>}
-                {m.body}
+                <MessageBody text={m.body} mentions={m.mentions} />
               </div>
               <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2, textAlign: out ? 'right' : 'left' }}>
                 {m.at ? new Date(m.at).toLocaleString() : ''}

@@ -4157,11 +4157,20 @@ async function getCommunications(handoverId, orgId) {
       // A channel thread's subject is the nearest thing Teams has to a subject
       // line. Chats have none, hence the null.
       subject: m.thread_subject || null,
-      // body_current, not body_original: the timeline shows what the message
-      // says NOW. Play evidence resolves to body_original instead, which is the
-      // whole point of holding both.
-      body: m.body_current,
-      bodyText: m.body_text,
+      // body is the FLATTENED text, not the HTML.
+      //
+      // The timeline renders bodies as plain text, because email and WhatsApp
+      // bodies already are. Sending Teams' HTML here put literal `<p>` and
+      // `<at id="0">Srujana</at>` on screen. body_text is the normalizer's
+      // flattened form: attachment placeholders removed, mention inner text
+      // kept, entities decoded.
+      //
+      // bodyHtml carries the original for any renderer that wants real
+      // formatting, and mentions[] carries the resolved ids so a renderer can
+      // highlight them properly rather than regexing the text. Neither is
+      // required to display the message.
+      body: m.body_text || '',
+      bodyHtml: m.body_current || null,
       at: m.sent_at, isAutomated: false,
       to: null, cc: [],
       groupSubject: m.conversation_name || null,
