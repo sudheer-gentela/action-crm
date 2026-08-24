@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict kxmUoGVlmMDgF20Hm9oA9bgY35Ie9BoKaQlghSlAo7ko0sDzIvjcBIfR120kjua
+\restrict RfDktRPYryNBSk3j4oh7crv15cbyxUVNVvehoxF1Ql4ewGUKWo9yqsjULK2ZzAD
 
 -- Dumped from database version 17.10 (Debian 17.10-1.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -5605,9 +5605,14 @@ CREATE TABLE public.msteams_conversations (
     capture_stopped_at timestamp with time zone,
     message_count integer DEFAULT 0 NOT NULL,
     last_message_at timestamp with time zone,
+    membership_type text,
+    is_readable boolean,
+    readability_checked_at timestamp with time zone,
+    readability_error text,
     CONSTRAINT msteams_conversations_binding_chk CHECK ((binding_status = ANY (ARRAY['unbound'::text, 'bound'::text, 'bound_account'::text, 'bound_pool'::text, 'ignored'::text]))),
     CONSTRAINT msteams_conversations_decided_chk CHECK (((is_watched = true) OR (binding_status = ANY (ARRAY['unbound'::text, 'ignored'::text])))),
     CONSTRAINT msteams_conversations_kind_chk CHECK ((kind = ANY (ARRAY['oneOnOne'::text, 'group'::text, 'meeting'::text, 'channel'::text]))),
+    CONSTRAINT msteams_conversations_membership_chk CHECK (((membership_type IS NULL) OR ((kind = 'channel'::text) AND (membership_type = ANY (ARRAY['standard'::text, 'private'::text, 'shared'::text, 'unknown'::text]))))),
     CONSTRAINT msteams_conversations_shape_chk CHECK ((((kind = 'channel'::text) AND (team_id IS NOT NULL)) OR ((kind <> 'channel'::text) AND (team_id IS NULL))))
 );
 
@@ -5617,6 +5622,13 @@ CREATE TABLE public.msteams_conversations (
 --
 
 COMMENT ON TABLE public.msteams_conversations IS 'Chats and channels a connected rep belongs to, as found by discovery. One row per (connection, conversation) ΓÇö two reps in the same channel is two rows, because watching is a per-rep decision. Phase 0 WRITES this table and captures nothing; 2026_126 reads is_watched to decide what to subscribe to.';
+
+
+--
+-- Name: COLUMN msteams_conversations.kind; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_conversations.kind IS 'oneOnOne, group, meeting (auto-created per Teams call), or channel. Meeting chats dominate by volume ΓÇö 405 of 475 in the measured pilot tenant ΓÇö so triage hides them by default and capture ignores them unless somebody deliberately watches one. Graph''s chatType is an open enum; unrecognised values are mapped to ''group'' at ingest rather than failing the poll.';
 
 
 --
@@ -5652,6 +5664,27 @@ COMMENT ON COLUMN public.msteams_conversations.last_activity_at IS 'Graph''s own
 --
 
 COMMENT ON COLUMN public.msteams_conversations.capture_started_at IS 'When watching began. Capture runs forward from here and never backwards: there is no backfill, and a message predating this is one nobody consented to retain. Set on watch, left in place on unwatch so a re-watch shows the original start.';
+
+
+--
+-- Name: COLUMN msteams_conversations.membership_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_conversations.membership_type IS 'Graph channel membershipType: standard, private, or shared. NULL for chats. Private channels have membership separate from the team, so a rep who owns a team can list a private channel and still be forbidden from reading it.';
+
+
+--
+-- Name: COLUMN msteams_conversations.is_readable; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_conversations.is_readable IS 'Three states, deliberately. NULL = never probed. true = a message read succeeded. false = 403, almost always because the rep is not a member of a private channel. Watching a false is refused up front rather than producing a subscription that captures nothing.';
+
+
+--
+-- Name: COLUMN msteams_conversations.readability_error; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_conversations.readability_error IS 'What the probe got back. Surfaced to the rep verbatim-ish, because the remedy ΓÇö ask a channel owner to add you ΓÇö is something only they can action.';
 
 
 --
@@ -5771,10 +5804,12 @@ CREATE TABLE public.msteams_messages (
     exclude_reason text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    is_system_event boolean DEFAULT false NOT NULL,
+    event_type text,
     CONSTRAINT msteams_messages_attribution_chk CHECK (((attribution_source IS NULL) OR (attribution_source = ANY (ARRAY['binding'::text, 'thread_root'::text, 'mention'::text, 'subject'::text, 'manual'::text])))),
     CONSTRAINT msteams_messages_attribution_shape_chk CHECK ((((handover_id IS NULL) AND (attribution_source IS NULL)) OR ((handover_id IS NOT NULL) AND (attribution_source IS NOT NULL)))),
     CONSTRAINT msteams_messages_exclude_shape_chk CHECK ((((excluded_at IS NULL) AND (excluded_by IS NULL)) OR ((excluded_at IS NOT NULL) AND (excluded_by IS NOT NULL) AND (exclude_reason IS NOT NULL) AND (btrim(exclude_reason) <> ''::text)))),
-    CONSTRAINT msteams_messages_type_chk CHECK ((message_type = ANY (ARRAY['message'::text, 'systemEventMessage'::text, 'unknown'::text])))
+    CONSTRAINT msteams_messages_type_shape_chk CHECK (((message_type IS NOT NULL) AND (btrim(message_type) <> ''::text)))
 );
 
 
@@ -5786,10 +5821,24 @@ COMMENT ON TABLE public.msteams_messages IS 'Captured Teams messages. Both bodie
 
 
 --
+-- Name: COLUMN msteams_messages.from_entra_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_messages.from_entra_id IS 'The sender''s Entra object id from chatMessage.from.user.id. NULL on system messages, where Graph sends from: null ΓÇö confirmed against the live tenant, not assumed. For those, the actors are inside eventDetail instead.';
+
+
+--
 -- Name: COLUMN msteams_messages.from_user_id; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.msteams_messages.from_user_id IS 'The resolved GoWarmCRM user, matched via from_entra_id. NULL for external participants, who are recorded and rendered but not linked.';
+
+
+--
+-- Name: COLUMN msteams_messages.message_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_messages.message_type IS 'Graph''s messageType, stored VERBATIM and deliberately unconstrained. The live tenant returns ''unknownFutureValue'' for call-started and call-ended messages ΓÇö OData''s signal for an open enum ΓÇö so a value list here would turn every future Microsoft addition into a failed write. Classify with is_system_event, not with this.';
 
 
 --
@@ -5818,6 +5867,20 @@ COMMENT ON COLUMN public.msteams_messages.mentions IS 'Graph''s mentions array, 
 --
 
 COMMENT ON COLUMN public.msteams_messages.deleted_at IS 'Set on changeType=deleted. Stops timeline rendering; does NOT remove the row, because evidence referencing it must still resolve. Genuine removal is a human act via excluded_at.';
+
+
+--
+-- Name: COLUMN msteams_messages.is_system_event; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_messages.is_system_event IS 'True when Graph attached an eventDetail block ΓÇö call started, member added, chat renamed. Derived from the PRESENCE of eventDetail rather than from messageType, which is an open enum and unreliable for this. Excluded from the project timeline by default: a handover does not need call-started for every meeting a rep attended.';
+
+
+--
+-- Name: COLUMN msteams_messages.event_type; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.msteams_messages.event_type IS 'The eventDetail @odata.type, e.g. #microsoft.graph.callEndedEventMessageDetail. Kept so "what kind of system message" is answerable without reparsing a body.';
 
 
 --
@@ -17211,6 +17274,13 @@ CREATE INDEX idx_msteams_conversations_graph_lookup ON public.msteams_conversati
 
 
 --
+-- Name: idx_msteams_conversations_readable; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_msteams_conversations_readable ON public.msteams_conversations USING btree (org_id, connection_id, is_readable) WHERE (kind = 'channel'::text);
+
+
+--
 -- Name: idx_msteams_conversations_triage; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -17235,7 +17305,7 @@ CREATE INDEX idx_msteams_messages_conversation ON public.msteams_messages USING 
 -- Name: idx_msteams_messages_handover; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_msteams_messages_handover ON public.msteams_messages USING btree (org_id, handover_id, sent_at DESC) WHERE ((handover_id IS NOT NULL) AND (excluded_at IS NULL) AND (deleted_at IS NULL));
+CREATE INDEX idx_msteams_messages_handover ON public.msteams_messages USING btree (org_id, handover_id, sent_at DESC) WHERE ((handover_id IS NOT NULL) AND (excluded_at IS NULL) AND (deleted_at IS NULL) AND (is_system_event = false));
 
 
 --
@@ -17256,7 +17326,7 @@ CREATE INDEX idx_msteams_messages_thread ON public.msteams_messages USING btree 
 -- Name: idx_msteams_messages_unassigned; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_msteams_messages_unassigned ON public.msteams_messages USING btree (org_id, sent_at DESC) WHERE ((handover_id IS NULL) AND (excluded_at IS NULL) AND (deleted_at IS NULL));
+CREATE INDEX idx_msteams_messages_unassigned ON public.msteams_messages USING btree (org_id, sent_at DESC) WHERE ((handover_id IS NULL) AND (excluded_at IS NULL) AND (deleted_at IS NULL) AND (is_system_event = false));
 
 
 --
@@ -25348,5 +25418,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict kxmUoGVlmMDgF20Hm9oA9bgY35Ie9BoKaQlghSlAo7ko0sDzIvjcBIfR120kjua
+\unrestrict RfDktRPYryNBSk3j4oh7crv15cbyxUVNVvehoxF1Ql4ewGUKWo9yqsjULK2ZzAD
 

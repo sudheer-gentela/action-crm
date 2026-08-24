@@ -2284,13 +2284,31 @@ async function freezePlanOnStart(handoverId, orgId, startDate = null) {
 
     // Resolve project_start-anchored dates. Until now these were NULL because
     // there was no start date to offset from.
+    //
+    // due_offset_days LIVES ON playbook_plays, NOT on the instance. This query
+    // read it as a bare column on project_play_instances, which has never had
+    // it — the instance carries due_anchor and due_date but not the offset they
+    // were derived from. So this UPDATE threw "column due_offset_days does not
+    // exist" every single time, the caller caught and logged it, and the
+    // project was left unfrozen. Project 91 hit exactly this. The same mistake
+    // is in getStartPreview, which is why the review modal never appeared:
+    // the preview threw and the UI fell through to the direct transition.
+    //
+    // An INNER join is correct here rather than LEFT. An ad-hoc play has
+    // play_id NULL and no template to take an offset from, and addAdHocPlay
+    // hardcodes due_anchor = 'created', so no ad-hoc play can be
+    // project_start-anchored in the first place. If one ever were, it has no
+    // offset to compute from and leaving its date alone is the only honest
+    // outcome.
     const { rowCount: recomputed } = await client.query(
-      `UPDATE project_play_instances
-          SET due_date = ($2::date + COALESCE(due_offset_days, 0)),
+      `UPDATE project_play_instances ppi
+          SET due_date = ($2::date + COALESCE(pp.due_offset_days, 0)),
               updated_at = now()
-        WHERE handover_id = $1 AND org_id = $3
-          AND due_anchor = 'project_start'
-          AND status NOT IN ('completed', 'skipped')`,
+         FROM playbook_plays pp
+        WHERE pp.id = ppi.play_id
+          AND ppi.handover_id = $1 AND ppi.org_id = $3
+          AND ppi.due_anchor = 'project_start'
+          AND ppi.status NOT IN ('completed', 'skipped')`,
       [handoverId, started, orgId]);
 
     // Promote provisional baselines to the committed plan.
@@ -2342,15 +2360,27 @@ async function getStartPreview(handoverId, orgId, startDate = null) {
 
   const started = startDate || new Date().toISOString().slice(0, 10);
 
+  // due_offset_days comes from playbook_plays, the TEMPLATE — the instance
+  // never had that column. Reading it as dpi.due_offset_days threw
+  // "column does not exist" on every call, and because requestAction in
+  // HandoverView falls back to the direct transition when the preview fails,
+  // the review step silently never appeared. A failing preview looked exactly
+  // like a project that had nothing to review.
+  //
+  // LEFT JOIN, unlike the recompute in freezePlanOnStart: this is a read and
+  // every play must appear in the review, including ad-hoc ones with no
+  // template. Those get a NULL offset, which COALESCE handles.
   const { rows } = await pool.query(
-    `SELECT dpi.id, dpi.title, dpi.stage_key, dpi.due_anchor, dpi.due_offset_days,
+    `SELECT dpi.id, dpi.title, dpi.stage_key, dpi.due_anchor,
+            pp.due_offset_days,
             dpi.due_date, dpi.baseline_source, dpi.is_gate, dpi.status,
             pst.name AS stage_name, pst.sort_order AS stage_sort_order,
             CASE WHEN dpi.due_anchor = 'project_start'
-                 THEN ($3::date + COALESCE(dpi.due_offset_days, 0))
+                 THEN ($3::date + COALESCE(pp.due_offset_days, 0))
                  ELSE dpi.due_date
             END AS computed_due_date
        FROM project_play_instances dpi
+       LEFT JOIN playbook_plays pp ON pp.id = dpi.play_id
        LEFT JOIN project_stages pst
               ON pst.handover_id = dpi.handover_id AND pst.key = dpi.stage_key
              AND pst.is_active = TRUE

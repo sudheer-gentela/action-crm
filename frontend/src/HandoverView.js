@@ -2023,6 +2023,201 @@ function DeliverableRollup({ rollup }) {
 
 // ── HandoverDetail ────────────────────────────────────────────────────────────
 
+/* ── EditableCoreFields ──────────────────────────────────────────────────────
+ *
+ * The project header's stat strip, with go-live date, contract value and
+ * commercial terms editable in place.
+ *
+ * WHY THIS EXISTS. handoverService.update() has always accepted goLiveDate,
+ * contractValue and commercialTermsSummary, and no screen ever sent them — the
+ * frontend called that endpoint with assignedServiceOwnerId and serviceNotes
+ * only. So all three were write-once at project creation, and changing a
+ * go-live date meant a hand-written SQL UPDATE. The service's own comment says
+ * that is not the intent: editing was deliberately opened up past draft because
+ * "a project is a live thing — dates move, owners change, budgets get revised".
+ *
+ * WHY INLINE RATHER THAN A MODAL. Three fields. A modal for three fields costs
+ * a click to open, a click to close, and a mental context switch, to edit
+ * numbers the user is already looking at. Clicking the value itself is fewer
+ * moving parts and needs no new screen.
+ *
+ * GATED ON TERMINAL ONLY, matching the backend exactly. update() refuses on
+ * completed and cancelled and allows everything else, so the UI does the same
+ * rather than inventing a stricter rule the server would not enforce — a button
+ * that is hidden when the API would have accepted the call is its own kind of
+ * bug.
+ */
+function EditableCoreFields({ detail, isTerminal, onSaved, fmtDate, fmtCurrency,
+                              gatesDone, gatesTotal, ownerLabel }) {
+  const [editing, setEditing] = useState(null);   // 'goLive' | 'value' | 'terms' | null
+  const [draft,   setDraft]   = useState('');
+  const [busy,    setBusy]    = useState(false);
+  const [err,     setErr]     = useState('');
+
+  const dtg = detail.goLiveDate
+    ? Math.ceil((new Date(detail.goLiveDate) - new Date()) / 86400000) : null;
+  const goLiveText  = dtg == null ? '—' : dtg < 0 ? `${Math.abs(dtg)}d overdue`
+                    : dtg === 0 ? 'Today' : `${dtg} days`;
+  const goLiveColor = dtg == null ? '#111827' : dtg < 0 ? '#dc2626'
+                    : dtg <= 14 ? '#d97706' : '#111827';
+
+  const open = (field, current) => {
+    setErr('');
+    setDraft(current == null ? '' : String(current));
+    setEditing(field);
+  };
+
+  const save = async (field) => {
+    setBusy(true); setErr('');
+    try {
+      const body = {};
+      if (field === 'goLive') {
+        // An empty date is a deliberate clear, but update() uses COALESCE on
+        // every column — passing null means "leave unchanged", not "clear".
+        // Rather than silently do nothing, say so.
+        if (!draft) {
+          setErr('Pick a date. Clearing the go-live date is not supported here.');
+          setBusy(false); return;
+        }
+        body.goLiveDate = draft;
+      } else if (field === 'value') {
+        const n = parseFloat(String(draft).replace(/[^0-9.-]/g, ''));
+        if (!Number.isFinite(n) || n < 0) {
+          setErr('Enter a number.'); setBusy(false); return;
+        }
+        body.contractValue = n;
+      } else {
+        body.commercialTermsSummary = draft.trim() || null;
+      }
+      await apiService.handovers.update(detail.id, body);
+      setEditing(null);
+      await onSaved();
+    } catch (e) {
+      setErr(e?.response?.data?.error?.message || e.message || 'Could not save.');
+    } finally { setBusy(false); }
+  };
+
+  const CARD = { flex: 1, minWidth: 120, background: '#fff', border: '1px solid #e5e7eb',
+                 borderRadius: 10, padding: '10px 12px' };
+  const LABEL = { fontSize: 10, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.3 };
+  const INPUT = { fontSize: 14, padding: '4px 6px', border: '1px solid #93c5fd',
+                  borderRadius: 5, width: '100%', boxSizing: 'border-box' };
+
+  const statCard = (value, label, color) => (
+    <div style={CARD}>
+      <div style={{ fontSize: 16, fontWeight: 700, color: color || '#111827' }}>{value}</div>
+      <div style={LABEL}>{label}</div>
+    </div>
+  );
+
+  // An editable card looks identical to a static one until hovered, so the
+  // strip does not turn into a wall of pencils. The title attribute carries the
+  // affordance for anyone who does not think to click a number.
+  const editableCard = (field, value, label, color, inputType) => (
+    <div style={{ ...CARD, cursor: isTerminal ? 'default' : 'pointer' }}
+         title={isTerminal ? 'A completed or cancelled project cannot be edited' : `Click to edit ${label}`}
+         onClick={() => { if (!isTerminal && editing !== field) open(field, draftValueFor(field)); }}>
+      {editing === field ? (
+        <div onClick={e => e.stopPropagation()}>
+          <input
+            type={inputType} value={draft} autoFocus disabled={busy}
+            onChange={e => setDraft(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') save(field);
+              if (e.key === 'Escape') { setEditing(null); setErr(''); }
+            }}
+            style={INPUT}
+          />
+          <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+            <button onClick={() => save(field)} disabled={busy}
+              style={{ fontSize: 11, padding: '3px 10px', borderRadius: 5, border: 'none',
+                       background: '#E8630A', color: '#fff', cursor: 'pointer' }}>
+              {busy ? 'Saving…' : 'Save'}
+            </button>
+            <button onClick={() => { setEditing(null); setErr(''); }} disabled={busy}
+              style={{ fontSize: 11, padding: '3px 10px', borderRadius: 5,
+                       border: '1px solid #d1d5db', background: '#fff', cursor: 'pointer' }}>
+              Cancel
+            </button>
+          </div>
+          {err && <div style={{ fontSize: 11, color: '#dc2626', marginTop: 4 }}>{err}</div>}
+        </div>
+      ) : (
+        <>
+          <div style={{ fontSize: 16, fontWeight: 700, color: color || '#111827' }}>{value}</div>
+          <div style={LABEL}>
+            {label}
+            {!isTerminal && <span style={{ marginLeft: 5, color: '#93c5fd', textTransform: 'none' }}>edit</span>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+
+  // The value the input should start from — the RAW value, not the formatted
+  // one. Seeding a currency field with "₹12,00,000" would make the first
+  // keystroke produce nonsense.
+  function draftValueFor(field) {
+    if (field === 'goLive') {
+      return detail.goLiveDate ? new Date(detail.goLiveDate).toISOString().slice(0, 10) : '';
+    }
+    if (field === 'value') return detail.contractValue ?? '';
+    return detail.commercialTermsSummary ?? '';
+  }
+
+  return (
+    <>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
+        {editableCard('goLive', goLiveText,
+          detail.goLiveDate ? `Go-live · ${fmtDate(detail.goLiveDate)}` : 'Go-live',
+          goLiveColor, 'date')}
+        {editableCard('value',
+          detail.contractValue ? fmtCurrency(detail.contractValue) : '—',
+          'Contract value', '#111827', 'number')}
+        {detail.serviceOwnerName ? statCard(detail.serviceOwnerName, ownerLabel) : null}
+        {gatesTotal > 0 ? statCard(`${gatesDone} / ${gatesTotal}`, 'Gate plays') : null}
+      </div>
+
+      {/* Commercial terms is prose, so it gets a row rather than a card. */}
+      <div style={{ marginTop: 8 }}>
+        {editing === 'terms' ? (
+          <div style={{ background: '#fff', border: '1px solid #93c5fd', borderRadius: 8, padding: 10 }}>
+            <div style={{ ...LABEL, marginBottom: 4 }}>Commercial terms</div>
+            <textarea value={draft} autoFocus disabled={busy} rows={3}
+              onChange={e => setDraft(e.target.value)}
+              style={{ ...INPUT, fontSize: 13, resize: 'vertical' }} />
+            <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+              <button onClick={() => save('terms')} disabled={busy}
+                style={{ fontSize: 11, padding: '3px 10px', borderRadius: 5, border: 'none',
+                         background: '#E8630A', color: '#fff', cursor: 'pointer' }}>
+                {busy ? 'Saving…' : 'Save'}
+              </button>
+              <button onClick={() => { setEditing(null); setErr(''); }} disabled={busy}
+                style={{ fontSize: 11, padding: '3px 10px', borderRadius: 5,
+                         border: '1px solid #d1d5db', background: '#fff', cursor: 'pointer' }}>
+                Cancel
+              </button>
+            </div>
+            {err && <div style={{ fontSize: 11, color: '#dc2626', marginTop: 4 }}>{err}</div>}
+          </div>
+        ) : (
+          <div style={{ fontSize: 12, color: '#6b7280', display: 'flex', gap: 6, alignItems: 'baseline' }}>
+            <span style={{ fontWeight: 600 }}>Commercial terms:</span>
+            <span style={{ color: detail.commercialTermsSummary ? '#374151' : '#9ca3af' }}>
+              {detail.commercialTermsSummary || 'Not recorded'}
+            </span>
+            {!isTerminal && (
+              <button onClick={() => open('terms', draftValueFor('terms'))}
+                style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                         color: '#2563eb', fontSize: 12 }}>edit</button>
+            )}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
 function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject, initialTab, onTabChange, managerLabel = 'Project Manager'}) {
   const [detail,    setDetail]    = useState(null);
   const [canSubmit, setCanSubmit] = useState(false);
@@ -2445,26 +2640,29 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
           </div>
         </div>
 
-        {/* Stat strip */}
-        {(() => {
-          const dtg = detail.goLiveDate ? Math.ceil((new Date(detail.goLiveDate) - new Date()) / 86400000) : null;
-          const goLiveText = dtg == null ? '—' : dtg < 0 ? `${Math.abs(dtg)}d overdue` : dtg === 0 ? 'Today' : `${dtg} days`;
-          const goLiveColor = dtg == null ? '#111827' : dtg < 0 ? '#dc2626' : dtg <= 14 ? '#d97706' : '#111827';
-          const statCard = (value, label, color) => (
-            <div style={{ flex: 1, minWidth: 120, background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '10px 12px' }}>
-              <div style={{ fontSize: 16, fontWeight: 700, color: color || '#111827' }}>{value}</div>
-              <div style={{ fontSize: 10, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.3 }}>{label}</div>
-            </div>
-          );
-          return (
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
-              {statCard(goLiveText, detail.goLiveDate ? `Go-live · ${fmtDate(detail.goLiveDate)}` : 'Go-live', goLiveColor)}
-              {detail.contractValue ? statCard(fmtCurrency(detail.contractValue), 'Contract value') : null}
-              {detail.serviceOwnerName ? statCard(detail.serviceOwnerName, ownerLabel) : null}
-              {gatesTotal > 0 ? statCard(`${gatesDone} / ${gatesTotal}`, 'Gate plays') : null}
-            </div>
-          );
-        })()}
+        {/* Stat strip — go-live, contract value and commercial terms are
+            EDITABLE here.
+
+            These three have always been accepted by handoverService.update()
+            and were unreachable from the UI: the frontend only ever called that
+            endpoint with assignedServiceOwnerId and serviceNotes. So a go-live
+            date could be set at creation and never changed, which is exactly
+            what update()'s own comment says the design intends to allow —
+            "a project is a live thing — dates move".
+            
+            Inline on the cards rather than a separate form, because these are
+            three fields and a modal for three fields is a worse trade than
+            clicking the number you are already looking at. */}
+        <EditableCoreFields
+          detail={detail}
+          isTerminal={isTerminal}
+          onSaved={async () => { await load(); onRefresh(); }}
+          fmtDate={fmtDate}
+          fmtCurrency={fmtCurrency}
+          gatesDone={gatesDone}
+          gatesTotal={gatesTotal}
+          ownerLabel={ownerLabel}
+        />
 
         {/* Status dates (secondary) */}
         <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 10, fontSize: 11, color: '#6b7280' }}>
