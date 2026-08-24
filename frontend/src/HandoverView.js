@@ -1576,20 +1576,44 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
           {/* 2026_130: submission replaces "Mark done" for everyone who is not
               a manager. A manager keeps the direct close — they are the person
               who would have approved it anyway, and routing them through a
-              review addressed to themselves is ceremony. */}
+              review addressed to themselves is ceremony.
+
+              But a manager must still be ABLE to submit. Three cases make the
+              direct-close-only version wrong:
+                • a manager doing work on a task assigned to them, who wants a
+                  second pair of eyes on it
+                • a project with two managers, where one reviews the other
+                • an org that wants every closure evidenced through review,
+                  regardless of who is closing it
+              So a manager gets both: Mark done as the primary action, Send for
+              review alongside it. Everyone else gets submission only. */}
           {!isDone && play.status !== 'in_review' && canAct && !capturing
             && (play.blockedBy || []).length === 0 && (
-            <button
-              onClick={() => (isManager ? setCapturing(true) : onReview?.(play, 'submit'))}
-              title={isManager
-                ? 'Close this task'
-                : 'Send this to the project manager with evidence'}
-              style={{
-                fontSize: 11, padding: '3px 10px', borderRadius: 4,
-                background: '#0369a1', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600,
-              }}>
-              {isManager ? 'Mark done' : 'Send for review'}
-            </button>
+            <>
+              {isManager && (
+                <button
+                  onClick={() => onReview?.(play, 'submit')}
+                  title="Record evidence and put this in the review queue instead of closing it"
+                  style={{
+                    fontSize: 11, padding: '3px 10px', borderRadius: 4,
+                    background: '#fffbeb', color: '#92400e',
+                    border: '1px solid #fde68a', cursor: 'pointer', fontWeight: 600,
+                  }}>
+                  Send for review
+                </button>
+              )}
+              <button
+                onClick={() => (isManager ? setCapturing(true) : onReview?.(play, 'submit'))}
+                title={isManager
+                  ? 'Close this task'
+                  : 'Send this to the project manager with evidence'}
+                style={{
+                  fontSize: 11, padding: '3px 10px', borderRadius: 4,
+                  background: '#0369a1', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600,
+                }}>
+                {isManager ? 'Mark done' : 'Send for review'}
+              </button>
+            </>
           )}
           {canEdit && onEdit && !editing && !capturing && (
             <button onClick={openEdit} title="Edit this item" style={{
