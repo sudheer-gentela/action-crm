@@ -163,6 +163,101 @@ function DueChip({ dueDate, isOverdue, daysOverdue }) {
 
 // ── HandoverRow ───────────────────────────────────────────────────────────────
 
+// ── Awaiting my review, across every project (2026_130) ──────────────────────
+//
+// The per-project banner answers "what is waiting on this project", which is
+// the right question once you have opened one and the wrong one when you run
+// six: the person who has to clear these does not know which project to open,
+// and that is exactly why reviews sit.
+//
+// Fetched here rather than derived from `projects`, unlike the per-project
+// banner — the portfolio list carries counts, not the tasks themselves, so
+// there is nothing local to derive from.
+function MyReviewQueue({ projects, onOpen }) {
+  const [rows, setRows] = useState(null);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    apiService.handovers.myReviewQueue()
+      .then(r => { if (alive) setRows(r.data || []); })
+      .catch(() => { if (alive) setRows([]); });
+    return () => { alive = false; };
+  }, []);
+
+  if (!rows || rows.length === 0) return null;
+
+  // ProjectsBoard's onOpen takes the project ROW, not an id — it does
+  // setSelected(h). So the id from the queue has to be resolved back to the row
+  // the board is holding. A project the viewer cannot see in this list (a scope
+  // they are not on) simply renders as plain text rather than a dead link.
+  const rowFor = (hid) => (projects || []).find(
+    x => Number(x.id ?? x.handoverId) === Number(hid));
+
+  // Grouped by project: "4 tasks on Riverside" is actionable in a way that
+  // four separate lines addressed to nobody in particular are not.
+  const byProject = rows.reduce((acc, r) => {
+    (acc[r.handoverId] = acc[r.handoverId] || { name: r.projectName, items: [] }).items.push(r);
+    return acc;
+  }, {});
+
+  return (
+    <div style={{ margin: '0 0 14px' }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 8,
+          fontSize: 13, fontWeight: 600, padding: '7px 14px', borderRadius: 999,
+          border: '1px solid #fde68a', background: '#fffbeb', color: '#92400e',
+          cursor: 'pointer', fontFamily: 'inherit',
+        }}>
+        <span>🔔 {rows.length} awaiting your review</span>
+        <span style={{ fontSize: 10, opacity: 0.8 }}>{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div style={{
+          marginTop: 8, border: '1px solid #fde68a', borderRadius: 8,
+          background: '#fffbeb', padding: '8px 4px', maxWidth: 760,
+        }}>
+          {Object.entries(byProject).map(([hid, g]) => {
+            const row = rowFor(hid);
+            return (
+            <div key={hid} style={{ padding: '4px 10px 8px' }}>
+              {row ? (
+                <button
+                  onClick={() => onOpen?.(row)}
+                  style={{
+                    border: 'none', background: 'none', padding: 0, cursor: 'pointer',
+                    fontSize: 12, fontWeight: 700, color: '#78350f',
+                    fontFamily: 'inherit', textDecoration: 'underline',
+                  }}>
+                  {g.name}
+                </button>
+              ) : (
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#78350f' }}>{g.name}</span>
+              )}
+              {g.items.map(it => (
+                <div key={it.playInstanceId} style={{
+                  fontSize: 12, color: '#92400e', padding: '3px 0 0 12px',
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                  {it.title}
+                  <span style={{ opacity: 0.75 }}>
+                    {' — '}{it.submittedByName || it.ownerName || 'someone'}
+                    {' asked to mark it '}{TARGET_WORD[it.targetStatus] || 'done'}
+                  </span>
+                </div>
+              ))}
+            </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setStatusFilter, statusMeta, onOpen, showOwner = false, managerLabel = 'Project Manager' }) {
   const [sortBy, setSortBy] = useState('value');
   const [overdueOnly, setOverdueOnly] = useState(false);
@@ -208,6 +303,11 @@ function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setS
 
   return (
     <div style={{ padding: 20, maxWidth: 1400, margin: '0 auto' }}>
+      {/* 2026_130. Above the metrics on purpose: this is the one thing on this
+          page that is blocking somebody else's work, and it renders nothing at
+          all when the queue is empty — which is most of the time. */}
+      <MyReviewQueue projects={projects} onOpen={onOpen} />
+
       {/* Metrics */}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
         {metric('Projects', projects.length)}
@@ -2742,17 +2842,6 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   // this only decides which task and which mode.
   const [reviewModal, setReviewModal] = useState(null);   // { play, mode }
 
-  // May the viewer work THIS task? Mirrors playReview.resolveActorRole on the
-  // server, which is the actual enforcement — this only decides whether to
-  // render a control or a read-only row. An unassigned task
-  // (ownerUserId null) is manager-only, so the null check is load-bearing:
-  // without it every unassigned task would look actionable to everyone.
-  const canReviewPlays = detail.canReviewPlays === true;
-  const viewerUserId   = detail.viewerUserId ?? readCurrentUserId();
-  const canActOnPlay   = (play) =>
-    canReviewPlays
-    || (play?.ownerUserId != null && Number(play.ownerUserId) === Number(viewerUserId));
-
   const openReview = (play, mode) => setReviewModal({ play, mode });
 
   // The Approve view offers "Send back", which is a different mode on the same
@@ -2812,6 +2901,25 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   // A project may override what its accountable person is called; otherwise the
   // org default applies.
   const ownerLabel = detail.managerLabel || managerLabel;
+
+  // 2026_130 — may the viewer work a given task? Mirrors
+  // playReview.resolveActorRole on the server, which is the actual enforcement;
+  // this only decides whether to render a control or a read-only row. An
+  // unassigned task (ownerUserId null) is manager-only, so the null check is
+  // load-bearing — without it every unassigned task would look actionable to
+  // everyone.
+  //
+  // MUST stay below the `if (!detail)` guard above. `detail` is useState(null)
+  // and only fills in after load(), so reading detail.canReviewPlays any
+  // earlier throws on the very first render — which is exactly what it did.
+  // The useState and the two handlers stay above the guard because hooks
+  // cannot sit behind a conditional return; these three are plain derivations
+  // and belong here with ownerLabel and the status flags.
+  const canReviewPlays = detail.canReviewPlays === true;
+  const viewerUserId   = detail.viewerUserId ?? readCurrentUserId();
+  const canActOnPlay   = (play) =>
+    canReviewPlays
+    || (play?.ownerUserId != null && Number(play.ownerUserId) === Number(viewerUserId));
 
   const isSalesView    = viewMode !== 'dashboard';
   const isServiceView  = viewMode === 'assigned';
