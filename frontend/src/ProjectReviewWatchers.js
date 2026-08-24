@@ -51,8 +51,17 @@ export default function ProjectReviewWatchers({ handoverId, canManage, managerLa
   const [busy,     setBusy]     = useState(false);
   const [err,      setErr]      = useState('');
 
+  // The endpoint may not exist yet if apiService.js has not shipped alongside
+  // this component. A missing method throws synchronously — before a promise
+  // exists — so a trailing .catch() would not catch it and the error would take
+  // the whole People card down with it. On a stale bundle this section simply
+  // does not render.
   const load = useCallback(() => {
     if (!handoverId) return;
+    if (typeof apiService.handovers?.reviewWatchers !== 'function') {
+      setWatchers([]);
+      return;
+    }
     apiService.handovers.reviewWatchers(handoverId)
       .then(r => setWatchers(r.data || []))
       .catch(e => { setWatchers([]); setErr(errText(e, 'Could not load the alert list.')); });
@@ -62,6 +71,7 @@ export default function ProjectReviewWatchers({ handoverId, canManage, managerLa
 
   useEffect(() => {
     if (!canManage) return;   // the picker is the only thing that needs the list
+    if (typeof apiService.handovers?.assignableUsers !== 'function') return;
     apiService.handovers.assignableUsers()
       .then(r => setUsers(r.data?.users || []))
       .catch(() => setUsers([]));
@@ -85,6 +95,11 @@ export default function ProjectReviewWatchers({ handoverId, canManage, managerLa
   };
 
   if (watchers === null) return null;   // silent while loading — this is a minor section
+  // No endpoint and nothing stored: render nothing rather than an empty section
+  // with an Add button that would fail on click.
+  if (watchers.length === 0 && typeof apiService.handovers?.setReviewWatchers !== 'function') {
+    return null;
+  }
 
   const ids       = watchers.map(w => w.userId);
   const available = users.filter(u => !ids.includes(u.id));

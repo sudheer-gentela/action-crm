@@ -179,8 +179,8 @@ function MyReviewQueue({ projects, onOpen }) {
 
   useEffect(() => {
     let alive = true;
-    apiService.handovers.myReviewQueue()
-      .then(r => { if (alive) setRows(r.data || []); })
+    callApi(apiService.handovers?.myReviewQueue)
+      .then(r => { if (alive) setRows(r?.data || []); })
       .catch(() => { if (alive) setRows([]); });
     return () => { alive = false; };
   }, []);
@@ -807,6 +807,30 @@ const isPlayDone = st => PLAY_DONE_STATUSES.includes(st);
 // PLAY_STATUS labels are noun-ish pills ('Done'); these are the verb form.
 const TARGET_WORD = { completed: 'done', skipped: 'skipped', cancelled: 'cancelled' };
 
+// Call an apiService method that may not exist yet.
+//
+// The review loop spans nineteen files across two deploys. If HandoverView.js
+// ships ahead of apiService.js, `apiService.handovers.myReviewQueue(...)`
+// throws a TypeError SYNCHRONOUSLY — before a promise exists — so the trailing
+// .catch() never runs and the error escapes the effect and unmounts the whole
+// projects board. A brand-new optional panel must never be able to do that:
+// the worst it should do on a stale bundle is not render.
+//
+// This is not defensive-programming-in-general. It is scoped to the endpoints
+// added in 2026_130, and only at the mount-time call sites — the user-initiated
+// ones already sit inside try/catch in an async function, where a synchronous
+// throw rejects the promise and is caught normally.
+function callApi(fn, ...args) {
+  if (typeof fn !== 'function') {
+    return Promise.reject(new Error('endpoint_unavailable'));
+  }
+  try {
+    return Promise.resolve(fn(...args));
+  } catch (err) {
+    return Promise.reject(err);
+  }
+}
+
 function PlayStatusPill({ status }) {
   const s = PLAY_STATUS[status] || PLAY_STATUS.not_started;
   return (
@@ -950,8 +974,8 @@ function PlayTransitionHistory({ handoverId, play }) {
 
   useEffect(() => {
     let alive = true;
-    apiService.handovers.playTransitions(handoverId, play.playInstanceId)
-      .then(r => { if (alive) setRows(r.data || []); })
+    callApi(apiService.handovers?.playTransitions, handoverId, play.playInstanceId)
+      .then(r => { if (alive) setRows(r?.data || []); })
       .catch(() => { if (alive) setRows([]); });
     return () => { alive = false; };
   }, [handoverId, play.playInstanceId]);

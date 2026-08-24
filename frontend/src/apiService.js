@@ -855,6 +855,8 @@ twilio: {
     playTransitions: (id, instanceId) =>
       api.get(`/handovers/sales/${id}/plays/${instanceId}/transitions`),
     reviewQueue:     (id) => api.get(`/handovers/sales/${id}/review-queue`),
+    // Awaiting MY review, across every project I run. Not project-scoped.
+    myReviewQueue:   ()   => api.get('/handovers/review-queue'),
     reviewWatchers:  (id) => api.get(`/handovers/sales/${id}/review-watchers`),
     setReviewWatchers: (id, userIds) =>
       api.put(`/handovers/sales/${id}/review-watchers`, { userIds }),
