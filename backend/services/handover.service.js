@@ -1142,12 +1142,63 @@ async function advanceStatus(handoverId, orgId, userId, toStatus, closureSummary
   // and would otherwise race the recompute and render stale dates.
   if (existing.status === 'draft' && toStatus !== 'draft') {
     try {
-      await freezePlanOnStart(handoverId, orgId);
+      const froze = await freezePlanOnStart(handoverId, orgId);
+      // Logged on success too. A freeze that promoted zero baselines on a
+      // project with plays is the signature of the bug this replaced, and
+      // without a line here it looked identical to a healthy freeze.
+      console.log(
+        `[handover.service] plan frozen (handover=${handoverId}): ` +
+        `startedAt=${froze.startedAt} recomputed=${froze.recomputed} promoted=${froze.promoted}` +
+        (froze.alreadyFrozen ? ' (timestamps already set — ran promotion sweep only)' : ''));
     } catch (err) {
       // A failed freeze must not strand the project mid-transition — the
       // status change is the user's intent and has already been written.
+      //
+      // freezePlanOnStart is now transactional, so a failure here leaves the
+      // plan wholly unfrozen rather than half-frozen, and the next Start can
+      // repair it. That is the fix for the trap this catch used to conceal:
+      // previously the function's first UPDATE committed independently, so a
+      // later failure left baseline_frozen_at set with baselines unpromoted —
+      // and the old all-or-nothing idempotence guard then made that permanent.
       console.error(
-        `[handover.service] plan freeze failed (handover=${handoverId}):`, err.message);
+        `[handover.service] plan freeze failed (handover=${handoverId}): ${err.message}\n` +
+        `  The plan is still provisional. Press Start again once the cause is fixed.`);
+    }
+  }
+
+  // Returning TO draft unfreezes the plan.
+  //
+  // Without this, a project sent back to draft kept baseline_frozen_at set and
+  // went on treating every date edit as tracked slip — which is precisely what
+  // draft is supposed to switch off. The state was also self-contradictory:
+  // status said provisional, the flag said committed.
+  //
+  // baseline_source 'original' is demoted to 'inferred' rather than cleared:
+  // the DATES remain a reasonable reconstruction, it is only the claim that
+  // somebody committed to them that is withdrawn. 'rebaselined' is left alone —
+  // it carries a written reason and is history, not a default.
+  if (existing.status !== 'draft' && toStatus === 'draft') {
+    try {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(
+          `UPDATE sales_handovers
+              SET baseline_frozen_at = NULL, started_at = NULL, updated_at = now()
+            WHERE id = $1 AND org_id = $2`,
+          [handoverId, orgId]);
+        await client.query(
+          `UPDATE project_play_instances
+              SET baseline_source = 'inferred', updated_at = now()
+            WHERE handover_id = $1 AND org_id = $2 AND baseline_source = 'original'`,
+          [handoverId, orgId]);
+        await client.query('COMMIT');
+        console.log(`[handover.service] plan unfrozen — back to draft (handover=${handoverId})`);
+      } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; }
+      finally { client.release(); }
+    } catch (err) {
+      console.error(
+        `[handover.service] unfreeze failed (handover=${handoverId}): ${err.message}`);
     }
   }
 
@@ -1733,17 +1784,28 @@ async function addPlay(handoverId, orgId, userId, data = {}) {
     [handoverId, orgId, stageKey]
   );
 
+  // Same baseline rule as the playbook path: a play added to an already-frozen
+  // project is born with a committed baseline, because nothing runs later to
+  // give it one. Without this, an ad-hoc play on a live project reported
+  // isAdHoc = true forever and contributed nothing to plan-vs-actual.
+  const { rows: [hb] } = await pool.query(
+    `SELECT baseline_frozen_at FROM sales_handovers WHERE id = $1 AND org_id = $2`,
+    [handoverId, orgId]
+  );
+  const baselineDue    = (hb?.baseline_frozen_at && dueDate) ? dueDate : null;
+  const baselineSource = baselineDue ? 'original' : null;
+
   const { rows: [inst] } = await pool.query(
     `INSERT INTO project_play_instances
        (handover_id, org_id, playbook_id, play_id, stage_key, title, description,
         channel, priority, execution_type, is_gate, due_date, due_anchor,
-        sort_order, status, owner_user_id)
+        sort_order, status, owner_user_id, baseline_due_date, baseline_source)
      VALUES ($1, $2, NULL, NULL, $3, $4, $5,
              'internal_task', 'medium', 'parallel', $6, $7, 'created',
-             $8, 'not_started', $9)
+             $8, 'not_started', $9, $10::date, $11::text)
      RETURNING id`,
     [handoverId, orgId, stageKey, title, (data.description || '').trim() || null,
-     isGate, dueDate, nextOrder, ownerUserId]
+     isGate, dueDate, nextOrder, ownerUserId, baselineDue, baselineSource]
   );
 
   const plays = await _getPlays(handoverId, orgId);
@@ -2175,50 +2237,91 @@ async function _evidencePolicy(handoverId, orgId) {
  * and leaving again cannot silently rewrite a committed plan.
  */
 async function freezePlanOnStart(handoverId, orgId, startDate = null) {
-  const { rows: [h] } = await pool.query(
-    `SELECT id, status, started_at, baseline_frozen_at
-       FROM sales_handovers WHERE id = $1 AND org_id = $2`,
-    [handoverId, orgId]);
-  if (!h) throw Object.assign(new Error('Project not found'), { status: 404 });
-  if (h.baseline_frozen_at) return { alreadyFrozen: true, recomputed: 0, promoted: 0 };
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  const started = startDate || new Date().toISOString().slice(0, 10);
+    const { rows: [h] } = await client.query(
+      `SELECT id, status, started_at, baseline_frozen_at
+         FROM sales_handovers WHERE id = $1 AND org_id = $2
+         FOR UPDATE`,
+      [handoverId, orgId]);
+    if (!h) throw Object.assign(new Error('Project not found'), { status: 404 });
 
-  await pool.query(
-    `UPDATE sales_handovers
-        SET started_at = COALESCE(started_at, $2::date),
-            baseline_frozen_at = now(),
-            updated_at = now()
-      WHERE id = $1 AND org_id = $3`,
-    [handoverId, started, orgId]);
+    // IDEMPOTENCE IS PER-STEP, NOT ALL-OR-NOTHING.
+    //
+    // This used to be `if (h.baseline_frozen_at) return { alreadyFrozen: true }`
+    // — a single early return covering all three steps. That was wrong in a way
+    // that made itself permanent. The function was not transactional, so its
+    // first UPDATE (started_at + baseline_frozen_at) committed on its own; if a
+    // later step then failed, the flag was durably set with the baselines
+    // untouched, and this guard meant no subsequent Start could ever repair it.
+    // Project 91 spent four days in exactly that state.
+    //
+    // Migration 118 produced the same shape at scale: its backfill froze every
+    // non-draft project without promoting a single baseline, and this guard then
+    // made all of them unpromotable.
+    //
+    // So: skip re-stamping the timestamps if they are already there — that part
+    // genuinely is done-once — but ALWAYS run the recompute and the promotion,
+    // because unpromoted plays can appear at any time (a playbook applied after
+    // start, an ad-hoc play added) and both sweeps are already scoped to leave
+    // finished work alone.
+    const alreadyFrozen = !!h.baseline_frozen_at;
+    const started = h.started_at
+      ? new Date(h.started_at).toISOString().slice(0, 10)
+      : (startDate || new Date().toISOString().slice(0, 10));
 
-  // Resolve project_start-anchored dates. Until now these were NULL because
-  // there was no start date to offset from.
-  const { rowCount: recomputed } = await pool.query(
-    `UPDATE project_play_instances
-        SET due_date = ($2::date + COALESCE(due_offset_days, 0)),
-            updated_at = now()
-      WHERE handover_id = $1 AND org_id = $3
-        AND due_anchor = 'project_start'
-        AND status NOT IN ('completed', 'skipped')`,
-    [handoverId, started, orgId]);
+    if (!alreadyFrozen) {
+      await client.query(
+        `UPDATE sales_handovers
+            SET started_at = COALESCE(started_at, $2::date),
+                baseline_frozen_at = now(),
+                updated_at = now()
+          WHERE id = $1 AND org_id = $3`,
+        [handoverId, started, orgId]);
+    }
 
-  // Promote provisional baselines to the committed plan.
-  //
-  // Scoped to 'inferred' and NULL. A baseline already marked 'original' or
-  // 'rebaselined' represents a real commitment someone made and must never be
-  // silently overwritten — that is the difference between freezing a plan and
-  // erasing its history.
-  const { rowCount: promoted } = await pool.query(
-    `UPDATE project_play_instances
-        SET baseline_due_date = due_date,
-            baseline_source   = 'original',
-            updated_at = now()
-      WHERE handover_id = $1 AND org_id = $2
-        AND (baseline_source IS NULL OR baseline_source = 'inferred')`,
-    [handoverId, orgId]);
+    // Resolve project_start-anchored dates. Until now these were NULL because
+    // there was no start date to offset from.
+    const { rowCount: recomputed } = await client.query(
+      `UPDATE project_play_instances
+          SET due_date = ($2::date + COALESCE(due_offset_days, 0)),
+              updated_at = now()
+        WHERE handover_id = $1 AND org_id = $3
+          AND due_anchor = 'project_start'
+          AND status NOT IN ('completed', 'skipped')`,
+      [handoverId, started, orgId]);
 
-  return { alreadyFrozen: false, startedAt: started, recomputed, promoted };
+    // Promote provisional baselines to the committed plan.
+    //
+    // Scoped to 'inferred' and NULL. A baseline already marked 'original' or
+    // 'rebaselined' represents a real commitment someone made and must never be
+    // silently overwritten — that is the difference between freezing a plan and
+    // erasing its history.
+    //
+    // due_date IS NOT NULL is new, and matches what 2026_111 decided: giving an
+    // unscheduled play a baseline invents a plan that never existed. Without it,
+    // an undated play got baseline_due_date = NULL and baseline_source =
+    // 'original' — a row claiming to be a committed baseline with no date in it.
+    const { rowCount: promoted } = await client.query(
+      `UPDATE project_play_instances
+          SET baseline_due_date = due_date,
+              baseline_source   = 'original',
+              updated_at = now()
+        WHERE handover_id = $1 AND org_id = $2
+          AND due_date IS NOT NULL
+          AND (baseline_source IS NULL OR baseline_source = 'inferred')`,
+      [handoverId, orgId]);
+
+    await client.query('COMMIT');
+    return { alreadyFrozen, startedAt: started, recomputed, promoted };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 /**

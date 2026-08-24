@@ -466,7 +466,13 @@ class PlaybookPlayService {
 
     const { rows: [handover] } = await db.query(
       `SELECT id, org_id, assigned_service_owner_id, go_live_date, created_by,
-              project_kind, budget
+              project_kind, budget,
+              -- started_at and baseline_frozen_at are BOTH required below.
+              -- started_at anchors project_start-anchored due dates;
+              -- baseline_frozen_at decides whether a new play is born with a
+              -- committed baseline. Omitting either makes the column silently
+              -- undefined, and a play then looks provisional on a live project.
+              started_at, baseline_frozen_at
          FROM sales_handovers WHERE id = $1 AND org_id = $2`,
       [handoverId, orgId]
     );
@@ -552,19 +558,42 @@ class PlaybookPlayService {
       const anchor  = play.due_anchor || 'created';
       const dueDate = computeInstanceDueDate(anchor, play.due_offset_days, goLiveDate, startedAt);
 
+      // BASELINE AT INSERT.
+      //
+      // Previously omitted from this column list entirely, so every play was
+      // born with baseline_due_date = NULL and baseline_source = NULL. That is
+      // correct while the project is in draft — the plan is provisional and
+      // freezePlanOnStart will promote it at Start. It is WRONG when the
+      // project is already frozen, because nothing runs after that point:
+      // planVariance then reports isAdHoc = true and no variance at all, so a
+      // project could show a full plan and a completely empty plan-vs-actual.
+      // Adding a playbook to a running project hit this every time.
+      //
+      // 'original' rather than 'inferred': the project is live, this date is
+      // the plan as of now, and it is being recorded at the moment of creation
+      // rather than reconstructed after the fact.
+      //
+      // No due_date means no baseline, matching 2026_111 — an unscheduled play
+      // given a baseline invents a plan that never existed.
+      const frozen = !!handover.baseline_frozen_at;
+      const baselineDue    = (frozen && dueDate) ? dueDate : null;
+      const baselineSource = baselineDue ? 'original' : null;
+
       const instResult = await db.query(
         `INSERT INTO project_play_instances (
            handover_id, org_id, play_id, stage_key,
            title, description, channel, priority,
            execution_type, is_gate, due_date, sort_order,
-           status, due_anchor, playbook_id
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+           status, due_anchor, playbook_id,
+           baseline_due_date, baseline_source
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
          RETURNING *`,
         [
           handoverId, orgId, play.id, stageKey,
           play.title, play.description, play.channel, play.priority,
           play.execution_type, play.is_gate, dueDate,
           play.sort_order, initialStatus, anchor, playbookId,
+          baselineDue, baselineSource,
         ]
       );
       const instance = instResult.rows[0];
