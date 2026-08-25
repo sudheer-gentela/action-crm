@@ -36,6 +36,19 @@ const TYPE_TO_CATEGORY = {
   prospecting_escalation_tier_3:   'escalation',
   revisit_prospect:                'revisit',
   revisit_account:                 'revisit',
+  // Project task review loop. Mapped explicitly rather than left to the
+  // `|| 'immediate'` fallback below, because two behaviours key off the
+  // 'review' category and both break silently without these entries:
+  // the per-category email preference, and the hourly digest deferral in
+  // deliverEmail (which only defers category === 'review').
+  //
+  // Safe for Slack: slackTargets.resolveTargets ignores the category today
+  // (channel routing is still commented out), and an absent key in
+  // slack_categories reads as allowed, so review alerts keep flowing there.
+  play_review_submitted:           'review',
+  play_review_approved:            'review',
+  play_review_rejected:            'review',
+  play_review_closed:              'review',
 };
 const DEAD_TOKEN_ERRORS = new Set(['token_revoked', 'invalid_auth', 'account_inactive']);
 
@@ -143,37 +156,88 @@ async function deliverSlack(orgId, notificationId) {
  * the recipient can turn it off.
  */
 async function deliverEmail(orgId, payload = {}) {
-  const { userId, notificationId, to, subject, html, text } = payload;
-  if (!to)      return { skipped: true, reason: 'no_recipient' };
+  const { userId, notificationId } = payload;
+
+  // ── Resolve the notification, exactly as deliverSlack does ──────────────
+  // Callers enqueue { orgId, userId, notificationId } and nothing more. The
+  // subject, body, category and recipient address are all derivable from the
+  // notification row, and deriving them here rather than at each call site is
+  // what makes email work for EVERY notification type instead of only the one
+  // that happened to pass them in.
+  //
+  // playReviewNotifier still passes to/subject/html/text explicitly. Those win
+  // when present — it builds a richer body with a deep link than the generic
+  // path can — so both call shapes are supported.
+  let n = null;
+  if (notificationId) {
+    const { rows } = await pool.query(
+      `SELECT * FROM notifications WHERE id = $1 AND org_id = $2`,
+      [notificationId, orgId]);
+    n = rows[0] || null;
+    if (!n) return { skipped: true, reason: 'notification_not_found' };
+  }
+
+  const recipientId = userId || n?.user_id;
+  if (!recipientId) return { skipped: true, reason: 'no_recipient' };
+
+  // ── Preference gate: master switch, then per-category ───────────────────
+  // Category comes from TYPE_TO_CATEGORY, the same map Slack routes on, so a
+  // new notification type is routed for both channels by one edit. Unknown
+  // types fall back to 'immediate', matching deliverSlack.
+  const category = n ? (TYPE_TO_CATEGORY[n.type] || 'immediate') : 'review';
+  const prefs    = await notificationService.getUserNotificationPrefs(recipientId, orgId);
+  const ch       = prefs.channels || {};
+
+  // Defaults OFF. Email is the only channel that reaches someone who is not in
+  // the app, which is exactly why it must be opted into rather than out of:
+  // silently mailing every user every notification is how a product teaches
+  // people to filter it. `=== true` and not `!== false` — an org upgrading from
+  // an older prefs row has no email key at all, and that must read as off.
+  if (ch.email_enabled !== true) return { skipped: true, reason: 'email_disabled' };
+  if (ch.email_categories && ch.email_categories[category] === false) {
+    return { skipped: true, reason: `category_off:${category}` };
+  }
+
+  // ── Digest deferral (review category only) ──────────────────────────────
+  // On a large project every submission would otherwise be its own email. In
+  // digest mode the send is skipped and the notification row is STAMPED
+  // instead; sendReviewDigest() below sweeps the stamps and sends one mail.
+  //
+  // Scoped to 'review' because that is the only category with a sweep behind
+  // it. The overdue path is already a daily digest by construction — deferring
+  // it again would delay a once-a-day mail by up to another hour for nothing.
+  //
+  // The stamp lives in metadata rather than a new column deliberately: it is
+  // per-notification bookkeeping with a lifetime of hours. Requires
+  // notificationId — a deferral we cannot stamp is a mail we would silently
+  // lose, so it falls through and sends immediately instead.
+  if (category === 'review' && ch.review_email_mode === 'digest' && notificationId) {
+    await pool.query(
+      `UPDATE notifications SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb
+        WHERE id = $1`,
+      [notificationId, JSON.stringify({ email_deferred: true })]
+    ).catch(() => {});
+    return { skipped: true, reason: 'deferred_to_digest' };
+  }
+
+  // ── Address ─────────────────────────────────────────────────────────────
+  let to = payload.to;
+  if (!to) {
+    const { rows: [u] } = await pool.query(
+      `SELECT email FROM users WHERE id = $1`, [recipientId]);
+    to = u?.email || null;
+  }
+  if (!to) return { skipped: true, reason: 'no_address' };
+
+  const subject = payload.subject || n?.title;
   if (!subject) return { skipped: true, reason: 'no_subject' };
 
-  if (userId) {
-    const prefs = await notificationService.getUserNotificationPrefs(userId, orgId);
-    const ch    = prefs.channels || {};
-    if (ch.email_enabled === false) return { skipped: true, reason: 'email_disabled' };
-    if (ch.email_categories && ch.email_categories.review === false) {
-      return { skipped: true, reason: 'category_off:review' };
-    }
-
-    // ── Digest deferral ──────────────────────────────────────────────────
-    // On a large project every submission would otherwise be its own email.
-    // In digest mode the send is skipped and the notification row is STAMPED
-    // instead; sendReviewDigests() below sweeps the stamps and sends one mail.
-    //
-    // The stamp lives in metadata rather than a new column deliberately: it is
-    // per-notification bookkeeping with a lifetime of hours, and a column on a
-    // hot table is a poor trade for that. Requires notificationId — a deferral
-    // we cannot stamp is a mail we would silently lose, so it falls through
-    // and sends immediately instead.
-    if (ch.review_email_mode === 'digest' && notificationId) {
-      await pool.query(
-        `UPDATE notifications SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb
-          WHERE id = $1`,
-        [notificationId, JSON.stringify({ email_deferred: true })]
-      ).catch(() => {});
-      return { skipped: true, reason: 'deferred_to_digest' };
-    }
-  }
+  const text = payload.text || `${n?.body || ''}${n?.metadata?.url ? `\n\n${n.metadata.url}` : ''}\n`;
+  // metadata.url is the deep link back to the thing the alert is about.
+  // Reading it here rather than having each notifier build its own HTML is
+  // what let playReviewNotifier stop enqueueing its own email: any caller
+  // that puts a url in metadata gets a linked email for free.
+  const html = payload.html || _genericHtml(n?.title, n?.body, n?.metadata?.url);
 
   const { sendSystemEmail } = require('./systemMailer');
   const result = await sendSystemEmail({ to, subject, html, text });
@@ -189,7 +253,23 @@ async function deliverEmail(orgId, payload = {}) {
     ).catch(() => {});
   }
 
-  return { notificationId, ...result };
+  return { notificationId, category, ...result };
+}
+
+// Plain transactional shell for notifications that did not supply their own
+// body. Deliberately minimal: this is an alert, not a campaign, and an HTML
+// wrapper with a logo in it buys nothing and breaks in more clients.
+function _genericHtml(title, body, url) {
+  const esc = (x) => String(x ?? '').replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const link = url
+    ? `<p style="margin:14px 0 0"><a href="${esc(url)}" style="color:#1d4ed8">Open it in GoWarmCRM</a></p>`
+    : '';
+  return `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;color:#111827;line-height:1.5">
+  <p style="margin:0 0 12px"><strong>${esc(title)}</strong></p>
+  <div style="margin:0;white-space:pre-wrap">${esc(body)}</div>
+  ${link}
+</div>`;
 }
 
 /**

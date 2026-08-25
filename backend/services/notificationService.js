@@ -248,6 +248,17 @@ async function createNotification(orgId, userId, type, title, body, entityType, 
       { type: 'push_delivery', orgId, userId, notificationId: notif.id, title, body },
       { jobId: `push-del-${notif.id}` }
     ).catch(err => console.warn('[notifications] push enqueue failed:', err.message));
+
+    // Email. Same queue, same best-effort contract as Slack and push above.
+    // deliverEmail resolves the subject, body, category and address from the
+    // notification row, so every notification type is reachable by email
+    // without its call site knowing anything about email. It is gated behind
+    // channels.email_enabled, which defaults FALSE, so adding this enqueue
+    // sends nothing until a user opts in.
+    notificationQueue.add(
+      { type: 'email_delivery', orgId, userId, notificationId: notif.id },
+      { jobId: `email-del-${notif.id}` }
+    ).catch(err => console.warn('[notifications] email enqueue failed:', err.message));
   } catch (err) {
     console.warn('[notifications] slack enqueue unavailable:', err.message);
   }
@@ -423,8 +434,20 @@ const DEFAULT_PREFS = {
     // sitting unreviewed because email silently defaulted off is the failure
     // the review loop exists to prevent. Only the 'review' category is
     // dispatched today.
-    email_enabled:    true,
-    email_categories: { review: true },
+    // Email defaults OFF, mirroring slack_enabled. Email is the only
+    // channel that reaches someone who is not in the app, which is exactly
+    // why it is opt-in: mailing every user every notification by default is
+    // how a product teaches people to filter it. In-app is the only channel
+    // on by default, and it is always on.
+    //
+    // Category defaults apply ONCE the user turns email on — same contract
+    // as slack_categories. 'digest' is true here where Slack has it false:
+    // a daily overdue summary is a natural email and a noisy DM.
+    email_enabled:    false,
+    email_categories: {
+      immediate: true, escalation: true, revisit: true,
+      digest:    true, review:     true,
+    },
     // 'immediate' sends on every review event; 'digest' batches them into
     // one mail per sweep. On a large project immediate is a lot of mail,
     // which is how a channel gets filtered to a folder and stops working.

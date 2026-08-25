@@ -202,11 +202,17 @@ async function notify(event, { orgId, handoverId, instance, actorId, targetStatu
             url,
           }
         );
-        await enqueueEmail({
-          orgId, userId: r.userId, notificationId: notif?.id ?? null,
-          to: r.email, subject: title,
-          ...buildEmail({ title, body, projectName, playTitle, url }),
-        });
+        // Email is NOT enqueued here any more.
+        //
+        // createNotification() now fans out to email itself, for every
+        // notification type, using the same jobId (`email-del-<id>`). Enqueuing
+        // a second job with that id would be silently dropped by Bull as a
+        // duplicate — and since the generic one is added first, this richer
+        // payload would be the one thrown away. Worse, if the ids ever diverged
+        // the user would get two copies of the same alert.
+        //
+        // The deep link survives: `url` goes into the notification's metadata
+        // below, and deliverEmail reads metadata.url when building the body.
       } catch (err) {
         errors += 1;
         console.warn(`[playReview] notify failed for user ${r.userId}:`, err.message);
@@ -220,29 +226,10 @@ async function notify(event, { orgId, handoverId, instance, actorId, targetStatu
 }
 
 /**
- * Put the email on the notification queue.
- *
- * Queued rather than sent inline so SMTP latency never sits inside the request
- * that moved the task, and so a transient SMTP failure gets the queue's retry
- * and backoff instead of being lost. Falls back to sending inline if Redis or
- * the queue module is unavailable — a missing queue should degrade delivery,
- * not remove it.
+ * Email dispatch used to live here (enqueueEmail). It moved into
+ * createNotification()'s fan-out so that every notification type is reachable
+ * by email, not just review events — see notificationDelivery.deliverEmail.
+ * Nothing in this module enqueues email any more.
  */
-async function enqueueEmail(payload) {
-  try {
-    const { notificationQueue } = require('../jobs/notificationJob');
-    await notificationQueue.add(
-      { type: 'email_delivery', ...payload },
-      payload.notificationId ? { jobId: `email-del-${payload.notificationId}` } : {}
-    );
-  } catch (err) {
-    console.warn('[playReview] email enqueue unavailable, sending inline:', err.message);
-    const { sendSystemEmail } = require('./systemMailer');
-    await sendSystemEmail({
-      to: payload.to, subject: payload.subject,
-      html: payload.html, text: payload.text,
-    }).catch(() => {});
-  }
-}
 
 module.exports = { notify, resolveRecipients, TYPES };
