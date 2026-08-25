@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict RfDktRPYryNBSk3j4oh7crv15cbyxUVNVvehoxF1Ql4ewGUKWo9yqsjULK2ZzAD
+\restrict jVtKvvvcmfeGAh8asK8JdtC5AhDSpdJoDRCf29zfPZ7Qc3GbVRB5ELFEP0TkdiQ
 
 -- Dumped from database version 17.10 (Debian 17.10-1.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -4745,11 +4745,18 @@ CREATE TABLE public.project_play_instances (
     baseline_due_date date,
     baseline_source text,
     depends_on integer[],
+    review_target_status text,
+    review_submitted_at timestamp with time zone,
+    review_submitted_by integer,
+    review_evidence jsonb,
+    fired_action_ids integer[],
     CONSTRAINT project_play_instances_baseline_source_chk CHECK (((baseline_source IS NULL) OR (baseline_source = ANY (ARRAY['original'::text, 'inferred'::text, 'rebaselined'::text])))),
     CONSTRAINT project_play_instances_depends_not_self CHECK (((depends_on IS NULL) OR (NOT (id = ANY (depends_on))))),
     CONSTRAINT project_play_instances_due_anchor_check CHECK (((due_anchor)::text = ANY (ARRAY['created'::text, 'go_live'::text, 'project_start'::text]))),
     CONSTRAINT project_play_instances_parent_not_self CHECK (((parent_instance_id IS NULL) OR (parent_instance_id <> id))),
-    CONSTRAINT project_play_instances_status_check CHECK ((status = ANY (ARRAY['not_started'::text, 'in_progress'::text, 'blocked'::text, 'snoozed'::text, 'completed'::text, 'skipped'::text, 'cancelled'::text])))
+    CONSTRAINT project_play_instances_review_complete_chk CHECK (((status <> 'in_review'::text) OR (review_target_status IS NOT NULL))),
+    CONSTRAINT project_play_instances_review_target_chk CHECK (((review_target_status IS NULL) OR (review_target_status = ANY (ARRAY['completed'::text, 'skipped'::text, 'cancelled'::text])))),
+    CONSTRAINT project_play_instances_status_check CHECK ((status = ANY (ARRAY['not_started'::text, 'in_progress'::text, 'blocked'::text, 'snoozed'::text, 'in_review'::text, 'completed'::text, 'skipped'::text, 'cancelled'::text])))
 );
 
 
@@ -4765,6 +4772,27 @@ COMMENT ON COLUMN public.project_play_instances.due_anchor IS 'created = offset 
 --
 
 COMMENT ON COLUMN public.project_play_instances.depends_on IS 'Sibling project_play_instances.id values that must be completed or skipped before this task may start. INSTANCE ids ΓÇö not the play ids in playbook_plays.depends_on. NULL/empty means no prerequisites.';
+
+
+--
+-- Name: COLUMN project_play_instances.review_target_status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.project_play_instances.review_target_status IS 'What the submitter is asking for: completed | skipped | cancelled. NULL unless status = ''in_review''. As of 2026_130.';
+
+
+--
+-- Name: COLUMN project_play_instances.review_evidence; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.project_play_instances.review_evidence IS 'Evidence captured at submission ({snippet, ...}). Carried into completion_evidence on approval so approval does not re-demand it.';
+
+
+--
+-- Name: COLUMN project_play_instances.fired_action_ids; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.project_play_instances.fired_action_ids IS 'actions.id rows created as a CONSEQUENCE of this play completing (next-play chain + dependents unblocked). Cancelled when a completion is rejected, un-cancelled if it is later re-approved.';
 
 
 --
@@ -7875,6 +7903,79 @@ CREATE SEQUENCE public.project_play_instances_id_seq
 --
 
 ALTER SEQUENCE public.project_play_instances_id_seq OWNED BY public.project_play_instances.id;
+
+
+--
+-- Name: project_play_status_transitions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.project_play_status_transitions (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    handover_id integer NOT NULL,
+    project_play_instance_id integer NOT NULL,
+    from_status text NOT NULL,
+    to_status text NOT NULL,
+    target_status text,
+    actor_id integer,
+    reason text,
+    evidence jsonb,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: project_play_status_transitions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.project_play_status_transitions_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: project_play_status_transitions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.project_play_status_transitions_id_seq OWNED BY public.project_play_status_transitions.id;
+
+
+--
+-- Name: project_play_watchers; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.project_play_watchers (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    handover_id integer NOT NULL,
+    user_id integer NOT NULL,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: project_play_watchers_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.project_play_watchers_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: project_play_watchers_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.project_play_watchers_id_seq OWNED BY public.project_play_watchers.id;
 
 
 --
@@ -12512,6 +12613,20 @@ ALTER TABLE ONLY public.project_play_instances ALTER COLUMN id SET DEFAULT nextv
 
 
 --
+-- Name: project_play_status_transitions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_status_transitions ALTER COLUMN id SET DEFAULT nextval('public.project_play_status_transitions_id_seq'::regclass);
+
+
+--
+-- Name: project_play_watchers id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_watchers ALTER COLUMN id SET DEFAULT nextval('public.project_play_watchers_id_seq'::regclass);
+
+
+--
 -- Name: project_stages id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -14320,6 +14435,30 @@ ALTER TABLE ONLY public.project_play_assignees
 
 ALTER TABLE ONLY public.project_play_instances
     ADD CONSTRAINT project_play_instances_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: project_play_status_transitions project_play_status_transitions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_status_transitions
+    ADD CONSTRAINT project_play_status_transitions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: project_play_watchers project_play_watchers_handover_id_user_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_watchers
+    ADD CONSTRAINT project_play_watchers_handover_id_user_id_key UNIQUE (handover_id, user_id);
+
+
+--
+-- Name: project_play_watchers project_play_watchers_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_watchers
+    ADD CONSTRAINT project_play_watchers_pkey PRIMARY KEY (id);
 
 
 --
@@ -17995,6 +18134,13 @@ CREATE INDEX idx_ppi_handover_status ON public.project_play_instances USING btre
 
 
 --
+-- Name: idx_ppi_in_review; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppi_in_review ON public.project_play_instances USING btree (org_id, handover_id) WHERE (status = 'in_review'::text);
+
+
+--
 -- Name: idx_ppi_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -18034,6 +18180,27 @@ CREATE INDEX idx_ppi_project_start_anchored ON public.project_play_instances USI
 --
 
 CREATE UNIQUE INDEX idx_ppi_unique ON public.project_play_instances USING btree (handover_id, play_id) WHERE (play_id IS NOT NULL);
+
+
+--
+-- Name: idx_ppst_handover; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppst_handover ON public.project_play_status_transitions USING btree (org_id, handover_id, created_at DESC);
+
+
+--
+-- Name: idx_ppst_instance; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppst_instance ON public.project_play_status_transitions USING btree (project_play_instance_id, created_at DESC);
+
+
+--
+-- Name: idx_ppw_handover; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppw_handover ON public.project_play_watchers USING btree (org_id, handover_id);
 
 
 --
@@ -23506,6 +23673,62 @@ ALTER TABLE ONLY public.project_play_instances
 
 
 --
+-- Name: project_play_instances project_play_instances_review_submitted_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_instances
+    ADD CONSTRAINT project_play_instances_review_submitted_by_fkey FOREIGN KEY (review_submitted_by) REFERENCES public.users(id);
+
+
+--
+-- Name: project_play_status_transitions project_play_status_transitions_actor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_status_transitions
+    ADD CONSTRAINT project_play_status_transitions_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: project_play_status_transitions project_play_status_transitions_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_status_transitions
+    ADD CONSTRAINT project_play_status_transitions_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: project_play_status_transitions project_play_status_transitions_project_play_instance_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_status_transitions
+    ADD CONSTRAINT project_play_status_transitions_project_play_instance_id_fkey FOREIGN KEY (project_play_instance_id) REFERENCES public.project_play_instances(id) ON DELETE CASCADE;
+
+
+--
+-- Name: project_play_watchers project_play_watchers_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_watchers
+    ADD CONSTRAINT project_play_watchers_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: project_play_watchers project_play_watchers_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_watchers
+    ADD CONSTRAINT project_play_watchers_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: project_play_watchers project_play_watchers_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_watchers
+    ADD CONSTRAINT project_play_watchers_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
 -- Name: project_stages project_stages_handover_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -25418,5 +25641,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict RfDktRPYryNBSk3j4oh7crv15cbyxUVNVvehoxF1Ql4ewGUKWo9yqsjULK2ZzAD
+\unrestrict jVtKvvvcmfeGAh8asK8JdtC5AhDSpdJoDRCf29zfPZ7Qc3GbVRB5ELFEP0TkdiQ
 

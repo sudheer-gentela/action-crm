@@ -242,6 +242,17 @@ export default function NotificationSettings() {
     ...p,
     channels: { ...(p.channels || {}), slack_enabled: val },
   }));
+  // 2026_130 email channel setters. Same setPrefs shape as the Slack pair
+  // above, so they share the existing save/dirty handling untouched.
+  const setEmailEnabled = (val) => setPrefs(p => ({
+    ...p,
+    channels: { ...(p.channels || {}), email_enabled: val },
+  }));
+  const setReviewEmailMode = (val) => setPrefs(p => ({
+    ...p,
+    channels: { ...(p.channels || {}), review_email_mode: val },
+  }));
+
   const setSlackCategory = (cat, val) => setPrefs(p => ({
     ...p,
     channels: {
@@ -376,6 +387,62 @@ export default function NotificationSettings() {
       </div>
 
       {/* ── Slack delivery (only when the org has Slack connected) ────────── */}
+      {/* ── Email delivery (2026_130) ──────────────────────────────────────
+          Not gated on a connection the way Slack is: email needs no setup on
+          the user's side, and the only thing that would hide this section is
+          an org with no SMTP configured — which the user cannot see or fix, so
+          hiding it would just look like a missing feature. */}
+      {(() => {
+        const ch   = prefs.channels || {};
+        const on   = ch.email_enabled !== false;
+        const mode = ch.review_email_mode || 'immediate';
+        return (
+          <>
+            <div className="ns-section-label" style={{ marginTop: 24 }}>Email</div>
+            <div className="ns-card">
+              <div className="ns-toggle-row">
+                <div>
+                  <div className="ns-card-title">Task review alerts by email</div>
+                  <div className="ns-card-desc">
+                    When a task on one of your projects is sent for review, approved,
+                    or sent back. These always appear in the in-app bell either way.
+                  </div>
+                </div>
+                <Toggle checked={on} onChange={setEmailEnabled} />
+              </div>
+
+              {on && (
+                <div className="ns-subsettings">
+                  <div className="ns-card-desc" style={{ marginBottom: 8 }}>How often</div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {[
+                      ['immediate', 'As they happen', 'One email per event. Nothing waits.'],
+                      ['digest',    'Hourly summary', 'One email an hour, only if something happened.'],
+                    ].map(([key, label, desc]) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setReviewEmailMode(key)}
+                        title={desc}
+                        style={{
+                          flex: '1 1 200px', textAlign: 'left', padding: '10px 12px',
+                          borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit',
+                          border: `1px solid ${mode === key ? '#0369a1' : '#d1d5db'}`,
+                          background: mode === key ? '#e0f2fe' : '#fff',
+                        }}>
+                        <div style={{ fontSize: 13, fontWeight: 600,
+                                      color: mode === key ? '#0369a1' : '#374151' }}>{label}</div>
+                        <div style={{ fontSize: 11.5, color: '#6b7280', marginTop: 2 }}>{desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        );
+      })()}
+
       {slackConnected && (() => {
         const ch  = prefs.channels || {};
         const cat = ch.slack_categories || {};
