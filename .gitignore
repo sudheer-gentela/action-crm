@@ -10,13 +10,15 @@ node_modules/
 /build
 /dist
 
-# Misc
-.DS_Store
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+# Environment / secrets.
+# `.env` matches ONLY that exact name — it does not cover .env.smtp,
+# .env.staging or any other suffix. `.env*` catches every variant.
+.env*
+# Keep committed templates. Negations MUST come after the pattern they
+# re-include, or git ignores them.
+!.env.example
+!.env.sample
+!.env.template
 
 # Logs
 npm-debug.log*
@@ -31,4 +33,5 @@ yarn-error.log*
 *~
 
 # OS
+.DS_Store
 Thumbs.db

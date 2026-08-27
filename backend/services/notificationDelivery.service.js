@@ -155,6 +155,28 @@ async function deliverSlack(orgId, notificationId) {
  * silently defaulted off is the failure this feature exists to prevent, and
  * the recipient can turn it off.
  */
+/**
+ * Record why an email was NOT sent, on the notification itself.
+ *
+ * Every skip path used to return silently, which made a DECLINED send
+ * indistinguishable from one that was never attempted - both showed no
+ * email_delivery key at all. That is the difference between 'the fan-out is
+ * deployed and correctly declining' and 'the fan-out is not running', and it
+ * is the first thing you want to know after a deploy.
+ *
+ * Best-effort: an observability write must never turn a correct skip into a
+ * failed job.
+ */
+async function _stampSkip(notificationId, reason, extra = {}) {
+  if (!notificationId) return { skipped: true, reason, ...extra };
+  await pool.query(
+    `UPDATE notifications SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb
+      WHERE id = $1`,
+    [notificationId, JSON.stringify({ email_delivery: { sent: false, reason } })]
+  ).catch(() => {});
+  return { skipped: true, reason, ...extra };
+}
+
 async function deliverEmail(orgId, payload = {}) {
   const { userId, notificationId } = payload;
 
@@ -193,9 +215,9 @@ async function deliverEmail(orgId, payload = {}) {
   // silently mailing every user every notification is how a product teaches
   // people to filter it. `=== true` and not `!== false` — an org upgrading from
   // an older prefs row has no email key at all, and that must read as off.
-  if (ch.email_enabled !== true) return { skipped: true, reason: 'email_disabled' };
+  if (ch.email_enabled !== true) return _stampSkip(notificationId, 'email_disabled');
   if (ch.email_categories && ch.email_categories[category] === false) {
-    return { skipped: true, reason: `category_off:${category}` };
+    return _stampSkip(notificationId, `category_off:${category}`);
   }
 
   // ── Digest deferral (review category only) ──────────────────────────────
@@ -215,7 +237,10 @@ async function deliverEmail(orgId, payload = {}) {
     await pool.query(
       `UPDATE notifications SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb
         WHERE id = $1`,
-      [notificationId, JSON.stringify({ email_deferred: true })]
+      [notificationId, JSON.stringify({
+        email_deferred: true,
+        email_delivery: { sent: false, reason: 'deferred_to_digest' },
+      })]
     ).catch(() => {});
     return { skipped: true, reason: 'deferred_to_digest' };
   }
@@ -227,10 +252,10 @@ async function deliverEmail(orgId, payload = {}) {
       `SELECT email FROM users WHERE id = $1`, [recipientId]);
     to = u?.email || null;
   }
-  if (!to) return { skipped: true, reason: 'no_address' };
+  if (!to) return _stampSkip(notificationId, 'no_address');
 
   const subject = payload.subject || n?.title;
-  if (!subject) return { skipped: true, reason: 'no_subject' };
+  if (!subject) return _stampSkip(notificationId, 'no_subject');
 
   const text = payload.text || `${n?.body || ''}${n?.metadata?.url ? `\n\n${n.metadata.url}` : ''}\n`;
   // metadata.url is the deep link back to the thing the alert is about.

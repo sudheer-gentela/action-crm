@@ -56,6 +56,15 @@ async function findActionsForImmediateNotification(orgId) {
       COALESCE(up.preferences->'notifications', '{}'::jsonb) AS esc_prefs
     FROM actions a
     JOIN users u ON u.id = a.user_id
+    -- 2026_131: only ACTIVE org members are notified.
+    -- These scans joined the users table alone, which has no notion of
+    -- membership, so a deactivated user kept receiving digests forever.
+    -- Harmless while notifications were in-app only; once email is a
+    -- channel it mails people who have been removed, at addresses that may
+    -- no longer exist and will hard-bounce. Membership is in org_users.
+    JOIN org_users ou_act ON ou_act.user_id = a.user_id
+                         AND ou_act.org_id  = a.org_id
+                         AND ou_act.is_active = TRUE
     LEFT JOIN user_preferences up ON up.user_id = a.user_id AND up.org_id = a.org_id
     WHERE a.org_id  = $1
       -- B18: this read 'pending', which has never been a valid actions status
@@ -100,6 +109,15 @@ async function findActionsForDailyDigest(orgId) {
       COALESCE(up.preferences->'notifications', '{}'::jsonb) AS esc_prefs
     FROM actions a
     JOIN users u ON u.id = a.user_id
+    -- 2026_131: only ACTIVE org members are notified.
+    -- These scans joined the users table alone, which has no notion of
+    -- membership, so a deactivated user kept receiving digests forever.
+    -- Harmless while notifications were in-app only; once email is a
+    -- channel it mails people who have been removed, at addresses that may
+    -- no longer exist and will hard-bounce. Membership is in org_users.
+    JOIN org_users ou_act ON ou_act.user_id = a.user_id
+                         AND ou_act.org_id  = a.org_id
+                         AND ou_act.is_active = TRUE
     LEFT JOIN user_preferences up ON up.user_id = a.user_id AND up.org_id = a.org_id
     WHERE a.org_id  = $1
       -- B18: see note above — 'pending' never matched. Canonical open states only.
@@ -292,6 +310,15 @@ async function processImmediateNotification(orgId, actionId) {
            COALESCE(up.preferences->'notifications', '{}'::jsonb) AS esc_prefs
     FROM actions a
     JOIN users u ON u.id = a.user_id
+    -- 2026_131: only ACTIVE org members are notified.
+    -- These scans joined the users table alone, which has no notion of
+    -- membership, so a deactivated user kept receiving digests forever.
+    -- Harmless while notifications were in-app only; once email is a
+    -- channel it mails people who have been removed, at addresses that may
+    -- no longer exist and will hard-bounce. Membership is in org_users.
+    JOIN org_users ou_act ON ou_act.user_id = a.user_id
+                         AND ou_act.org_id  = a.org_id
+                         AND ou_act.is_active = TRUE
     LEFT JOIN user_preferences up ON up.user_id = a.user_id AND up.org_id = a.org_id
     WHERE a.id = $1 AND a.org_id = $2
   `, [actionId, orgId]);
@@ -685,6 +712,15 @@ async function findProspectingActionsForImmediateNotification(orgId, policy) {
       FROM prospecting_actions pa
       JOIN prospects p ON p.id = pa.prospect_id
       JOIN users     u ON u.id = pa.user_id
+      -- 2026_131: only ACTIVE org members are notified.
+      -- These scans joined the users table alone, which has no notion of
+      -- membership, so a deactivated user kept receiving alerts forever.
+      -- Harmless while notifications were in-app only; once email is a
+      -- channel it mails people who have been removed, at addresses that may
+      -- no longer exist and will hard-bounce. Membership is in org_users.
+      JOIN org_users ou_act ON ou_act.user_id = pa.user_id
+                           AND ou_act.org_id  = pa.org_id
+                           AND ou_act.is_active = TRUE
       LEFT JOIN clients c ON c.id = p.client_id
       LEFT JOIN user_preferences up
              ON up.user_id = pa.user_id AND up.org_id = pa.org_id
@@ -741,6 +777,15 @@ async function findProspectingActionsForDailyDigest(orgId, policy) {
     FROM prospecting_actions pa
     JOIN prospects p ON p.id = pa.prospect_id
     JOIN users     u ON u.id = pa.user_id
+    -- 2026_131: only ACTIVE org members are notified.
+    -- These scans joined the users table alone, which has no notion of
+    -- membership, so a deactivated user kept receiving digests forever.
+    -- Harmless while notifications were in-app only; once email is a
+    -- channel it mails people who have been removed, at addresses that may
+    -- no longer exist and will hard-bounce. Membership is in org_users.
+    JOIN org_users ou_act ON ou_act.user_id = pa.user_id
+                         AND ou_act.org_id  = pa.org_id
+                         AND ou_act.is_active = TRUE
     LEFT JOIN clients c ON c.id = p.client_id
     LEFT JOIN user_preferences up
            ON up.user_id = pa.user_id AND up.org_id = pa.org_id
@@ -801,6 +846,15 @@ async function findProspectingActionsForEscalation(orgId, policy) {
       FROM prospecting_actions pa
       JOIN prospects p ON p.id = pa.prospect_id
       JOIN users     u ON u.id = pa.user_id
+      -- 2026_131: only ACTIVE org members are notified.
+      -- These scans joined the users table alone, which has no notion of
+      -- membership, so a deactivated user kept receiving alerts forever.
+      -- Harmless while notifications were in-app only; once email is a
+      -- channel it mails people who have been removed, at addresses that may
+      -- no longer exist and will hard-bounce. Membership is in org_users.
+      JOIN org_users ou_act ON ou_act.user_id = pa.user_id
+                           AND ou_act.org_id  = pa.org_id
+                           AND ou_act.is_active = TRUE
       LEFT JOIN clients cl ON cl.id = p.client_id
       WHERE pa.org_id   = $1
         AND pa.status   = 'pending'
@@ -887,6 +941,15 @@ async function processProspectingImmediateNotification(orgId, actionId) {
     FROM prospecting_actions pa
     JOIN prospects p ON p.id = pa.prospect_id
     JOIN users     u ON u.id = pa.user_id
+    -- 2026_131: only ACTIVE org members are notified.
+    -- These scans joined the users table alone, which has no notion of
+    -- membership, so a deactivated user kept receiving digests forever.
+    -- Harmless while notifications were in-app only; once email is a
+    -- channel it mails people who have been removed, at addresses that may
+    -- no longer exist and will hard-bounce. Membership is in org_users.
+    JOIN org_users ou_act ON ou_act.user_id = pa.user_id
+                         AND ou_act.org_id  = pa.org_id
+                         AND ou_act.is_active = TRUE
     LEFT JOIN clients cl ON cl.id = p.client_id
     LEFT JOIN user_preferences up
            ON up.user_id = pa.user_id AND up.org_id = pa.org_id
@@ -1091,6 +1154,15 @@ async function processProspectingEscalation(orgId, actionId, targetTier) {
     FROM prospecting_actions pa
     JOIN prospects p ON p.id = pa.prospect_id
     JOIN users     u ON u.id = pa.user_id
+    -- 2026_131: only ACTIVE org members are notified.
+    -- These scans joined the users table alone, which has no notion of
+    -- membership, so a deactivated user kept receiving digests forever.
+    -- Harmless while notifications were in-app only; once email is a
+    -- channel it mails people who have been removed, at addresses that may
+    -- no longer exist and will hard-bounce. Membership is in org_users.
+    JOIN org_users ou_act ON ou_act.user_id = pa.user_id
+                         AND ou_act.org_id  = pa.org_id
+                         AND ou_act.is_active = TRUE
     LEFT JOIN clients cl ON cl.id = p.client_id
     WHERE pa.id = $1 AND pa.org_id = $2
   `, [actionId, orgId]);
