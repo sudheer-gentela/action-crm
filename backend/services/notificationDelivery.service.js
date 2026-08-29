@@ -245,6 +245,22 @@ async function deliverEmail(orgId, payload = {}) {
     return { skipped: true, reason: 'deferred_to_digest' };
   }
 
+  // ── Recipient must still be an active member of THIS org ────────────────
+  // The active flag lives on org_users, not users — a person can be active in
+  // one org and deactivated in another, so this is scoped by org_id and is not
+  // a property of the user row.
+  //
+  // Placed BEFORE the address block deliberately. Callers that pass an explicit
+  // `to` (playReviewNotifier does) skip the users lookup entirely, so a guard
+  // written into that query would miss exactly the case that matters: a
+  // deactivated seat whose address is already in hand.
+  //
+  // No row means not a member of this org at all, which reads as inactive.
+  const { rows: [member] } = await pool.query(
+    `SELECT is_active FROM org_users WHERE user_id = $1 AND org_id = $2`,
+    [recipientId, orgId]);
+  if (!member?.is_active) return _stampSkip(notificationId, 'recipient_inactive');
+
   // ── Address ─────────────────────────────────────────────────────────────
   let to = payload.to;
   if (!to) {
@@ -322,8 +338,20 @@ async function sendReviewDigest(orgId, userId) {
 
   if (!rows.length) return { skipped: true, reason: 'nothing_pending' };
 
+  // Same org-scoped active check as deliverEmail. Kept as a separate reason
+  // from 'no_recipient' so a deactivated seat is distinguishable from a user
+  // with no address — the distinction _stampSkip exists to preserve.
+  //
+  // The stamps are deliberately NOT cleared here. A deactivated user's pending
+  // reviews stay undigested, so reactivation within the sweep's 7-day window
+  // delivers the backlog rather than silently dropping it.
   const { rows: [u] } = await pool.query(
-    `SELECT email, first_name FROM users WHERE id = $1`, [userId]);
+    `SELECT u.email, u.first_name, COALESCE(ou.is_active, FALSE) AS is_active
+       FROM users u
+       LEFT JOIN org_users ou ON ou.user_id = u.id AND ou.org_id = $2
+      WHERE u.id = $1`,
+    [userId, orgId]);
+  if (!u?.is_active) return { skipped: true, reason: 'recipient_inactive' };
   if (!u?.email) return { skipped: true, reason: 'no_recipient' };
 
   const esc = (x) => String(x ?? '').replace(/[&<>"']/g, c => (

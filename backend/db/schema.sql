@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict jVtKvvvcmfeGAh8asK8JdtC5AhDSpdJoDRCf29zfPZ7Qc3GbVRB5ELFEP0TkdiQ
+\restrict x7RkvYid90uvNI5aTTid8u1KflgFJiHSTqqTpHUapWfbTetA4qPOa82pbAnVnuS
 
 -- Dumped from database version 17.10 (Debian 17.10-1.pgdg13+1)
 -- Dumped by pg_dump version 18.1
@@ -122,17 +122,23 @@ BEGIN
     RETURN OLD;
   END IF;
 
-  -- Referential detach: a cited WhatsApp message or an accepted file is
-  -- going away and its FK is SET NULL. Permitted for the link columns
-  -- only, and only in the set -> NULL direction, so this cannot be used
-  -- to launder an edit. See 2026_121 for the full reasoning.
+  -- Referential detach: a cited WhatsApp message, Teams message or an
+  -- accepted file is going away and its FK is SET NULL. Permitted for the
+  -- link columns only, and only in the set -> NULL direction, so this
+  -- cannot be used to launder an edit. See 2026_121 for the full reasoning.
   IF ( (OLD.whatsapp_message_id IS NOT NULL AND NEW.whatsapp_message_id IS NULL
-        AND NEW.storage_file_id IS NOT DISTINCT FROM OLD.storage_file_id)
+        AND NEW.storage_file_id     IS NOT DISTINCT FROM OLD.storage_file_id
+        AND NEW.msteams_message_id  IS NOT DISTINCT FROM OLD.msteams_message_id)
     OR (OLD.storage_file_id     IS NOT NULL AND NEW.storage_file_id     IS NULL
-        AND NEW.whatsapp_message_id IS NOT DISTINCT FROM OLD.whatsapp_message_id) )
+        AND NEW.whatsapp_message_id IS NOT DISTINCT FROM OLD.whatsapp_message_id
+        AND NEW.msteams_message_id  IS NOT DISTINCT FROM OLD.msteams_message_id)
+    OR (OLD.msteams_message_id  IS NOT NULL AND NEW.msteams_message_id  IS NULL
+        AND NEW.whatsapp_message_id IS NOT DISTINCT FROM OLD.whatsapp_message_id
+        AND NEW.storage_file_id     IS NOT DISTINCT FROM OLD.storage_file_id) )
      AND NEW.id                       IS NOT DISTINCT FROM OLD.id
      AND NEW.org_id                   IS NOT DISTINCT FROM OLD.org_id
      AND NEW.project_play_instance_id IS NOT DISTINCT FROM OLD.project_play_instance_id
+     AND NEW.daily_work_entry_id      IS NOT DISTINCT FROM OLD.daily_work_entry_id
      AND NEW.channel                  IS NOT DISTINCT FROM OLD.channel
      AND NEW.snapshot_body            IS NOT DISTINCT FROM OLD.snapshot_body
      AND NEW.snapshot_sender          IS NOT DISTINCT FROM OLD.snapshot_sender
@@ -160,23 +166,25 @@ BEGIN
     RAISE EXCEPTION 'play_evidence % is immutable; the only permitted update is a revocation', OLD.id;
   END IF;
 
-  IF NEW.id                       IS DISTINCT FROM OLD.id
-     OR NEW.org_id                IS DISTINCT FROM OLD.org_id
+  IF NEW.id                          IS DISTINCT FROM OLD.id
+     OR NEW.org_id                   IS DISTINCT FROM OLD.org_id
      OR NEW.project_play_instance_id IS DISTINCT FROM OLD.project_play_instance_id
-     OR NEW.channel               IS DISTINCT FROM OLD.channel
-     OR NEW.whatsapp_message_id   IS DISTINCT FROM OLD.whatsapp_message_id
-     OR NEW.storage_file_id       IS DISTINCT FROM OLD.storage_file_id
-     OR NEW.snapshot_body         IS DISTINCT FROM OLD.snapshot_body
-     OR NEW.snapshot_sender       IS DISTINCT FROM OLD.snapshot_sender
-     OR NEW.snapshot_sent_at      IS DISTINCT FROM OLD.snapshot_sent_at
-     OR NEW.snapshot_thread_id    IS DISTINCT FROM OLD.snapshot_thread_id
-     OR NEW.snapshot_file_name    IS DISTINCT FROM OLD.snapshot_file_name
-     OR NEW.snapshot_mime_type    IS DISTINCT FROM OLD.snapshot_mime_type
-     OR NEW.snapshot_file_size    IS DISTINCT FROM OLD.snapshot_file_size
-     OR NEW.snapshot_web_url      IS DISTINCT FROM OLD.snapshot_web_url
-     OR NEW.note                  IS DISTINCT FROM OLD.note
-     OR NEW.accepted_by           IS DISTINCT FROM OLD.accepted_by
-     OR NEW.accepted_at           IS DISTINCT FROM OLD.accepted_at
+     OR NEW.daily_work_entry_id      IS DISTINCT FROM OLD.daily_work_entry_id
+     OR NEW.channel                  IS DISTINCT FROM OLD.channel
+     OR NEW.whatsapp_message_id      IS DISTINCT FROM OLD.whatsapp_message_id
+     OR NEW.msteams_message_id       IS DISTINCT FROM OLD.msteams_message_id
+     OR NEW.storage_file_id          IS DISTINCT FROM OLD.storage_file_id
+     OR NEW.snapshot_body            IS DISTINCT FROM OLD.snapshot_body
+     OR NEW.snapshot_sender          IS DISTINCT FROM OLD.snapshot_sender
+     OR NEW.snapshot_sent_at         IS DISTINCT FROM OLD.snapshot_sent_at
+     OR NEW.snapshot_thread_id       IS DISTINCT FROM OLD.snapshot_thread_id
+     OR NEW.snapshot_file_name       IS DISTINCT FROM OLD.snapshot_file_name
+     OR NEW.snapshot_mime_type       IS DISTINCT FROM OLD.snapshot_mime_type
+     OR NEW.snapshot_file_size       IS DISTINCT FROM OLD.snapshot_file_size
+     OR NEW.snapshot_web_url         IS DISTINCT FROM OLD.snapshot_web_url
+     OR NEW.note                     IS DISTINCT FROM OLD.note
+     OR NEW.accepted_by              IS DISTINCT FROM OLD.accepted_by
+     OR NEW.accepted_at              IS DISTINCT FROM OLD.accepted_at
   THEN
     RAISE EXCEPTION 'play_evidence % is immutable; only the revocation fields may be set', OLD.id;
   END IF;
@@ -201,14 +209,15 @@ BEGIN
     RAISE EXCEPTION 'play_note % is append-only; the only permitted update is a deletion. Post a correcting note instead.', OLD.id;
   END IF;
 
-  IF NEW.id                       IS DISTINCT FROM OLD.id
-     OR NEW.org_id                IS DISTINCT FROM OLD.org_id
+  IF NEW.id                          IS DISTINCT FROM OLD.id
+     OR NEW.org_id                   IS DISTINCT FROM OLD.org_id
      OR NEW.project_play_instance_id IS DISTINCT FROM OLD.project_play_instance_id
-     OR NEW.author_id             IS DISTINCT FROM OLD.author_id
-     OR NEW.body                  IS DISTINCT FROM OLD.body
-     OR NEW.note_type             IS DISTINCT FROM OLD.note_type
-     OR NEW.is_internal           IS DISTINCT FROM OLD.is_internal
-     OR NEW.created_at            IS DISTINCT FROM OLD.created_at
+     OR NEW.daily_work_entry_id      IS DISTINCT FROM OLD.daily_work_entry_id
+     OR NEW.author_id                IS DISTINCT FROM OLD.author_id
+     OR NEW.body                     IS DISTINCT FROM OLD.body
+     OR NEW.note_type                IS DISTINCT FROM OLD.note_type
+     OR NEW.is_internal              IS DISTINCT FROM OLD.is_internal
+     OR NEW.created_at               IS DISTINCT FROM OLD.created_at
   THEN
     RAISE EXCEPTION 'play_note % is immutable; only deleted_at and deleted_by may be set', OLD.id;
   END IF;
@@ -3634,6 +3643,249 @@ ALTER SEQUENCE public.custom_field_defs_id_seq OWNED BY public.custom_field_defs
 
 
 --
+-- Name: daily_activity_types; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.daily_activity_types (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    key text NOT NULL,
+    label text NOT NULL,
+    is_system boolean DEFAULT false NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    merged_into_key text,
+    sort_order integer DEFAULT 100 NOT NULL,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_dat_merge_shape CHECK ((((status = 'merged'::text) AND (merged_into_key IS NOT NULL)) OR ((status <> 'merged'::text) AND (merged_into_key IS NULL)))),
+    CONSTRAINT chk_dat_status CHECK ((status = ANY (ARRAY['active'::text, 'candidate'::text, 'merged'::text])))
+);
+
+
+--
+-- Name: TABLE daily_activity_types; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.daily_activity_types IS 'Org-configurable activity vocabulary for daily work tracking. Modelled on team_dimensions: system entries are seeded per org, renameable and deactivatable but never deleted. As of 2026_131.';
+
+
+--
+-- Name: daily_activity_types_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.daily_activity_types_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: daily_activity_types_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.daily_activity_types_id_seq OWNED BY public.daily_activity_types.id;
+
+
+--
+-- Name: daily_work_entries; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.daily_work_entries (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    item_id integer NOT NULL,
+    user_id integer NOT NULL,
+    entry_date date NOT NULL,
+    description text NOT NULL,
+    next_steps text,
+    day_stage text NOT NULL,
+    department_team_id integer,
+    activity_type_key text,
+    anchor_kind text,
+    anchor_id integer,
+    is_continuation boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_edited_by integer,
+    CONSTRAINT chk_dwen_anchor_shape CHECK ((((anchor_kind IS NULL) AND (anchor_id IS NULL)) OR ((anchor_kind IS NOT NULL) AND (anchor_id IS NOT NULL)))),
+    CONSTRAINT chk_dwen_day_stage CHECK ((day_stage = ANY (ARRAY['yet_to_start'::text, 'in_progress'::text, 'in_review'::text, 'completed'::text, 'dropped'::text]))),
+    CONSTRAINT chk_dwen_description_len CHECK ((length(description) <= 2000)),
+    CONSTRAINT chk_dwen_description_not_blank CHECK ((btrim(description) <> ''::text)),
+    CONSTRAINT chk_dwen_next_steps_len CHECK (((next_steps IS NULL) OR (length(next_steps) <= 2000)))
+);
+
+
+--
+-- Name: COLUMN daily_work_entries.entry_date; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.daily_work_entries.entry_date IS 'The OWNER''s local date, resolved at write from users.timezone -> org calendar -> UTC. Stored as a date so the day cannot be re-derived differently later. As of 2026_131.';
+
+
+--
+-- Name: daily_work_entries_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.daily_work_entries_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: daily_work_entries_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.daily_work_entries_id_seq OWNED BY public.daily_work_entries.id;
+
+
+--
+-- Name: daily_work_exceptions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.daily_work_exceptions (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    user_id integer NOT NULL,
+    exception_date date NOT NULL,
+    reason text NOT NULL,
+    requested_by integer,
+    approved_by integer,
+    approved_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_dwe_approval_shape CHECK ((((approved_by IS NULL) AND (approved_at IS NULL)) OR ((approved_by IS NOT NULL) AND (approved_at IS NOT NULL)))),
+    CONSTRAINT chk_dwe_reason_not_blank CHECK ((btrim(reason) <> ''::text))
+);
+
+
+--
+-- Name: daily_work_exceptions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.daily_work_exceptions_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: daily_work_exceptions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.daily_work_exceptions_id_seq OWNED BY public.daily_work_exceptions.id;
+
+
+--
+-- Name: daily_work_items; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.daily_work_items (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    owner_user_id integer NOT NULL,
+    kind text NOT NULL,
+    title text NOT NULL,
+    activity_type_key text,
+    anchor_kind text,
+    anchor_id integer,
+    status text NOT NULL,
+    department_team_id integer,
+    created_by integer,
+    assigned_by integer,
+    opened_on date DEFAULT CURRENT_DATE NOT NULL,
+    closed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_dwi_anchor_kind CHECK (((anchor_kind IS NULL) OR (anchor_kind = ANY (ARRAY['handover'::text, 'account'::text, 'campaign'::text])))),
+    CONSTRAINT chk_dwi_anchor_shape CHECK ((((anchor_kind IS NULL) AND (anchor_id IS NULL)) OR ((anchor_kind IS NOT NULL) AND (anchor_id IS NOT NULL)))),
+    CONSTRAINT chk_dwi_kind CHECK ((kind = ANY (ARRAY['recurring'::text, 'assigned'::text]))),
+    CONSTRAINT chk_dwi_status_by_kind CHECK ((((kind = 'assigned'::text) AND (status = ANY (ARRAY['not_started'::text, 'in_progress'::text, 'in_review'::text, 'completed'::text, 'dropped'::text]))) OR ((kind = 'recurring'::text) AND (status = ANY (ARRAY['active'::text, 'retired'::text]))))),
+    CONSTRAINT chk_dwi_title_not_blank CHECK ((btrim(title) <> ''::text))
+);
+
+
+--
+-- Name: COLUMN daily_work_items.anchor_kind; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.daily_work_items.anchor_kind IS 'Soft polymorphic reference: handover | account | campaign. Text rather than an FK so the vocabulary can grow without cascading changes, per the account_teams.dimension precedent. As of 2026_131.';
+
+
+--
+-- Name: daily_work_items_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.daily_work_items_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: daily_work_items_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.daily_work_items_id_seq OWNED BY public.daily_work_items.id;
+
+
+--
+-- Name: daily_work_schedules; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.daily_work_schedules (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    user_id integer NOT NULL,
+    weekday_mask smallint DEFAULT 31 NOT NULL,
+    holiday_calendar_id integer,
+    effective_from date NOT NULL,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_dws_weekday_mask CHECK (((weekday_mask > 0) AND (weekday_mask <= 127)))
+);
+
+
+--
+-- Name: COLUMN daily_work_schedules.weekday_mask; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.daily_work_schedules.weekday_mask IS '7-bit mask, bit 0 = Monday .. bit 6 = Sunday. Mon-Fri = 31. As of 2026_131.';
+
+
+--
+-- Name: daily_work_schedules_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.daily_work_schedules_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: daily_work_schedules_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.daily_work_schedules_id_seq OWNED BY public.daily_work_schedules.id;
+
+
+--
 -- Name: deal_activities; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -5021,6 +5273,75 @@ CREATE VIEW public.handover_deliverable_rollup AS
 --
 
 COMMENT ON VIEW public.handover_deliverable_rollup IS 'Per-handover deliverable aggregate: play + commitment counts, overdue counts, and is_closeable. Read by handover.service.list(), canClose(), handoverHealthService and notificationService. Reads project_play_instances as of 2026_112 (was deal_play_instances via sales_handover_plays, which froze after the 2026_109 split).';
+
+
+--
+-- Name: holiday_calendar_dates; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.holiday_calendar_dates (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    calendar_id integer NOT NULL,
+    holiday_date date NOT NULL,
+    label text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: holiday_calendar_dates_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.holiday_calendar_dates_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: holiday_calendar_dates_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.holiday_calendar_dates_id_seq OWNED BY public.holiday_calendar_dates.id;
+
+
+--
+-- Name: holiday_calendars; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.holiday_calendars (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    name text NOT NULL,
+    is_default boolean DEFAULT false NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    created_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: holiday_calendars_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.holiday_calendars_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: holiday_calendars_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.holiday_calendars_id_seq OWNED BY public.holiday_calendars.id;
 
 
 --
@@ -7076,7 +7397,7 @@ ALTER SEQUENCE public.play_due_date_revisions_id_seq OWNED BY public.play_due_da
 CREATE TABLE public.play_evidence (
     id integer NOT NULL,
     org_id integer NOT NULL,
-    project_play_instance_id integer NOT NULL,
+    project_play_instance_id integer,
     channel text DEFAULT 'whatsapp'::text NOT NULL,
     whatsapp_message_id integer,
     snapshot_body text,
@@ -7095,7 +7416,9 @@ CREATE TABLE public.play_evidence (
     snapshot_file_size bigint,
     snapshot_web_url text,
     msteams_message_id integer,
+    daily_work_entry_id integer,
     CONSTRAINT play_evidence_channel_chk CHECK ((channel = ANY (ARRAY['whatsapp'::text, 'email'::text, 'file'::text, 'manual'::text, 'teams'::text]))),
+    CONSTRAINT play_evidence_parent_shape_chk CHECK ((num_nonnulls(project_play_instance_id, daily_work_entry_id) = 1)),
     CONSTRAINT play_evidence_revoke_shape_chk CHECK ((((revoked_at IS NULL) AND (revoked_by IS NULL)) OR ((revoked_at IS NOT NULL) AND (revoked_by IS NOT NULL) AND (revoke_reason IS NOT NULL) AND (btrim(revoke_reason) <> ''::text)))),
     CONSTRAINT play_evidence_source_shape_chk CHECK ((((channel <> 'whatsapp'::text) OR (whatsapp_message_id IS NOT NULL)) AND ((channel <> 'file'::text) OR (storage_file_id IS NOT NULL)) AND ((channel <> 'teams'::text) OR (msteams_message_id IS NOT NULL))))
 );
@@ -7195,7 +7518,7 @@ ALTER SEQUENCE public.play_note_attachments_id_seq OWNED BY public.play_note_att
 CREATE TABLE public.play_notes (
     id integer NOT NULL,
     org_id integer NOT NULL,
-    project_play_instance_id integer NOT NULL,
+    project_play_instance_id integer,
     author_id integer,
     body text NOT NULL,
     note_type character varying(30) DEFAULT 'comment'::character varying NOT NULL,
@@ -7203,9 +7526,11 @@ CREATE TABLE public.play_notes (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     deleted_at timestamp with time zone,
     deleted_by integer,
+    daily_work_entry_id integer,
     CONSTRAINT play_notes_body_not_blank_chk CHECK ((btrim(body) <> ''::text)),
     CONSTRAINT play_notes_delete_shape_chk CHECK ((((deleted_at IS NULL) AND (deleted_by IS NULL)) OR ((deleted_at IS NOT NULL) AND (deleted_by IS NOT NULL)))),
-    CONSTRAINT play_notes_note_type_check CHECK (((note_type)::text = ANY (ARRAY[('comment'::character varying)::text, ('blocker'::character varying)::text, ('decision'::character varying)::text, ('system'::character varying)::text])))
+    CONSTRAINT play_notes_note_type_check CHECK (((note_type)::text = ANY (ARRAY[('comment'::character varying)::text, ('blocker'::character varying)::text, ('decision'::character varying)::text, ('system'::character varying)::text]))),
+    CONSTRAINT play_notes_parent_shape_chk CHECK ((num_nonnulls(project_play_instance_id, daily_work_entry_id) = 1))
 );
 
 
@@ -12116,6 +12441,41 @@ ALTER TABLE ONLY public.custom_field_defs ALTER COLUMN id SET DEFAULT nextval('p
 
 
 --
+-- Name: daily_activity_types id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_activity_types ALTER COLUMN id SET DEFAULT nextval('public.daily_activity_types_id_seq'::regclass);
+
+
+--
+-- Name: daily_work_entries id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_entries ALTER COLUMN id SET DEFAULT nextval('public.daily_work_entries_id_seq'::regclass);
+
+
+--
+-- Name: daily_work_exceptions id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_exceptions ALTER COLUMN id SET DEFAULT nextval('public.daily_work_exceptions_id_seq'::regclass);
+
+
+--
+-- Name: daily_work_items id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_items ALTER COLUMN id SET DEFAULT nextval('public.daily_work_items_id_seq'::regclass);
+
+
+--
+-- Name: daily_work_schedules id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_schedules ALTER COLUMN id SET DEFAULT nextval('public.daily_work_schedules_id_seq'::regclass);
+
+
+--
 -- Name: deal_activities id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -12253,6 +12613,20 @@ ALTER TABLE ONLY public.entity_custom_fields ALTER COLUMN id SET DEFAULT nextval
 --
 
 ALTER TABLE ONLY public.entity_signals ALTER COLUMN id SET DEFAULT nextval('public.entity_signals_id_seq'::regclass);
+
+
+--
+-- Name: holiday_calendar_dates id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.holiday_calendar_dates ALTER COLUMN id SET DEFAULT nextval('public.holiday_calendar_dates_id_seq'::regclass);
+
+
+--
+-- Name: holiday_calendars id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.holiday_calendars ALTER COLUMN id SET DEFAULT nextval('public.holiday_calendars_id_seq'::regclass);
 
 
 --
@@ -13614,6 +13988,78 @@ ALTER TABLE ONLY public.custom_field_defs
 
 
 --
+-- Name: daily_activity_types daily_activity_types_org_id_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_activity_types
+    ADD CONSTRAINT daily_activity_types_org_id_key_key UNIQUE (org_id, key);
+
+
+--
+-- Name: daily_activity_types daily_activity_types_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_activity_types
+    ADD CONSTRAINT daily_activity_types_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: daily_work_entries daily_work_entries_org_id_item_id_entry_date_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_entries
+    ADD CONSTRAINT daily_work_entries_org_id_item_id_entry_date_key UNIQUE (org_id, item_id, entry_date);
+
+
+--
+-- Name: daily_work_entries daily_work_entries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_entries
+    ADD CONSTRAINT daily_work_entries_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: daily_work_exceptions daily_work_exceptions_org_id_user_id_exception_date_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_exceptions
+    ADD CONSTRAINT daily_work_exceptions_org_id_user_id_exception_date_key UNIQUE (org_id, user_id, exception_date);
+
+
+--
+-- Name: daily_work_exceptions daily_work_exceptions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_exceptions
+    ADD CONSTRAINT daily_work_exceptions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: daily_work_items daily_work_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_items
+    ADD CONSTRAINT daily_work_items_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: daily_work_schedules daily_work_schedules_org_id_user_id_effective_from_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_schedules
+    ADD CONSTRAINT daily_work_schedules_org_id_user_id_effective_from_key UNIQUE (org_id, user_id, effective_from);
+
+
+--
+-- Name: daily_work_schedules daily_work_schedules_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_schedules
+    ADD CONSTRAINT daily_work_schedules_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: deal_activities deal_activities_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -13803,6 +14249,38 @@ ALTER TABLE ONLY public.entity_custom_fields
 
 ALTER TABLE ONLY public.entity_signals
     ADD CONSTRAINT entity_signals_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: holiday_calendar_dates holiday_calendar_dates_calendar_id_holiday_date_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.holiday_calendar_dates
+    ADD CONSTRAINT holiday_calendar_dates_calendar_id_holiday_date_key UNIQUE (calendar_id, holiday_date);
+
+
+--
+-- Name: holiday_calendar_dates holiday_calendar_dates_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.holiday_calendar_dates
+    ADD CONSTRAINT holiday_calendar_dates_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: holiday_calendars holiday_calendars_org_id_name_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.holiday_calendars
+    ADD CONSTRAINT holiday_calendars_org_id_name_key UNIQUE (org_id, name);
+
+
+--
+-- Name: holiday_calendars holiday_calendars_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.holiday_calendars
+    ADD CONSTRAINT holiday_calendars_pkey PRIMARY KEY (id);
 
 
 --
@@ -16881,6 +17359,62 @@ CREATE INDEX idx_dpi_playbook_id ON public.deal_play_instances USING btree (play
 
 
 --
+-- Name: idx_dwe_user_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dwe_user_date ON public.daily_work_exceptions USING btree (org_id, user_id, exception_date);
+
+
+--
+-- Name: idx_dwen_activity_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dwen_activity_date ON public.daily_work_entries USING btree (org_id, activity_type_key, entry_date);
+
+
+--
+-- Name: idx_dwen_item_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dwen_item_date ON public.daily_work_entries USING btree (item_id, entry_date DESC);
+
+
+--
+-- Name: idx_dwen_user_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dwen_user_date ON public.daily_work_entries USING btree (org_id, user_id, entry_date DESC);
+
+
+--
+-- Name: idx_dwi_activity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dwi_activity ON public.daily_work_items USING btree (org_id, activity_type_key);
+
+
+--
+-- Name: idx_dwi_anchor; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dwi_anchor ON public.daily_work_items USING btree (org_id, anchor_kind, anchor_id) WHERE (anchor_kind IS NOT NULL);
+
+
+--
+-- Name: idx_dwi_owner_open; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dwi_owner_open ON public.daily_work_items USING btree (org_id, owner_user_id, status);
+
+
+--
+-- Name: idx_dws_user_effective; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dws_user_effective ON public.daily_work_schedules USING btree (org_id, user_id, effective_from DESC);
+
+
+--
 -- Name: idx_ecf_date_value; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -17186,6 +17720,13 @@ CREATE INDEX idx_handover_plays_handover ON public.sales_handover_plays USING bt
 --
 
 CREATE INDEX idx_handover_plays_instance ON public.sales_handover_plays USING btree (play_instance_id);
+
+
+--
+-- Name: idx_hcd_calendar_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_hcd_calendar_date ON public.holiday_calendar_dates USING btree (calendar_id, holiday_date);
 
 
 --
@@ -17840,6 +18381,13 @@ CREATE INDEX idx_play_assignees_user ON public.deal_play_assignees USING btree (
 
 
 --
+-- Name: idx_play_evidence_daily_entry; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_play_evidence_daily_entry ON public.play_evidence USING btree (daily_work_entry_id) WHERE (daily_work_entry_id IS NOT NULL);
+
+
+--
 -- Name: idx_play_evidence_instance; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -17879,6 +18427,13 @@ CREATE INDEX idx_play_note_attachments_org ON public.play_note_attachments USING
 --
 
 CREATE INDEX idx_play_notes_author ON public.play_notes USING btree (author_id);
+
+
+--
+-- Name: idx_play_notes_daily_entry; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_play_notes_daily_entry ON public.play_notes USING btree (daily_work_entry_id) WHERE (daily_work_entry_id IS NOT NULL);
 
 
 --
@@ -19727,6 +20282,13 @@ CREATE UNIQUE INDEX uq_ede_ndr_recipient ON public.email_delivery_events USING b
 --
 
 CREATE UNIQUE INDEX uq_entity_signals_org_entity_key ON public.entity_signals USING btree (org_id, entity_type, entity_id, key);
+
+
+--
+-- Name: uq_holiday_calendars_one_default; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_holiday_calendars_one_default ON public.holiday_calendars USING btree (org_id) WHERE is_default;
 
 
 --
@@ -21778,6 +22340,166 @@ ALTER TABLE ONLY public.custom_field_defs
 
 
 --
+-- Name: daily_activity_types daily_activity_types_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_activity_types
+    ADD CONSTRAINT daily_activity_types_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_activity_types daily_activity_types_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_activity_types
+    ADD CONSTRAINT daily_activity_types_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: daily_work_entries daily_work_entries_department_team_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_entries
+    ADD CONSTRAINT daily_work_entries_department_team_id_fkey FOREIGN KEY (department_team_id) REFERENCES public.teams(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_work_entries daily_work_entries_item_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_entries
+    ADD CONSTRAINT daily_work_entries_item_id_fkey FOREIGN KEY (item_id) REFERENCES public.daily_work_items(id) ON DELETE CASCADE;
+
+
+--
+-- Name: daily_work_entries daily_work_entries_last_edited_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_entries
+    ADD CONSTRAINT daily_work_entries_last_edited_by_fkey FOREIGN KEY (last_edited_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_work_entries daily_work_entries_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_entries
+    ADD CONSTRAINT daily_work_entries_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: daily_work_entries daily_work_entries_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_entries
+    ADD CONSTRAINT daily_work_entries_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: daily_work_exceptions daily_work_exceptions_approved_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_exceptions
+    ADD CONSTRAINT daily_work_exceptions_approved_by_fkey FOREIGN KEY (approved_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_work_exceptions daily_work_exceptions_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_exceptions
+    ADD CONSTRAINT daily_work_exceptions_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: daily_work_exceptions daily_work_exceptions_requested_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_exceptions
+    ADD CONSTRAINT daily_work_exceptions_requested_by_fkey FOREIGN KEY (requested_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_work_exceptions daily_work_exceptions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_exceptions
+    ADD CONSTRAINT daily_work_exceptions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: daily_work_items daily_work_items_assigned_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_items
+    ADD CONSTRAINT daily_work_items_assigned_by_fkey FOREIGN KEY (assigned_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_work_items daily_work_items_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_items
+    ADD CONSTRAINT daily_work_items_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_work_items daily_work_items_department_team_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_items
+    ADD CONSTRAINT daily_work_items_department_team_id_fkey FOREIGN KEY (department_team_id) REFERENCES public.teams(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_work_items daily_work_items_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_items
+    ADD CONSTRAINT daily_work_items_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: daily_work_items daily_work_items_owner_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_items
+    ADD CONSTRAINT daily_work_items_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: daily_work_schedules daily_work_schedules_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_schedules
+    ADD CONSTRAINT daily_work_schedules_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_work_schedules daily_work_schedules_holiday_calendar_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_schedules
+    ADD CONSTRAINT daily_work_schedules_holiday_calendar_id_fkey FOREIGN KEY (holiday_calendar_id) REFERENCES public.holiday_calendars(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_work_schedules daily_work_schedules_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_schedules
+    ADD CONSTRAINT daily_work_schedules_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: daily_work_schedules daily_work_schedules_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_schedules
+    ADD CONSTRAINT daily_work_schedules_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
 -- Name: deal_activities deal_activities_deal_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -22458,6 +23180,38 @@ ALTER TABLE ONLY public.users
 
 
 --
+-- Name: holiday_calendar_dates holiday_calendar_dates_calendar_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.holiday_calendar_dates
+    ADD CONSTRAINT holiday_calendar_dates_calendar_id_fkey FOREIGN KEY (calendar_id) REFERENCES public.holiday_calendars(id) ON DELETE CASCADE;
+
+
+--
+-- Name: holiday_calendar_dates holiday_calendar_dates_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.holiday_calendar_dates
+    ADD CONSTRAINT holiday_calendar_dates_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: holiday_calendars holiday_calendars_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.holiday_calendars
+    ADD CONSTRAINT holiday_calendars_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: holiday_calendars holiday_calendars_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.holiday_calendars
+    ADD CONSTRAINT holiday_calendars_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
 -- Name: linkedin_profiles linkedin_profiles_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -23122,6 +23876,14 @@ ALTER TABLE ONLY public.play_evidence
 
 
 --
+-- Name: play_evidence play_evidence_daily_work_entry_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_evidence
+    ADD CONSTRAINT play_evidence_daily_work_entry_id_fkey FOREIGN KEY (daily_work_entry_id) REFERENCES public.daily_work_entries(id) ON DELETE CASCADE;
+
+
+--
 -- Name: play_evidence play_evidence_instance_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -23214,6 +23976,14 @@ ALTER TABLE ONLY public.play_note_attachments
 
 ALTER TABLE ONLY public.play_notes
     ADD CONSTRAINT play_notes_author_id_fkey FOREIGN KEY (author_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: play_notes play_notes_daily_work_entry_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.play_notes
+    ADD CONSTRAINT play_notes_daily_work_entry_id_fkey FOREIGN KEY (daily_work_entry_id) REFERENCES public.daily_work_entries(id) ON DELETE CASCADE;
 
 
 --
@@ -25641,5 +26411,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict jVtKvvvcmfeGAh8asK8JdtC5AhDSpdJoDRCf29zfPZ7Qc3GbVRB5ELFEP0TkdiQ
+\unrestrict x7RkvYid90uvNI5aTTid8u1KflgFJiHSTqqTpHUapWfbTetA4qPOa82pbAnVnuS
 

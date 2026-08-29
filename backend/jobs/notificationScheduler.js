@@ -407,15 +407,22 @@ async function enqueueProspectingEscalations() {
 async function enqueueReviewDigests() {
   try {
     const { rows } = await db.query(
-      `SELECT DISTINCT org_id, user_id
-         FROM notifications
-        WHERE type LIKE 'play_review_%'
-          AND metadata->>'email_deferred' = 'true'
-          AND metadata->>'email_digested' IS NULL
+      `SELECT DISTINCT n.org_id, n.user_id
+         FROM notifications n
+         JOIN org_users ou
+           ON ou.org_id = n.org_id AND ou.user_id = n.user_id
+        WHERE n.type LIKE 'play_review_%'
+          AND n.metadata->>'email_deferred' = 'true'
+          AND n.metadata->>'email_digested' IS NULL
+          -- Deactivated seats are filtered at enqueue, not only at delivery.
+          -- Without this a deactivated user with pending stamps produces one
+          -- job an hour for the full 7-day window below. deliverEmail and
+          -- sendReviewDigest both guard again; this is the cheap outer gate.
+          AND ou.is_active = TRUE
           -- Bound the scan. Anything older than a week is stale enough that
           -- mailing it would confuse rather than help, and it stays readable
           -- in-app either way.
-          AND created_at > now() - interval '7 days'`);
+          AND n.created_at > now() - interval '7 days'`);
 
     for (const r of rows) {
       await notificationQueue.add(
