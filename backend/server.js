@@ -372,6 +372,7 @@ app.use('/api/contracts',       require('./routes/contracts.routes'));
 app.use('/api/team-dimensions', require('./routes/team-dimensions.routes'));
 app.use('/api/account-teams',   require('./routes/account-teams.routes'));
 app.use('/api/handovers',       require('./routes/handovers.routes'));
+app.use('/api/daily-work',      require('./routes/dailyWork.routes'));
 app.use('/api/support',         require('./routes/support.routes'));
 app.use('/api/sequences',       require('./routes/sequences.routes'));
 // A/B variants (2026_46). Same base path, disjoint sub-paths — must mount AFTER

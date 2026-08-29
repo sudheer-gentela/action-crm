@@ -493,8 +493,190 @@ async function getAnchorOptions(orgId) {
   });
 }
 
+/* ───────────────────────── activity vocabulary ─────────────────────── */
+
+/**
+ * A member picked "Other" and named it.
+ *
+ * The named thing becomes a CANDIDATE type immediately, so their entry has a
+ * real key from the moment it is written rather than free text that has to be
+ * reconciled later. The manager decides afterwards whether it joins the shared
+ * list or folds into something that already exists.
+ *
+ * Members never get write access to the shared vocabulary — that is the whole
+ * point of the candidate status. What they get is an escape hatch that does
+ * not require waiting for anyone.
+ *
+ * A label that already exists returns the existing key rather than creating a
+ * near-duplicate. Two people naming the same thing on the same day is the
+ * common case, not an edge case.
+ */
+async function proposeActivityType(orgId, userId, label) {
+  const clean = (label || '').trim();
+  if (!clean) throw new DailyWorkError('An activity type needs a name', 'BLANK_LABEL');
+
+  const key = clean.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+  if (!key) throw new DailyWorkError('That name has no letters or digits in it', 'BAD_LABEL');
+
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows: existing } = await client.query(
+      `SELECT key, label, status, merged_into_key FROM daily_activity_types
+        WHERE org_id = $1 AND key = $2`, [orgId, key]);
+
+    if (existing[0]) {
+      // Already merged away: hand back what it was merged into, so the entry
+      // is written against the surviving key rather than a dead one.
+      if (existing[0].status === 'merged') {
+        return { key: existing[0].merged_into_key, reused: true, wasMerged: true };
+      }
+      return { key: existing[0].key, reused: true, wasMerged: false };
+    }
+
+    const { rows } = await client.query(
+      `INSERT INTO daily_activity_types (org_id, key, label, is_system, status, created_by)
+       VALUES ($1,$2,$3,FALSE,'candidate',$4)
+       RETURNING key, label, status`,
+      [orgId, key, clean, userId]);
+
+    return { ...rows[0], reused: false, wasMerged: false };
+  });
+}
+
+/** Manager accepts a candidate into the shared list. */
+async function promoteActivityType(orgId, managerUserId, key) {
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows } = await client.query(
+      `UPDATE daily_activity_types
+          SET status = 'active', updated_at = now()
+        WHERE org_id = $1 AND key = $2 AND status = 'candidate'
+        RETURNING key, label, status`,
+      [orgId, key]);
+
+    if (!rows[0]) {
+      throw new DailyWorkError('No candidate activity type with that key',
+        'NO_SUCH_CANDIDATE', { key });
+    }
+    return rows[0];
+  });
+}
+
+/**
+ * Fold one activity type into another.
+ *
+ * Existing entries and items are REPOINTED at the surviving key rather than
+ * left alone and resolved through merged_into_key at read time. That is a
+ * deliberate exception to "never rewrite history", and worth being explicit
+ * about:
+ *
+ *   - A merge is an explicit, deliberate correction by a manager, not a
+ *     passive join that fires on every read. Nobody's history changes because
+ *     an unrelated record moved.
+ *   - The audit trail survives: the merged row stays, with status 'merged' and
+ *     merged_into_key set. chk_dat_merge_shape exists precisely so that pair
+ *     cannot come apart.
+ *   - The alternative means every filter, group-by and count has to follow a
+ *     chain of merges, recursively, forever. That cost lands on every query in
+ *     the module for the life of the product, to preserve a distinction the
+ *     manager just said should not exist.
+ */
+async function mergeActivityType(orgId, managerUserId, key, intoKey) {
+  if (key === intoKey) {
+    throw new DailyWorkError('An activity type cannot be merged into itself', 'MERGE_SELF');
+  }
+
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows: target } = await client.query(
+      `SELECT key, status FROM daily_activity_types
+        WHERE org_id = $1 AND key = $2`, [orgId, intoKey]);
+
+    if (!target[0]) {
+      throw new DailyWorkError('Nothing to merge into', 'NO_SUCH_TARGET', { intoKey });
+    }
+    // Merging into something already merged would build a chain, which is the
+    // thing repointing exists to avoid.
+    if (target[0].status !== 'active') {
+      throw new DailyWorkError('Can only merge into an active activity type',
+        'TARGET_NOT_ACTIVE', { intoKey, status: target[0].status });
+    }
+
+    const { rowCount: entriesMoved } = await client.query(
+      `UPDATE daily_work_entries SET activity_type_key = $1, updated_at = now()
+        WHERE org_id = $2 AND activity_type_key = $3`, [intoKey, orgId, key]);
+
+    await client.query(
+      `UPDATE daily_work_items SET activity_type_key = $1, updated_at = now()
+        WHERE org_id = $2 AND activity_type_key = $3`, [intoKey, orgId, key]);
+
+    const { rows } = await client.query(
+      `UPDATE daily_activity_types
+          SET status = 'merged', merged_into_key = $1, updated_at = now()
+        WHERE org_id = $2 AND key = $3
+        RETURNING key, label, status, merged_into_key`,
+      [intoKey, orgId, key]);
+
+    if (!rows[0]) {
+      throw new DailyWorkError('No activity type with that key', 'NO_SUCH_TYPE', { key });
+    }
+    return { ...rows[0], entriesMoved };
+  });
+}
+
+/* ───────────────────────── evidence ────────────────────────────────── */
+
+/**
+ * Attach evidence to ONE ENTRY.
+ *
+ * Per entry, never per day. The same file supporting work on three different
+ * days is three rows — they can share a storage_file_id, but each one belongs
+ * to the day it evidences. Attaching to a day would mean the person-day view
+ * owned something, and that view is derived and owns nothing.
+ *
+ * channel 'manual' covers both a pasted link and a written sentence; the
+ * source-shape CHECK only demands extra columns for whatsapp, file and teams.
+ *
+ * Evidence is immutable once written — play_evidence_immutable() blocks any
+ * UPDATE. That asymmetry is intended: an entry is someone's account of their
+ * day and can be corrected, while evidence is a claim that something happened
+ * and should not be quietly edited afterwards.
+ */
+async function attachEvidence(orgId, userId, { entryId, note, channel = 'manual', storageFileId = null }) {
+  if (!note || !note.trim()) {
+    throw new DailyWorkError('Evidence needs a link or a sentence', 'BLANK_EVIDENCE');
+  }
+  if (channel === 'file' && !storageFileId) {
+    throw new DailyWorkError('File evidence needs a stored file', 'MISSING_FILE');
+  }
+
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows: entry } = await client.query(
+      `SELECT id, user_id FROM daily_work_entries WHERE id = $1 AND org_id = $2`,
+      [entryId, orgId]);
+
+    if (!entry[0]) {
+      throw new DailyWorkError('No such entry', 'NO_SUCH_ENTRY', { entryId });
+    }
+    if (entry[0].user_id !== userId) {
+      throw new DailyWorkError('That entry belongs to someone else',
+        'NOT_YOUR_ENTRY', { entryId });
+    }
+
+    const { rows } = await client.query(
+      `INSERT INTO play_evidence
+         (org_id, daily_work_entry_id, channel, note, storage_file_id, accepted_by)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       RETURNING id, daily_work_entry_id, channel, note, accepted_at`,
+      [orgId, entryId, channel, note.trim(), storageFileId, userId]);
+
+    return rows[0];
+  });
+}
+
 module.exports = {
   getAnchorOptions,
+  proposeActivityType,
+  promoteActivityType,
+  mergeActivityType,
+  attachEvidence,
   createItem,
   assignItem,
   saveDay,

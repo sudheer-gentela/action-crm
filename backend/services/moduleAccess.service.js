@@ -9,7 +9,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 const { pool } = require('../config/database');
 
-const MODULE_KEYS = ['prospecting', 'contracts', 'handovers', 'service', 'agency'];
+const MODULE_KEYS = ['prospecting', 'contracts', 'handovers', 'service', 'agency','dailywork'];
 
 // small cache, mirroring requireModule's 60s TTL
 const _cache = new Map();

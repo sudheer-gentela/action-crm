@@ -72,6 +72,7 @@ export default function OAModules() {
     handovers:   'handovers',
     service:     'service',
     agency:      null, // no sample playbook for agency
+    dailywork:   null, // daily work seeds activity types, not a playbook
   };
 
   const handleToggle = async (moduleName, newEnabled) => {
@@ -171,6 +172,19 @@ export default function OAModules() {
         'Implementation notes visible to the service team',
       ],
       color: '#0369a1',
+    },
+    {
+      key: 'dailywork',
+      icon: '📋',
+      label: 'Daily Work',
+      desc: 'Replaces a shared daily-activity spreadsheet. Each person logs what they did against their own work items; managers read it by day, by person, by project or by account.',
+      features: [
+        'One save for the whole day, not one per task',
+        'Recurring work and assigned deliverables tracked differently',
+        'Days logged against working days, allowing for holidays and leave',
+        'Filter by account, project, activity or department',
+      ],
+      color: '#0ea5e9',
     },
     {
       key: 'service',
