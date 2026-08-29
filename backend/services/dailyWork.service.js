@@ -402,7 +402,64 @@ async function getDay(orgId, userId, { date = null, asOf = new Date() } = {}) {
   });
 }
 
+/**
+ * What a person may anchor work to.
+ *
+ * SELECT ONLY. The daily work surface never creates a project, an account or a
+ * campaign — an admin or project manager sets those up, and the ten choose
+ * from them. Ten people free-typing project names produces "PowerBI",
+ * "Power BI" and "PowerBi" as three separate projects inside a fortnight, and
+ * no amount of reporting recovers from that.
+ *
+ * Four kinds come back, and the difference between the middle two is the whole
+ * basis of the account view:
+ *
+ *   customer project — a handover with an account. Work here is attributed.
+ *   internal project — project_kind 'internal'. The schema GUARANTEES no
+ *                      account (sales_handovers_kind_shape_chk), so this is
+ *                      the Internal Projects bucket exactly, not a heuristic.
+ *   account          — anchoring straight at a customer with no project.
+ *   campaign         — internal by nature; prospecting_campaigns has no
+ *                      account link to follow.
+ *
+ * Cancelled and completed projects are excluded: you should not be able to
+ * start logging against something that finished. Work already anchored to them
+ * keeps its anchor, because the entry holds a snapshot.
+ */
+async function getAnchorOptions(orgId) {
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows } = await client.query(
+      `SELECT 'handover'::text AS anchor_kind, h.id AS anchor_id, h.name AS label,
+              CASE WHEN h.project_kind = 'internal' THEN 'internal_project'
+                   ELSE 'customer_project' END AS group_key,
+              h.account_id, a.name AS account_name
+         FROM sales_handovers h
+         LEFT JOIN accounts a ON a.id = h.account_id AND a.org_id = h.org_id
+        WHERE h.org_id = $1
+          AND h.status NOT IN ('cancelled','completed')
+          AND h.name IS NOT NULL
+
+        UNION ALL
+
+       SELECT 'account'::text, a.id, a.name, 'account'::text, a.id, a.name
+         FROM accounts a
+        WHERE a.org_id = $1 AND a.deleted_at IS NULL
+
+        UNION ALL
+
+       SELECT 'campaign'::text, c.id, c.name, 'campaign'::text, NULL::integer, NULL::varchar
+         FROM prospecting_campaigns c
+        WHERE c.org_id = $1 AND c.status = 'active'
+
+        ORDER BY group_key, label`,
+      [orgId]);
+
+    return rows;
+  });
+}
+
 module.exports = {
+  getAnchorOptions,
   createItem,
   assignItem,
   saveDay,
