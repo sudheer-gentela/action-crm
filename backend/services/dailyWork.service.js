@@ -36,6 +36,40 @@
 const { withOrgTransaction } = require('../config/database');
 const dwDate = require('./dailyWorkDate');
 
+// ── Why every date column is cast to text ────────────────────────────
+//
+// node-postgres parses a Postgres DATE into a JS Date at LOCAL midnight. On a
+// server at UTC+5:30, entry_date 2026-08-28 becomes 2026-08-27T18:30:00Z, and
+// anything that then calls toISOString() — including Express serialising the
+// response to JSON — reports the day before. Every user east of UTC would see
+// their own entries dated one day early.
+//
+// That is the exact failure this module exists to prevent, arriving through
+// the driver rather than through the logic. A calendar date is a string here
+// and stays a string all the way to the browser.
+//
+// Casting in SQL rather than registering a global pg type parser for OID 1082:
+// that parser is process-wide and would change how every other module in the
+// app reads dates.
+//
+// Enumerating the columns also stops RETURNING * from leaking whatever a
+// future migration adds straight into the API response.
+
+const ITEM_COLUMNS = `
+  id, org_id, owner_user_id, kind, title, activity_type_key,
+  anchor_kind, anchor_id, account_id, status, department_team_id,
+  created_by, assigned_by,
+  target_date::text AS target_date,
+  opened_on::text   AS opened_on,
+  closed_at, created_at, updated_at`;
+
+const ENTRY_COLUMNS = `
+  id, org_id, item_id, user_id,
+  entry_date::text AS entry_date,
+  description, next_steps, day_stage, department_team_id, activity_type_key,
+  anchor_kind, anchor_id, account_id, is_continuation,
+  created_at, updated_at, last_edited_by`;
+
 const MAX_DESCRIPTION = 2000;
 const MAX_NEXT_STEPS = 2000;
 
@@ -186,7 +220,7 @@ async function createItem(orgId, actorUserId, input) {
           anchor_kind, anchor_id, account_id, status, department_team_id,
           created_by, assigned_by, target_date)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-       RETURNING *`,
+       RETURNING ${ITEM_COLUMNS}`,
       [orgId, ownerUserId, kind, title.trim(), activityTypeKey,
        anchorKind, anchorId, accountId, status, teamId,
        actorUserId, assignedBy, targetDate]);
@@ -323,7 +357,7 @@ async function saveDay(orgId, userId, entries, { asOf = new Date() } = {}) {
                 day_stage      = EXCLUDED.day_stage,
                 last_edited_by = EXCLUDED.last_edited_by,
                 updated_at     = now()
-         RETURNING *`,
+         RETURNING ${ENTRY_COLUMNS}`,
         [orgId, entry.itemId, userId, entryDate,
          entry.description.trim(), entry.nextSteps || null, entry.dayStage,
          teamId, item.activity_type_key,
@@ -371,12 +405,13 @@ async function getDay(orgId, userId, { date = null, asOf = new Date() } = {}) {
     const { rows } = await client.query(
       `SELECT i.id                AS item_id,
               i.kind, i.title, i.status, i.activity_type_key,
-              i.anchor_kind, i.anchor_id, i.account_id, i.target_date,
+              i.anchor_kind, i.anchor_id, i.account_id,
+              i.target_date::text  AS target_date,
               i.assigned_by, i.created_at,
               a.name              AS account_name,
               e.id                AS entry_id,
               e.description, e.next_steps, e.day_stage, e.is_continuation,
-              prior.entry_date    AS prior_date,
+              prior.entry_date::text AS prior_date,
               prior.description   AS prior_description,
               (SELECT count(*)::int FROM play_evidence pe
                 WHERE pe.daily_work_entry_id = e.id) AS evidence_count
