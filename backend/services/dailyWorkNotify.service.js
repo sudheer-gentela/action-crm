@@ -291,29 +291,73 @@ async function runRollups({ now = new Date() } = {}) {
             ORDER BY u.first_name, u.last_name`,
           [orgId, subordinates, date]);
 
-        const logged = rows.filter(r => r.logged);
-        const missing = rows.filter(r => !r.logged);
-        const name = r => `${r.first_name || ''} ${r.last_name || ''}`.trim() || 'Someone';
+        // The rollup applies the SAME guards as the reminder. Without this it
+        // lists everyone who has not logged, which puts people on approved
+        // leave and people not scheduled to work today into what a manager
+        // reads as a chase list. One appearance there of someone who is on
+        // holiday is enough for the whole thing to stop being trusted.
+        const byId = new Map(people.map(x => [x.user_id, x]));
+        const logged = [], notYet = [], offToday = [], unconfigured = [];
 
-        const body = missing.length === 0
-          ? `Everyone logged today: ${logged.map(name).join(', ')}.`
-          : `Logged: ${logged.length ? logged.map(name).join(', ') : 'nobody yet'}.\n` +
-            `Not yet: ${missing.map(name).join(', ')}.\n\n` +
+        for (const r of rows) {
+          if (r.logged) { logged.push(r); continue; }
+
+          const sched = byId.get(r.id);
+          if (!sched || !sched.weekday_mask) { unconfigured.push(r); continue; }
+          if (!dwDate.isScheduledDay(date, sched.weekday_mask)) { offToday.push(r); continue; }
+
+          const off = await isDayOff(orgId, r.id, sched.holiday_calendar_id, date);
+          if (off) { offToday.push(r); continue; }
+
+          notYet.push(r);
+        }
+
+        const name = r => `${r.first_name || ''} ${r.last_name || ''}`.trim() || 'Someone';
+        const lines = [];
+
+        lines.push(`Logged: ${logged.length ? logged.map(name).join(', ') : 'nobody yet'}.`);
+        if (notYet.length) lines.push(`Not yet: ${notYet.map(name).join(', ')}.`);
+        if (offToday.length) lines.push(`Not expected today: ${offToday.map(name).join(', ')}.`);
+        // A configuration gap, surfaced to the person who can get it fixed.
+        // These people are also not being reminded, which is the part that
+        // would otherwise go unnoticed for weeks.
+        if (unconfigured.length) {
+          lines.push(`No working week set, so not being reminded: ${unconfigured.map(name).join(', ')}.`);
+        }
+
+        const body = notYet.length === 0
+          ? (logged.length
+              ? `Everyone logged today: ${logged.map(name).join(', ')}.` +
+                (offToday.length ? `\n\nNot expected today: ${offToday.map(name).join(', ')}.` : '') +
+                (unconfigured.length
+                  ? `\n\nNo working week set, so not being reminded: ${unconfigured.map(name).join(', ')}.`
+                  : '')
+              : lines.join('\n'))
+          : lines.join('\n') +
             // Said explicitly because the alternative reading — that someone is
             // behind — is the one a manager reaches for first.
-            `A missing day is an absence, not a backlog. There is nothing to clear.`;
+            `\n\nA missing day is an absence, not a backlog. There is nothing to clear.`;
+
+        // The count is of people EXPECTED to log, not of everyone who reports
+        // to you. "2 of 5" when three were on holiday is a false accusation
+        // dressed as a statistic.
+        const expected = logged.length + notYet.length;
 
         await notificationService.createNotification(
           orgId, p.user_id,
           'dailywork_rollup',
-          `${logged.length} of ${rows.length} logged today`,
+          expected === 0
+            ? 'Nobody was expected to log today'
+            : `${logged.length} of ${expected} logged today`,
           body,
           'daily_work', null,
           {
             entry_date: date,
             timezone: tz,
             logged_ids: logged.map(r => r.id),
-            missing_ids: missing.map(r => r.id),
+            missing_ids: notYet.map(r => r.id),
+            off_today_ids: offToday.map(r => r.id),
+            unconfigured_ids: unconfigured.map(r => r.id),
           }
         );
         summary.sent++;
