@@ -218,6 +218,7 @@ async function enqueueRevisitAlerts() {
 // ═════════════════════════════════════════════════════════════════════════════
 
 const ProspectingEscalationService = require('../services/prospectingEscalation.service');
+const dailyWorkNotify = require('../services/dailyWorkNotify.service');
 
 /**
  * Scan all orgs for prospecting actions eligible for an immediate alert.
@@ -494,6 +495,27 @@ function startScheduler() {
     );
   }, { timezone: 'UTC' });
 
+  // Daily work: hourly at :25 and :35, clear of the :05, :15 and :45 sweeps.
+  //
+  // Both fire EVERY hour and self-filter per PERSON on their own local hour,
+  // which is the prospecting digest's org-level pattern pushed down a level.
+  // One schedule covers every timezone; do not add a cron per zone.
+  cron.schedule('25 * * * *', () => {
+    dailyWorkNotify.runReminders()
+      .then(s => {
+        if (s.sent) console.log(`[dailywork] reminders sent: ${s.sent} of ${s.considered} considered`);
+      })
+      .catch(err => console.error('[dailywork] reminder cron error:', err.message));
+  }, { timezone: 'UTC' });
+
+  cron.schedule('35 * * * *', () => {
+    dailyWorkNotify.runRollups()
+      .then(s => {
+        if (s.sent) console.log(`[dailywork] rollups sent: ${s.sent}`);
+      })
+      .catch(err => console.error('[dailywork] rollup cron error:', err.message));
+  }, { timezone: 'UTC' });
+
   // Review digests: hourly at :45, clear of every other sweep above.
   cron.schedule('45 * * * *', () => {
     enqueueReviewDigests().catch(err =>
@@ -501,7 +523,7 @@ function startScheduler() {
     );
   }, { timezone: 'UTC' });
 
-  console.log('✅ Notification scheduler started (deal: immediate 2h, digest 09:00 UTC, revisit 08:00 UTC | prospecting: immediate 2h+30m, digest hourly+org-filtered, escalation 4h+15m | review digest hourly+45m)');
+  console.log('✅ Notification scheduler started (deal: immediate 2h, digest 09:00 UTC, revisit 08:00 UTC | prospecting: immediate 2h+30m, digest hourly+org-filtered, escalation 4h+15m | review digest hourly+45m | daily work: reminder hourly+25m, rollup hourly+35m, both per-user local hour)');
 }
 
 module.exports = {
