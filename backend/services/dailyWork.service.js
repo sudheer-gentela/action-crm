@@ -945,8 +945,221 @@ async function listDepartments(orgId) {
   });
 }
 
+/* ───────────────────────── calendars and schedules ─────────────────── */
+
+/**
+ * Every calendar in the org, with its dates and how many people use it.
+ *
+ * The usage count matters: deleting a calendar that four people are scheduled
+ * against silently changes four denominators, so the screen has to be able to
+ * say so before anyone clicks.
+ */
+async function listCalendars(orgId) {
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows: calendars } = await client.query(
+      `SELECT c.id, c.name, c.is_default,
+              (SELECT count(*)::int FROM daily_work_schedules s
+                WHERE s.org_id = c.org_id AND s.holiday_calendar_id = c.id) AS people,
+              (SELECT count(*)::int FROM holiday_calendar_dates d
+                WHERE d.org_id = c.org_id AND d.calendar_id = c.id) AS date_count
+         FROM holiday_calendars c
+        WHERE c.org_id = $1
+        ORDER BY c.is_default DESC, c.name`,
+      [orgId]);
+
+    const { rows: dates } = await client.query(
+      `SELECT id, calendar_id, holiday_date::text AS holiday_date, label
+         FROM holiday_calendar_dates
+        WHERE org_id = $1
+        ORDER BY holiday_date`,
+      [orgId]);
+
+    return calendars.map(c => ({
+      ...c,
+      dates: dates.filter(d => d.calendar_id === c.id),
+    }));
+  });
+}
+
+async function createCalendar(orgId, userId, { name, isDefault = false }) {
+  if (!name || !name.trim()) {
+    throw new DailyWorkError('A calendar needs a name', 'BLANK_NAME');
+  }
+
+  return withOrgTransaction(orgId, async (client) => {
+    // uq_holiday_calendars_one_default permits one default per org, so the
+    // existing one is stood down first rather than letting the insert fail with
+    // a constraint name nobody outside this file would recognise.
+    if (isDefault) {
+      await client.query(
+        `UPDATE holiday_calendars SET is_default = FALSE WHERE org_id = $1 AND is_default`,
+        [orgId]);
+    }
+
+    const { rows } = await client.query(
+      `INSERT INTO holiday_calendars (org_id, name, is_default, created_by)
+       VALUES ($1,$2,$3,$4)
+       RETURNING id, name, is_default`,
+      [orgId, name.trim(), !!isDefault, userId]);
+
+    return rows[0];
+  });
+}
+
+async function setDefaultCalendar(orgId, calendarId) {
+  return withOrgTransaction(orgId, async (client) => {
+    await client.query(
+      `UPDATE holiday_calendars SET is_default = FALSE WHERE org_id = $1 AND is_default`,
+      [orgId]);
+    const { rows } = await client.query(
+      `UPDATE holiday_calendars SET is_default = TRUE
+        WHERE id = $1 AND org_id = $2
+        RETURNING id, name, is_default`,
+      [calendarId, orgId]);
+    if (!rows[0]) throw new DailyWorkError('No such calendar', 'NO_SUCH_CALENDAR', { calendarId });
+    return rows[0];
+  });
+}
+
+async function deleteCalendar(orgId, calendarId) {
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows: users } = await client.query(
+      `SELECT count(*)::int AS n FROM daily_work_schedules
+        WHERE org_id = $1 AND holiday_calendar_id = $2`, [orgId, calendarId]);
+
+    // Refuse rather than cascade. Removing a calendar out from under a
+    // schedule would change those people's working days with no trace of why.
+    if (users[0].n > 0) {
+      throw new DailyWorkError(
+        `${users[0].n} ${users[0].n === 1 ? 'person is' : 'people are'} using this calendar — move them first`,
+        'CALENDAR_IN_USE', { calendarId, people: users[0].n });
+    }
+
+    const { rowCount } = await client.query(
+      `DELETE FROM holiday_calendars WHERE id = $1 AND org_id = $2`, [calendarId, orgId]);
+    if (!rowCount) throw new DailyWorkError('No such calendar', 'NO_SUCH_CALENDAR', { calendarId });
+    return { deleted: calendarId };
+  });
+}
+
+/**
+ * Add holidays. Accepts a list, because nobody wants to click through fourteen
+ * dates one at a time.
+ *
+ * Dates already present are skipped rather than erroring, so pasting next
+ * year's list over this year's is safe and reports what it actually added.
+ */
+async function addHolidays(orgId, calendarId, dates) {
+  if (!Array.isArray(dates) || !dates.length) {
+    throw new DailyWorkError('No dates given', 'NO_DATES');
+  }
+
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows: cal } = await client.query(
+      `SELECT id FROM holiday_calendars WHERE id = $1 AND org_id = $2`, [calendarId, orgId]);
+    if (!cal[0]) throw new DailyWorkError('No such calendar', 'NO_SUCH_CALENDAR', { calendarId });
+
+    const added = [];
+    const skipped = [];
+    for (const d of dates) {
+      const date = (d.date || '').trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        throw new DailyWorkError(`"${date}" is not a date in YYYY-MM-DD form`, 'BAD_DATE', { date });
+      }
+      const { rows } = await client.query(
+        `INSERT INTO holiday_calendar_dates (org_id, calendar_id, holiday_date, label)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT (calendar_id, holiday_date) DO NOTHING
+         RETURNING id, holiday_date::text AS holiday_date, label`,
+        [orgId, calendarId, date, (d.label || '').trim() || null]);
+      rows[0] ? added.push(rows[0]) : skipped.push(date);
+    }
+    return { added, skipped };
+  });
+}
+
+async function removeHoliday(orgId, dateId) {
+  return withOrgTransaction(orgId, async (client) => {
+    const { rowCount } = await client.query(
+      `DELETE FROM holiday_calendar_dates WHERE id = $1 AND org_id = $2`, [dateId, orgId]);
+    if (!rowCount) throw new DailyWorkError('No such holiday', 'NO_SUCH_HOLIDAY', { dateId });
+    return { deleted: dateId };
+  });
+}
+
+/**
+ * Who is on which calendar and which working week.
+ *
+ * Scoped to people granted the module — someone without it has no denominator
+ * to get wrong, and listing the whole org would bury the ten in a hundred.
+ */
+async function listSchedules(orgId) {
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows } = await client.query(
+      `SELECT u.id AS user_id, u.first_name, u.last_name, u.timezone,
+              s.id AS schedule_id, s.weekday_mask,
+              s.effective_from::text AS effective_from,
+              s.holiday_calendar_id, c.name AS calendar_name
+         FROM user_module_access g
+         JOIN users u ON u.id = g.user_id
+         LEFT JOIN LATERAL (
+                SELECT id, weekday_mask, effective_from, holiday_calendar_id
+                  FROM daily_work_schedules d
+                 WHERE d.org_id = g.org_id AND d.user_id = g.user_id
+                 ORDER BY effective_from DESC LIMIT 1
+              ) s ON TRUE
+         LEFT JOIN holiday_calendars c ON c.id = s.holiday_calendar_id
+        WHERE g.org_id = $1 AND g.module_key = 'dailywork'
+        ORDER BY u.first_name, u.last_name`,
+      [orgId]);
+    return rows;
+  });
+}
+
+/**
+ * Change someone's working week or calendar.
+ *
+ * A new EFFECTIVE-DATED ROW, never an update in place. Someone moving to a
+ * four-day week in June must still have their May days counted against the old
+ * mask, and rewriting the row would silently restate every rate they have ever
+ * been shown. Setting the same effective_from twice does update, because that
+ * is a correction to a change not yet in force rather than a new one.
+ */
+async function setSchedule(orgId, userId, actorUserId, { weekdayMask, holidayCalendarId, effectiveFrom }) {
+  if (!Number.isInteger(weekdayMask) || weekdayMask < 1 || weekdayMask > 127) {
+    throw new DailyWorkError('A working week must include at least one day', 'BAD_MASK', { weekdayMask });
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom || '')) {
+    throw new DailyWorkError('effectiveFrom must be YYYY-MM-DD', 'BAD_DATE');
+  }
+
+  return withOrgTransaction(orgId, async (client) => {
+    await assertActiveMember(client, orgId, userId);
+
+    const { rows } = await client.query(
+      `INSERT INTO daily_work_schedules
+         (org_id, user_id, weekday_mask, holiday_calendar_id, effective_from, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (org_id, user_id, effective_from) DO UPDATE
+          SET weekday_mask = EXCLUDED.weekday_mask,
+              holiday_calendar_id = EXCLUDED.holiday_calendar_id
+       RETURNING id, weekday_mask, effective_from::text AS effective_from, holiday_calendar_id`,
+      [orgId, userId, weekdayMask, holidayCalendarId || null, effectiveFrom, actorUserId]);
+
+    return rows[0];
+  });
+}
+
 module.exports = {
   getAnchorOptions,
+  listCalendars,
+  createCalendar,
+  setDefaultCalendar,
+  deleteCalendar,
+  addHolidays,
+  removeHoliday,
+  listSchedules,
+  setSchedule,
   listEvidence,
   revokeEvidence,
   replaceEvidence,

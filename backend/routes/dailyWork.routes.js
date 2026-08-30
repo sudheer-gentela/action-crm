@@ -17,6 +17,20 @@
 // POST   /daily-work/evidence/:id/replace    withdraw and attach a correction
 // GET    /daily-work/departments             for the manager's filter
 //
+// ── Setup, owner and admin only ──────────────────────────────────────────────
+// GET    /daily-work/calendars               calendars with their dates
+// POST   /daily-work/calendars               create one
+// POST   /daily-work/calendars/:id/default   make it the org default
+// DELETE /daily-work/calendars/:id           refused while anyone uses it
+// POST   /daily-work/calendars/:id/dates     add holidays, many at once
+// DELETE /daily-work/holidays/:id            remove one
+// GET    /daily-work/schedules               who is on which week and calendar
+// PUT    /daily-work/schedules/:userId       set a working week, effective-dated
+//
+// requireRole fails CLOSED on error, unlike requireModule. That asymmetry is
+// right here: a database blip should not hand out the ability to change
+// everyone's working days.
+//
 // ── Manager surface ──────────────────────────────────────────────────────────
 // GET    /daily-work/team/log                one row per person per day
 // GET    /daily-work/team/day-detail         the items behind one of those rows
@@ -60,7 +74,7 @@ const express = require('express');
 const router  = express.Router();
 
 const authenticateToken = require('../middleware/auth.middleware');
-const { orgContext }    = require('../middleware/orgContext.middleware');
+const { orgContext, requireRole } = require('../middleware/orgContext.middleware');
 const requireModule     = require('../middleware/requireModule.middleware');
 
 const dailyWork  = require('../services/dailyWork.service');
@@ -411,6 +425,81 @@ router.post('/activity-types/:key/merge', async (req, res) => {
     if (!intoKey) return res.status(400).json({ error: 'intoKey is required' });
     res.json(await dailyWork.mergeActivityType(req.orgId, req.userId, req.params.key, intoKey));
   } catch (err) { handle(res, err, 'POST /activity-types/:key/merge'); }
+});
+
+/* ───────────────────────── setup: calendars ────────────────────────── */
+//
+// Holiday calendars and working weeks decide the denominator of every rate in
+// this module. Changing one silently restates figures people have already been
+// shown, so this is owner and admin only — not merely anyone with reports.
+
+const adminOnly = requireRole('owner', 'admin');
+
+router.get('/calendars', adminOnly, async (req, res) => {
+  try {
+    res.json(await dailyWork.listCalendars(req.orgId));
+  } catch (err) { handle(res, err, 'GET /calendars'); }
+});
+
+router.post('/calendars', adminOnly, async (req, res) => {
+  try {
+    const b = req.body || {};
+    res.status(201).json(await dailyWork.createCalendar(req.orgId, req.userId, {
+      name: b.name, isDefault: !!b.isDefault,
+    }));
+  } catch (err) { handle(res, err, 'POST /calendars'); }
+});
+
+router.post('/calendars/:id/default', adminOnly, async (req, res) => {
+  try {
+    const id = asId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'bad calendar id' });
+    res.json(await dailyWork.setDefaultCalendar(req.orgId, id));
+  } catch (err) { handle(res, err, 'POST /calendars/:id/default'); }
+});
+
+router.delete('/calendars/:id', adminOnly, async (req, res) => {
+  try {
+    const id = asId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'bad calendar id' });
+    res.json(await dailyWork.deleteCalendar(req.orgId, id));
+  } catch (err) { handle(res, err, 'DELETE /calendars/:id'); }
+});
+
+router.post('/calendars/:id/dates', adminOnly, async (req, res) => {
+  try {
+    const id = asId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'bad calendar id' });
+    const dates = (req.body || {}).dates;
+    res.json(await dailyWork.addHolidays(req.orgId, id, dates));
+  } catch (err) { handle(res, err, 'POST /calendars/:id/dates'); }
+});
+
+router.delete('/holidays/:id', adminOnly, async (req, res) => {
+  try {
+    const id = asId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'bad holiday id' });
+    res.json(await dailyWork.removeHoliday(req.orgId, id));
+  } catch (err) { handle(res, err, 'DELETE /holidays/:id'); }
+});
+
+router.get('/schedules', adminOnly, async (req, res) => {
+  try {
+    res.json(await dailyWork.listSchedules(req.orgId));
+  } catch (err) { handle(res, err, 'GET /schedules'); }
+});
+
+router.put('/schedules/:userId', adminOnly, async (req, res) => {
+  try {
+    const userId = asId(req.params.userId);
+    if (!userId) return res.status(400).json({ error: 'bad user id' });
+    const b = req.body || {};
+    res.json(await dailyWork.setSchedule(req.orgId, userId, req.userId, {
+      weekdayMask: Number(b.weekdayMask),
+      holidayCalendarId: asId(b.holidayCalendarId) || null,
+      effectiveFrom: b.effectiveFrom,
+    }));
+  } catch (err) { handle(res, err, 'PUT /schedules/:userId'); }
 });
 
 module.exports = router;

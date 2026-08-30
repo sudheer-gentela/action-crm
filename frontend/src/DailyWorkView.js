@@ -32,6 +32,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
 import DailyWorkTeamView from './DailyWorkTeamView';
+import DailyWorkSetupView from './DailyWorkSetupView';
 import useIsMobile from './useIsMobile';
 import './DailyWork.css';
 
@@ -40,6 +41,16 @@ import './DailyWork.css';
 const currentUserId = () => {
   try { return JSON.parse(localStorage.getItem('user') || '{}').id || null; }
   catch { return null; }
+};
+
+// Only for deciding whether to OFFER the setup tab. The endpoints behind it are
+// guarded by requireRole on the server, which fails closed — this is a UI hint,
+// not a permission check, and the view handles a 403 on its own.
+const isOrgAdmin = () => {
+  try {
+    const u = JSON.parse(localStorage.getItem('user') || '{}');
+    return ['owner', 'admin'].includes(u.org_role || u.role);
+  } catch { return false; }
 };
 
 const SOFT_LIMIT = 1000;
@@ -62,6 +73,7 @@ export default function DailyWorkView() {
   const [tab, setTab] = useState('day');        // 'day' | 'team'
   const [mode, setMode] = useState('log');
   const [me] = useState(currentUserId);
+  const [canSetUp] = useState(isOrgAdmin);
   const [myRate, setMyRate] = useState(null);  // my row from the rollup
   const [hasReports, setHasReports] = useState(false);
   const [history, setHistory] = useState([]);  // person-days before today
@@ -324,18 +336,26 @@ export default function DailyWorkView() {
 
   return (
     <div className="dw">
-      {hasReports && (
-        <div className="dw-toggle" style={{ marginBottom: 16 }} role="group" aria-label="My day or my team">
+      {(hasReports || canSetUp) && (
+        <div className="dw-toggle" style={{ marginBottom: 16 }} role="group" aria-label="Section">
           <button type="button" aria-pressed={tab === 'day'} onClick={() => setTab('day')}>
             My day
           </button>
-          <button type="button" aria-pressed={tab === 'team'} onClick={() => setTab('team')}>
-            My team
-          </button>
+          {hasReports && (
+            <button type="button" aria-pressed={tab === 'team'} onClick={() => setTab('team')}>
+              My team
+            </button>
+          )}
+          {canSetUp && (
+            <button type="button" aria-pressed={tab === 'setup'} onClick={() => setTab('setup')}>
+              Setup
+            </button>
+          )}
         </div>
       )}
 
-      {tab === 'team' ? <DailyWorkTeamView /> : (
+      {tab === 'team' ? <DailyWorkTeamView />
+       : tab === 'setup' ? <DailyWorkSetupView /> : (
       <>
       <div className="dw-head">
         <div>

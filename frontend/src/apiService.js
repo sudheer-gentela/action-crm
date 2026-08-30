@@ -1013,6 +1013,21 @@ twilio: {
 
     listDepartments: () => api.get('/daily-work/departments'),
 
+    // ── setup, owner and admin only ──────────────────────────────────
+    listCalendars:      () => api.get('/daily-work/calendars'),
+    createCalendar:     ({ name, isDefault }) => api.post('/daily-work/calendars', { name, isDefault }),
+    setDefaultCalendar: (id) => api.post(`/daily-work/calendars/${id}/default`),
+    deleteCalendar:     (id) => api.delete(`/daily-work/calendars/${id}`),
+    // Many at once: nobody wants to click through fourteen dates.
+    addHolidays:        (id, dates) => api.post(`/daily-work/calendars/${id}/dates`, { dates }),
+    removeHoliday:      (id) => api.delete(`/daily-work/holidays/${id}`),
+
+    listSchedules: () => api.get('/daily-work/schedules'),
+    // Effective-dated: this adds a row, it does not rewrite the old one, so
+    // past rates keep being computed against the week that was in force then.
+    setSchedule:   (userId, { weekdayMask, holidayCalendarId, effectiveFrom }) =>
+      api.put(`/daily-work/schedules/${userId}`, { weekdayMask, holidayCalendarId, effectiveFrom }),
+
     // Recurring work only. Assigned items take their status from the day's
     // stage, so this path refuses them.
     retireItem: (itemId) => api.patch(`/daily-work/items/${itemId}`, { status: 'retired' }),
