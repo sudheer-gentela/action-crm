@@ -57,6 +57,7 @@ export default function DailyWorkTeamView() {
   const [candidates, setCandidates] = useState([]);
   const [accountSummary, setAccountSummary] = useState(null);
 
+  const [assigning, setAssigning] = useState(false);
   const [expanded, setExpanded] = useState({});   // key -> true
   const [details, setDetails]   = useState({});   // `${user}:${date}` -> rows
   const [notice, setNotice]     = useState(null);
@@ -216,11 +217,25 @@ export default function DailyWorkTeamView() {
               <button className="dw-btn dw-btn-sm" onClick={() => setAnchor(shiftDate(anchorDate, 1))}>›</button>
             </>
           )}
+          <button className="dw-btn dw-btn-primary" onClick={() => setAssigning(a => !a)}>
+            {assigning ? 'Cancel' : 'Assign work'}
+          </button>
         </div>
       </div>
 
       {notice && <div className={`dw-banner ${notice.kind}`}>{notice.text}</div>}
       {error && <div className="dw-banner stop">{error}</div>}
+
+      {assigning && (
+        <AssignForm
+          people={rollup}
+          anchors={anchors}
+          activityTypes={activityTypes}
+          onCancel={() => setAssigning(false)}
+          onDone={(msg) => { setAssigning(false); setNotice({ kind: 'info', text: msg }); load(); }}
+          onError={(msg) => setNotice({ kind: 'stop', text: msg })}
+        />
+      )}
 
       {/* ── filters ─────────────────────────────────────────────────── */}
 
@@ -484,6 +499,156 @@ function DayStrip({ days }) {
   );
 }
 
+/**
+ * Hand work to someone.
+ *
+ * The kind choice is the important control, and it is not a formality — the two
+ * kinds are measured differently and cannot be swapped later without rewriting
+ * what the reports mean:
+ *
+ *   one-off   completes once. Its stage lives on the item, and it appears in
+ *             "assigned work that isn't moving" when nothing is logged.
+ *   standing  never completes. It joins their daily rows every morning and
+ *             counts towards days logged, not towards any completion figure.
+ *
+ * The design originally tied kind to who created it — members made recurring
+ * work, managers assigned deliverables. Handing down standing ownership
+ * ("LinkedIn posts are yours now") broke that, so the manager chooses.
+ *
+ * Rendered inline rather than as a fixed modal: on a phone a fixed overlay
+ * fights the keyboard, and this form is mostly typing.
+ */
+function AssignForm({ people, anchors, activityTypes, onCancel, onDone, onError }) {
+  const [form, setForm] = useState({
+    ownerUserId: '', kind: 'assigned', title: '',
+    activityTypeKey: '', anchor: '', targetDate: '',
+  });
+  const [busy, setBusy] = useState(false);
+
+  const set = patch => setForm(f => ({ ...f, ...patch }));
+
+  const submit = async () => {
+    if (!form.ownerUserId) { onError('Choose who it is for.'); return; }
+    if (!form.title.trim()) { onError('Say what needs doing.'); return; }
+
+    const [anchorKind, anchorId] = form.anchor ? form.anchor.split(':') : [null, null];
+    setBusy(true);
+    try {
+      const { data } = await apiService.dailyWork.assign({
+        ownerUserId: Number(form.ownerUserId),
+        kind: form.kind,
+        title: form.title.trim(),
+        activityTypeKey: form.activityTypeKey || null,
+        anchorKind: anchorKind || null,
+        anchorId: anchorId ? Number(anchorId) : null,
+        // Only one-off work can carry a target date — the database refuses it
+        // on recurring work, so the field is not even sent.
+        targetDate: form.kind === 'assigned' && form.targetDate ? form.targetDate : null,
+      });
+      const who = people.find(p => p.user_id === Number(form.ownerUserId));
+      const name = who ? `${who.first_name} ${who.last_name}`.trim() : 'them';
+      onDone(form.kind === 'assigned'
+        ? `Assigned "${data.title}" to ${name}. It is on their list from today.`
+        : `"${data.title}" added to ${name}'s standing work. It returns every morning.`);
+    } catch (err) {
+      onError(err?.response?.data?.error || 'Could not assign that');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="dw-card" style={{ marginBottom: 14 }}>
+      <div className="dw-card-head"><h2>Assign work</h2></div>
+      <div className="dw-item-body" style={{ paddingTop: 14 }}>
+
+        <div className="dw-field" style={{ marginTop: 0 }}>
+          <label>Kind of work</label>
+          <div className="dw-toggle">
+            <button type="button" aria-pressed={form.kind === 'assigned'}
+                    onClick={() => set({ kind: 'assigned' })}>One-off deliverable</button>
+            <button type="button" aria-pressed={form.kind === 'recurring'}
+                    onClick={() => set({ kind: 'recurring', targetDate: '' })}>Standing work</button>
+          </div>
+          <div className="dw-item-status">
+            {form.kind === 'assigned'
+              ? 'Completes once. Its stage lives on the item, and it shows up as stalled if nothing is logged against it.'
+              : 'Never completes — only ever done for today. It joins their rows every morning and counts towards days logged.'}
+          </div>
+        </div>
+
+        <div className="dw-field">
+          <label htmlFor="dw-a-title">What needs doing</label>
+          <input id="dw-a-title" type="text" value={form.title}
+                 placeholder="e.g. Q3 pipeline dashboard"
+                 onChange={e => set({ title: e.target.value })} />
+        </div>
+
+        <div className="dw-addgrid" style={{ marginTop: 14 }}>
+          <div className="dw-field" style={{ marginTop: 0 }}>
+            <label htmlFor="dw-a-who">Assign to</label>
+            <select id="dw-a-who" value={form.ownerUserId}
+                    onChange={e => set({ ownerUserId: e.target.value })}>
+              <option value="">Choose someone</option>
+              {people.map(p => (
+                <option key={p.user_id} value={p.user_id}>
+                  {`${p.first_name || ''} ${p.last_name || ''}`.trim() || `User ${p.user_id}`}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="dw-field" style={{ marginTop: 0 }}>
+            <label htmlFor="dw-a-activity">Kind of activity</label>
+            <select id="dw-a-activity" value={form.activityTypeKey}
+                    onChange={e => set({ activityTypeKey: e.target.value })}>
+              <option value="">Not set</option>
+              {(activityTypes || []).map(t => (
+                <option key={t.key} value={t.key}>{t.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="dw-field" style={{ marginTop: 0 }}>
+            <label htmlFor="dw-a-anchor">Project or client</label>
+            <select id="dw-a-anchor" value={form.anchor}
+                    onChange={e => set({ anchor: e.target.value })}>
+              <option value="">Not tied to one</option>
+              {groupAnchors(anchors).map(g => (
+                <optgroup key={g.label} label={g.label}>
+                  {g.options.map(o => (
+                    <option key={`${o.anchor_kind}:${o.anchor_id}`}
+                            value={`${o.anchor_kind}:${o.anchor_id}`}>{o.label}</option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {form.kind === 'assigned' && (
+          <div className="dw-field">
+            <label htmlFor="dw-a-target">Target date (optional)</label>
+            <input id="dw-a-target" type="date" value={form.targetDate}
+                   onChange={e => set({ targetDate: e.target.value })} />
+            <div className="dw-item-status">
+              Advisory. It is shown and it sorts the stalled list — it never makes
+              anything overdue and it sends no reminders.
+            </div>
+          </div>
+        )}
+
+        <div className="dw-addform-actions">
+          <button className="dw-btn dw-btn-primary" onClick={submit} disabled={busy}>
+            {busy ? 'Assigning…' : 'Assign'}
+          </button>
+          <button className="dw-btn" onClick={onCancel}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CandidateRow({ candidate, targets, onPromote, onMerge }) {
   const [merging, setMerging] = useState(false);
   const [target, setTarget] = useState('');
@@ -547,6 +712,18 @@ function formatDate(dateStr) {
   if (!y || !m || !d) return dateStr;
   return new Date(y, m - 1, d).toLocaleDateString(undefined,
     { weekday: 'short', day: 'numeric', month: 'short' });
+}
+
+function groupAnchors(anchors) {
+  const labels = {
+    customer_project: 'Customer projects',
+    internal_project: 'Internal projects',
+    account: 'Accounts',
+    campaign: 'Campaigns',
+  };
+  const groups = {};
+  (anchors || []).forEach(a => { (groups[a.group_key] = groups[a.group_key] || []).push(a); });
+  return Object.keys(groups).map(k => ({ label: labels[k] || k, options: groups[k] }));
 }
 
 function accountOptions(anchors) {
