@@ -31,8 +31,16 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
+import DailyWorkTeamView from './DailyWorkTeamView';
 import useIsMobile from './useIsMobile';
 import './DailyWork.css';
+
+// Who is looking. The team tab and the rate both need it, and the rollup comes
+// back keyed by user_id with no indication of which row is yours.
+const currentUserId = () => {
+  try { return JSON.parse(localStorage.getItem('user') || '{}').id || null; }
+  catch { return null; }
+};
 
 const SOFT_LIMIT = 1000;
 const HARD_LIMIT = 2000;
@@ -51,7 +59,12 @@ const stageLabel = v => (STAGES.find(s => s.value === v) || {}).label || v;
 export default function DailyWorkView() {
   const isMobile = useIsMobile(768);
 
+  const [tab, setTab] = useState('day');        // 'day' | 'team'
   const [mode, setMode] = useState('log');
+  const [me] = useState(currentUserId);
+  const [myRate, setMyRate] = useState(null);  // my row from the rollup
+  const [hasReports, setHasReports] = useState(false);
+  const [history, setHistory] = useState([]);  // person-days before today
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [day, setDay] = useState(null);          // { entryDate, timezone, rows }
@@ -106,6 +119,39 @@ export default function DailyWorkView() {
       .then(({ data }) => setAnchors(data || []))
       .catch(() => { /* the picker is optional; work can be logged unanchored */ });
   }, [mode, anchors.length]);
+
+  /**
+   * One call, two answers.
+   *
+   * The rollup is scoped to the viewer plus their manager chain, so:
+   *   - the row whose user_id is mine carries my own rate, which §9 makes
+   *     self-visible on purpose — nobody should learn their compliance figure
+   *     from their manager
+   *   - more than one row back means I have reports, which is what decides
+   *     whether the team tab exists at all
+   *
+   * Failing quietly is deliberate: a member whose rollup errors should still be
+   * able to log their day. The rate is information, not a gate.
+   */
+  useEffect(() => {
+    apiService.dailyWork.teamRollup({})
+      .then(({ data }) => {
+        const rows = data.rows || [];
+        setHasReports(rows.length > 1);
+        setMyRate(rows.find(r => r.user_id === me) || null);
+      })
+      .catch(() => {});
+  }, [me]);
+
+  // The last week of my own days, so the log reads as a log rather than as a
+  // single row. Same endpoint the manager uses, scoped to myself — it is gated
+  // by the module, not by having reports.
+  useEffect(() => {
+    if (!me) return;
+    apiService.dailyWork.teamLog({ users: String(me) })
+      .then(({ data }) => setHistory(data.rows || []))
+      .catch(() => {});
+  }, [me, saved]);
 
   const loadActivityTypes = useCallback(() => {
     apiService.dailyWork.listActivityTypes()
@@ -248,6 +294,19 @@ export default function DailyWorkView() {
 
   return (
     <div className="dw">
+      {hasReports && (
+        <div className="dw-toggle" style={{ marginBottom: 16 }} role="group" aria-label="My day or my team">
+          <button type="button" aria-pressed={tab === 'day'} onClick={() => setTab('day')}>
+            My day
+          </button>
+          <button type="button" aria-pressed={tab === 'team'} onClick={() => setTab('team')}>
+            My team
+          </button>
+        </div>
+      )}
+
+      {tab === 'team' ? <DailyWorkTeamView /> : (
+      <>
       <div className="dw-head">
         <div>
           <h1>{formatDate(day.entryDate)}</h1>
@@ -257,6 +316,15 @@ export default function DailyWorkView() {
           </div>
         </div>
         <div className="dw-head-actions">
+          {myRate && myRate.working_days > 0 && (
+            // Your own figure, before anyone else sees it. null rate means the
+            // whole window was holiday — no rate rather than a zero, because
+            // zero reads as a failure nobody committed.
+            <span className={`dw-rate ${myRate.rate !== null && myRate.rate < 0.6 ? 'low' : ''}`}>
+              <span className="dot" />
+              Logged <b>{myRate.days_logged}</b> of <b>{myRate.working_days}</b> working days
+            </span>
+          )}
           <div className="dw-toggle" role="group" aria-label="View or edit">
             <button type="button" aria-pressed={mode === 'log'} onClick={() => setMode('log')}>
               Day view
@@ -279,6 +347,7 @@ export default function DailyWorkView() {
 
       {mode === 'log'
         ? <DayLog day={day} rows={rows} written={written} drafts={drafts} saved={saved}
+                  history={history.filter(h => h.entry_date !== day.entryDate)}
                   onEdit={itemId => { setOpenItem(itemId); setMode('edit'); }} />
         : (
           <>
@@ -378,19 +447,32 @@ export default function DailyWorkView() {
             </div>
           </>
         )}
+      </>
+      )}
     </div>
   );
 }
 
 /* ── the day log ────────────────────────────────────────────────────── */
 
-function DayLog({ day, rows, written, drafts, saved, onEdit }) {
-  if (!written.length) {
+/**
+ * The log: ONE ROW PER DAY, the day's descriptions run together.
+ *
+ * That is the shape the spreadsheet had, which is the point — the manager still
+ * gets the familiar block, and the parts underneath were never lost. Today's
+ * row is built from the drafts so unsaved work shows immediately; earlier days
+ * come from the server already grouped and concatenated.
+ */
+function DayLog({ day, rows, written, drafts, saved, history, onEdit }) {
+  const joined = written.map(r => (drafts[r.item_id]?.description || '').trim()).join(' ');
+  const past = history || [];
+
+  if (!written.length && !past.length) {
     return (
       <div className="dw-card">
         <div className="dw-empty">
           <p>
-            Nothing logged for today yet.
+            Nothing logged yet.
             {rows.length > 0 && <><br />You have {rows.length} open {rows.length === 1 ? 'item' : 'items'} waiting.</>}
           </p>
           <button className="dw-btn dw-btn-primary" onClick={() => onEdit(rows[0]?.item_id)}>
@@ -401,49 +483,85 @@ function DayLog({ day, rows, written, drafts, saved, onEdit }) {
     );
   }
 
-  // The day as ONE block, descriptions run together — the shape the sheet had.
-  // The parts are underneath, each with its own Edit, so nothing is lost by
-  // reading it this way.
-  const joined = written.map(r => (drafts[r.item_id]?.description || '').trim()).join(' ');
-
   return (
     <div className="dw-card">
       <div className="dw-card-head">
-        <h2>Work done today</h2>
+        <h2>My daily log</h2>
         <span className={`m ${saved ? 'saved' : ''}`}>
-          {saved ? `Saved · ${written.length} ${written.length === 1 ? 'item' : 'items'}`
-                 : `${written.length} written, not saved yet`}
+          {written.length === 0
+            ? 'Nothing logged today'
+            : saved ? `Today saved · ${written.length} ${written.length === 1 ? 'item' : 'items'}`
+                    : `${written.length} written, not saved yet`}
         </span>
       </div>
 
       <div className="dw-daylog">
         <div className="dw-dayrow today">
-          <div className="dw-date">{formatDate(day.entryDate)}</div>
-          <div className="dw-work">{joined}</div>
-          <div className="dw-meta">
-            {written.length} {written.length === 1 ? 'item' : 'items'}
-          </div>
-
-          <div className="dw-detail">
-            {written.map(r => (
-              <div className="dw-detail-item" key={r.item_id}>
-                <div className="t">
-                  <b>{r.title}</b>
-                  <span className="dw-badge">{stageLabel(drafts[r.item_id]?.dayStage)}</span>
-                  {r.evidence_count > 0 && (
-                    <span className="dw-badge">{r.evidence_count} evidence</span>
-                  )}
-                  <button className="dw-btn-link" style={{ marginLeft: 'auto' }}
-                          onClick={() => onEdit(r.item_id)}>Edit</button>
-                </div>
-                <div className="d">{drafts[r.item_id]?.description}</div>
-                {drafts[r.item_id]?.nextSteps && (
-                  <div className="dw-meta"><b>Next:</b> {drafts[r.item_id].nextSteps}</div>
-                )}
+          <div className="dw-date">{formatDate(day.entryDate)} · today</div>
+          {written.length ? (
+            <>
+              <div className="dw-work">{joined}</div>
+              <div className="dw-meta">{written.length} {written.length === 1 ? 'item' : 'items'}</div>
+              <div className="dw-detail">
+                {written.map(r => (
+                  <div className="dw-detail-item" key={r.item_id}>
+                    <div className="t">
+                      <b>{r.title}</b>
+                      <span className="dw-badge">{stageLabel(drafts[r.item_id]?.dayStage)}</span>
+                      {r.evidence_count > 0 && (
+                        <span className="dw-badge">{r.evidence_count} evidence</span>
+                      )}
+                      <button className="dw-btn-link" style={{ marginLeft: 'auto' }}
+                              onClick={() => onEdit(r.item_id)}>Edit</button>
+                    </div>
+                    <div className="d">{drafts[r.item_id]?.description}</div>
+                    {drafts[r.item_id]?.nextSteps && (
+                      <div className="dw-meta"><b>Next:</b> {drafts[r.item_id].nextSteps}</div>
+                    )}
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            </>
+          ) : (
+            <>
+              <div className="dw-none">Not logged yet.</div>
+              <button className="dw-btn dw-btn-sm dw-btn-primary" style={{ marginTop: 10 }}
+                      onClick={() => onEdit(rows[0]?.item_id)}>
+                Log today's work
+              </button>
+            </>
+          )}
         </div>
+
+        {past.map(d => <PastDay key={d.entry_date} day={d} />)}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * An earlier day, read-only.
+ *
+ * Deliberately not editable from here. Correcting three days ago is a real
+ * need, but it is also how a compliance log stops meaning anything, so it
+ * should be a considered feature rather than a side effect of the log being
+ * on screen.
+ */
+function PastDay({ day }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="dw-dayrow">
+      <div className="dw-date">{formatDate(day.entry_date)}</div>
+      <div className={`dw-work ${open ? '' : 'dw-clamp'}`}>{day.work_done}</div>
+      <div className="dw-meta">
+        {day.item_count} {day.item_count === 1 ? 'item' : 'items'}
+        {day.evidence_count > 0 && ` · ${day.evidence_count} evidence`}
+        {day.work_done && day.work_done.length > 160 && (
+          <button className="dw-btn-link" style={{ marginLeft: 10 }}
+                  onClick={() => setOpen(!open)}>
+            {open ? 'Show less' : 'Show all'}
+          </button>
+        )}
       </div>
     </div>
   );
