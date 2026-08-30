@@ -206,20 +206,24 @@ router.post('/login', async (req, res) => {
     const orgPayload = await getOrgPayload(user.id);
     const superAdmin = await isSuperAdmin(user.id);
 
-    // First-login timezone capture: only set if not already stored, so a
-    // value the rep later edits in settings is never overwritten by a login
-    // from a differently-configured device.
-    if (!user.timezone && isValidTimeZone(req.body.timezone)) {
-      try {
-        await db.query(
-          `UPDATE users SET timezone = $1, updated_at = NOW() WHERE id = $2 AND timezone IS NULL`,
-          [req.body.timezone, user.id]
-        );
-        user.timezone = req.body.timezone;
-      } catch (tzErr) {
-        console.warn('Timezone capture on login failed (non-fatal):', tzErr.message);
-      }
-    }
+    // First-login timezone capture REMOVED (daily work, 2026_132 era).
+    //
+    // This used to fill users.timezone from the browser when it was NULL. It
+    // looked harmless — only ever filling a blank, never overwriting — but
+    // users.timezone now decides which DAY a piece of work counts for, and
+    // therefore the denominator of a compliance rate.
+    //
+    // The failure was quiet and permanent: someone whose first login happened
+    // from a laptop set to UTC, or while travelling, had that value baked in
+    // and never corrected, and their evening work then filed against the wrong
+    // date for as long as they used the product. Nothing errors; the number is
+    // simply wrong for one person.
+    //
+    // A timezone is now either chosen by the person (PATCH /users/me/timezone),
+    // set at registration, or set by an admin in Daily Work → Setup. When it is
+    // NULL, dailyWorkDate falls back to the organisation's calendar timezone
+    // and then to UTC, which is a defensible default rather than a guess made
+    // by whichever device someone happened to open first.
     const token = jwt.sign(
       {
         userId: user.id,        // kept as userId to match existing convention

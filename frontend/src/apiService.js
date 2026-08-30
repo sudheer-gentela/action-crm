@@ -1027,6 +1027,10 @@ twilio: {
     // past rates keep being computed against the week that was in force then.
     setSchedule:   (userId, { weekdayMask, holidayCalendarId, effectiveFrom }) =>
       api.put(`/daily-work/schedules/${userId}`, { weekdayMask, holidayCalendarId, effectiveFrom }),
+    // Set deliberately by an admin. The browser no longer fills this at login —
+    // it decides which day someone's work counts for.
+    setUserTimezone: (userId, timezone) =>
+      api.put(`/daily-work/schedules/${userId}/timezone`, { timezone }),
 
     // Recurring work only. Assigned items take their status from the day's
     // stage, so this path refuses them.

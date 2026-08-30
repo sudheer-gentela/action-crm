@@ -335,6 +335,7 @@ function ScheduleRow({ row, calendars, onRun }) {
   const [mask, setMask] = useState(row.weekday_mask || MON_FRI);
   const [calendarId, setCalendarId] = useState(row.holiday_calendar_id || '');
   const [from, setFrom] = useState(todayString());
+  const [tz, setTz] = useState(row.timezone || '');
 
   const name = `${row.first_name || ''} ${row.last_name || ''}`.trim() || `User ${row.user_id}`;
   const toggle = bit => setMask(m => m ^ (1 << bit));
@@ -343,6 +344,7 @@ function ScheduleRow({ row, calendars, onRun }) {
     <div className="dw-dayrow">
       <div className="t" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <b>{name}</b>
+        {row.timezone && <span className="dw-badge">{row.timezone}</span>}
         {row.schedule_id ? (
           <>
             <span className="dw-badge">{describeMask(row.weekday_mask)}</span>
@@ -387,6 +389,25 @@ function ScheduleRow({ row, calendars, onRun }) {
                 Pick at least one day — a week with none has no denominator at all.
               </div>
             )}
+          </div>
+
+          <div className="dw-field">
+            <label htmlFor={`dw-tz-${row.user_id}`}>Timezone</label>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <input id={`dw-tz-${row.user_id}`} type="text" value={tz}
+                     placeholder="e.g. Asia/Kolkata"
+                     onChange={e => setTz(e.target.value)} />
+              <button className="dw-btn dw-btn-sm" disabled={!tz.trim()}
+                      onClick={() => onRun(
+                        () => apiService.dailyWork.setUserTimezone(row.user_id, tz.trim()),
+                        `${name} is now on ${tz.trim()}.`)}>
+                Set
+              </button>
+            </div>
+            <div className="dw-item-status">
+              Decides which day their evening work counts for. Left blank, it falls
+              back to the organisation's calendar.
+            </div>
           </div>
 
           <div className="dw-addgrid" style={{ marginTop: 14 }}>

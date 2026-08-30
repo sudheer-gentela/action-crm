@@ -8,9 +8,15 @@
  *   - enabled:                  master kill-switch for the whole subsystem
  *   - digest_hour_utc:          UTC hour (0..23) at which the daily digest fires
  *                               for this org. Default 3 = 8:30 AM IST.
- *                               There is no users.timezone column anywhere,
- *                               so per-user time-of-day is not possible today;
- *                               this is org-level.
+ *                               This is ORG-level and remains so. users.timezone
+ *                               does exist (added by 2026_15) and per-user
+ *                               time-of-day IS possible — the daily work
+ *                               reminder does exactly that, following the
+ *                               pattern below with each row self-filtering on
+ *                               its own local hour. This digest was not
+ *                               converted because changing when an existing
+ *                               digest fires would move it for every org that
+ *                               already relies on the current time.
  *   - immediate_alert_enabled:  fire an immediate alert when an action goes
  *                               overdue past immediate_hours.
  *   - immediate_hours:          how many hours past due_date before the

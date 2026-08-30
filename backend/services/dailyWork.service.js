@@ -1150,8 +1150,38 @@ async function setSchedule(orgId, userId, actorUserId, { weekdayMask, holidayCal
   });
 }
 
+/**
+ * Set someone's timezone, deliberately.
+ *
+ * This exists because the login-time browser capture was removed: it decided
+ * which DAY a person's work counted for, and getting that from whichever device
+ * they first opened is not a decision anybody made.
+ *
+ * Validated against the IANA set through Intl, so a typo is refused here rather
+ * than silently falling back to UTC at read time and shifting one person's
+ * dates by hours.
+ */
+async function setUserTimezone(orgId, userId, timezone) {
+  const tz = (timezone || '').trim();
+  if (tz && !dwDate.isValidZone(tz)) {
+    throw new DailyWorkError(`"${tz}" is not a timezone`, 'BAD_TIMEZONE', { timezone: tz });
+  }
+
+  return withOrgTransaction(orgId, async (client) => {
+    await assertActiveMember(client, orgId, userId);
+    const { rows } = await client.query(
+      `UPDATE users SET timezone = $1, updated_at = now()
+        WHERE id = $2 AND org_id = $3
+        RETURNING id, timezone`,
+      [tz || null, userId, orgId]);
+    if (!rows[0]) throw new DailyWorkError('No such user', 'NO_SUCH_USER', { userId });
+    return rows[0];
+  });
+}
+
 module.exports = {
   getAnchorOptions,
+  setUserTimezone,
   listCalendars,
   createCalendar,
   setDefaultCalendar,

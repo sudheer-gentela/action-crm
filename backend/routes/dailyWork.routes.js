@@ -26,6 +26,7 @@
 // DELETE /daily-work/holidays/:id            remove one
 // GET    /daily-work/schedules               who is on which week and calendar
 // PUT    /daily-work/schedules/:userId       set a working week, effective-dated
+// PUT    /daily-work/schedules/:userId/timezone   set it deliberately, not from a browser
 //
 // requireRole fails CLOSED on error, unlike requireModule. That asymmetry is
 // right here: a database blip should not hand out the ability to change
@@ -487,6 +488,14 @@ router.get('/schedules', adminOnly, async (req, res) => {
   try {
     res.json(await dailyWork.listSchedules(req.orgId));
   } catch (err) { handle(res, err, 'GET /schedules'); }
+});
+
+router.put('/schedules/:userId/timezone', adminOnly, async (req, res) => {
+  try {
+    const userId = asId(req.params.userId);
+    if (!userId) return res.status(400).json({ error: 'bad user id' });
+    res.json(await dailyWork.setUserTimezone(req.orgId, userId, (req.body || {}).timezone));
+  } catch (err) { handle(res, err, 'PUT /schedules/:userId/timezone'); }
 });
 
 router.put('/schedules/:userId', adminOnly, async (req, res) => {
