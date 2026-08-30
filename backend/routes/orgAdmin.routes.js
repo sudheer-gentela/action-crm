@@ -36,7 +36,7 @@ router.get('/profile', adminOnly, async (req, res) => {
     const settings = org.settings || {};
     const rawMods  = settings.modules || {};
 
-    const MODULE_KEYS = ['prospecting', 'contracts', 'handovers', 'service', 'agency'];
+    const MODULE_KEYS = ['prospecting', 'contracts', 'handovers', 'service', 'agency', 'dailywork'];
 
     // Normalize all modules into { allowed, enabled } regardless of legacy shape
     const modules = {};
@@ -798,7 +798,7 @@ router.delete('/hierarchy/:userId', adminOnly, async (req, res) => {
 
 const requireModule = require('../middleware/requireModule.middleware');
 
-const MODULE_KEYS    = ['prospecting', 'contracts', 'handovers', 'service', 'agency'];
+const MODULE_KEYS    = ['prospecting', 'contracts', 'handovers', 'service', 'agency', 'dailywork'];
 const MODULE_LABELS  = {
   prospecting: 'Prospecting',
   contracts:   'Contract Lifecycle Management',

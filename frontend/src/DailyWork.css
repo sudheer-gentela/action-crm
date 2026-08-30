@@ -1,0 +1,288 @@
+/* DailyWork.css
+ *
+ * MOBILE FIRST, which is a deliberate deviation from the rest of this codebase.
+ *
+ * Every other view here is written desktop-first with max-width queries. This
+ * module inverts it: the rules below the media query ARE the phone layout, and
+ * a single `@media (min-width: 769px)` block assembles them into a table.
+ *
+ * The reason is that this is a daily habit rather than an occasional screen.
+ * Assembling cards upward into a table is straightforward; stripping a table
+ * down into cards is where responsive layouts rot, because the phone case is
+ * only ever exercised by whoever remembers to check it.
+ *
+ * 769px matches the global breakpoint in mobile.css (768px), so the shared
+ * .gw-* utilities line up rather than fighting these rules.
+ *
+ * Two things are already handled globally and must not be redone here:
+ *   - mobile.css forces inputs to 16px below the breakpoint, which is what
+ *     stops iOS zooming on focus. Do not set a smaller font-size on inputs.
+ *   - the app shell owns page padding.
+ */
+
+.dw {
+  --dw-ink:    #1A3A5C;
+  --dw-ink-2:  #475569;
+  --dw-ink-3:  #64748b;
+  --dw-line:   #e2e8f0;
+  --dw-line-2: #f1f5f9;
+  --dw-bg:     #f8fafc;
+  --dw-paper:  #ffffff;
+  --dw-accent: #1A3A5C;
+  --dw-accent-wash: #eef4fb;
+  --dw-warn:   #92400e;
+  --dw-warn-wash: #fffbeb;
+  --dw-stop:   #b91c1c;
+  --dw-stop-wash: #fef2f2;
+  --dw-ok:     #15803d;
+  --dw-ok-wash: #f0fdf4;
+
+  color: var(--dw-ink);
+  font-size: 14px;
+}
+
+/* ── header ─────────────────────────────────────────────────────────── */
+
+.dw-head { margin-bottom: 16px; }
+.dw-head h1 { font-size: 20px; font-weight: 800; margin: 0 0 4px; letter-spacing: -0.01em; }
+.dw-head .dw-sub { font-size: 13px; color: var(--dw-ink-3); }
+
+/* On a phone the save action lives HERE, not in a bottom bar. iOS displaces
+ * bottom-fixed elements when the keyboard opens, and this surface is almost
+ * entirely typing — a save button that jumps around mid-sentence is worse than
+ * one that scrolls with the page. */
+.dw-head-actions {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px;
+}
+
+.dw-rate {
+  display: inline-flex; align-items: center; gap: 7px;
+  background: var(--dw-paper); border: 1.5px solid var(--dw-line);
+  border-radius: 999px; padding: 6px 13px; font-size: 12.5px; white-space: nowrap;
+}
+.dw-rate b { font-weight: 700; font-variant-numeric: tabular-nums; }
+.dw-rate .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dw-ok); }
+.dw-rate.low .dot { background: #d97706; }
+
+/* ── buttons ────────────────────────────────────────────────────────── */
+
+.dw-btn {
+  appearance: none; font: inherit; font-size: 14px;
+  border: 1.5px solid var(--dw-line); background: var(--dw-paper); color: var(--dw-ink);
+  padding: 10px 16px; border-radius: 8px; cursor: pointer;
+  min-height: 44px;              /* thumb target */
+}
+.dw-btn:hover { border-color: #cbd5e1; }
+.dw-btn:focus-visible { outline: 2px solid var(--dw-accent); outline-offset: 2px; }
+.dw-btn-primary {
+  background: var(--dw-accent); border-color: var(--dw-accent); color: #fff; font-weight: 600;
+}
+.dw-btn-primary:hover { background: #14314e; }
+.dw-btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+.dw-btn-sm { padding: 7px 12px; font-size: 13px; min-height: 36px; }
+.dw-btn-link {
+  border: none; background: none; color: var(--dw-accent); padding: 4px 0;
+  min-height: 0; text-decoration: underline; cursor: pointer; font-size: 13px;
+}
+
+/* ── mode toggle ────────────────────────────────────────────────────── */
+
+.dw-toggle {
+  display: inline-flex; gap: 2px; background: var(--dw-paper);
+  border: 1.5px solid var(--dw-line); border-radius: 999px; padding: 3px;
+}
+.dw-toggle button {
+  appearance: none; font: inherit; font-size: 13px; border: none; background: none;
+  color: var(--dw-ink-3); padding: 7px 14px; border-radius: 999px; cursor: pointer;
+  min-height: 38px;
+}
+.dw-toggle button[aria-pressed="true"] {
+  background: var(--dw-ink); color: #fff; font-weight: 600;
+}
+
+/* ── the day log (read view) ────────────────────────────────────────── */
+
+.dw-card {
+  background: var(--dw-paper); border: 1.5px solid var(--dw-line);
+  border-radius: 10px; overflow: hidden;
+}
+.dw-card-head {
+  padding: 14px 16px; border-bottom: 1.5px solid var(--dw-line);
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.dw-card-head h2 { font-size: 15px; font-weight: 700; margin: 0; }
+.dw-card-head .m { font-size: 12.5px; color: var(--dw-ink-3); }
+.dw-card-head .m.saved { color: var(--dw-ok); font-weight: 600; }
+
+.dw-daylog { display: flex; flex-direction: column; }
+.dw-dayrow { padding: 14px 16px; border-bottom: 1px solid var(--dw-line-2); }
+.dw-dayrow:last-child { border-bottom: none; }
+.dw-dayrow.today { background: #fcfdff; }
+.dw-dayrow .dw-date {
+  font-size: 12.5px; color: var(--dw-ink-3); font-weight: 600; margin-bottom: 6px;
+}
+.dw-dayrow .dw-work { line-height: 1.6; }
+.dw-dayrow .dw-meta { font-size: 12px; color: var(--dw-ink-3); margin-top: 6px; }
+.dw-clamp {
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.dw-blank {
+  color: var(--dw-stop); background: var(--dw-stop-wash);
+  border-radius: 6px; padding: 6px 10px; display: inline-block; font-size: 13px;
+}
+.dw-none { color: var(--dw-ink-3); }
+
+.dw-detail {
+  margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--dw-line);
+}
+.dw-detail-item { padding: 9px 0; border-bottom: 1px solid var(--dw-line-2); }
+.dw-detail-item:last-child { border-bottom: none; }
+.dw-detail-item .t {
+  display: flex; gap: 7px; align-items: center; flex-wrap: wrap; margin-bottom: 4px;
+}
+.dw-detail-item .t b { font-size: 13.5px; font-weight: 700; }
+.dw-detail-item .d { font-size: 13.5px; line-height: 1.55; color: var(--dw-ink-2); }
+
+/* ── badges ─────────────────────────────────────────────────────────── */
+
+.dw-badge {
+  font-size: 11px; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--dw-line); background: var(--dw-bg);
+  color: var(--dw-ink-2); white-space: nowrap;
+}
+.dw-badge.assigned { background: var(--dw-accent-wash); border-color: #c7dbf0; color: var(--dw-accent); }
+.dw-badge.carried  { background: var(--dw-warn-wash); border-color: #fde68a; color: var(--dw-warn); }
+.dw-badge.review   { background: #f5f3ff; border-color: #ddd6fe; color: #6d28d9; }
+.dw-badge.new      { background: var(--dw-ok-wash); border-color: #bbf7d0; color: var(--dw-ok); }
+
+/* ── the edit surface: CARDS on a phone ─────────────────────────────── */
+
+.dw-items { display: flex; flex-direction: column; gap: 12px; }
+
+.dw-item {
+  background: var(--dw-paper); border: 1.5px solid var(--dw-line);
+  border-radius: 10px; overflow: hidden;
+}
+.dw-item.dw-open { border-color: var(--dw-accent); }
+.dw-item.dropped .dw-item-title { text-decoration: line-through; color: var(--dw-ink-3); }
+
+/* The collapsed card is a tap target, not a row of controls. One item open at
+ * a time keeps a five-item day to one screen of typing instead of five. */
+.dw-item-head {
+  width: 100%; text-align: left; background: none; border: none; font: inherit;
+  padding: 14px 16px; cursor: pointer; display: block;
+}
+.dw-item-title { font-size: 15px; font-weight: 700; line-height: 1.35; }
+.dw-item-badges { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 7px; }
+.dw-item-status { font-size: 12.5px; color: var(--dw-ink-3); margin-top: 7px; }
+.dw-item-status.done { color: var(--dw-ok); font-weight: 600; }
+
+.dw-item-body { padding: 0 16px 16px; border-top: 1px solid var(--dw-line-2); }
+
+.dw-field { margin-top: 14px; }
+.dw-field label {
+  display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--dw-ink-3); font-weight: 700; margin-bottom: 6px;
+}
+
+.dw select, .dw input[type="text"], .dw input[type="date"], .dw textarea {
+  width: 100%; font: inherit; border: 1.5px solid var(--dw-line); border-radius: 8px;
+  padding: 11px 12px; background: var(--dw-paper); color: var(--dw-ink);
+  /* No font-size here on purpose — mobile.css forces 16px below the breakpoint
+   * to stop iOS zooming on focus, and overriding it undoes that. */
+}
+.dw textarea { resize: vertical; min-height: 96px; line-height: 1.55; }
+.dw select:focus, .dw input:focus, .dw textarea:focus {
+  outline: 2px solid var(--dw-accent); outline-offset: -1px; border-color: var(--dw-accent);
+}
+.dw textarea.over { border-color: var(--dw-stop); background: var(--dw-stop-wash); }
+.dw textarea.warn { border-color: #d97706; }
+
+.dw-prior {
+  font-size: 12.5px; color: var(--dw-ink-3); background: var(--dw-bg);
+  border-left: 3px solid var(--dw-line); padding: 8px 10px;
+  border-radius: 0 6px 6px 0; margin-bottom: 8px; line-height: 1.5;
+}
+.dw-prior b { color: var(--dw-ink-2); font-weight: 700; }
+.dw-prior.empty {
+  background: var(--dw-stop-wash); border-left-color: #fca5a5; color: var(--dw-stop);
+}
+
+.dw-foot { display: flex; align-items: center; gap: 10px; margin-top: 6px; min-height: 20px; }
+.dw-count {
+  font-size: 12px; color: var(--dw-ink-3); font-variant-numeric: tabular-nums; margin-left: auto;
+}
+.dw-count.warn { color: #b45309; }
+.dw-count.over { color: var(--dw-stop); font-weight: 700; }
+.dw-err { color: var(--dw-stop); font-size: 12.5px; font-weight: 600; }
+
+.dw-ev { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.dw-ev-item {
+  display: flex; gap: 7px; align-items: flex-start; font-size: 12.5px;
+  background: var(--dw-bg); border: 1px solid var(--dw-line);
+  border-radius: 6px; padding: 8px 10px; line-height: 1.4; word-break: break-word;
+}
+.dw-ev-item .k {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--dw-ink-3); font-weight: 700;
+}
+
+.dw-banner {
+  border-radius: 8px; padding: 11px 14px; font-size: 13px;
+  margin-bottom: 14px; line-height: 1.5;
+}
+.dw-banner.warn { background: var(--dw-warn-wash); border: 1.5px solid #fde68a; color: var(--dw-warn); }
+.dw-banner.info { background: var(--dw-accent-wash); border: 1.5px solid #c7dbf0; color: var(--dw-accent); }
+.dw-banner.stop { background: var(--dw-stop-wash); border: 1.5px solid #fecaca; color: var(--dw-stop); }
+
+.dw-empty { padding: 40px 20px; text-align: center; color: var(--dw-ink-3); }
+.dw-empty p { margin: 0 0 16px; font-size: 14px; line-height: 1.6; }
+
+.dw-add { margin-top: 14px; }
+.dw-addform {
+  background: var(--dw-paper); border: 1.5px solid var(--dw-line);
+  border-radius: 10px; padding: 16px; margin-top: 10px;
+}
+.dw-addform .dw-note {
+  background: var(--dw-accent-wash); border: 1px solid #c7dbf0; color: var(--dw-accent);
+  font-size: 12.5px; padding: 10px 12px; border-radius: 8px; margin-top: 14px; line-height: 1.5;
+}
+.dw-addform-actions { display: flex; gap: 8px; margin-top: 14px; }
+.dw-addform-actions .dw-btn { flex: 1; }
+
+.dw-spinner { padding: 40px; text-align: center; color: var(--dw-ink-3); font-size: 14px; }
+
+/* ── DESKTOP: assemble the cards into a table ───────────────────────── */
+
+@media (min-width: 769px) {
+  .dw-head { display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap; }
+  .dw-head h1 { font-size: 22px; }
+  .dw-head-actions { margin-top: 0; margin-left: auto; }
+
+  .dw-items {
+    gap: 0; border: 1.5px solid var(--dw-line); border-radius: 10px;
+    overflow: hidden; background: var(--dw-paper);
+  }
+  .dw-item { border: none; border-bottom: 1px solid var(--dw-line-2); border-radius: 0; }
+  .dw-item:last-child { border-bottom: none; }
+  .dw-item.dw-open { border-color: transparent; background: #fcfdff; }
+
+  /* Every item expanded at once: on a wide screen the whole day is visible and
+   * tabbing between fields beats tapping cards open one by one. */
+  .dw-item-head { cursor: default; padding: 16px 18px 0; }
+  .dw-item-body { border-top: none; padding: 0 18px 18px; }
+
+  .dw-item-grid {
+    display: grid; grid-template-columns: 260px 1fr 190px; gap: 18px; align-items: start;
+  }
+  .dw-item-grid .dw-field { margin-top: 0; }
+  .dw-item-grid .dw-field.desc { grid-column: 2; }
+
+  .dw-addform-actions { justify-content: flex-start; }
+  .dw-addform-actions .dw-btn { flex: 0 0 auto; }
+  .dw-addgrid { display: grid; grid-template-columns: 1fr 220px 220px; gap: 14px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dw * { transition: none !important; animation: none !important; }
+}

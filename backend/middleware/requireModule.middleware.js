@@ -126,7 +126,7 @@ requireModule.invalidate = (orgId, moduleName) => {
  * Always returns an object — missing keys default to { allowed: false, enabled: false }.
  */
 requireModule.getOrgModules = async (orgId) => {
-  const MODULE_KEYS = ['prospecting', 'contracts', 'handovers', 'service', 'agency'];
+  const MODULE_KEYS = ['prospecting', 'contracts', 'handovers', 'service', 'agency', 'dailywork'];
   try {
     const r = await pool.query(
       `SELECT settings->'modules' AS modules FROM organizations WHERE id = $1`,

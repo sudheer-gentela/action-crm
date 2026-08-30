@@ -725,7 +725,7 @@ router.post('/orgs/:orgId/suspend', async (req, res) => {
 // Modules not mentioned in the request body are left unchanged.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const MODULE_KEYS = ['prospecting', 'contracts', 'handovers', 'service', 'agency'];
+const MODULE_KEYS = ['prospecting', 'contracts', 'handovers', 'service', 'agency', 'dailywork'];
 
 // ═════════════════════════════════════════════════════════════════════════════
 // MODULE PROVISIONING — super admin controls which modules an org may use

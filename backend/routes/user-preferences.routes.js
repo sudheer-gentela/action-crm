@@ -42,7 +42,7 @@ const UI_PREF_DEFAULTS = {
 const OPTIONAL_PROJECT_TABS = ['mine'];
 
 // Modules that are allowed to be pinned (must match orgModules keys in App.js)
-const PINNABLE_MODULE_IDS = ['prospecting', 'contracts', 'handovers', 'service', 'agency'];
+const PINNABLE_MODULE_IDS = ['prospecting', 'contracts', 'handovers', 'service', 'agency', 'dailywork'];
 const PINNED_MODULES_CAP  = 4;
 
 // ── Helper ────────────────────────────────────────────────────────────────
