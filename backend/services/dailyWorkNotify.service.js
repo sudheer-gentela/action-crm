@@ -46,6 +46,27 @@ const notificationService = require('./notificationService');
 const DEFAULT_REMINDER_HOUR = 17;
 const DEFAULT_ROLLUP_HOUR = 18;
 
+/**
+ * Read an hour from org settings, falling back when it is absent or nonsense.
+ *
+ * This exists because the obvious version was wrong in a way that testing
+ * caught and reading would not have:
+ *
+ *   Number(null) === 0, and Number('') === 0
+ *
+ * so `Number(v) >= 0 && Number(v) <= 23` is TRUE for an absent setting, and the
+ * hour resolved to midnight instead of the default. Every org without an
+ * explicit `dailywork.reminder_hour` — which is every org today — would have
+ * been nudged at 00:00 local. Nothing would have errored.
+ *
+ * Absence is checked before coercion, and the value must be a whole number.
+ */
+function hourOr(value, fallback) {
+  if (value === null || value === undefined || value === '') return fallback;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 && n <= 23 ? n : fallback;
+}
+
 /* ───────────────────────── shared scan ─────────────────────────────── */
 
 /**
@@ -159,8 +180,7 @@ async function runReminders({ now = new Date() } = {}) {
       try {
         const tz = dwDate.isValidZone(p.user_tz) ? p.user_tz
                  : dwDate.isValidZone(p.org_tz) ? p.org_tz : 'UTC';
-        const hour = Number(p.reminder_hour) >= 0 && Number(p.reminder_hour) <= 23
-          ? Number(p.reminder_hour) : DEFAULT_REMINDER_HOUR;
+        const hour = hourOr(p.reminder_hour, DEFAULT_REMINDER_HOUR);
 
         // The self-filter. Everyone is scanned every hour; only those for whom
         // it is now the right hour where they are get any further.
@@ -243,8 +263,7 @@ async function runRollups({ now = new Date() } = {}) {
       try {
         const tz = dwDate.isValidZone(p.user_tz) ? p.user_tz
                  : dwDate.isValidZone(p.org_tz) ? p.org_tz : 'UTC';
-        const hour = Number(p.rollup_hour) >= 0 && Number(p.rollup_hour) <= 23
-          ? Number(p.rollup_hour) : DEFAULT_ROLLUP_HOUR;
+        const hour = hourOr(p.rollup_hour, DEFAULT_ROLLUP_HOUR);
 
         if (dwDate.localHour(tz, now) !== hour) { skip('wrong_hour'); continue; }
 
@@ -308,6 +327,7 @@ async function runRollups({ now = new Date() } = {}) {
 }
 
 module.exports = {
+  hourOr,
   runReminders,
   runRollups,
   loadCandidates,
