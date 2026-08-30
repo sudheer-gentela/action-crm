@@ -8,6 +8,8 @@
 // POST   /daily-work/day                     save the whole day, one call
 // GET    /daily-work/anchors                 what work can be anchored to
 // POST   /daily-work/items                   create a work item
+// GET    /daily-work/activity-types          the shared list, for every picker
+// PATCH  /daily-work/items/:id                change an item's activity or anchor
 // POST   /daily-work/activity-types          propose one ("Other" + a name)
 // POST   /daily-work/entries/:id/evidence    attach a link or a sentence
 //
@@ -174,6 +176,44 @@ router.post('/items', async (req, res) => {
     });
     res.status(201).json(item);
   } catch (err) { handle(res, err, 'POST /items'); }
+});
+
+router.get('/activity-types', async (req, res) => {
+  try {
+    // Candidates are included and flagged. Someone who proposed a type must be
+    // able to keep using it while it waits — a proposal that stops working
+    // until a manager looks at it is a proposal nobody makes twice.
+    res.json(await dailyWork.listActivityTypes(req.orgId, {
+      includeCandidates: req.query.candidates !== 'false',
+    }));
+  } catch (err) { handle(res, err, 'GET /activity-types'); }
+});
+
+router.patch('/items/:id', async (req, res) => {
+  try {
+    const itemId = asId(req.params.id);
+    if (!itemId) return res.status(400).json({ error: 'bad item id' });
+
+    const b = req.body || {};
+    const patch = {};
+    // Only keys actually present are patched. Sending undefined for the rest
+    // is what lets the service tell "clear this" from "leave it alone".
+    if ('title' in b) patch.title = b.title;
+    if ('activityTypeKey' in b) patch.activityTypeKey = b.activityTypeKey;
+    if ('anchorKind' in b || 'anchorId' in b) {
+      const anchorId = asId(b.anchorId);
+      if (anchorId === undefined) return res.status(400).json({ error: 'anchorId must be an id' });
+      patch.anchorKind = b.anchorKind || null;
+      patch.anchorId = anchorId;
+    }
+    if ('targetDate' in b) {
+      const targetDate = asDate(b.targetDate);
+      if (targetDate === undefined) return res.status(400).json({ error: 'targetDate must be YYYY-MM-DD' });
+      patch.targetDate = targetDate;
+    }
+
+    res.json(await dailyWork.updateItem(req.orgId, req.userId, itemId, patch));
+  } catch (err) { handle(res, err, 'PATCH /items/:id'); }
 });
 
 router.post('/activity-types', async (req, res) => {

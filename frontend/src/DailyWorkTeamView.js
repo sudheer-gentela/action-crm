@@ -42,7 +42,6 @@ const PERIODS = [
 export default function DailyWorkTeamView() {
   const [period, setPeriod]   = useState('day');
   const [anchorDate, setAnchor] = useState(null);   // 'YYYY-MM-DD'
-  const [groupBy, setGroupBy] = useState('person');
   const [sortBy, setSortBy]   = useState('name');
   const [filters, setFilters] = useState({ account: '', anchor: '', activity: '' });
 
@@ -53,6 +52,7 @@ export default function DailyWorkTeamView() {
   const [window_, setWindow]  = useState({ from: null, to: null });
 
   const [anchors, setAnchors]       = useState([]);
+  const [activityTypes, setActivityTypes] = useState([]);
   const [stalled, setStalled]       = useState([]);
   const [candidates, setCandidates] = useState([]);
   const [accountSummary, setAccountSummary] = useState(null);
@@ -124,6 +124,8 @@ export default function DailyWorkTeamView() {
     apiService.dailyWork.getAnchors().then(({ data }) => setAnchors(data || [])).catch(() => {});
     apiService.dailyWork.stalled().then(({ data }) => setStalled(data || [])).catch(() => {});
     apiService.dailyWork.candidates().then(({ data }) => setCandidates(data || [])).catch(() => {});
+    apiService.dailyWork.listActivityTypes()
+      .then(({ data }) => setActivityTypes(data || [])).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -248,6 +250,16 @@ export default function DailyWorkTeamView() {
               </select>
             </div>
             <div className="dw-field" style={{ marginTop: 0 }}>
+              <label htmlFor="dw-f-activity">Activity</label>
+              <select id="dw-f-activity" value={filters.activity}
+                      onChange={e => setFilters({ ...filters, activity: e.target.value })}>
+                <option value="">All activities</option>
+                {activityTypes.map(t => (
+                  <option key={t.key} value={t.key}>{t.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="dw-field" style={{ marginTop: 0 }}>
               <label htmlFor="dw-f-sort">Sort</label>
               <select id="dw-f-sort" value={sortBy} onChange={e => setSortBy(e.target.value)}>
                 <option value="name">By name</option>
@@ -333,7 +345,8 @@ export default function DailyWorkTeamView() {
           </div>
           <div className="dw-daylog">
             {candidates.map(c => (
-              <CandidateRow key={c.key} candidate={c} anchors={anchors}
+              <CandidateRow key={c.key} candidate={c}
+                            targets={activityTypes.filter(t => t.status === 'active' && t.key !== c.key)}
                             onPromote={() => promote(c.key)}
                             onMerge={intoKey => merge(c.key, intoKey)} />
             ))}
@@ -471,7 +484,7 @@ function DayStrip({ days }) {
   );
 }
 
-function CandidateRow({ candidate, anchors, onPromote, onMerge }) {
+function CandidateRow({ candidate, targets, onPromote, onMerge }) {
   const [merging, setMerging] = useState(false);
   const [target, setTarget] = useState('');
 
@@ -486,9 +499,17 @@ function CandidateRow({ candidate, anchors, onPromote, onMerge }) {
       </div>
       {merging ? (
         <div className="dw-addform-actions" style={{ marginTop: 10 }}>
-          <input type="text" value={target} placeholder="Merge into which key?"
-                 onChange={e => setTarget(e.target.value)} />
-          <button className="dw-btn dw-btn-sm dw-btn-primary" onClick={() => onMerge(target)}>
+          {/* A dropdown, not a text box. Nobody should have to know that
+              "Demo call" is stored as demo_call, and a typo here would fail
+              against a key that does not exist. */}
+          <select value={target} onChange={e => setTarget(e.target.value)}>
+            <option value="">Merge into…</option>
+            {(targets || []).map(t => (
+              <option key={t.key} value={t.key}>{t.label}</option>
+            ))}
+          </select>
+          <button className="dw-btn dw-btn-sm dw-btn-primary"
+                  onClick={() => onMerge(target)} disabled={!target}>
             Merge
           </button>
           <button className="dw-btn dw-btn-sm" onClick={() => setMerging(false)}>Cancel</button>

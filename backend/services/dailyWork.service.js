@@ -243,6 +243,70 @@ async function assignItem(orgId, managerUserId, input) {
   });
 }
 
+/**
+ * Change what an item IS — its activity type, or what it is anchored to.
+ *
+ * Entries already written are NOT touched. They hold their own snapshot of the
+ * activity, anchor, account and department as those were on the day, which is
+ * the point of snapshotting: correcting an item today must not rewrite what
+ * last month says. New entries pick up the new values.
+ *
+ * Owner only. A manager who thinks an item is mis-categorised should say so
+ * rather than silently reclassify someone else's work — and the candidate
+ * queue already gives them the vocabulary decision, which is the part that
+ * genuinely needs a manager.
+ */
+async function updateItem(orgId, userId, itemId, patch) {
+  const { title, activityTypeKey, anchorKind, anchorId, targetDate } = patch;
+
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows: found } = await client.query(
+      `SELECT id, kind, owner_user_id FROM daily_work_items WHERE id = $1 AND org_id = $2`,
+      [itemId, orgId]);
+
+    const item = found[0];
+    if (!item) throw new DailyWorkError('No such work item', 'NO_SUCH_ITEM', { itemId });
+    if (item.owner_user_id !== userId) {
+      throw new DailyWorkError('That item belongs to someone else', 'NOT_YOUR_ITEM', { itemId });
+    }
+    if (targetDate && item.kind !== 'assigned') {
+      throw new DailyWorkError(
+        'Only assigned work can carry a target date — recurring work never completes',
+        'TARGET_ON_RECURRING');
+    }
+    if (title !== undefined && !String(title).trim()) {
+      throw new DailyWorkError('An item needs a title', 'BLANK_TITLE');
+    }
+
+    // The anchor and the account move together or not at all. Re-resolving only
+    // when the anchor is part of the patch stops an unrelated title edit from
+    // quietly re-deriving an account that was corrected by hand.
+    const changingAnchor = anchorKind !== undefined || anchorId !== undefined;
+    const accountId = changingAnchor
+      ? await resolveAccountId(client, orgId, anchorKind || null, anchorId || null)
+      : null;
+
+    const { rows } = await client.query(
+      `UPDATE daily_work_items
+          SET title             = COALESCE($3, title),
+              activity_type_key = CASE WHEN $4::boolean THEN $5 ELSE activity_type_key END,
+              anchor_kind       = CASE WHEN $6::boolean THEN $7 ELSE anchor_kind END,
+              anchor_id         = CASE WHEN $6::boolean THEN $8 ELSE anchor_id END,
+              account_id        = CASE WHEN $6::boolean THEN $9 ELSE account_id END,
+              target_date       = CASE WHEN $10::boolean THEN $11 ELSE target_date END,
+              updated_at        = now()
+        WHERE id = $1 AND org_id = $2
+        RETURNING ${ITEM_COLUMNS}`,
+      [itemId, orgId,
+       title === undefined ? null : String(title).trim(),
+       activityTypeKey !== undefined, activityTypeKey || null,
+       changingAnchor, anchorKind || null, anchorId || null, accountId,
+       targetDate !== undefined, targetDate || null]);
+
+    return rows[0];
+  });
+}
+
 /* ───────────────────────── the day's entries ───────────────────────── */
 
 function validateEntry(entry, index) {
@@ -496,6 +560,30 @@ async function getAnchorOptions(orgId) {
 /* ───────────────────────── activity vocabulary ─────────────────────── */
 
 /**
+ * The shared list, for every picker in the module.
+ *
+ * Merged types are excluded: they are history, not choices. Candidates ARE
+ * included by default and flagged, because the person who proposed one needs to
+ * keep using it while it waits for a decision — a proposal that stops working
+ * until a manager looks at it is a proposal nobody makes twice.
+ *
+ * Sorted by sort_order then label so the seeded list keeps the order it was
+ * seeded in and anything added later lands alphabetically after it.
+ */
+async function listActivityTypes(orgId, { includeCandidates = true } = {}) {
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows } = await client.query(
+      `SELECT key, label, status, is_system, sort_order
+         FROM daily_activity_types
+        WHERE org_id = $1
+          AND status = ANY($2)
+        ORDER BY sort_order, label`,
+      [orgId, includeCandidates ? ['active', 'candidate'] : ['active']]);
+    return rows;
+  });
+}
+
+/**
  * A member picked "Other" and named it.
  *
  * The named thing becomes a CANDIDATE type immediately, so their entry has a
@@ -673,6 +761,8 @@ async function attachEvidence(orgId, userId, { entryId, note, channel = 'manual'
 
 module.exports = {
   getAnchorOptions,
+  listActivityTypes,
+  updateItem,
   proposeActivityType,
   promoteActivityType,
   mergeActivityType,

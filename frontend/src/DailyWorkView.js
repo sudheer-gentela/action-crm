@@ -63,6 +63,7 @@ export default function DailyWorkView() {
   const [notice, setNotice] = useState(null);
 
   const [anchors, setAnchors] = useState([]);
+  const [activityTypes, setActivityTypes] = useState([]);
   const [adding, setAdding] = useState(false);
   const [newItem, setNewItem] = useState({ title: '', activityTypeKey: '', anchor: '' });
 
@@ -105,6 +106,47 @@ export default function DailyWorkView() {
       .then(({ data }) => setAnchors(data || []))
       .catch(() => { /* the picker is optional; work can be logged unanchored */ });
   }, [mode, anchors.length]);
+
+  const loadActivityTypes = useCallback(() => {
+    apiService.dailyWork.listActivityTypes()
+      .then(({ data }) => setActivityTypes(data || []))
+      .catch(() => {});
+  }, []);
+  useEffect(() => { loadActivityTypes(); }, [loadActivityTypes]);
+
+  /**
+   * Set an item's activity type.
+   *
+   * This changes the ITEM, not just today's row, because the activity is what
+   * the work IS rather than what happened on one day. Entries already saved
+   * keep their own snapshot, so nothing written earlier moves.
+   *
+   * A label typed into "Other" becomes a candidate type immediately and is used
+   * straight away — waiting for a manager to approve a word before you can
+   * describe your own day is how people stop bothering.
+   */
+  const setItemActivity = async (itemId, value, freeText) => {
+    try {
+      let key = value;
+      if (value === '__other__') {
+        if (!freeText || !freeText.trim()) return;
+        const { data } = await apiService.dailyWork.proposeActivityType(freeText.trim());
+        key = data.key;
+        loadActivityTypes();
+        if (data.wasMerged) {
+          setNotice({ kind: 'info',
+            text: `That was merged into "${key}" earlier, so it has been filed there.` });
+        }
+      }
+      await apiService.dailyWork.updateItem(itemId, { activityTypeKey: key || null });
+      setDay(d => ({
+        ...d,
+        rows: d.rows.map(r => r.item_id === itemId ? { ...r, activity_type_key: key || null } : r),
+      }));
+    } catch (err) {
+      setNotice({ kind: 'stop', text: readError(err, 'Could not set the activity') });
+    }
+  };
 
   /* ── editing ──────────────────────────────────────────────────────── */
 
@@ -266,6 +308,8 @@ export default function DailyWorkView() {
                     onChange={patch => setDraft(row.item_id, patch)}
                     onEvidence={load}
                     collapsible={isMobile}
+                    activityTypes={activityTypes}
+                    onActivity={(value, freeText) => setItemActivity(row.item_id, value, freeText)}
                   />
                 ))}
               </div>
@@ -282,6 +326,26 @@ export default function DailyWorkView() {
                       <input id="dw-new-title" type="text" value={newItem.title}
                              placeholder="e.g. LinkedIn outreach"
                              onChange={e => setNewItem({ ...newItem, title: e.target.value })} />
+                    </div>
+                    <div className="dw-field" style={{ marginTop: 0 }}>
+                      <label htmlFor="dw-new-activity">Kind of activity</label>
+                      <ActivityPicker
+                        id="dw-new-activity"
+                        types={activityTypes}
+                        value={newItem.activityTypeKey}
+                        onPick={(value, freeText) => {
+                          if (value !== '__other__') {
+                            setNewItem({ ...newItem, activityTypeKey: value });
+                            return;
+                          }
+                          apiService.dailyWork.proposeActivityType(freeText)
+                            .then(({ data }) => {
+                              setNewItem({ ...newItem, activityTypeKey: data.key });
+                              loadActivityTypes();
+                            })
+                            .catch(err => setNotice({ kind: 'stop', text: readError(err, 'Could not add that') }));
+                        }}
+                      />
                     </div>
                     <div className="dw-field" style={{ marginTop: 0 }}>
                       <label htmlFor="dw-new-anchor">Project or client</label>
@@ -387,7 +451,8 @@ function DayLog({ day, rows, written, drafts, saved, onEdit }) {
 
 /* ── one work item ──────────────────────────────────────────────────── */
 
-function ItemCard({ row, draft, error, isOpen, onToggle, onChange, onEvidence, collapsible }) {
+function ItemCard({ row, draft, error, isOpen, onToggle, onChange, onEvidence, collapsible,
+                   activityTypes, onActivity }) {
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [evidenceText, setEvidenceText] = useState('');
   const [attaching, setAttaching] = useState(false);
@@ -458,6 +523,16 @@ function ItemCard({ row, draft, error, isOpen, onToggle, onChange, onEvidence, c
                   </span>
                 )}
               </div>
+            </div>
+
+            <div className="dw-field">
+              <label htmlFor={`dw-activity-${row.item_id}`}>Activity</label>
+              <ActivityPicker
+                id={`dw-activity-${row.item_id}`}
+                types={activityTypes}
+                value={row.activity_type_key}
+                onPick={onActivity}
+              />
             </div>
 
             <div className="dw-field">
@@ -545,6 +620,72 @@ function ItemHeader({ row, description, stage }) {
       <div className={`dw-item-status ${written ? 'done' : ''}`}>
         {written ? 'Written for today' : 'Nothing written yet'}
       </div>
+    </>
+  );
+}
+
+/**
+ * The activity dropdown, with "Other" as an escape hatch.
+ *
+ * Members never get write access to the shared list — that is what the
+ * candidate status is for. What they get is a way to name the thing they
+ * actually did without waiting for anyone, and the manager decides afterwards
+ * whether it joins the list or folds into something that already exists.
+ *
+ * Candidates are shown, marked, because the person who proposed one has to keep
+ * using it while it waits.
+ */
+function ActivityPicker({ id, types, value, onPick }) {
+  const [other, setOther] = useState(false);
+  const [text, setText] = useState('');
+
+  const known = (types || []).some(t => t.key === value);
+
+  return (
+    <>
+      <select
+        id={id}
+        value={other ? '__other__' : (known ? value : '')}
+        onChange={e => {
+          if (e.target.value === '__other__') { setOther(true); return; }
+          setOther(false);
+          onPick(e.target.value || null);
+        }}
+      >
+        <option value="">Not set</option>
+        {(types || []).map(t => (
+          <option key={t.key} value={t.key}>
+            {t.label}{t.status === 'candidate' ? ' (proposed)' : ''}
+          </option>
+        ))}
+        <option value="__other__">Other…</option>
+      </select>
+
+      {other && (
+        <div style={{ marginTop: 8 }}>
+          <input
+            type="text"
+            value={text}
+            placeholder="Name it — your manager reviews these"
+            onChange={e => setText(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && text.trim()) {
+                onPick('__other__', text.trim());
+                setText(''); setOther(false);
+              }
+            }}
+          />
+          <div className="dw-addform-actions">
+            <button className="dw-btn dw-btn-sm dw-btn-primary"
+                    onClick={() => { if (text.trim()) { onPick('__other__', text.trim()); setText(''); setOther(false); } }}>
+              Use this
+            </button>
+            <button className="dw-btn dw-btn-sm" onClick={() => { setOther(false); setText(''); }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </>
   );
 }
