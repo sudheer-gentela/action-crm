@@ -191,6 +191,16 @@ export default function DailyWorkView() {
    * straight away — waiting for a manager to approve a word before you can
    * describe your own day is how people stop bothering.
    */
+  const retireItem = async (itemId) => {
+    try {
+      await apiService.dailyWork.retireItem(itemId);
+      setNotice({ kind: 'info', text: "Stopped. It will not be on tomorrow's list." });
+      await load();
+    } catch (err) {
+      setNotice({ kind: 'stop', text: readError(err, 'Could not stop that item') });
+    }
+  };
+
   const setItemActivity = async (itemId, value, freeText) => {
     try {
       let key = value;
@@ -410,6 +420,7 @@ export default function DailyWorkView() {
                     collapsible={isMobile}
                     activityTypes={activityTypes}
                     onActivity={(value, freeText) => setItemActivity(row.item_id, value, freeText)}
+                    onRetire={retireItem}
                   />
                 ))}
               </div>
@@ -703,10 +714,7 @@ function PastDay({ day }) {
 /* ── one work item ──────────────────────────────────────────────────── */
 
 function ItemCard({ row, draft, error, isOpen, onToggle, onChange, onEvidence, collapsible,
-                   activityTypes, onActivity }) {
-  const [evidenceOpen, setEvidenceOpen] = useState(false);
-  const [evidenceText, setEvidenceText] = useState('');
-  const [attaching, setAttaching] = useState(false);
+                   activityTypes, onActivity, onRetire }) {
 
   const description = draft.description || '';
   const length = description.length;
@@ -714,19 +722,6 @@ function ItemCard({ row, draft, error, isOpen, onToggle, onChange, onEvidence, c
   const overHard = length > HARD_LIMIT;
   const stage = draft.dayStage || 'in_progress';
   const closed = stage === 'completed' || stage === 'dropped';
-
-  const attach = async () => {
-    if (!evidenceText.trim() || !row.entry_id) return;
-    setAttaching(true);
-    try {
-      await apiService.dailyWork.attachEvidence(row.entry_id, { note: evidenceText.trim() });
-      setEvidenceText('');
-      setEvidenceOpen(false);
-      onEvidence();
-    } finally {
-      setAttaching(false);
-    }
-  };
 
   return (
     <div className={`dw-item ${isOpen ? 'dw-open' : ''} ${stage === 'dropped' ? 'dropped' : ''}`}>
@@ -805,46 +800,18 @@ function ItemCard({ row, draft, error, isOpen, onToggle, onChange, onEvidence, c
                         onChange={e => onChange({ nextSteps: e.target.value })} />
             </div>
 
+            {row.kind === 'recurring' && (
+              <div className="dw-field" style={{ gridColumn: '1 / -1' }}>
+                <RetireControl title={row.title} onRetire={() => onRetire(row.item_id)} />
+              </div>
+            )}
+
             <div className="dw-field" style={{ gridColumn: '1 / -1' }}>
               <label>Evidence</label>
               {!row.entry_id ? (
                 <div className="dw-item-status">Save the day first, then you can attach to it.</div>
               ) : (
-                <>
-                  {row.evidence_count > 0 && (
-                    <div className="dw-ev">
-                      <div className="dw-ev-item">
-                        <span className="k">attached</span>
-                        {row.evidence_count} {row.evidence_count === 1 ? 'item' : 'items'}
-                      </div>
-                    </div>
-                  )}
-                  {evidenceOpen ? (
-                    <>
-                      <input type="text" value={evidenceText}
-                             placeholder="Paste a link, or write one sentence"
-                             onChange={e => setEvidenceText(e.target.value)} />
-                      <div className="dw-addform-actions">
-                        <button className="dw-btn dw-btn-sm dw-btn-primary"
-                                onClick={attach} disabled={attaching}>
-                          {attaching ? 'Attaching…' : 'Attach'}
-                        </button>
-                        <button className="dw-btn dw-btn-sm" onClick={() => setEvidenceOpen(false)}>
-                          Cancel
-                        </button>
-                      </div>
-                    </>
-                  ) : (
-                    <button className="dw-btn dw-btn-sm" onClick={() => setEvidenceOpen(true)}>
-                      Attach evidence
-                    </button>
-                  )}
-                  {closed && !row.evidence_count && (
-                    <div className="dw-item-status">
-                      Closing without evidence — your manager sees this as unverified.
-                    </div>
-                  )}
-                </>
+                <EvidenceList entryId={row.entry_id} closed={closed} onChange={onEvidence} />
               )}
             </div>
           </div>
@@ -872,6 +839,172 @@ function ItemHeader({ row, description, stage }) {
         {written ? 'Written for today' : 'Nothing written yet'}
       </div>
     </>
+  );
+}
+
+/**
+ * Everything attached to one entry, withdrawn rows included.
+ *
+ * Evidence is immutable in the database — the only permitted update is setting
+ * the revocation fields, and re-revoking is refused. So there is no edit here:
+ * there is Withdraw, and there is Replace, which withdraws and attaches in one
+ * transaction so the entry is never briefly left with nothing.
+ *
+ * Withdrawn rows stay on screen, struck through, with who withdrew them and
+ * why. A correction that erased what it replaced would be indistinguishable
+ * from never having made the mistake.
+ */
+function EvidenceList({ entryId, closed, onChange }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [mode, setMode] = useState(null);       // null | 'add' | { action, id }
+  const [note, setNote] = useState('');
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    apiService.dailyWork.listEvidence(entryId)
+      .then(({ data }) => setItems(data || []))
+      .catch(() => setItems([]))
+      .finally(() => setLoading(false));
+  }, [entryId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const reset = () => { setMode(null); setNote(''); setReason(''); setErr(null); };
+
+  const run = async () => {
+    setBusy(true); setErr(null);
+    try {
+      if (mode === 'add') {
+        await apiService.dailyWork.attachEvidence(entryId, { note: note.trim() });
+      } else if (mode.action === 'revoke') {
+        await apiService.dailyWork.revokeEvidence(mode.id, reason.trim());
+      } else {
+        await apiService.dailyWork.replaceEvidence(mode.id, { note: note.trim(), reason: reason.trim() });
+      }
+      reset();
+      load();
+      if (onChange) onChange();
+    } catch (e) {
+      setErr(readError(e, 'That did not work'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const live = items.filter(i => !i.revoked_at);
+
+  if (loading) return <div className="dw-item-status">Loading evidence…</div>;
+
+  return (
+    <>
+      {items.length > 0 && (
+        <div className="dw-ev">
+          {items.map(i => (
+            <div className="dw-ev-item" key={i.id}
+                 style={i.revoked_at ? { opacity: 0.65 } : undefined}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <span className="k">{i.revoked_at ? 'withdrawn' : i.channel}</span>
+                <div style={i.revoked_at ? { textDecoration: 'line-through' } : undefined}>
+                  {i.note}
+                </div>
+                {i.revoked_at && (
+                  <div className="dw-meta">
+                    Withdrawn by {i.revoked_first || 'someone'} — {i.revoke_reason}
+                  </div>
+                )}
+              </div>
+              {!i.revoked_at && (
+                <span style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                  <button className="dw-btn-link"
+                          onClick={() => { setMode({ action: 'replace', id: i.id }); setNote(i.note || ''); }}>
+                    Replace
+                  </button>
+                  <button className="dw-btn-link" onClick={() => setMode({ action: 'revoke', id: i.id })}>
+                    Withdraw
+                  </button>
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {err && <div className="dw-err" style={{ marginBottom: 8 }}>{err}</div>}
+
+      {mode ? (
+        <div>
+          {(mode === 'add' || mode.action === 'replace') && (
+            <input type="text" value={note} autoFocus
+                   placeholder="Paste a link, or write one sentence"
+                   onChange={e => setNote(e.target.value)} />
+          )}
+          {mode !== 'add' && (
+            <input type="text" value={reason}
+                   style={{ marginTop: 8 }}
+                   placeholder={mode.action === 'revoke'
+                     ? 'Why are you withdrawing it?' : 'Why are you replacing it?'}
+                   onChange={e => setReason(e.target.value)} />
+          )}
+          <div className="dw-addform-actions">
+            <button className="dw-btn dw-btn-sm dw-btn-primary" onClick={run} disabled={busy}>
+              {busy ? 'Working…'
+                : mode === 'add' ? 'Attach'
+                : mode.action === 'revoke' ? 'Withdraw' : 'Replace'}
+            </button>
+            <button className="dw-btn dw-btn-sm" onClick={reset}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <button className="dw-btn dw-btn-sm" onClick={() => setMode('add')}>
+          Attach evidence
+        </button>
+      )}
+
+      {closed && live.length === 0 && (
+        <div className="dw-item-status">
+          Closing without evidence — your manager sees this as unverified.
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * Stop a recurring item.
+ *
+ * Retire, not delete. The entries stay and the history stays readable; the item
+ * simply stops appearing on tomorrow's list. Deleting would cascade away
+ * everything anyone ever logged against it, which is a strange price for
+ * tidying a list.
+ *
+ * Two taps, because an item that quietly disappears from someone's morning is
+ * worse than one that takes a moment to remove.
+ */
+function RetireControl({ title, onRetire }) {
+  const [confirming, setConfirming] = useState(false);
+
+  if (!confirming) {
+    return (
+      <button className="dw-btn dw-btn-sm" onClick={() => setConfirming(true)}>
+        Stop tracking this
+      </button>
+    );
+  }
+  return (
+    <div className="dw-banner warn" style={{ marginBottom: 0 }}>
+      Stop tracking <b>{title}</b>? It leaves tomorrow's list. Everything already
+      logged against it stays, and you can start it again later.
+      <div className="dw-addform-actions">
+        <button className="dw-btn dw-btn-sm dw-btn-primary" onClick={onRetire}>
+          Stop tracking it
+        </button>
+        <button className="dw-btn dw-btn-sm" onClick={() => setConfirming(false)}>Keep it</button>
+      </div>
+    </div>
   );
 }
 

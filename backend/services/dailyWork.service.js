@@ -34,6 +34,7 @@
 //    meaningless, because recurring work would complete every day.
 
 const { withOrgTransaction } = require('../config/database');
+const hierarchyService = require('./hierarchyService');
 const dwDate = require('./dailyWorkDate');
 
 // ── Why every date column is cast to text ────────────────────────────
@@ -257,7 +258,7 @@ async function assignItem(orgId, managerUserId, input) {
  * genuinely needs a manager.
  */
 async function updateItem(orgId, userId, itemId, patch) {
-  const { title, activityTypeKey, anchorKind, anchorId, targetDate } = patch;
+  const { title, activityTypeKey, anchorKind, anchorId, targetDate, status } = patch;
 
   return withOrgTransaction(orgId, async (client) => {
     const { rows: found } = await client.query(
@@ -278,6 +279,26 @@ async function updateItem(orgId, userId, itemId, patch) {
       throw new DailyWorkError('An item needs a title', 'BLANK_TITLE');
     }
 
+    // Retiring is the ONLY status change allowed here, and only for recurring
+    // work. Assigned items take their status from the day's stage, so letting
+    // both paths write it would give two answers to one question.
+    //
+    // Retire rather than delete: the entries stay, the history stays readable,
+    // and the item simply stops appearing on tomorrow's list. Deleting would
+    // cascade away everything anyone ever logged against it.
+    if (status !== undefined) {
+      if (item.kind !== 'recurring') {
+        throw new DailyWorkError(
+          "An assigned item's status comes from the day's stage — mark it complete or dropped instead",
+          'STATUS_ON_ASSIGNED', { itemId });
+      }
+      if (!RECURRING_STATUSES.includes(status)) {
+        throw new DailyWorkError(
+          `Recurring work is either ${RECURRING_STATUSES.join(' or ')}`,
+          'BAD_STATUS', { status });
+      }
+    }
+
     // The anchor and the account move together or not at all. Re-resolving only
     // when the anchor is part of the patch stops an unrelated title edit from
     // quietly re-deriving an account that was corrected by hand.
@@ -294,6 +315,10 @@ async function updateItem(orgId, userId, itemId, patch) {
               anchor_id         = CASE WHEN $6::boolean THEN $8 ELSE anchor_id END,
               account_id        = CASE WHEN $6::boolean THEN $9 ELSE account_id END,
               target_date       = CASE WHEN $10::boolean THEN $11 ELSE target_date END,
+              status            = CASE WHEN $12::boolean THEN $13 ELSE status END,
+              closed_at         = CASE WHEN $12::boolean AND $13 = 'retired' THEN now()
+                                       WHEN $12::boolean THEN NULL
+                                       ELSE closed_at END,
               updated_at        = now()
         WHERE id = $1 AND org_id = $2
         RETURNING ${ITEM_COLUMNS}`,
@@ -301,7 +326,8 @@ async function updateItem(orgId, userId, itemId, patch) {
        title === undefined ? null : String(title).trim(),
        activityTypeKey !== undefined, activityTypeKey || null,
        changingAnchor, anchorKind || null, anchorId || null, accountId,
-       targetDate !== undefined, targetDate || null]);
+       targetDate !== undefined, targetDate || null,
+       status !== undefined, status || null]);
 
     return rows[0];
   });
@@ -759,8 +785,172 @@ async function attachEvidence(orgId, userId, { entryId, note, channel = 'manual'
   });
 }
 
+/**
+ * Who may read the Tier 2 content on an entry: the owner, and their manager
+ * chain. Tier 2 is description, next steps and evidence — §10 of the design
+ * keeps it narrower than Tier 1 on purpose.
+ */
+async function canSeeEntry(orgId, viewerId, ownerId) {
+  if (viewerId === ownerId) return true;
+  const subordinates = await hierarchyService.getSubordinates(orgId, viewerId);
+  return subordinates.includes(ownerId);
+}
+
+/** Everything attached to one entry, revoked rows included. */
+async function listEvidence(orgId, viewerId, entryId) {
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows: entry } = await client.query(
+      `SELECT id, user_id FROM daily_work_entries WHERE id = $1 AND org_id = $2`,
+      [entryId, orgId]);
+    if (!entry[0]) throw new DailyWorkError('No such entry', 'NO_SUCH_ENTRY', { entryId });
+
+    if (!(await canSeeEntry(orgId, viewerId, entry[0].user_id))) {
+      throw new DailyWorkError('That entry belongs to someone else', 'NOT_YOUR_ENTRY', { entryId });
+    }
+
+    // Revoked rows come back too, marked. That is the whole audit trail: a
+    // correction that erased what it replaced would be indistinguishable from
+    // never having made the mistake.
+    const { rows } = await client.query(
+      `SELECT e.id, e.channel, e.note, e.storage_file_id,
+              e.accepted_by, e.accepted_at,
+              e.revoked_at, e.revoked_by, e.revoke_reason,
+              a.first_name AS accepted_first, a.last_name AS accepted_last,
+              r.first_name AS revoked_first,  r.last_name AS revoked_last
+         FROM play_evidence e
+         LEFT JOIN users a ON a.id = e.accepted_by
+         LEFT JOIN users r ON r.id = e.revoked_by
+        WHERE e.org_id = $1 AND e.daily_work_entry_id = $2
+        ORDER BY e.accepted_at`,
+      [orgId, entryId]);
+
+    return rows;
+  });
+}
+
+/**
+ * Withdraw a piece of evidence.
+ *
+ * Evidence is immutable — play_evidence_immutable() refuses every update except
+ * setting the revocation fields, and refuses re-revoking something already
+ * revoked. So there is no edit: there is a withdrawal, which keeps the original
+ * row, who withdrew it, when, and why.
+ *
+ * The reason is mandatory in the database too
+ * (play_evidence_revoke_shape_chk), which is the right place for it — a
+ * revocation with no reason is just a deletion wearing a hat.
+ */
+async function revokeEvidence(orgId, userId, evidenceId, reason) {
+  if (!reason || !reason.trim()) {
+    throw new DailyWorkError('Say why you are withdrawing it', 'BLANK_REASON');
+  }
+
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows: found } = await client.query(
+      `SELECT ev.id, ev.revoked_at, e.user_id
+         FROM play_evidence ev
+         JOIN daily_work_entries e ON e.id = ev.daily_work_entry_id
+        WHERE ev.id = $1 AND ev.org_id = $2`,
+      [evidenceId, orgId]);
+
+    const row = found[0];
+    if (!row) throw new DailyWorkError('No such evidence', 'NO_SUCH_EVIDENCE', { evidenceId });
+    if (row.user_id !== userId) {
+      throw new DailyWorkError('That belongs to someone else', 'NOT_YOUR_ENTRY', { evidenceId });
+    }
+    if (row.revoked_at) {
+      throw new DailyWorkError('That was already withdrawn', 'ALREADY_REVOKED', { evidenceId });
+    }
+
+    const { rows } = await client.query(
+      `UPDATE play_evidence
+          SET revoked_at = now(), revoked_by = $1, revoke_reason = $2
+        WHERE id = $3 AND org_id = $4
+        RETURNING id, revoked_at, revoke_reason`,
+      [userId, reason.trim(), evidenceId, orgId]);
+
+    return rows[0];
+  });
+}
+
+/**
+ * Correct a piece of evidence: withdraw the old, attach the new, in one go.
+ *
+ * One transaction, so an entry is never briefly left with nothing attached, and
+ * the pair is never half-applied. What the reader ends up with is both rows —
+ * the withdrawn one with its reason, and the replacement — which is a more
+ * honest record than an edit that leaves no trace of the original.
+ */
+async function replaceEvidence(orgId, userId, evidenceId, { note, reason, channel = 'manual' }) {
+  if (!note || !note.trim()) {
+    throw new DailyWorkError('The replacement needs a link or a sentence', 'BLANK_EVIDENCE');
+  }
+  if (!reason || !reason.trim()) {
+    throw new DailyWorkError('Say why you are replacing it', 'BLANK_REASON');
+  }
+
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows: found } = await client.query(
+      `SELECT ev.id, ev.revoked_at, ev.daily_work_entry_id, e.user_id
+         FROM play_evidence ev
+         JOIN daily_work_entries e ON e.id = ev.daily_work_entry_id
+        WHERE ev.id = $1 AND ev.org_id = $2`,
+      [evidenceId, orgId]);
+
+    const row = found[0];
+    if (!row) throw new DailyWorkError('No such evidence', 'NO_SUCH_EVIDENCE', { evidenceId });
+    if (row.user_id !== userId) {
+      throw new DailyWorkError('That belongs to someone else', 'NOT_YOUR_ENTRY', { evidenceId });
+    }
+    if (row.revoked_at) {
+      throw new DailyWorkError('That was already withdrawn', 'ALREADY_REVOKED', { evidenceId });
+    }
+
+    await client.query(
+      `UPDATE play_evidence
+          SET revoked_at = now(), revoked_by = $1, revoke_reason = $2
+        WHERE id = $3 AND org_id = $4`,
+      [userId, reason.trim(), evidenceId, orgId]);
+
+    const { rows } = await client.query(
+      `INSERT INTO play_evidence
+         (org_id, daily_work_entry_id, channel, note, accepted_by)
+       VALUES ($1,$2,$3,$4,$5)
+       RETURNING id, channel, note, accepted_at`,
+      [orgId, row.daily_work_entry_id, channel, note.trim(), userId]);
+
+    return { revoked: evidenceId, replacement: rows[0] };
+  });
+}
+
+/**
+ * Departments, for the manager's filter.
+ *
+ * Teams on an INTERNAL dimension — 2026_131 reused the existing team model
+ * rather than adding a table. teams.dimension holds team_dimensions.key, a
+ * string join rather than an id, which is easy to get subtly wrong.
+ */
+async function listDepartments(orgId) {
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows } = await client.query(
+      `SELECT t.id, t.name
+         FROM teams t
+         JOIN team_dimensions td
+                ON td.key = t.dimension AND td.org_id = t.org_id
+               AND td.applies_to = 'internal'
+        WHERE t.org_id = $1 AND t.is_active = TRUE
+        ORDER BY t.name`,
+      [orgId]);
+    return rows;
+  });
+}
+
 module.exports = {
   getAnchorOptions,
+  listEvidence,
+  revokeEvidence,
+  replaceEvidence,
+  listDepartments,
   listActivityTypes,
   updateItem,
   proposeActivityType,

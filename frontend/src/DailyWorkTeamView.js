@@ -43,7 +43,7 @@ export default function DailyWorkTeamView() {
   const [period, setPeriod]   = useState('day');
   const [anchorDate, setAnchor] = useState(null);   // 'YYYY-MM-DD'
   const [sortBy, setSortBy]   = useState('name');
-  const [filters, setFilters] = useState({ account: '', anchor: '', activity: '' });
+  const [filters, setFilters] = useState({ account: '', anchor: '', activity: '', department: '' });
 
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
@@ -53,6 +53,7 @@ export default function DailyWorkTeamView() {
 
   const [anchors, setAnchors]       = useState([]);
   const [activityTypes, setActivityTypes] = useState([]);
+  const [departments, setDepartments] = useState([]);
   const [stalled, setStalled]       = useState([]);
   const [candidates, setCandidates] = useState([]);
   const [accountSummary, setAccountSummary] = useState(null);
@@ -86,6 +87,7 @@ export default function DailyWorkTeamView() {
     const f = {};
     if (filters.account) f.account = filters.account;
     if (filters.activity) f.activity = filters.activity;
+    if (filters.department) f.department = filters.department;
     if (filters.anchor) {
       const [kind, id] = filters.anchor.split(':');
       f.anchorKind = kind; f.anchorId = id;
@@ -127,6 +129,8 @@ export default function DailyWorkTeamView() {
     apiService.dailyWork.candidates().then(({ data }) => setCandidates(data || [])).catch(() => {});
     apiService.dailyWork.listActivityTypes()
       .then(({ data }) => setActivityTypes(data || [])).catch(() => {});
+    apiService.dailyWork.listDepartments()
+      .then(({ data }) => setDepartments(data || [])).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -275,6 +279,19 @@ export default function DailyWorkTeamView() {
               </select>
             </div>
             <div className="dw-field" style={{ marginTop: 0 }}>
+              <label htmlFor="dw-f-dept">Department</label>
+              {/* Filters the ENTRY's snapshotted department, not the person's
+                  current team — which is why October keeps answering the same
+                  thing after someone transfers in November. */}
+              <select id="dw-f-dept" value={filters.department}
+                      onChange={e => setFilters({ ...filters, department: e.target.value })}>
+                <option value="">All departments</option>
+                {departments.map(d => (
+                  <option key={d.id} value={d.id}>{d.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="dw-field" style={{ marginTop: 0 }}>
               <label htmlFor="dw-f-sort">Sort</label>
               <select id="dw-f-sort" value={sortBy} onChange={e => setSortBy(e.target.value)}>
                 <option value="name">By name</option>
@@ -282,9 +299,9 @@ export default function DailyWorkTeamView() {
               </select>
             </div>
           </div>
-          {(filters.account || filters.anchor || filters.activity) && (
+          {(filters.account || filters.anchor || filters.activity || filters.department) && (
             <button className="dw-btn dw-btn-sm" style={{ marginTop: 12 }}
-                    onClick={() => setFilters({ account: '', anchor: '', activity: '' })}>
+                    onClick={() => setFilters({ account: '', anchor: '', activity: '', department: '' })}>
               Clear filters
             </button>
           )}

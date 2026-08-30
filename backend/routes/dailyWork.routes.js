@@ -11,7 +11,11 @@
 // GET    /daily-work/activity-types          the shared list, for every picker
 // PATCH  /daily-work/items/:id                change an item's activity or anchor
 // POST   /daily-work/activity-types          propose one ("Other" + a name)
+// GET    /daily-work/entries/:id/evidence    everything attached, revoked included
 // POST   /daily-work/entries/:id/evidence    attach a link or a sentence
+// POST   /daily-work/evidence/:id/revoke     withdraw it, with a reason
+// POST   /daily-work/evidence/:id/replace    withdraw and attach a correction
+// GET    /daily-work/departments             for the manager's filter
 //
 // ── Manager surface ──────────────────────────────────────────────────────────
 // GET    /daily-work/team/log                one row per person per day
@@ -221,6 +225,39 @@ router.post('/activity-types', async (req, res) => {
     res.status(201).json(
       await dailyWork.proposeActivityType(req.orgId, req.userId, (req.body || {}).label));
   } catch (err) { handle(res, err, 'POST /activity-types'); }
+});
+
+router.get('/entries/:id/evidence', async (req, res) => {
+  try {
+    const entryId = asId(req.params.id);
+    if (!entryId) return res.status(400).json({ error: 'bad entry id' });
+    res.json(await dailyWork.listEvidence(req.orgId, req.userId, entryId));
+  } catch (err) { handle(res, err, 'GET /entries/:id/evidence'); }
+});
+
+router.post('/evidence/:id/revoke', async (req, res) => {
+  try {
+    const id = asId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'bad evidence id' });
+    res.json(await dailyWork.revokeEvidence(req.orgId, req.userId, id, (req.body || {}).reason));
+  } catch (err) { handle(res, err, 'POST /evidence/:id/revoke'); }
+});
+
+router.post('/evidence/:id/replace', async (req, res) => {
+  try {
+    const id = asId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'bad evidence id' });
+    const b = req.body || {};
+    res.json(await dailyWork.replaceEvidence(req.orgId, req.userId, id, {
+      note: b.note, reason: b.reason, channel: b.channel || 'manual',
+    }));
+  } catch (err) { handle(res, err, 'POST /evidence/:id/replace'); }
+});
+
+router.get('/departments', async (req, res) => {
+  try {
+    res.json(await dailyWork.listDepartments(req.orgId));
+  } catch (err) { handle(res, err, 'GET /departments'); }
 });
 
 router.post('/entries/:id/evidence', async (req, res) => {
