@@ -21,6 +21,7 @@ import PlaybookRegister from './PlaybookRegister';
 import PlaybookApprovals from './PlaybookApprovals';
 import ProspectingView from './ProspectingView';
 import ContractsView from './ContractsView';
+import DailyWorkView from './DailyWorkView';
 import HandoverView from './HandoverView';
 import SupportView from './SupportView';
 import AgencyView from './AgencyView';
@@ -83,6 +84,7 @@ const ALL_MODULE_ITEMS = [
   { id: 'handovers',   label: 'Projects',    icon: '🤝' },
   { id: 'service',     label: 'Service',     icon: '🎧' },
   { id: 'agency',      label: 'Agency',      icon: '🏢' },
+  { id: 'dailywork',   label: 'Daily Work',  icon: '📋' },
   { id: 'preview',     label: 'Data Preview', icon: '🔎' },
 ];
 
@@ -976,6 +978,15 @@ function Dashboard({ user, onLogout }) {
         <div className="content-area">
           {currentTab === 'actions'     && <ActionsView openActionId={pendingActionId} onActionOpened={() => setPendingActionId(null)} />}
           {currentTab === 'preview'     && <PreviewContacts />}
+          {currentTab === 'dailywork'   && (
+            orgModules.dailywork
+              ? <DailyWorkView />
+              : <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:12, color:'#94a3b8' }}>
+                  <div style={{ fontSize:48 }}>📋</div>
+                  <div style={{ fontSize:16, fontWeight:600, color:'#475569' }}>Daily Work module is disabled</div>
+                  <div style={{ fontSize:13 }}>An org admin can enable it under Org Admin → Modules.</div>
+                </div>
+          )}
           {currentTab === 'prospecting' && (
             orgModules.prospecting
               ? <ProspectingView />
