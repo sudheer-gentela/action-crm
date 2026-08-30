@@ -65,6 +65,8 @@ export default function DailyWorkView() {
   const [myRate, setMyRate] = useState(null);  // my row from the rollup
   const [hasReports, setHasReports] = useState(false);
   const [history, setHistory] = useState([]);  // person-days before today
+  const [candidates, setCandidates] = useState([]);
+  const [stalled, setStalled] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [day, setDay] = useState(null);          // { entryDate, timezone, rows }
@@ -152,6 +154,24 @@ export default function DailyWorkView() {
       .then(({ data }) => setHistory(data.rows || []))
       .catch(() => {});
   }, [me, saved]);
+
+  /**
+   * The two queues, from endpoints that mean different things depending on who
+   * is asking — which is the point of scoping them by the manager chain rather
+   * than by a role flag.
+   *
+   *   stalled     for a member, their OWN assigned work with nothing logged
+   *               against it. For a manager, that plus their reports'.
+   *   candidates  every proposed activity type in the org. A member cares about
+   *               the ones they proposed; a manager has to decide on all of them.
+   *
+   * Both fail quietly. A queue that fails to load should not stop someone
+   * logging their day.
+   */
+  useEffect(() => {
+    apiService.dailyWork.stalled().then(({ data }) => setStalled(data || [])).catch(() => {});
+    apiService.dailyWork.candidates().then(({ data }) => setCandidates(data || [])).catch(() => {});
+  }, [saved]);
 
   const loadActivityTypes = useCallback(() => {
     apiService.dailyWork.listActivityTypes()
@@ -345,6 +365,17 @@ export default function DailyWorkView() {
 
       {notice && <div className={`dw-banner ${notice.kind}`}>{notice.text}</div>}
 
+      <WaitingPanel
+        me={me}
+        hasReports={hasReports}
+        rows={rows}
+        drafts={drafts}
+        stalled={stalled}
+        candidates={candidates}
+        onOpenItem={itemId => { setOpenItem(itemId); setMode('edit'); }}
+        onOpenTeam={() => setTab('team')}
+      />
+
       {mode === 'log'
         ? <DayLog day={day} rows={rows} written={written} drafts={drafts} saved={saved}
                   history={history.filter(h => h.entry_date !== day.entryDate)}
@@ -454,6 +485,108 @@ export default function DailyWorkView() {
 }
 
 /* ── the day log ────────────────────────────────────────────────────── */
+
+/**
+ * What is sitting with you, and what is sitting with someone else.
+ *
+ * Derived entirely from queries that already exist — nothing here is stored,
+ * and none of it is a work item. Turning "review two activity types" into a
+ * daily_work_item would mean logging work about logging work, and would inflate
+ * days-logged for whoever happened to have admin chores that day.
+ *
+ * The panel deliberately shows BOTH directions. A member seeing "with your
+ * manager · nothing for you to do" is the difference between a queue that feels
+ * like a to-do list and one that feels like being chased.
+ *
+ * It renders nothing when there is nothing waiting. An empty panel that says
+ * "all clear" every day teaches people to stop reading the space.
+ */
+function WaitingPanel({ me, hasReports, rows, drafts, stalled, candidates, onOpenItem, onOpenTeam }) {
+  const items = [];
+
+  // Assigned to me and untouched. For a member the stalled endpoint returns
+  // only their own, so this is genuinely "yours to move".
+  (stalled || []).filter(s => s.owner_user_id === me).forEach(s => items.push({
+    key: `mine:${s.item_id}`,
+    badge: 'yours',
+    badgeClass: 'assigned',
+    title: s.title,
+    why: s.last_entry_date
+      ? `Nothing logged since ${formatDate(s.last_entry_date)}`
+      : 'Assigned to you, never logged against',
+    action: { label: 'Log against it', run: () => onOpenItem(s.item_id) },
+  }));
+
+  // Handed back and waiting on someone else. Nothing for them to do, and saying
+  // so is the point.
+  rows.filter(r => (drafts[r.item_id]?.dayStage || r.status) === 'in_review').forEach(r => items.push({
+    key: `review:${r.item_id}`,
+    badge: 'with your manager',
+    badgeClass: 'review',
+    title: r.title,
+    why: 'Marked in review — nothing for you to do until they come back',
+  }));
+
+  // Activity types I proposed, still awaiting a decision. They work in the
+  // meantime; this is information, not a blocker.
+  (candidates || []).filter(c => c.created_by === me).forEach(c => items.push({
+    key: `mycand:${c.key}`,
+    badge: 'proposed',
+    badgeClass: 'review',
+    title: c.label,
+    why: 'You named this activity — it works now, your manager decides if it joins the shared list',
+  }));
+
+  if (hasReports) {
+    (candidates || []).forEach(c => items.push({
+      key: `review-cand:${c.key}`,
+      badge: 'to review',
+      badgeClass: 'carried',
+      title: c.label,
+      why: `Proposed by ${c.first_name || 'someone'}${c.uses ? ` · used ${c.uses} ${c.uses === 1 ? 'time' : 'times'}` : ''}`,
+      action: { label: 'Review', run: onOpenTeam },
+    }));
+
+    (stalled || []).filter(s => s.owner_user_id !== me).forEach(s => items.push({
+      key: `chase:${s.item_id}`,
+      badge: 'chase',
+      badgeClass: 'carried',
+      title: s.title,
+      why: `${s.first_name || 'Someone'} ${s.last_name || ''}`.trim() +
+           (s.last_entry_date
+             ? ` — nothing since ${formatDate(s.last_entry_date)}`
+             : ' — never logged against'),
+      action: { label: 'Open team', run: onOpenTeam },
+    }));
+  }
+
+  if (!items.length) return null;
+
+  return (
+    <div className="dw-card" style={{ marginBottom: 14 }}>
+      <div className="dw-card-head">
+        <h2>Waiting on you</h2>
+        <span className="m">{items.length} {items.length === 1 ? 'thing' : 'things'}</span>
+      </div>
+      <div className="dw-daylog">
+        {items.map(i => (
+          <div className="dw-dayrow" key={i.key}>
+            <div className="t" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span className={`dw-badge ${i.badgeClass}`}>{i.badge}</span>
+              <b>{i.title}</b>
+              {i.action && (
+                <button className="dw-btn-link" style={{ marginLeft: 'auto' }} onClick={i.action.run}>
+                  {i.action.label}
+                </button>
+              )}
+            </div>
+            <div className="dw-meta">{i.why}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 /**
  * The log: ONE ROW PER DAY, the day's descriptions run together.

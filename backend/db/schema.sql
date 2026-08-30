@@ -2,9 +2,9 @@
 -- PostgreSQL database dump
 --
 
-\restrict x7RkvYid90uvNI5aTTid8u1KflgFJiHSTqqTpHUapWfbTetA4qPOa82pbAnVnuS
+\restrict QLTtEo2bZ6SdXcrOhDeQmfioBmWXzi7Rp0pElZdTTLzCSQiWoa0EU3qHX88dYkU
 
--- Dumped from database version 17.10 (Debian 17.10-1.pgdg13+1)
+-- Dumped from database version 17.11 (Debian 17.11-1.pgdg13+2)
 -- Dumped by pg_dump version 18.1
 
 SET statement_timeout = 0;
@@ -3711,6 +3711,7 @@ CREATE TABLE public.daily_work_entries (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     last_edited_by integer,
+    account_id integer,
     CONSTRAINT chk_dwen_anchor_shape CHECK ((((anchor_kind IS NULL) AND (anchor_id IS NULL)) OR ((anchor_kind IS NOT NULL) AND (anchor_id IS NOT NULL)))),
     CONSTRAINT chk_dwen_day_stage CHECK ((day_stage = ANY (ARRAY['yet_to_start'::text, 'in_progress'::text, 'in_review'::text, 'completed'::text, 'dropped'::text]))),
     CONSTRAINT chk_dwen_description_len CHECK ((length(description) <= 2000)),
@@ -3724,6 +3725,13 @@ CREATE TABLE public.daily_work_entries (
 --
 
 COMMENT ON COLUMN public.daily_work_entries.entry_date IS 'The OWNER''s local date, resolved at write from users.timezone -> org calendar -> UTC. Stored as a date so the day cannot be re-derived differently later. As of 2026_131.';
+
+
+--
+-- Name: COLUMN daily_work_entries.account_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.daily_work_entries.account_id IS 'Snapshot copied from the item at write time. Account filters read THIS column, not the item and not a join, so a project re-parented later cannot move work that was already logged.';
 
 
 --
@@ -3806,10 +3814,13 @@ CREATE TABLE public.daily_work_items (
     closed_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    account_id integer,
+    target_date date,
     CONSTRAINT chk_dwi_anchor_kind CHECK (((anchor_kind IS NULL) OR (anchor_kind = ANY (ARRAY['handover'::text, 'account'::text, 'campaign'::text])))),
     CONSTRAINT chk_dwi_anchor_shape CHECK ((((anchor_kind IS NULL) AND (anchor_id IS NULL)) OR ((anchor_kind IS NOT NULL) AND (anchor_id IS NOT NULL)))),
     CONSTRAINT chk_dwi_kind CHECK ((kind = ANY (ARRAY['recurring'::text, 'assigned'::text]))),
-    CONSTRAINT chk_dwi_status_by_kind CHECK ((((kind = 'assigned'::text) AND (status = ANY (ARRAY['not_started'::text, 'in_progress'::text, 'in_review'::text, 'completed'::text, 'dropped'::text]))) OR ((kind = 'recurring'::text) AND (status = ANY (ARRAY['active'::text, 'retired'::text]))))),
+    CONSTRAINT chk_dwi_status_by_kind CHECK ((((kind = 'assigned'::text) AND (status = ANY (ARRAY['yet_to_start'::text, 'in_progress'::text, 'in_review'::text, 'completed'::text, 'dropped'::text]))) OR ((kind = 'recurring'::text) AND (status = ANY (ARRAY['active'::text, 'retired'::text]))))),
+    CONSTRAINT chk_dwi_target_date_kind CHECK (((target_date IS NULL) OR (kind = 'assigned'::text))),
     CONSTRAINT chk_dwi_title_not_blank CHECK ((btrim(title) <> ''::text))
 );
 
@@ -3819,6 +3830,20 @@ CREATE TABLE public.daily_work_items (
 --
 
 COMMENT ON COLUMN public.daily_work_items.anchor_kind IS 'Soft polymorphic reference: handover | account | campaign. Text rather than an FK so the vocabulary can grow without cascading changes, per the account_teams.dimension precedent. As of 2026_131.';
+
+
+--
+-- Name: COLUMN daily_work_items.account_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.daily_work_items.account_id IS 'Snapshot, resolved once at write from the anchor. NEVER re-derive by joining: sales_handovers.account_id is mutable and a live join would rewrite closed history. NULL means internal work or unattributed.';
+
+
+--
+-- Name: COLUMN daily_work_items.target_date; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.daily_work_items.target_date IS 'ADVISORY. Display and sort only. Generates no status, no notification, and no overdue state anywhere. Recurring work cannot carry one.';
 
 
 --
@@ -17366,6 +17391,13 @@ CREATE INDEX idx_dwe_user_date ON public.daily_work_exceptions USING btree (org_
 
 
 --
+-- Name: idx_dwen_account_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dwen_account_date ON public.daily_work_entries USING btree (org_id, account_id, entry_date DESC) WHERE (account_id IS NOT NULL);
+
+
+--
 -- Name: idx_dwen_activity_date; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -17387,6 +17419,13 @@ CREATE INDEX idx_dwen_user_date ON public.daily_work_entries USING btree (org_id
 
 
 --
+-- Name: idx_dwi_account; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dwi_account ON public.daily_work_items USING btree (org_id, account_id) WHERE (account_id IS NOT NULL);
+
+
+--
 -- Name: idx_dwi_activity; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -17405,6 +17444,13 @@ CREATE INDEX idx_dwi_anchor ON public.daily_work_items USING btree (org_id, anch
 --
 
 CREATE INDEX idx_dwi_owner_open ON public.daily_work_items USING btree (org_id, owner_user_id, status);
+
+
+--
+-- Name: idx_dwi_target; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dwi_target ON public.daily_work_items USING btree (org_id, target_date) WHERE ((target_date IS NOT NULL) AND (status = ANY (ARRAY['yet_to_start'::text, 'in_progress'::text, 'in_review'::text])));
 
 
 --
@@ -23060,6 +23106,22 @@ ALTER TABLE ONLY public.deals
 
 
 --
+-- Name: daily_work_entries fk_dwen_account; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_entries
+    ADD CONSTRAINT fk_dwen_account FOREIGN KEY (account_id) REFERENCES public.accounts(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_work_items fk_dwi_account; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_items
+    ADD CONSTRAINT fk_dwi_account FOREIGN KEY (account_id) REFERENCES public.accounts(id) ON DELETE SET NULL;
+
+
+--
 -- Name: email_sync_history fk_email_sync_history_org; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -26411,5 +26473,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict x7RkvYid90uvNI5aTTid8u1KflgFJiHSTqqTpHUapWfbTetA4qPOa82pbAnVnuS
+\unrestrict QLTtEo2bZ6SdXcrOhDeQmfioBmWXzi7Rp0pElZdTTLzCSQiWoa0EU3qHX88dYkU
 

@@ -1,8 +1,24 @@
-#!/usr/bin/env node
 /**
  * verify_daily_work_schema.js — behavioural verification of migration 2026_131.
  *
- *   node scripts/verify_daily_work_schema.js
+ * STANDALONE. Does not import anything from the application repo, so it can
+ * live in its own folder with its own node_modules and never touch
+ * action-crm-clean. Its only dependencies are pg and (optionally) dotenv.
+ *
+ * Setup, once:
+ *
+ *   mkdir C:\Projects\dw-verify
+ *   cd C:\Projects\dw-verify
+ *   copy this file here, plus the package.json
+ *   npm install
+ *   create a .env holding one line:  DATABASE_URL=postgresql://user:pass@host:5432/db
+ *
+ * Then:
+ *
+ *   node verify_daily_work_schema.js
+ *
+ * SSL is enabled automatically for any host that is not localhost, because
+ * hosted Postgres refuses plaintext connections.
  *
  * 2026_131 was applied to production but never behaviourally tested. A schema
  * dump proves the DDL landed; it does not prove the constraints actually refuse
@@ -17,20 +33,49 @@
  *               fails for an unrelated typo, so every negative assertion here
  *               names the constraint and compares err.constraint against it.
  *
- * Safety against a live database, following scripts/phase109_acceptance.js:
- * every write is scoped to a fixture org named DAILYWORK_VERIFY_FIXTURE, and
- * teardown deletes that org by name. FK cascades remove everything beneath it.
- * Teardown runs in a finally block, so it happens even when an assertion throws.
- *
- * Deliberately NOT rollback-isolated. A single BEGIN/ROLLBACK would work for
- * pure SQL, but the same harness shape is reused later for service-level tests,
- * and services take their own pool connections — a transaction opened here
- * would be invisible to them. Fixture-and-teardown works for both.
+ * Safety against a live database: every write is scoped to a fixture org named
+ * DAILYWORK_VERIFY_FIXTURE, and teardown deletes that org by name. FK cascades
+ * remove everything beneath it. Teardown runs in a finally block, so it happens
+ * even when an assertion throws, and setup clears a stale fixture first in case
+ * an earlier run died before its finally.
  *
  * Exits non-zero on any failure, so it can gate a deploy.
+ *
+ * NOTE: if row-level security is later enabled on these tables, this harness
+ * must set app.current_org_id per statement or every query will silently
+ * return zero rows.
  */
 
-const { pool } = require('../config/database');
+try { require('dotenv').config(); } catch { /* fine — env may be set inline */ }
+
+let Pool;
+try {
+  ({ Pool } = require('pg'));
+} catch {
+  console.error('\nThe pg module is not installed in this folder.\n');
+  console.error('From the folder holding this script:');
+  console.error('  npm install\n');
+  console.error('It needs only pg and dotenv, and installs nothing into your app repo.\n');
+  process.exit(2);
+}
+
+const CONN = process.env.DATABASE_URL;
+if (!CONN) {
+  console.error('\nNo DATABASE_URL found.\n');
+  console.error('Put it in a .env file next to this script:');
+  console.error('  DATABASE_URL=postgresql://user:pass@host:5432/dbname\n');
+  console.error('Or pass it inline (PowerShell):');
+  console.error('  $env:DATABASE_URL="postgresql://..."; node verify_daily_work_schema.js\n');
+  process.exit(2);
+}
+
+const isLocal = /@(localhost|127\.0\.0\.1)[:/]/.test(CONN);
+const pool = new Pool({
+  connectionString: CONN,
+  ssl: isLocal ? false : { rejectUnauthorized: false },
+  max: 4,
+  connectionTimeoutMillis: 10000,
+});
 
 const FIXTURE_ORG  = 'DAILYWORK_VERIFY_FIXTURE';
 const FIXTURE_SLUG = 'dailywork-verify-fixture';
@@ -362,6 +407,7 @@ async function behaviourChecks({ orgId, userId }) {
 
 (async () => {
   console.log(`\nverify_daily_work_schema — migration 2026_131`);
+  console.log(`target:      ${CONN.replace(/:[^:@/]+@/, ':****@')}`);
   console.log(`fixture org: ${FIXTURE_ORG}\n`);
 
   let fixture;
