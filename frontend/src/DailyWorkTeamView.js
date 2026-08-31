@@ -68,6 +68,11 @@ export default function DailyWorkTeamView() {
   // Which attention queue is expanded, if any. One at a time — both open at
   // once pushes the people off the screen, which is the thing this replaced.
   const [showQueue, setShowQueue] = useState(null);
+  // Filters start CLOSED. Five dropdowns in an always-open card pushed the
+  // people themselves below the fold, so the screen opened on its own controls
+  // instead of its content. Opens automatically when a filter is active, so a
+  // narrowed list never looks like the whole list.
+  const [showFilters, setShowFilters] = useState(false);
   const [expanded, setExpanded] = useState({});   // key -> true
   const [details, setDetails]   = useState({});   // `${user}:${date}` -> rows
   const [notice, setNotice]     = useState(null);
@@ -209,6 +214,8 @@ export default function DailyWorkTeamView() {
 
   const loggedToday = rollup.filter(r => r.days_logged > 0).length;
   const totalOverdue = rollup.reduce((n, r) => n + (r.overdueTasks || 0), 0);
+  const activeFilterCount =
+    ['account', 'anchor', 'activity', 'department'].filter(k => filters[k]).length;
 
   // The person page is a full screen, not an overlay: it replaces the list
   // rather than sitting on top of it, so the back control is the only way out
@@ -230,6 +237,12 @@ export default function DailyWorkTeamView() {
       <div className="dw-head">
         <div>
           <h1>People</h1>
+          {/* Said ONCE, here. It used to repeat on every unlogged row, which on
+              a day when nobody has logged yet is the same sentence eight times
+              and no information at all. */}
+          <div className="dw-sub" style={{ marginBottom: 2 }}>
+            A day with no entry is simply an absence — nothing expires and nothing accumulates.
+          </div>
           <div className="dw-sub">
             {window_.from === window_.to
               ? formatDate(window_.from)
@@ -273,7 +286,34 @@ export default function DailyWorkTeamView() {
       {/* ── filters ─────────────────────────────────────────────────── */}
 
       <div className="dw-card" style={{ marginBottom: 14 }}>
-        <div className="dw-item-body" style={{ paddingTop: 14 }}>
+        <div className="dw-item-body" style={{ paddingTop: 12, paddingBottom: activeFilterCount || showFilters ? undefined : 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <button className="dw-btn dw-btn-sm" onClick={() => setShowFilters(v => !v)}
+                    aria-expanded={showFilters || activeFilterCount > 0}>
+              Filters{activeFilterCount > 0 ? ` · ${activeFilterCount}` : ''}
+            </button>
+            <select value={sortBy} onChange={e => setSortBy(e.target.value)}
+                    aria-label="Sort" style={{ maxWidth: 220 }}>
+              <option value="name">By name</option>
+              <option value="gaps">Fewest days logged first</option>
+            </select>
+            {activeFilterCount > 0 && (
+              <button className="dw-btn dw-btn-sm"
+                      onClick={() => setFilters({ account: '', anchor: '', activity: '', department: '' })}>
+                Clear
+              </button>
+            )}
+            {/* Not the logged count — the header already carries that. This
+                says how many rows the filters are actually showing, which is
+                the one thing a filter bar owes the reader. */}
+            <span className="m" style={{ marginLeft: 'auto' }}>
+              {rollup.length} {rollup.length === 1 ? 'person' : 'people'}
+            </span>
+          </div>
+        </div>
+
+        {(showFilters || activeFilterCount > 0) && (
+        <div className="dw-item-body" style={{ paddingTop: 4 }}>
           <div className="dw-addgrid">
             <div className="dw-field" style={{ marginTop: 0 }}>
               <label htmlFor="dw-f-account">Account</label>
@@ -320,21 +360,10 @@ export default function DailyWorkTeamView() {
                 ))}
               </select>
             </div>
-            <div className="dw-field" style={{ marginTop: 0 }}>
-              <label htmlFor="dw-f-sort">Sort</label>
-              <select id="dw-f-sort" value={sortBy} onChange={e => setSortBy(e.target.value)}>
-                <option value="name">By name</option>
-                <option value="gaps">Fewest days logged first</option>
-              </select>
-            </div>
+
           </div>
-          {(filters.account || filters.anchor || filters.activity || filters.department) && (
-            <button className="dw-btn dw-btn-sm" style={{ marginTop: 12 }}
-                    onClick={() => setFilters({ account: '', anchor: '', activity: '', department: '' })}>
-              Clear filters
-            </button>
-          )}
         </div>
+        )}
       </div>
 
       {/* ── account summary, only when one account is chosen ─────────── */}
@@ -689,44 +718,82 @@ function PersonProjectPanel({ userId }) {
   );
 }
 
+/** Initials, from whatever name parts exist. Two letters, never more. */
+function initialsOf(person) {
+  const a = (person.first_name || '').trim()[0] || '';
+  const b = (person.last_name || '').trim()[0] || '';
+  return (a + b).toUpperCase() || '?';
+}
+
+/**
+ * Who this is and how they are doing — the line that was missing.
+ *
+ * The trailing record rather than the viewed window: on the day tab the window
+ * rate is "0 of 1 days" for everyone, which is true and tells you nothing. What
+ * answers "is this person keeping up" is their last few weeks, and that has to
+ * stay legible while you are reading a single day.
+ */
+function PersonIdentity({ person }) {
+  const t = person.trailing_rate;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+      <div aria-hidden="true" style={{
+        width: 32, height: 32, borderRadius: '50%', flexShrink: 0,
+        background: '#ede9fe', color: '#5b21b6', fontSize: 12, fontWeight: 700,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>{initialsOf(person)}</div>
+      <div style={{ minWidth: 0 }}>
+        <div className="dw-item-title" style={{ margin: 0 }}>
+          {`${person.first_name || ''} ${person.last_name || ''}`.trim() || 'Unknown'}
+        </div>
+        <div className="dw-meta" style={{ margin: 0 }}>
+          {person.department && <>{person.department} · </>}
+          {person.trailing_working_days
+            ? `${person.trailing_days_logged} of ${person.trailing_working_days} days`
+            : 'no working days in range'}
+          {t !== null && t !== undefined && ` · ${Math.round(t * 100)}%`}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PersonRow({ person, period, hasProjects = false, log, expanded, details,
                      onToggle, onOpenDay, onOpenPerson }) {
   const key = `p:${person.user_id}`;
   const isOpen = !!expanded[key];
   const name = `${person.first_name || ''} ${person.last_name || ''}`.trim() || 'Unknown';
 
-  // A day period is already one row per person; there is nothing to roll up.
+  // A day period is already one row per person; there is nothing to roll up, so
+  // the row opens the full view rather than expanding.
+  //
+  // THE WHOLE ROW IS THE CONTROL. A per-row "Open full view" button cost a line
+  // each and turned a list of eight people into a scroll. The row carries who,
+  // how they are doing, and what they logged, on two lines.
   if (period === 'day') {
     const today = log[0];
     return (
       <div className="dw-item">
-        <div className="dw-item-head">
-          <div className="dw-item-title">{name}</div>
-          {today ? (
-            <>
-              <div className="dw-work dw-clamp" style={{ marginTop: 8 }}>{today.work_done}</div>
-              <div className="dw-item-status">
-                {today.item_count} {today.item_count === 1 ? 'item' : 'items'}
-                {today.evidence_count > 0 && ` · ${today.evidence_count} evidence`}
-              </div>
-            </>
-          ) : (
-            <div className="dw-item-status">
-              Not logged. The absence is the signal — there is nothing to clear.
+        <button className="dw-item-head" onClick={onOpenPerson}
+                style={{ cursor: 'pointer', width: '100%', textAlign: 'left' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%' }}>
+            <PersonIdentity person={person} />
+            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+              {hasProjects && person.openTasks > 0 && (
+                <span className="dw-badge">{person.openTasks} {person.openTasks === 1 ? 'task' : 'tasks'}</span>
+              )}
+              {hasProjects && person.overdueTasks > 0 && (
+                <span className="dw-badge carried">{person.overdueTasks} overdue</span>
+              )}
+              {/* The status pill, so who-logged-today is answerable by scanning
+                  one column instead of reading every row's prose. */}
+              <span className={`dw-badge ${today ? '' : 'carried'}`}>
+                {today ? `${today.item_count} logged` : 'not yet'}
+              </span>
             </div>
-          )}
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
-            {hasProjects && person.openTasks > 0 && (
-              <span className="dw-badge">{person.openTasks} project {person.openTasks === 1 ? 'task' : 'tasks'}</span>
-            )}
-            {hasProjects && person.overdueTasks > 0 && (
-              <span className="dw-badge carried">{person.overdueTasks} overdue</span>
-            )}
-            <button className="dw-btn dw-btn-sm" style={{ marginLeft: 'auto' }} onClick={onOpenPerson}>
-              Open full view →
-            </button>
           </div>
-        </div>
+          {today && <div className="dw-work dw-clamp" style={{ marginTop: 8 }}>{today.work_done}</div>}
+        </button>
       </div>
     );
   }
@@ -734,17 +801,14 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
   return (
     <div className={`dw-item ${isOpen ? 'dw-open' : ''}`}>
       <button className="dw-item-head" onClick={() => onToggle(key)} aria-expanded={isOpen}>
-        <div className="dw-item-title">{name}</div>
+        <PersonIdentity person={person} />
         <div className="dw-item-badges" style={{ alignItems: 'center' }}>
           <DayStrip days={person.days} />
+          {/* This window, not the trailing one the identity line shows. Two
+              different questions, so two different numbers, each labelled. */}
           <span className="dw-badge">
-            {person.days_logged} of {person.working_days} days
+            {person.days_logged} of {person.working_days} this {period}
           </span>
-          {person.rate !== null && (
-            <span className={`dw-badge ${person.rate < 0.6 ? 'carried' : ''}`}>
-              {Math.round(person.rate * 100)}%
-            </span>
-          )}
           {!person.has_schedule && (
             <span className="dw-badge carried">no schedule set</span>
           )}

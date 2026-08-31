@@ -327,6 +327,38 @@ async function getRollup(orgId, { userIds, from, to, filters = {} }) {
   });
 }
 
+/**
+ * Each person's department, for the People screen.
+ *
+ * A separate lookup rather than a join inside getRollup: the rollup filters on
+ * the ENTRY's snapshotted department_team_id, which is deliberately the team
+ * someone was in when they logged. This is the opposite — who they are NOW,
+ * which is what belongs beside their name. Joining them would quietly conflate
+ * the two, and the snapshot rule exists precisely so October keeps answering
+ * the same thing after someone transfers in November.
+ *
+ * Primary membership only, and only teams on an 'internal' dimension, matching
+ * what listDepartments offers as a filter.
+ */
+async function getDepartmentsByUser(orgId, userIds) {
+  const out = new Map();
+  if (!userIds || userIds.length === 0) return out;
+
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows } = await client.query(
+      `SELECT DISTINCT ON (tm.user_id) tm.user_id, t.name
+         FROM team_memberships tm
+         JOIN teams t ON t.id = tm.team_id AND t.org_id = tm.org_id
+         JOIN team_dimensions td ON td.key = t.dimension AND td.org_id = t.org_id
+                                AND td.applies_to = 'internal'
+        WHERE tm.org_id = $1 AND tm.user_id = ANY($2) AND t.is_active = TRUE
+        ORDER BY tm.user_id, tm.is_primary DESC NULLS LAST, t.name`,
+      [orgId, userIds]);
+    for (const r of rows) out.set(r.user_id, r.name);
+    return out;
+  });
+}
+
 /* ───────────────────────── the account view ────────────────────────── */
 
 /**
@@ -451,6 +483,7 @@ async function getCandidateActivityTypes(orgId) {
 module.exports = {
   getVisibleUserIds,
   getLog,
+  getDepartmentsByUser,
   getDayDetail,
   getRollup,
   getAccountSummary,

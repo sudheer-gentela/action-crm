@@ -160,6 +160,19 @@ function eachDate(fromStr, toStr) {
 }
 
 /**
+ * Shift a 'YYYY-MM-DD' by n days, returning a string.
+ *
+ * UTC arithmetic on the parts, exactly as eachDate does above, never
+ * `new Date(str)` plus setDate. A date built from a bare 'YYYY-MM-DD' is UTC
+ * midnight, and reading it back through local getters west of UTC hands you
+ * the previous day — the same trap this module's header is about.
+ */
+function addDays(dateStr, n) {
+  const [y, m, d] = String(dateStr).split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d) + n * 86400000).toISOString().slice(0, 10);
+}
+
+/**
  * The metric's denominator.
  *
  * A day counts when the schedule says the person works it, the holiday
@@ -206,6 +219,7 @@ module.exports = {
   weekdayIndex,
   isScheduledDay,
   eachDate,
+  addDays,
   workingDays,
   loggingRate,
   isValidZone,

@@ -356,22 +356,51 @@ router.get('/people', async (req, res) => {
     const userIds = await scopeUserIds(req.orgId, req.userId, req.query.users);
     const filters = readFilters(req.query);
 
-    const [rollup, workload] = await Promise.all([
+    // A SECOND, WIDER WINDOW, always the same regardless of the selected period.
+    //
+    // The rollup is computed over the window being VIEWED, so on the day tab
+    // everyone reads "0 of 1 days" — technically true and useless. What tells
+    // you whether someone is keeping up is their record over a few weeks, and
+    // that has to stay on screen while you are looking at a single day.
+    //
+    // Trailing 28 calendar days ending at the window's end, not "last 20
+    // working days": working days are per-person, since schedules and holiday
+    // calendars differ, so a fixed calendar span is the only span that means
+    // the same thing for everyone. getRollup turns it into each person's own
+    // working-day count from their own calendar.
+    const trailingFrom = dwDate.addDays(win.to, -27);
+
+    const [rollup, trailing, departments, workload] = await Promise.all([
       dailyQuery.getRollup(req.orgId, { userIds, from: win.from, to: win.to, filters }),
+      dailyQuery.getRollup(req.orgId, { userIds, from: trailingFrom, to: win.to, filters }),
+      dailyQuery.getDepartmentsByUser(req.orgId, userIds),
       _projectSideOrEmpty('workload',
         () => handoverService.getProjectWorkloadByUser(req.orgId, userIds),
         new Map()),
     ]);
+
+    const trailingBy = new Map(trailing.map(t => [t.user_id, t]));
 
     res.json({
       ...win,
       // projectsAvailable lets the client hide the two project columns entirely
       // rather than render a row of zeros that reads as "nothing assigned".
       projectsAvailable: workload.size > 0 || userIds.length === 0,
-      people: rollup.map(p => ({
-        ...p,
-        ...(workload.get(p.user_id) || { openTasks: 0, overdueTasks: 0 }),
-      })),
+      trailingFrom,
+      people: rollup.map(p => {
+        const t = trailingBy.get(p.user_id) || {};
+        return {
+          ...p,
+          department: departments.get(p.user_id) || null,
+          // Namespaced rather than overwriting days_logged: the row shows the
+          // viewed window AND the trailing record, and a reader has to be able
+          // to tell which number answers which question.
+          trailing_days_logged:  t.days_logged  ?? null,
+          trailing_working_days: t.working_days ?? null,
+          trailing_rate:         t.rate ?? null,
+          ...(workload.get(p.user_id) || { openTasks: 0, overdueTasks: 0 }),
+        };
+      }),
     });
   } catch (err) { handle(res, err, 'GET /people'); }
 });
