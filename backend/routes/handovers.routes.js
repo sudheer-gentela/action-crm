@@ -224,7 +224,12 @@ router.post('/sales/:id/actions/:actionId/complete', async (req, res) => {
 
 router.put('/sales/:id', async (req, res) => {
   try {
-    const handover = await handoverService.update(parseInt(req.params.id), req.orgId, req.body);
+    // userId is threaded through for go-live rescheduling: every date the
+    // reschedule moves is written to play_due_date_revisions, whose revised_by
+    // is NOT NULL. Without it the go-live saves and the checklist is left
+    // alone rather than moved anonymously.
+    const handover = await handoverService.update(
+      parseInt(req.params.id), req.orgId, req.body, req.user.userId);
     res.json({ handover });
   } catch (err) {
     console.error('Update handover error:', err);
@@ -312,6 +317,22 @@ router.delete('/sales/:id/retire', async (req, res) => {
     res.json({ project });
   } catch (err) {
     console.error('Un-retire initiative error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── GET /sales/:id/go-live-drift ──────────────────────────────────────────────
+//
+// The frozen half of go-live rescheduling. On a project whose plan is frozen the
+// rescheduler deliberately moves nothing — a date move there is a rebaseline and
+// has to be somebody's decision, with a reason, through PATCH .../plays/:id.
+// This reports the gap so it is visible rather than a silently wrong checklist.
+// Empty for an unfrozen project, where the dates have already been moved.
+router.get('/sales/:id/go-live-drift', async (req, res) => {
+  try {
+    res.json(await handoverService.getGoLiveDrift(parseInt(req.params.id), req.orgId));
+  } catch (err) {
+    console.error('Go-live drift error:', err);
     res.status(err.status || 500).json({ error: { message: err.message } });
   }
 });

@@ -1077,7 +1077,13 @@ async function _getDealTeam(dealId, orgId) {
 // UPDATE core fields (draft only)
 // ═══════════════════════════════════════════════════════════════════════════
 
-async function update(handoverId, orgId, data) {
+/**
+ * @param {number} [userId] — required for go-live rescheduling. Without it the
+ *   go-live still saves but the checklist is left alone, because
+ *   play_due_date_revisions.revised_by is NOT NULL and an unattributed date
+ *   change is exactly what this module refuses to make.
+ */
+async function update(handoverId, orgId, data, userId = null) {
   const existing = await _getHandover(handoverId, orgId);
 
   // Editing used to stop at 'draft'. That made sense when a submitted handover
@@ -1117,24 +1123,52 @@ async function update(handoverId, orgId, data) {
       { status: 400 });
   }
 
-  const { rows } = await pool.query(
-    `UPDATE sales_handovers
-     SET assigned_service_owner_id = COALESCE($1, assigned_service_owner_id),
-         go_live_date              = COALESCE($2, go_live_date),
-         contract_value            = COALESCE($3, contract_value),
-         commercial_terms_summary  = COALESCE($4, commercial_terms_summary),
-         updated_at                = NOW()
-     WHERE id = $5 AND org_id = $6
-     RETURNING *`,
-    [
-      assignedServiceOwnerId ?? null,
-      goLiveDate ?? null,
-      contractValue ?? null,
-      commercialTermsSummary ?? null,
-      handoverId,
-      orgId,
-    ]
-  );
+  // In a transaction now, because the go-live write and the checklist
+  // rescheduling that follows it have to succeed or fail together. A project
+  // whose date moved but whose tasks only half-moved is worse than one that
+  // refused the edit.
+  const client = await pool.connect();
+  let rows, reschedule = null;
+  try {
+    await client.query('BEGIN');
+
+    ({ rows } = await client.query(
+      `UPDATE sales_handovers
+       SET assigned_service_owner_id = COALESCE($1, assigned_service_owner_id),
+           go_live_date              = COALESCE($2, go_live_date),
+           contract_value            = COALESCE($3, contract_value),
+           commercial_terms_summary  = COALESCE($4, commercial_terms_summary),
+           updated_at                = NOW()
+       WHERE id = $5 AND org_id = $6
+       RETURNING *`,
+      [
+        assignedServiceOwnerId ?? null,
+        goLiveDate ?? null,
+        contractValue ?? null,
+        commercialTermsSummary ?? null,
+        handoverId,
+        orgId,
+      ]
+    ));
+
+    // Compared as strings. existing.goLiveDate is already 'YYYY-MM-DD' through
+    // fmt(); the RETURNING row is a Date, so it goes through toDateStr. Getting
+    // this wrong would compare a Date to a string, find them always different,
+    // and shift the whole checklist on a save that touched only the budget.
+    const before = existing.goLiveDate || null;
+    const after  = toDateStr(rows[0]?.go_live_date);
+    if (before !== after) {
+      reschedule = await _rescheduleGoLiveAnchored(
+        client, handoverId, orgId, userId, before, after);
+    }
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 
   // Keep project membership in step with the owner column. Without this the
   // person accountable for the project is missing from "Project team & roles",
@@ -1179,7 +1213,10 @@ async function update(handoverId, orgId, data) {
     ).catch(err => console.warn('[handover] previous owner demotion failed:', err.message));
   }
 
-  return fmt(rows[0]);
+  // The counts ride along on the response rather than needing a second call:
+  // the person who just moved a date is the one who needs to know what it did
+  // to the checklist, and they are looking at this response right now.
+  return { ...fmt(rows[0]), ...(reschedule ? { reschedule } : {}) };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1278,22 +1315,42 @@ async function convertTrackingMode(handoverId, orgId, userId, toMode, opts = {})
         { status: 400 });
     }
 
-    const { rows } = await pool.query(
-      `UPDATE sales_handovers
-          SET tracking_mode             = 'timeboxed',
-              assigned_service_owner_id = $1,
-              go_live_date              = $2,
-              updated_at                = NOW()
-        WHERE id = $3 AND org_id = $4
-        RETURNING *`,
-      [ownerId, goLive, handoverId, orgId]);
+    // Same transaction as the rescheduling below it, for the same reason
+    // update() is now transactional.
+    const client = await pool.connect();
+    let rows, reschedule = null;
+    try {
+      await client.query('BEGIN');
+      ({ rows } = await client.query(
+        `UPDATE sales_handovers
+            SET tracking_mode             = 'timeboxed',
+                assigned_service_owner_id = $1,
+                go_live_date              = $2,
+                updated_at                = NOW()
+          WHERE id = $3 AND org_id = $4
+          RETURNING *`,
+        [ownerId, goLive, handoverId, orgId]));
 
-    // Setting go_live_date from NULL fires trg_reschedule_go_live, which
-    // schedules go_live-anchored rows in the LEGACY deal_play_instances table
-    // through sales_handover_plays. project_play_instances has no equivalent,
-    // so a project's actual checklist is not scheduled by this. Named here
-    // because the trigger's existence makes it look as though it were.
-    return fmt(rows[0]);
+      // A standing initiative has no go-live by definition, so this is always
+      // a NULL -> date transition: the first-set path, which schedules plays
+      // that never had a date and disturbs no plan. It runs even on a frozen
+      // project for that reason.
+      reschedule = await _rescheduleGoLiveAnchored(
+        client, handoverId, orgId, userId, null, toDateStr(rows[0]?.go_live_date));
+
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    // Setting go_live_date from NULL also fires trg_reschedule_go_live, which
+    // schedules the LEGACY deal_play_instances rows through
+    // sales_handover_plays. Those are not what the module reads; the real
+    // checklist is scheduled by _rescheduleGoLiveAnchored above.
+    return { ...fmt(rows[0]), ...(reschedule ? { reschedule } : {}) };
   }
 
   // → standing. Dropping the date is the whole operation; the owner is left
@@ -1372,6 +1429,202 @@ async function unretire(handoverId, orgId) {
     [handoverId, orgId]);
 
   return fmt(rows[0]);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GO-LIVE RESCHEDULING (project_play_instances)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// THE GAP THIS CLOSES. Since the 2026_109 split, project checklists live in
+// project_play_instances. Its go_live-anchored due dates are computed once, at
+// insert, by computeInstanceDueDate in PlaybookPlayService — and until now
+// NOTHING recomputed them. Moving a project's go-live by three weeks changed
+// nothing on its checklist, and plan-vs-actual kept measuring against a plan
+// nobody was working to. trg_reschedule_go_live still fires, but only on the
+// legacy deal_play_instances rows 2026_109 left behind, which nothing reads.
+//
+// WHY THIS IS NOT THAT TRIGGER, MOVED. Every other date change in this module
+// goes through updatePlay, which writes a row to play_due_date_revisions with a
+// reason and an actor, refuses non-managers unless the org opts in, and is
+// explicit about whether the move is a rebaseline. A trigger does none of that,
+// and on a frozen project it would silently overwrite baseline_source =
+// 'original' — which 2026_111's own comment calls a real commitment someone
+// made that must never be silently overwritten.
+//
+// SO THE RULE IS THE ONE THE PRODUCT ALREADY DRAWS, at the baseline freeze:
+//
+//   Not frozen  → the plan is provisional. Reschedule, and log every move.
+//   Frozen      → the plan is a commitment. Touch nothing; report the drift and
+//                 let a manager rebaseline explicitly through updatePlay, which
+//                 already has the permission gate and the reason field.
+//
+// ONE CASE SITS OUTSIDE BOTH and happens regardless of freeze: the FIRST time a
+// go-live is set, go_live-anchored plays have due_date NULL and were never
+// scheduled at all. Filling those in disturbs no plan because there is no plan
+// to disturb. 2026_76 does exactly this on the deal side.
+//
+// Subsequent moves shift by the DELTA rather than recomputing from the offset,
+// so a date someone deliberately nudged keeps its nudge. Recomputing would
+// discard every manual adjustment on the checklist without saying so.
+
+/**
+ * Recompute go_live-anchored due dates after a project's go-live has moved.
+ *
+ * Runs inside the caller's transaction, so a failure here rolls back the
+ * go-live change with it. A project whose date moved but whose checklist only
+ * half-moved is worse than one that refused the edit.
+ *
+ * @returns {{rescheduled:number, scheduled:number, skippedFrozen:number, frozen:boolean}}
+ */
+async function _rescheduleGoLiveAnchored(client, handoverId, orgId, userId, fromDate, toDate) {
+  const result = { rescheduled: 0, scheduled: 0, skippedFrozen: 0, frozen: false };
+
+  // revised_by is NOT NULL on play_due_date_revisions. Without an author the
+  // choice is between moving dates unlogged and not moving them; not moving
+  // them is right, because an unattributed date change is the thing this whole
+  // design exists to prevent.
+  if (!userId) return result;
+
+  const { rows: [h] } = await client.query(
+    `SELECT baseline_frozen_at FROM sales_handovers WHERE id = $1 AND org_id = $2`,
+    [handoverId, orgId]);
+  result.frozen = !!h?.baseline_frozen_at;
+
+  // Nothing to anchor to. Clearing a go-live deliberately leaves dates where
+  // they are — convertTrackingMode warns the caller about that instead.
+  if (!toDate) return result;
+
+  // ── First set: schedule plays that never had a date ──────────────────────
+  //
+  // Absolute, from the play's signed offset on playbook_plays. INNER JOIN: an
+  // ad-hoc play has play_id NULL and no template to take an offset from, and
+  // addPlay hardcodes due_anchor 'created', so none can be go_live-anchored. If
+  // one somehow were, it has nothing to compute from and leaving it alone is
+  // the only honest outcome.
+  const { rows: firstSet } = await client.query(
+    `UPDATE project_play_instances ppi
+        SET due_date = ($3::date + COALESCE(pp.due_offset_days, 0)),
+            updated_at = now()
+       FROM playbook_plays pp
+      WHERE pp.id = ppi.play_id
+        AND ppi.handover_id = $1 AND ppi.org_id = $2
+        AND ppi.due_anchor = 'go_live'
+        AND ppi.due_date IS NULL
+        AND ppi.status NOT IN ('completed', 'skipped', 'cancelled')
+      RETURNING ppi.id, ppi.due_date::text AS to_due`,
+    [handoverId, orgId, toDate]);
+  result.scheduled = firstSet.length;
+
+  // ── Subsequent move: shift the already-scheduled ones ────────────────────
+  const delta = fromDate && toDate
+    ? Math.round((Date.parse(`${toDate}T00:00:00Z`) - Date.parse(`${fromDate}T00:00:00Z`)) / 86400000)
+    : 0;
+
+  let shifted = [];
+  if (delta !== 0) {
+    if (result.frozen) {
+      // Option C. The plan is committed; moving its dates is a rebaseline and
+      // has to be somebody's decision, with a reason, through updatePlay.
+      const { rows: [c] } = await client.query(
+        `SELECT count(*)::int AS n FROM project_play_instances
+          WHERE handover_id = $1 AND org_id = $2
+            AND due_anchor = 'go_live' AND due_date IS NOT NULL
+            AND status NOT IN ('completed', 'skipped', 'cancelled')`,
+        [handoverId, orgId]);
+      result.skippedFrozen = c.n;
+    } else {
+      const { rows } = await client.query(
+        `UPDATE project_play_instances
+            SET due_date = due_date + $3::int,
+                updated_at = now()
+          WHERE handover_id = $1 AND org_id = $2
+            AND due_anchor = 'go_live'
+            AND due_date IS NOT NULL
+            AND status NOT IN ('completed', 'skipped', 'cancelled')
+          RETURNING id, (due_date - $3::int)::text AS from_due, due_date::text AS to_due`,
+        [handoverId, orgId, delta]);
+      shifted = rows;
+      result.rescheduled = rows.length;
+    }
+  }
+
+  // ── Log every move ───────────────────────────────────────────────────────
+  //
+  // is_rebaseline is FALSE throughout: this only ever runs on an unfrozen plan,
+  // where the baseline is NULL or 'inferred' and there is no commitment to
+  // reset. A move on a frozen plan is a rebaseline and does not happen here.
+  const moves = [
+    ...firstSet.map(r => ({ id: r.id, from: null, to: r.to_due })),
+    ...shifted.map(r => ({ id: r.id, from: r.from_due, to: r.to_due })),
+  ];
+  for (const m of moves) {
+    await client.query(
+      `INSERT INTO play_due_date_revisions
+         (org_id, source_module, project_play_instance_id,
+          from_due_date, to_due_date, reason, is_rebaseline, revised_by)
+       VALUES ($1, 'project', $2, $3, $4, $5, FALSE, $6)`,
+      [orgId, m.id, m.from, m.to,
+       m.from ? `Go-live moved ${fromDate} to ${toDate}` : `Go-live set to ${toDate}`,
+       userId]);
+  }
+
+  return result;
+}
+
+/**
+ * Are any open go_live-anchored tasks scheduled from a date the project no
+ * longer has?
+ *
+ * The reporting half of the frozen case. There the rescheduler deliberately
+ * moves nothing, so the drift has to be visible or it is just a silent wrong
+ * number on the checklist.
+ *
+ * Recomputed rather than stored: what each play's date SHOULD be is derivable
+ * from the go-live and the play's offset, so there is no new column and nothing
+ * to keep in sync.
+ *
+ * Returns an empty list for an unfrozen project. There the rescheduler has
+ * already moved them, so any remaining difference is a deliberate manual
+ * adjustment — reporting it as drift would be telling someone their own edit
+ * was a mistake.
+ */
+async function getGoLiveDrift(handoverId, orgId) {
+  const { rows: [h] } = await pool.query(
+    `SELECT go_live_date::text AS go_live_date, baseline_frozen_at,
+            COALESCE(tracking_mode, 'timeboxed') AS tracking_mode
+       FROM sales_handovers WHERE id = $1 AND org_id = $2`,
+    [handoverId, orgId]);
+  if (!h) throw Object.assign(new Error('Handover not found'), { status: 404 });
+
+  const frozen = !!h.baseline_frozen_at;
+  if (!frozen || !h.go_live_date || h.tracking_mode === 'standing') {
+    return { frozen, goLiveDate: h.go_live_date || null, plays: [] };
+  }
+
+  const { rows } = await pool.query(
+    `SELECT ppi.id, ppi.title,
+            ppi.due_date::text AS due_date,
+            ($3::date + COALESCE(pp.due_offset_days, 0))::text AS expected_due_date
+       FROM project_play_instances ppi
+       JOIN playbook_plays pp ON pp.id = ppi.play_id
+      WHERE ppi.handover_id = $1 AND ppi.org_id = $2
+        AND ppi.due_anchor = 'go_live'
+        AND ppi.due_date IS NOT NULL
+        AND ppi.status NOT IN ('completed', 'skipped', 'cancelled')
+        AND ppi.due_date <> ($3::date + COALESCE(pp.due_offset_days, 0))
+      ORDER BY ppi.due_date, ppi.id`,
+    [handoverId, orgId, h.go_live_date]);
+
+  return {
+    frozen: true,
+    goLiveDate: h.go_live_date,
+    plays: rows.map(r => ({
+      id: r.id, title: r.title,
+      dueDate: r.due_date, expectedDueDate: r.expected_due_date,
+      driftDays: Math.round(
+        (Date.parse(`${r.expected_due_date}T00:00:00Z`) - Date.parse(`${r.due_date}T00:00:00Z`)) / 86400000),
+    })),
+  };
 }
 
 /**
@@ -5353,6 +5606,7 @@ module.exports = {
   reorderPlays,            // checklist items — reposition within a stage (A5)
   setPlayDependencies,     // task prerequisites (2026_117)
   freezePlanOnStart,       // baseline freeze on leaving draft (2026_118)
+  getGoLiveDrift,          // frozen-plan drift against the go-live (2026_133)
   getEvidencePolicy,       // effective evidence policy
   getStartPreview,         // review-dates step
   listStages,              // project stages — read (2026_115)
