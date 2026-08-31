@@ -284,6 +284,17 @@ async function getRollup(orgId, { userIds, from, to, filters = {} }) {
       params);
 
     const byUser = new Map(rows.map(r => [r.user_id, r]));
+
+    // Names come from a SEPARATE query over the requested ids, not from the
+    // entries join. The entries join only knows about people who logged
+    // something, so on a day nobody has logged — which is every day before the
+    // pilot starts — the whole team rendered as "Unknown". The absence of a
+    // row is exactly the case this screen exists to show, so the names have to
+    // come from somewhere that does not depend on there being entries.
+    const { rows: names } = await client.query(
+      `SELECT id, first_name, last_name FROM users WHERE id = ANY($1)`, [userIds]);
+    const nameById = new Map(names.map(n => [n.id, n]));
+
     const calendars = await loadCalendars(client, orgId, userIds, from, to);
 
     return userIds.map(userId => {
@@ -293,10 +304,11 @@ async function getRollup(orgId, { userIds, from, to, filters = {} }) {
       const logged = row.logged_dates || [];
       const rate = dwDate.loggingRate(logged, workingDates);
 
+      const who = nameById.get(userId) || {};
       return {
         user_id: userId,
-        first_name: row.first_name || null,
-        last_name: row.last_name || null,
+        first_name: who.first_name || null,
+        last_name: who.last_name || null,
         entry_count: row.entry_count || 0,
         account_ids: row.account_ids || [],
         activity_keys: row.activity_keys || [],
