@@ -629,6 +629,11 @@ function Dashboard({ user, onLogout }) {
   const [sidebarOpen, setSidebarOpen]           = useState(false);
   const [isMobile, setIsMobile]                 = useState(window.innerWidth < 768);
   const [orgModules, setOrgModules]             = useState({});  // { contracts: true/false, ... }
+  // Whether /org/context actually answered. {} means BOTH "this org has no
+  // modules" and "we never found out", and the two render identically: an
+  // empty rail. That ambiguity sent a real diagnosis down the wrong path —
+  // an expired token looked exactly like revoked module access.
+  const [modulesLoadFailed, setModulesLoadFailed] = useState(false);
   const [pinnedModules, setPinnedModules]       = useState([]);  // array of module IDs pinned to sidebar
 
   // Fetch org module flags once on mount — accessible to ALL roles via /org/context
@@ -638,11 +643,19 @@ function Dashboard({ user, onLogout }) {
     fetch(`${API}/org/context`, {
       headers: { Authorization: `Bearer ${token}` },
     })
-      .then(r => r.ok ? r.json() : null)
+      .then(r => {
+        // An unauthorised response is the common case and the confusing one:
+        // the app still renders, so nothing looks broken, but every module
+        // silently vanishes from the rail.
+        if (!r.ok) throw new Error(r.status === 401 || r.status === 403 ? 'auth' : 'http');
+        return r.json();
+      })
       .then(data => {
         if (data?.modules) setOrgModules(normaliseModules(data.modules));
+        else throw new Error('shape');
       })
-      .catch(() => {}); // non-fatal — modules stay hidden if fetch fails
+      // Still non-fatal — the rest of the app works — but no longer silent.
+      .catch(() => setModulesLoadFailed(true));
   }, []);
 
   // Fetch user preferences (pinned_modules) once on mount
@@ -814,6 +827,19 @@ function Dashboard({ user, onLogout }) {
   // Only surface module items whose flag is enabled in org settings
   const enabledModuleItems = ALL_MODULE_ITEMS.filter(m => !!orgModules[m.id]);
 
+  // Shown in place of the module section when we never got an answer. Says the
+  // one thing that distinguishes this from a genuine permissions change, and
+  // says it where the missing items would have been rather than in a toast
+  // that has already gone by the time anyone wonders.
+  const moduleLoadNotice = modulesLoadFailed ? (
+    <div style={{ margin: '8px 12px', padding: '8px 10px', borderRadius: 8,
+                  background: '#fffbeb', border: '1px solid #fde68a',
+                  fontSize: 11, color: '#92400e', lineHeight: 1.5 }}>
+      Couldn't load your modules, so they are hidden. Nothing has been turned
+      off — try signing out and back in.
+    </div>
+  ) : null;
+
   // Modules the user has pinned that are also org-enabled. Preserves
   // user-chosen order. Capped at PINNED_MODULES_CAP.
   const pinnedModuleItems = pinnedModules
@@ -939,6 +965,7 @@ function Dashboard({ user, onLogout }) {
         user={user}
         navItems={navItems}
         allModuleItems={enabledModuleItems}
+        moduleLoadNotice={moduleLoadNotice}
         pinnedModuleItems={pinnedModuleItems}
         pinnedModuleIds={pinnedModules}
         pinnedModulesCap={PINNED_MODULES_CAP}

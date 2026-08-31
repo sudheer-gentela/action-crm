@@ -490,6 +490,7 @@ export default function Sidebar({
   user,
   navItems,
   allModuleItems,
+  moduleLoadNotice = null,
   pinnedModuleItems = [],
   pinnedModuleIds   = [],
   pinnedModulesCap  = 2,
@@ -606,6 +607,10 @@ export default function Sidebar({
               </button>
             );
           })}
+
+          {/* Rendered where the missing items would have been, not as a toast
+              that is gone by the time anyone wonders why the rail is short. */}
+          {isMemberRole && moduleLoadNotice}
 
           {isMemberRole && (
             <ModuleLauncher

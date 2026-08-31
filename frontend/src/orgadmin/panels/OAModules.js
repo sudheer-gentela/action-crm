@@ -19,6 +19,13 @@ export default function OAModules() {
   const [saving, setSaving]         = useState(null);   // module key being toggled
   const [seeding, setSeeding]       = useState(null);   // module key being seeded
   const [error, setError]           = useState('');
+  // Distinct from `error`. A failed LOAD means the module states in this
+  // component are still their initial all-false defaults, and rendering those
+  // tells every module the org owns that it is "not included in your plan" and
+  // to contact support for an upgrade. That is a confident false statement
+  // produced by a network failure. A save error is different — the states on
+  // screen are real — so the two cannot share one flag.
+  const [loadFailed, setLoadFailed]  = useState(false);
   const [success, setSuccess]       = useState('');
 
   const API    = process.env.REACT_APP_API_URL || '';
@@ -53,7 +60,7 @@ export default function OAModules() {
         }
         setSeedStatus(seedRes.status || {});
       })
-      .catch(() => setError('Failed to load module settings'))
+      .catch(() => { setError('Failed to load module settings'); setLoadFailed(true); })
       .finally(() => setLoading(false));
   }, []); // eslint-disable-line
 
@@ -237,6 +244,17 @@ export default function OAModules() {
 
       {loading ? (
         <div className="sv-loading">Loading modules…</div>
+      ) : loadFailed ? (
+        <div className="sv-empty" style={{ padding: 24, lineHeight: 1.6 }}>
+          <p>Your module settings couldn't be loaded, so nothing is shown here.</p>
+          <p className="sv-muted">
+            This is usually an expired session — sign out and back in. Nothing has changed;
+            no module has been turned off.
+          </p>
+          <button className="sv-btn" style={{ marginTop: 12 }} onClick={() => window.location.reload()}>
+            Try again
+          </button>
+        </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {MODULE_DEFS.map(mod => {

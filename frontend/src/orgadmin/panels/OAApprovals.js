@@ -25,12 +25,27 @@ export default function OAApprovals() {
   const [loading, setLoading] = useState(true);
   const [err, setErr]         = useState('');
   const [busy, setBusy]       = useState('');
+  // Whether the LOAD failed, as opposed to an action failing.
+  //
+  // rows stays [] when the fetch dies, and [] renders "Nothing to approve right
+  // now" with a party emoji. So a failure showed an error and a celebration at
+  // once, and the celebration is the part people believe — an admin reads it,
+  // concludes the queue is clear, and walks away from work that is waiting.
+  // An empty list only means "nothing waiting" if we actually got a list.
+  const [loadFailed, setLoadFailed] = useState(false);
 
   const load = useCallback(async () => {
-    setLoading(true); setErr('');
-    try { const r = await apiService.handovers.getApprovals(); setRows(r.data.approvals || []); }
-    catch (e) { setErr(e?.response?.data?.error?.message || 'Could not load approvals.'); }
-    finally { setLoading(false); }
+    setLoading(true); setErr(''); setLoadFailed(false);
+    try {
+      const r = await apiService.handovers.getApprovals();
+      setRows(r.data.approvals || []);
+    } catch (e) {
+      setErr(e?.response?.data?.error?.message || 'Could not load approvals.');
+      setLoadFailed(true);
+      // Cleared rather than left stale: a queue from before the failure would
+      // be presented as current, and these rows carry Approve and Reject.
+      setRows([]);
+    } finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -57,6 +72,18 @@ export default function OAApprovals() {
       {err && <div style={{ color: '#991b1b', fontSize: 13, marginBottom: 10 }}>{err}</div>}
 
       {loading ? <div style={{ color: '#9ca3af' }}>Loading…</div>
+        : loadFailed ? (
+          <div style={{ fontSize: 13, color: '#6b7280', lineHeight: 1.6 }}>
+            <div>The approvals queue couldn't be loaded, so this list is not showing anything.</div>
+            <div style={{ marginTop: 4 }}>
+              There may still be items waiting. This is usually an expired session — sign out and back in.
+            </div>
+            <button onClick={load} style={{ marginTop: 10, fontSize: 12, padding: '5px 14px', borderRadius: 6,
+                                            border: '1px solid #d1d5db', background: '#fff', cursor: 'pointer' }}>
+              Try again
+            </button>
+          </div>
+        )
         : rows.length === 0 ? <div style={{ color: '#9ca3af', fontSize: 13 }}>Nothing to approve right now. 🎉</div>
         : rows.map(item => {
           const b = TYPE_BADGE[item.type] || { label: item.type, bg: '#f1f5f9', fg: '#334155' };
