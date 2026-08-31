@@ -796,6 +796,12 @@ twilio: {
     // scheduled from the go-live date. details.plays lists them; resend with
     // acknowledgeAnchoredPlays to proceed.
     convertTrackingMode: (id, body) => api.patch(`/handovers/sales/${id}/tracking-mode`, body),
+
+    // Open go_live-anchored tasks still scheduled from a date the project no
+    // longer has. Only ever non-empty for a project whose plan is FROZEN —
+    // on an unfrozen one the dates have already been moved, so any remaining
+    // difference is a deliberate manual adjustment, not drift.
+    goLiveDrift: (id) => api.get(`/handovers/sales/${id}/go-live-drift`),
     retire:   (id) => api.post(`/handovers/sales/${id}/retire`),
     unretire: (id) => api.delete(`/handovers/sales/${id}/retire`),
     // Projects that don't come from a won deal: internal, or the customer

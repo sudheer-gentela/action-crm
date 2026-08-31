@@ -2571,6 +2571,11 @@ function EditableCoreFields({ detail, isTerminal, onSaved, fmtDate, fmtCurrency,
   const [draft,   setDraft]   = useState('');
   const [busy,    setBusy]    = useState(false);
   const [err,     setErr]     = useState('');
+  // What moving the go-live just did to the checklist. Shown once, after the
+  // save that caused it — a date change now has a consequence somewhere the
+  // person is not looking, and silently doing that is how a checklist starts
+  // disagreeing with what someone remembers doing.
+  const [resched, setResched] = useState(null);
 
   const dtg = detail.goLiveDate
     // Both sides floored to local midnight: comparing a calendar date against
@@ -2609,8 +2614,10 @@ function EditableCoreFields({ detail, isTerminal, onSaved, fmtDate, fmtCurrency,
       } else {
         body.commercialTermsSummary = draft.trim() || null;
       }
-      await apiService.handovers.update(detail.id, body);
+      const res = await apiService.handovers.update(detail.id, body);
       setEditing(null);
+      // Only present when a go-live actually moved; absent on every other save.
+      setResched(res?.data?.handover?.reschedule || null);
       await onSaved();
     } catch (e) {
       setErr(e?.response?.data?.error?.message || e.message || 'Could not save.');
@@ -2690,6 +2697,44 @@ function EditableCoreFields({ detail, isTerminal, onSaved, fmtDate, fmtCurrency,
 
   return (
     <>
+      {/* What the last go-live change did to the checklist. Three outcomes, and
+          the middle one is the important one: on a frozen plan nothing moved,
+          and if that is not said here the person walks away believing their
+          checklist followed the date. */}
+      {resched && (resched.rescheduled > 0 || resched.scheduled > 0 || resched.skippedFrozen > 0) && (
+        <div style={{
+          marginTop: 12, padding: '10px 12px', borderRadius: 8, fontSize: 12, lineHeight: 1.6,
+          background: resched.skippedFrozen > 0 ? '#fffbeb' : '#f0f9ff',
+          border: `1px solid ${resched.skippedFrozen > 0 ? '#fde68a' : '#bae6fd'}`,
+          color: resched.skippedFrozen > 0 ? '#92400e' : '#075985',
+          display: 'flex', alignItems: 'flex-start', gap: 8,
+        }}>
+          <div style={{ flex: 1 }}>
+            {resched.scheduled > 0 && (
+              <div>
+                {resched.scheduled} task{resched.scheduled === 1 ? '' : 's'} scheduled from the new go-live date.
+              </div>
+            )}
+            {resched.rescheduled > 0 && (
+              <div>
+                {resched.rescheduled} task{resched.rescheduled === 1 ? '' : 's'} moved with it.
+                Each change is recorded on the task.
+              </div>
+            )}
+            {resched.skippedFrozen > 0 && (
+              <div>
+                <strong>{resched.skippedFrozen} task{resched.skippedFrozen === 1 ? '' : 's'} did not move.</strong>{' '}
+                This project's plan is frozen, so its dates are a commitment and changing them
+                is a rebaseline. Move them individually on the Checklist, with a reason.
+              </div>
+            )}
+          </div>
+          <button onClick={() => setResched(null)} aria-label="Dismiss"
+            style={{ border: 'none', background: 'none', cursor: 'pointer', color: 'inherit',
+                     fontSize: 15, lineHeight: 1, padding: 0 }}>×</button>
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
         {/* 2026_133. A standing initiative has no go-live, and update() refuses
             to give it one — so an editable date card here would be a control
@@ -3513,6 +3558,8 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
       {/* ── Details (body) ──────────────────────────────── */}
       {detailTab === 'details' && (
       <div style={{ padding: '16px 20px' }}>
+
+        <GoLiveDriftBanner handoverId={detail.id} goLiveDate={detail.goLiveDate} />
 
         {/* Handover Checklist (plays) — grouped by stage */}
         <section style={{ marginBottom: 24 }}>
@@ -5683,6 +5730,76 @@ function PlaybookPicker({ detail, canEdit, onRefresh }) {
 // go-live date leaves any task scheduled from it holding a date with nothing
 // behind it, and nothing recomputes those. The server refuses once and returns
 // the affected tasks; this shows them and lets the person go ahead knowingly.
+// ── GoLiveDriftBanner ─────────────────────────────────────────────────────────
+//
+// The visible half of the frozen-project rule.
+//
+// When a go-live moves on a project whose plan is FROZEN, the backend
+// deliberately moves nothing: those dates are a commitment, and changing them
+// is a rebaseline that needs a person, a permission and a reason. That is the
+// right call, and it leaves a checklist quietly disagreeing with the project's
+// own go-live date. Unsaid, that is just a wrong screen.
+//
+// So it is said, here, on the tab where the affected dates actually are —
+// not on Overview where the date was changed. Someone acting on this has to
+// open each task anyway.
+//
+// Always empty for an unfrozen project: there the dates have already moved, so
+// any remaining difference is a deliberate manual adjustment and flagging it
+// would be telling someone their own edit was a mistake.
+function GoLiveDriftBanner({ handoverId, goLiveDate }) {
+  const [drift, setDrift] = useState(null);
+  const [dismissed, setDismissed] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setDismissed(false);
+    if (!goLiveDate) { setDrift(null); return; }
+    apiService.handovers.goLiveDrift(handoverId)
+      .then(r => { if (alive) setDrift(r.data); })
+      .catch(() => { if (alive) setDrift(null); });   // never block the checklist
+    return () => { alive = false; };
+  }, [handoverId, goLiveDate]);
+
+  const plays = drift?.plays || [];
+  if (dismissed || plays.length === 0) return null;
+
+  return (
+    <div style={{ marginBottom: 16, padding: '12px 14px', borderRadius: 8,
+                  background: '#fffbeb', border: '1px solid #fde68a',
+                  fontSize: 12, color: '#92400e', lineHeight: 1.6 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+        <div style={{ flex: 1 }}>
+          <strong>
+            {plays.length} task{plays.length === 1 ? '' : 's'} still scheduled from an older go-live date.
+          </strong>
+          <div>
+            This project's plan is frozen, so moving the go-live did not move these.
+            Changing them is a rebaseline — open each one and set the date with a reason.
+          </div>
+          <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+            {plays.slice(0, 6).map(p => (
+              <li key={p.id} style={{ marginBottom: 2 }}>
+                {p.title} · due {fmtDate(p.dueDate)}
+                <span style={{ color: '#b45309' }}>
+                  {' '}({p.driftDays > 0 ? `${p.driftDays}d later` : `${Math.abs(p.driftDays)}d earlier`} if
+                  {' '}re-anchored to {fmtDate(drift.goLiveDate)})
+                </span>
+              </li>
+            ))}
+            {plays.length > 6 && (
+              <li style={{ color: '#b45309' }}>…and {plays.length - 6} more</li>
+            )}
+          </ul>
+        </div>
+        <button onClick={() => setDismissed(true)} aria-label="Dismiss"
+          style={{ border: 'none', background: 'none', cursor: 'pointer',
+                   color: 'inherit', fontSize: 15, lineHeight: 1, padding: 0 }}>×</button>
+      </div>
+    </div>
+  );
+}
+
 // ── ProjectDailyWork (2026_133) ───────────────────────────────────────────────
 //
 // The daily work logged against this project, inside the Projects module.
