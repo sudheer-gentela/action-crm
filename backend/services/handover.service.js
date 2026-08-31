@@ -4863,6 +4863,8 @@ async function getTeamMemberProjects(userId, orgId) {
   const { rows } = await pool.query(
     `SELECT h.id AS handover_id,
             h.project_kind,
+            h.tracking_mode,
+            h.retired_at,
             COALESCE(h.name, d.name)          AS project,
             d.name                            AS deal,
             a.name                            AS account,
@@ -4884,20 +4886,42 @@ async function getTeamMemberProjects(userId, orgId) {
        LEFT JOIN org_roles dtmrole ON dtmrole.id = dtm.role_id
       WHERE h.org_id = $2
         AND (h.assigned_service_owner_id = $1 OR pm.id IS NOT NULL OR dtm.id IS NOT NULL)
-      ORDER BY h.go_live_date NULLS LAST, h.id`,
+      -- 2026_133. Both axes appear here on purpose — the individual view is the
+      -- one place a person's recurring initiatives and their time-boxed
+      -- projects belong together, which is the whole point of not making
+      -- someone move between modules to see one person's work.
+      --
+      -- But NULLS LAST on go_live_date would have bunched every standing
+      -- initiative at the bottom by accident rather than by decision, mixed in
+      -- with time-boxed projects whose date is merely unset. Ordered
+      -- explicitly instead: live projects by date, then live initiatives, then
+      -- anything retired.
+      ORDER BY (h.retired_at IS NOT NULL),
+               (COALESCE(h.tracking_mode, 'timeboxed') = 'standing'),
+               h.go_live_date NULLS LAST,
+               h.id`,
     [userId, orgId]
   );
 
   return rows.map(r => ({
     handoverId:   r.handover_id,
     projectKind:  r.project_kind || 'customer',
+    // Which axis this sits on. Without it the person panel shows a standing
+    // initiative and a time-boxed project as the same kind of row, and every
+    // column that means "progress toward an end" reads as missing data on one
+    // of them.
+    trackingMode: r.tracking_mode || 'timeboxed',
+    isStanding:   (r.tracking_mode || 'timeboxed') === 'standing',
+    isRetired:    r.retired_at != null,
     project:      r.project || `Project #${r.handover_id}`,
     deal:         r.deal    || null,
     // Internal projects have no account by design, so say so rather than
     // rendering a blank cell that reads as missing data.
     account:      r.account || (r.project_kind === 'internal' ? 'Internal project' : null),
     status:       r.status,
-    goLiveDate:   r.go_live_date,
+    // 'YYYY-MM-DD', same reason as fmt(): a DATE read as an object and
+    // serialised reports the previous day east of UTC.
+    goLiveDate:   toDateStr(r.go_live_date),
     contractValue: r.contract_value ?? null,
     budget:        r.budget ?? null,
     // Service owner wins: it is the accountable role, whatever else they hold.
@@ -4939,6 +4963,84 @@ function _mapComm(m) {
   };
 }
 
+/**
+ * Commitments this person owns, across every project.
+ *
+ * Extracted from getPersonDashboard so the daily work person view can ask the
+ * same question without pulling that function's communications timeline, which
+ * is several joins over emails and WhatsApp and is not what a side panel about
+ * someone's week needs.
+ *
+ * Open work first, then closed. openOnly drops the closed tail entirely for
+ * callers that only want "what is outstanding on them".
+ */
+async function _personCommitments(userId, orgId, { openOnly = false } = {}) {
+  const { rows } = await pool.query(
+    `SELECT c.id, c.description, c.status, c.due_date::text AS due_date,
+            c.commitment_type,
+            a.name AS account, h.id AS handover_id,
+            COALESCE(h.name, d.name) AS project,
+            COALESCE(h.tracking_mode, 'timeboxed') AS tracking_mode
+       FROM sales_handover_commitments c
+       JOIN sales_handovers h ON h.id = c.handover_id
+       LEFT JOIN deals    d ON d.id = h.deal_id
+       LEFT JOIN accounts a ON a.id = h.account_id
+      WHERE c.org_id = $2 AND c.owner_user_id = $1
+        ${openOnly ? `AND c.status IN ('open','in_progress')` : ''}
+      ORDER BY (c.status IN ('open','in_progress')) DESC, c.due_date NULLS LAST, c.id`,
+    [userId, orgId]
+  );
+  return rows;
+}
+
+/**
+ * One person's project-side commitments, for the daily work person view.
+ *
+ * The complaint this answers: "if I want to see anyone's tasks across daily
+ * tasks and projects, I have to move across two modules — that is a killer."
+ *
+ * The answer is NOT to merge the modules. Most daily work has no project at all
+ * — LinkedIn outreach, list updates, research — so a project-shaped home makes
+ * the common case homeless. Each module keeps its own axis and answers a whole
+ * question about it; this is the small amount the daily work side needs to
+ * borrow to stop being a dead end.
+ *
+ * Deliberately narrow: open commitments and the projects they sit on, nothing
+ * else. It is a panel, not a second dashboard.
+ */
+async function getPersonProjectSummary(userId, orgId) {
+  const [projects, commitments] = await Promise.all([
+    getTeamMemberProjects(userId, orgId),
+    _personCommitments(userId, orgId, { openOnly: true }),
+  ]);
+
+  const today = toDateStr(new Date());
+
+  return {
+    projects: projects.filter(p => !p.isRetired),
+    commitments: commitments.map(c => ({
+      id:          c.id,
+      handoverId:  c.handover_id,
+      project:     c.project || `Project #${c.handover_id}`,
+      account:     c.account || null,
+      description: c.description,
+      status:      c.status,
+      dueDate:     c.due_date,
+      type:        c.commitment_type,
+      isStanding:  c.tracking_mode === 'standing',
+      // Computed here rather than in the browser: 'overdue' has to mean the
+      // same thing in both modules, and a client comparing a date string
+      // against its own clock is how the two drift apart.
+      //
+      // A commitment on a STANDING initiative is never overdue, for the same
+      // reason the initiative itself never is — but a commitment carries its
+      // own due date, so unlike a project it CAN legitimately have one. Left
+      // showing the date, just never flagged as late.
+      isOverdue:   c.tracking_mode !== 'standing' && !!c.due_date && c.due_date < today,
+    })),
+  };
+}
+
 async function getPersonDashboard(userId, orgId) {
   const { rows: [person] } = await pool.query(
     `SELECT id, first_name || ' ' || last_name AS name, email FROM users WHERE id = $1`,
@@ -4947,16 +5049,7 @@ async function getPersonDashboard(userId, orgId) {
 
   const projects = await getTeamMemberProjects(userId, orgId);
 
-  const { rows: deliverables } = await pool.query(
-    `SELECT c.id, c.description, c.status, c.due_date, c.commitment_type,
-            a.name AS account, h.id AS handover_id
-       FROM sales_handover_commitments c
-       JOIN sales_handovers h ON h.id = c.handover_id
-       LEFT JOIN accounts a ON a.id = h.account_id
-      WHERE c.org_id = $2 AND c.owner_user_id = $1
-      ORDER BY (c.status IN ('open','in_progress')) DESC, c.due_date NULLS LAST, c.id`,
-    [userId, orgId]
-  );
+  const deliverables = await _personCommitments(userId, orgId);
 
   const { rows: emails } = await pool.query(
     `SELECT e.id, 'email' AS channel, e.direction, e.subject, e.body,
@@ -5230,6 +5323,7 @@ module.exports = {
   setPlaybook,             // attach + activate a playbook (2026_89)
   list,
   getTeamMemberProjects,  // person drill-down
+  getPersonProjectSummary, // daily work person view — cross-module (2026_133)
   getPersonDashboard,     // person side-panel (individual dashboard)
   getContactCommunications, // customer-contact comms drill-down
   getCommitmentActivity,  // deliverable drill-down

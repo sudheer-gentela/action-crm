@@ -1207,6 +1207,35 @@ router.get('/team-members/:userId/projects', async (req, res) => {
   }
 });
 
+// ── GET /team-members/:userId/project-summary — for the daily work module ────
+//
+// Cross-module read (2026_133): the daily work person view calls this so
+// "what is Chandini doing" is answerable without leaving it.
+//
+// SCOPED, unlike the two routes above it. Those return anyone's projects to
+// anyone in the org, which is pre-existing and not widened here — but this one
+// is new, it is consumed by a module whose every team read is bounded by the
+// manager chain, and shipping a new unscoped route beside a scoped module would
+// hand people a way around that boundary. Self plus reports, matching the rule
+// list() already uses for scope=team.
+//
+// Returns empty rather than 403: a 403 confirms the person exists.
+router.get('/team-members/:userId/project-summary', async (req, res) => {
+  try {
+    const target = parseInt(req.params.userId, 10);
+    if (!Number.isInteger(target) || target <= 0) {
+      return res.status(400).json({ error: { message: 'userId must be a positive integer' } });
+    }
+    const visible = new Set([req.user.userId, ...(req.subordinateIds || [])]);
+    if (!visible.has(target)) return res.json({ projects: [], commitments: [] });
+
+    res.json(await handoverService.getPersonProjectSummary(target, req.orgId));
+  } catch (err) {
+    console.error('Person project summary error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
 // ── GET /team-members/:userId/dashboard — person side-panel ───────────────────
 
 router.get('/team-members/:userId/dashboard', async (req, res) => {

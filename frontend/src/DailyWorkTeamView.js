@@ -391,6 +391,88 @@ export default function DailyWorkTeamView() {
 
 /* ── one person ─────────────────────────────────────────────────────── */
 
+/**
+ * The project side of one person's work, inside the daily work module.
+ *
+ * WHY THIS IS HERE AND NOT A MERGE. The complaint was having to move between
+ * two modules to see one person's work. The answer is not to merge them: most
+ * daily work has no project at all — outreach, list updates, research — so a
+ * project-shaped home would make the common case homeless. Each module keeps
+ * its own axis; this is the small amount daily work borrows so it stops being
+ * a dead end.
+ *
+ * Loaded lazily, only when the row is expanded, and only once. A team view is
+ * one row per person and fetching this for everybody up front would be N
+ * requests for panels most people never open.
+ *
+ * A 404 means the Projects module is off for this org. That is not an error
+ * worth showing — the panel simply does not exist here.
+ */
+function PersonProjectPanel({ userId }) {
+  const [state, setState] = useState({ loading: true, data: null, unavailable: false });
+
+  useEffect(() => {
+    let alive = true;
+    apiService.dailyWork.personProjectSummary(userId)
+      .then(r => { if (alive) setState({ loading: false, data: r.data, unavailable: false }); })
+      .catch(e => {
+        if (!alive) return;
+        setState({ loading: false, data: null, unavailable: e?.response?.status === 404 });
+      });
+    return () => { alive = false; };
+  }, [userId]);
+
+  if (state.unavailable) return null;
+  if (state.loading) {
+    return <div className="dw-item-status" style={{ paddingTop: 8 }}>Loading projects…</div>;
+  }
+  const projects    = state.data?.projects || [];
+  const commitments = state.data?.commitments || [];
+  if (projects.length === 0 && commitments.length === 0) return null;
+
+  return (
+    <div className="dw-detail-item" style={{ borderTop: '1px solid #e5e7eb', marginTop: 8, paddingTop: 10 }}>
+      <div className="t"><b>Projects and initiatives</b></div>
+
+      {projects.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '6px 0 2px' }}>
+          {projects.map(p => (
+            <span key={p.handoverId} className="dw-badge" title={p.account || ''}>
+              {p.project}
+              {/* The label item 2 was about: without it a standing initiative
+                  and a time-boxed project read as the same kind of thing, and
+                  "no end date" looks like missing data rather than the point. */}
+              {p.isStanding ? ' · standing' : (p.goLiveDate ? ` · ${formatDate(p.goLiveDate)}` : '')}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {commitments.length > 0 && (
+        <>
+          <div className="dw-meta" style={{ marginTop: 8 }}><b>Open commitments</b></div>
+          {commitments.map(c => (
+            <div className="dw-detail-item" key={c.id} style={{ paddingLeft: 12 }}>
+              <div className="t">
+                <span>{c.description}</span>
+                <span className="dw-badge">{c.project}</span>
+                {/* Lateness is decided on the server so the two modules cannot
+                    disagree about what "overdue" means, and a commitment on a
+                    standing initiative is never flagged — same reason the
+                    initiative itself never is. */}
+                {c.isOverdue && <span className="dw-badge carried">overdue</span>}
+              </div>
+              {c.dueDate && (
+                <div className="dw-meta"><b>Due:</b> {formatDate(c.dueDate)}</div>
+              )}
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
 function PersonRow({ person, period, log, expanded, details, onToggle, onOpenDay }) {
   const key = `p:${person.user_id}`;
   const isOpen = !!expanded[key];
@@ -486,6 +568,8 @@ function PersonRow({ person, period, log, expanded, details, onToggle, onOpenDay
               </div>
             );
           })}
+
+          <PersonProjectPanel userId={person.user_id} />
         </div>
       )}
     </div>

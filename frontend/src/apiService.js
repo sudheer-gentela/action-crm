@@ -1057,6 +1057,14 @@ twilio: {
     teamLog: ({ from, to, users, ...filters } = {}) =>
       api.get('/daily-work/team/log', { params: { from, to, users, ...filters } }),
 
+    // Cross-module (2026_133). The project side of one person's work, so the
+    // daily work person view is not a dead end. Scoped server-side to the
+    // viewer's own chain and returns empty rather than 403 for anyone outside
+    // it. 404 when the Projects module is off for this org — the caller hides
+    // the panel rather than showing an error for a module they do not have.
+    personProjectSummary: (userId) =>
+      api.get(`/handovers/team-members/${userId}/project-summary`),
+
     teamDayDetail: ({ user, date, ...filters }) =>
       api.get('/daily-work/team/day-detail', { params: { user, date, ...filters } }),
 

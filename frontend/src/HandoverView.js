@@ -65,7 +65,7 @@ function parseHandoverHash() {
   // silently falls back to Summary. commercial/files/variance were already
   // missing before boq was added.
   const sub = ['summary', 'details', 'commercial', 'files', 'communications',
-               'variance', 'boq'].includes(parts[i]) ? parts[i] : 'summary';
+               'variance', 'boq', 'dailywork'].includes(parts[i]) ? parts[i] : 'summary';
   return { scope, id, sub };
 }
 
@@ -3469,7 +3469,10 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                 { key: 'boq', label: 'Bill of quantities' }] },
             { group: 'Records',     items: [
                 { key: 'files',          label: 'Files' },
-                { key: 'communications', label: 'Communications' }] },
+                { key: 'communications', label: 'Communications' },
+                // 2026_133. A view over an endpoint that already existed —
+                // getLog has taken an anchor filter since the daily work build.
+                { key: 'dailywork',      label: 'Daily work' }] },
           ].map((sec, si) => (
             <div key={si} style={{ marginBottom: 12 }}>
               {sec.group && (
@@ -3492,6 +3495,13 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
         {/* minWidth 0 is load-bearing: without it a wide table inside a flex
             child refuses to shrink and pushes the rail off-screen. */}
         <div style={{ flex: 1, minWidth: 0 }}>
+
+      {/* ── Daily work (2026_133) ───────────────────────── */}
+      {detailTab === 'dailywork' && (
+        <div style={{ padding: '16px 20px' }}>
+          <ProjectDailyWork handoverId={detail.id} />
+        </div>
+      )}
 
       {/* ── Summary ─────────────────────────────────────── */}
       {detailTab === 'summary' && (
@@ -5673,6 +5683,153 @@ function PlaybookPicker({ detail, canEdit, onRefresh }) {
 // go-live date leaves any task scheduled from it holding a date with nothing
 // behind it, and nothing recomputes those. The server refuses once and returns
 // the affected tasks; this shows them and lets the person go ahead knowingly.
+// ── ProjectDailyWork (2026_133) ───────────────────────────────────────────────
+//
+// The daily work logged against this project, inside the Projects module.
+//
+// A VIEW OVER AN ENDPOINT THAT ALREADY EXISTS. getLog has accepted an anchor
+// filter since the daily work build; nothing new was added on the server for
+// this. That matters, because the alternative — merging the two modules — was
+// rejected for a good reason: most daily work has no project at all, so a
+// project-shaped home makes the common case homeless.
+//
+// TWO THINGS THIS SCREEN IS HONEST ABOUT.
+//
+// 1. SCOPE. /daily-work/team/log bounds every read by the viewer's manager
+//    chain, because a description is something a person wrote and is not
+//    org-readable. So this shows work logged by you and your reports, not all
+//    work on the project. Saying so beats quietly showing a partial list —
+//    someone who assumes it is complete will conclude a colleague logged
+//    nothing.
+//
+// 2. AVAILABILITY. requireModule returns 404 when Daily Work is off for the
+//    org. Rendered as "not enabled" rather than an error, because that is what
+//    it is.
+function ProjectDailyWork({ handoverId }) {
+  const [days, setDays] = useState(90);
+  const [state, setState] = useState({ loading: true, rows: [], unavailable: false, error: '' });
+
+  useEffect(() => {
+    let alive = true;
+    setState(s => ({ ...s, loading: true }));
+
+    // Local dates, formatted by hand. new Date().toISOString().slice(0,10) is
+    // the UTC day, which east of UTC is tomorrow for part of the evening — the
+    // same trap the go-live date had.
+    const pad = n => String(n).padStart(2, '0');
+    const asStr = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const to = new Date();
+    const from = new Date(); from.setDate(from.getDate() - days);
+
+    apiService.dailyWork.teamLog({
+      from: asStr(from), to: asStr(to),
+      anchorKind: 'handover', anchorId: handoverId,
+    })
+      .then(r => { if (alive) setState({ loading: false, rows: r.data?.rows || [], unavailable: false, error: '' }); })
+      .catch(e => {
+        if (!alive) return;
+        if (e?.response?.status === 404) {
+          setState({ loading: false, rows: [], unavailable: true, error: '' });
+        } else {
+          setState({ loading: false, rows: [], unavailable: false,
+                     error: e?.response?.data?.error || 'Could not load daily work.' });
+        }
+      });
+    return () => { alive = false; };
+  }, [handoverId, days]);
+
+  if (state.unavailable) {
+    return (
+      <div style={{ padding: 30, textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>
+        Daily Work is not enabled for this organisation.
+      </div>
+    );
+  }
+
+  const byPerson = new Map();
+  for (const r of state.rows) {
+    const name = `${r.first_name || ''} ${r.last_name || ''}`.trim() || 'Unknown';
+    // Keyed and rendered by user_id, not by name: two people can share a name,
+    // and a duplicate React key silently drops a row.
+    if (!byPerson.has(r.user_id)) byPerson.set(r.user_id, { id: r.user_id, name, days: [], items: 0 });
+    const p = byPerson.get(r.user_id);
+    p.days.push(r);
+    p.items += Number(r.item_count) || 0;
+  }
+  const people = [...byPerson.values()].sort((a, b) => b.items - a.items);
+
+  const th = { textAlign: 'left', fontSize: 11, color: '#9ca3af', fontWeight: 600,
+               textTransform: 'uppercase', letterSpacing: 0.3, padding: '0 12px 8px' };
+  const td = { fontSize: 13, padding: '10px 12px', borderTop: '1px solid #f3f4f6', verticalAlign: 'top' };
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+        <h4 style={{ margin: 0, fontSize: 14, color: '#374151' }}>
+          📋 Daily work on this project
+        </h4>
+        <select value={days} onChange={e => setDays(Number(e.target.value))}
+          style={{ fontSize: 13, padding: '5px 8px', borderRadius: 7, border: '1px solid #d1d5db' }}>
+          <option value={30}>Last 30 days</option>
+          <option value={90}>Last 90 days</option>
+          <option value={365}>Last year</option>
+        </select>
+        <span style={{ marginLeft: 'auto', fontSize: 11, color: '#9ca3af' }}>
+          Logged by you and the people you manage
+        </span>
+      </div>
+
+      {state.error && (
+        <div style={{ fontSize: 12, color: '#991b1b', marginBottom: 10 }}>{state.error}</div>
+      )}
+
+      {state.loading ? (
+        <div style={{ padding: 30, textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>Loading…</div>
+      ) : people.length === 0 ? (
+        <div style={{ padding: 30, textAlign: 'center', color: '#9ca3af', fontSize: 13, lineHeight: 1.6 }}>
+          No daily work logged against this project in the period.
+          <div style={{ fontSize: 12, marginTop: 6 }}>
+            Work is logged in the Daily Work module and anchored to a project there.
+          </div>
+        </div>
+      ) : (
+        <div className="gw-table-scroll" style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden', overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr>
+              <th style={th}>Person</th>
+              <th style={th}>Days logged</th>
+              <th style={th}>Most recent</th>
+            </tr></thead>
+            <tbody>
+              {people.map(p => {
+                const latest = p.days[0];
+                return (
+                  <tr key={p.id}>
+                    <td style={{ ...td, fontWeight: 600, color: '#111827', whiteSpace: 'nowrap' }}>{p.name}</td>
+                    <td style={{ ...td, color: '#6b7280', whiteSpace: 'nowrap' }}>
+                      {p.days.length} · {p.items} {p.items === 1 ? 'item' : 'items'}
+                    </td>
+                    <td style={td}>
+                      {latest ? (
+                        <>
+                          <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 2 }}>
+                            {fmtDate(latest.entry_date)}
+                          </div>
+                          <div style={{ color: '#374151' }}>{latest.work_done}</div>
+                        </>
+                      ) : '—'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ConvertTrackingModeModal({ detail, users = [], managerLabel = 'Project Manager',
                                     onClose, onConverted }) {
   const toStanding = !detail.isStanding;
