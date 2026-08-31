@@ -1265,6 +1265,12 @@ router.get('/admin/project-access', async (req, res) => {
         hasTeam:    (req.subordinateIds || []).length > 0,
         canUseOrg:  projectSettings.canUseOrgScope(cfg, role),
         canUseTeam: cfg.team_scope_enabled && (req.subordinateIds || []).length > 0,
+        // 2026_133. Sent rather than re-derived on the client, so the button
+        // and the 403 can never disagree. Note it is NOT canUseTeam: that
+        // ANDs in team_scope_enabled, an unrelated org setting, so a manager
+        // in an org with team scope switched off would be shown no option and
+        // then allowed by the server.
+        canCreateStanding: await canCreateStanding(req),
       },
     });
   } catch (err) {

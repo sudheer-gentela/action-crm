@@ -144,7 +144,21 @@ function fmt(row) {
     accountId:              row.account_id,
     assignedServiceOwnerId: row.assigned_service_owner_id,
     status:                 row.status,
-    goLiveDate:             row.go_live_date,
+    // A DATE column, returned as 'YYYY-MM-DD'.
+    //
+    // This used to pass row.go_live_date straight through, which is a JS Date:
+    // node-postgres parses DATE at LOCAL midnight, so res.json() serialised it
+    // as the previous day's 18:30Z from IST. Every consumer then had to undo
+    // that, and HandoverView's date input did not — it ran the value through
+    // new Date(...).toISOString().slice(0,10), so west of UTC the edit form
+    // opened on the wrong day and saving moved the go-live back by one.
+    //
+    // toDateStr already existed in this file for exactly this and was used by
+    // getStartPreview but never here. The frontend half of the fix is
+    // parseLocalDate in HandoverView: a bare 'YYYY-MM-DD' handed to new Date()
+    // is UTC midnight and renders as the day BEFORE west of UTC, which is the
+    // same trap from the other side.
+    goLiveDate:             toDateStr(row.go_live_date),
     contractValue:          row.contract_value,
     managerLabel:           row.manager_label || null,
     // ── internal projects (2026_87) ──

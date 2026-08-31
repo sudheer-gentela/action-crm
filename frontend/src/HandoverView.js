@@ -42,6 +42,7 @@ import ProjectAttachments from './ProjectAttachments';
 // ── Deep-link parsing ─────────────────────────────────────────────────────────
 // #/handovers                         → My Handovers list
 // #/handovers/assigned                → Assigned-to-Me list
+// #/handovers/initiatives             → Standing initiatives (2026_133)
 // #/handovers/dashboard               → Dashboard tab
 // #/handovers/vendors                 → Vendors and partners tab
 // #/handovers/<id>[/<subtab>]         → open handover <id> (mine), subtab
@@ -53,7 +54,7 @@ function parseHandoverHash() {
   let i = 1, scope = 'mine';
   // 'team' and 'org' were briefly tabs; they are scopes now. Map old links onto
   // My Work rather than leaving `tab` on a value that renders no button.
-  if (['assigned', 'team', 'org', 'dashboard', 'vendors'].includes(parts[i])) {
+  if (['assigned', 'team', 'org', 'dashboard', 'vendors', 'initiatives'].includes(parts[i])) {
     scope = (parts[i] === 'team' || parts[i] === 'org') ? 'assigned' : parts[i];
     i += 1;
   }
@@ -124,9 +125,45 @@ function CommitmentStatusPill({ status }) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/**
+ * Turn a date value from the API into a Date positioned on the right CALENDAR
+ * DAY in the viewer's timezone.
+ *
+ * The trap, both halves of it:
+ *
+ *   • A DATE column read as an object and serialised reports the previous day
+ *     east of UTC — node-postgres parses DATE at local midnight, so 2026-12-01
+ *     from IST goes over the wire as 2026-11-30T18:30:00Z.
+ *   • `new Date('2026-12-01')` is UTC MIDNIGHT, so it renders as 30 Nov west
+ *     of UTC. Fixing the server to send a bare date and leaving this alone
+ *     just moves the bug to the other hemisphere.
+ *
+ * So a bare 'YYYY-MM-DD' is built in LOCAL time, component by component, and
+ * anything carrying a time is parsed normally. Both forms are accepted on
+ * purpose: goLiveDate is fixed at the source now, but other DATE columns in
+ * this module still arrive as timestamps, and this keeps working for them
+ * either way.
+ */
+function parseLocalDate(d) {
+  if (!d) return null;
+  if (d instanceof Date) return d;
+  const s = String(d);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s.trim());
+  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return new Date(s);
+}
+
+/** 'YYYY-MM-DD' for a date input, from whichever form the API sent. */
+function toInputDate(d) {
+  const dt = parseLocalDate(d);
+  if (!dt || Number.isNaN(dt.getTime())) return '';
+  const pad = n => String(n).padStart(2, '0');
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+}
+
 function fmtDate(d) {
   if (!d) return '—';
-  return new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  return parseLocalDate(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
 function fmtCurrency(v) {
@@ -258,6 +295,122 @@ function MyReviewQueue({ projects, onOpen }) {
   );
 }
 
+// ── InitiativesBoard: standing initiatives (2026_133) ─────────────────────────
+//
+// A SEPARATE BOARD RATHER THAN A FLAG ON ProjectsBoard.
+//
+// Almost every column there is about finishing: go-live, overdue, value,
+// commitments closed out of total, status through a lifecycle that ends. On a
+// standing initiative each of those is either empty or meaningless, and a table
+// of em-dashes teaches people the screen is broken. What matters instead is
+// whether anything is happening on it, which is a different question and wants
+// different columns.
+//
+// The shared parts — the row click, the detail panel, the create modal — are
+// still shared. Only the table differs.
+function InitiativesBoard({ initiatives, searchTerm, setSearchTerm, showRetired, setShowRetired,
+                            onOpen, onRetire, onUnretire, busyId }) {
+  const rows = initiatives
+    .filter(h => showRetired || !h.isRetired)
+    .filter(h => !searchTerm ||
+      (h.projectName || h.name || '').toLowerCase().includes(searchTerm.toLowerCase()))
+    .sort((a, b) => (a.projectName || a.name || '').localeCompare(b.projectName || b.name || ''));
+
+  const live    = initiatives.filter(h => !h.isRetired).length;
+  const retired = initiatives.filter(h => h.isRetired).length;
+
+  const metric = (label, value, color) => (
+    <div style={{ flex: 1, minWidth: 130, background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '12px 14px' }}>
+      <div style={{ fontSize: 22, fontWeight: 700, color: color || '#111827' }}>{value}</div>
+      <div style={{ fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: 0.3 }}>{label}</div>
+    </div>
+  );
+  const inp = { fontSize: 13, padding: '7px 10px', borderRadius: 8, border: '1px solid #d1d5db' };
+  const th  = { textAlign: 'left', fontSize: 11, color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.3, padding: '0 12px 8px' };
+  const td  = { fontSize: 13, padding: '10px 12px', borderTop: '1px solid #f3f4f6' };
+
+  return (
+    <div style={{ padding: 20, maxWidth: 1400, margin: '0 auto' }}>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+        {metric('Initiatives', live, '#7c3aed')}
+        {retired > 0 && metric('Retired', retired)}
+      </div>
+
+      {/* No status filter and no overdue toggle: a standing initiative has one
+          meaningful state — live or retired — and nothing to be late for. */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+        <input value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
+          placeholder="Search initiatives…" style={{ ...inp, minWidth: 240 }} />
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151' }}>
+          <input type="checkbox" checked={showRetired} onChange={e => setShowRetired(e.target.checked)} />
+          Show retired
+        </label>
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: '#9ca3af' }}>{rows.length} shown</span>
+      </div>
+
+      {rows.length === 0 ? (
+        <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af', background: '#fff', borderRadius: 12, border: '1px solid #e5e7eb' }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>🌱</div>
+          {initiatives.length === 0
+            ? 'No standing initiatives yet. These are ongoing areas of work — AI Learning, Skill Development, a retainer — that daily work can be logged against but never complete.'
+            : 'No initiatives match.'}
+        </div>
+      ) : (
+        <div className="gw-table-scroll" style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden', overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead><tr>
+              <th style={th}>Initiative</th>
+              <th style={th}>Kind</th>
+              <th style={th}>Started</th>
+              <th style={{ ...th, textAlign: 'right' }}></th>
+            </tr></thead>
+            <tbody>
+              {rows.map(h => (
+                <tr key={h.id} onClick={() => onOpen(h)} style={{ cursor: 'pointer', opacity: h.isRetired ? 0.55 : 1 }}
+                  onMouseEnter={e => { e.currentTarget.style.background = '#f9fafb'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
+                  <td style={td}>
+                    <div style={{ fontWeight: 600, color: '#111827' }}>
+                      {h.projectName || h.name || `Initiative #${h.id}`}
+                      {h.isRetired && (
+                        <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, padding: '2px 6px',
+                                       borderRadius: 999, background: '#f1f5f9', color: '#475569',
+                                       textTransform: 'uppercase', letterSpacing: 0.3 }}>Retired</span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 12, color: '#6b7280' }}>
+                      {h.projectKind === 'internal' ? 'Internal' : (h.accountName || 'Customer')}
+                    </div>
+                  </td>
+                  <td style={{ ...td, color: '#6b7280' }}>
+                    {h.projectKind === 'internal' ? 'Internal' : 'Retainer'}
+                  </td>
+                  <td style={{ ...td, color: '#6b7280' }}>{h.createdAt ? fmtDate(h.createdAt) : '—'}</td>
+                  <td style={{ ...td, textAlign: 'right' }}>
+                    {/* Retire, never delete. Deleting the container would leave
+                        every daily work item anchored to it pointing at an id
+                        that resolves to nothing — there is no foreign key, so
+                        nothing stops it and nothing reports it. */}
+                    <button
+                      disabled={busyId === h.id}
+                      onClick={e => { e.stopPropagation(); h.isRetired ? onUnretire(h) : onRetire(h); }}
+                      style={{ fontSize: 12, padding: '5px 12px', borderRadius: 7,
+                               border: '1px solid #d1d5db', background: '#fff',
+                               color: h.isRetired ? '#0369a1' : '#6b7280',
+                               cursor: busyId === h.id ? 'wait' : 'pointer' }}>
+                      {busyId === h.id ? '…' : (h.isRetired ? 'Un-retire' : 'Retire')}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setStatusFilter, statusMeta, onOpen, showOwner = false, managerLabel = 'Project Manager' }) {
   const [sortBy, setSortBy] = useState('value');
   const [overdueOnly, setOverdueOnly] = useState(false);
@@ -268,7 +421,7 @@ function ProjectsBoard({ projects, searchTerm, setSearchTerm, statusFilter, setS
   let rows = overdueOnly ? projects.filter(h => overdueOf(h) > 0) : projects;
   rows = [...rows].sort((a, b) => {
     if (sortBy === 'value')  return (Number(b.contractValue) || 0) - (Number(a.contractValue) || 0);
-    if (sortBy === 'golive') return new Date(a.goLiveDate || '2999-01-01') - new Date(b.goLiveDate || '2999-01-01');
+    if (sortBy === 'golive') return parseLocalDate(a.goLiveDate || '2999-01-01') - parseLocalDate(b.goLiveDate || '2999-01-01');
     if (sortBy === 'overdue') return overdueOf(b) - overdueOf(a);
     return (a.projectName || a.dealName || '').localeCompare(b.projectName || b.dealName || '');
   });
@@ -2350,7 +2503,7 @@ function CommitmentsSection({ commitments, canManage, users, onAdd, onUpdate, on
 // Compact summary line fed by /can-close's rollup. Present whenever we have a
 // rollup (i.e. the handover is past draft and not terminal).
 
-function DeliverableRollup({ rollup }) {
+function DeliverableRollup({ rollup, isStanding = false }) {
   if (!rollup) return null;
   const n = (v) => Number(v || 0);
   const playsDone   = n(rollup.plays_done);
@@ -2375,7 +2528,10 @@ function DeliverableRollup({ rollup }) {
       {gatesOpen > 0 && chip(`${gatesOpen} gate${gatesOpen === 1 ? '' : 's'} open`, true)}
       {chip(`${cClosed}/${cTotal} commitments closed`)}
       {(playsOver + cOver) > 0 && chip(`${playsOver + cOver} overdue`, true)}
-      {days != null && chip(
+      {/* Never for a standing initiative: there is no date to count toward, so
+          the chip would either be absent (fine) or, if a stale one survived a
+          conversion, actively wrong. */}
+      {days != null && !isStanding && chip(
         days >= 0 ? `Go-live in ${days}d` : `Go-live ${Math.abs(days)}d ago`,
         days < 0,
       )}
@@ -2417,7 +2573,9 @@ function EditableCoreFields({ detail, isTerminal, onSaved, fmtDate, fmtCurrency,
   const [err,     setErr]     = useState('');
 
   const dtg = detail.goLiveDate
-    ? Math.ceil((new Date(detail.goLiveDate) - new Date()) / 86400000) : null;
+    // Both sides floored to local midnight: comparing a calendar date against
+    // `new Date()` mid-afternoon rounds a same-day go-live up to 1 day away.
+    ? Math.ceil((parseLocalDate(detail.goLiveDate) - new Date(new Date().setHours(0, 0, 0, 0))) / 86400000) : null;
   const goLiveText  = dtg == null ? '—' : dtg < 0 ? `${Math.abs(dtg)}d overdue`
                     : dtg === 0 ? 'Today' : `${dtg} days`;
   const goLiveColor = dtg == null ? '#111827' : dtg < 0 ? '#dc2626'
@@ -2521,7 +2679,10 @@ function EditableCoreFields({ detail, isTerminal, onSaved, fmtDate, fmtCurrency,
   // keystroke produce nonsense.
   function draftValueFor(field) {
     if (field === 'goLive') {
-      return detail.goLiveDate ? new Date(detail.goLiveDate).toISOString().slice(0, 10) : '';
+      // NOT new Date(x).toISOString().slice(0,10): that converts to UTC first,
+      // so west of UTC the input opened on the previous day and saving it moved
+      // the go-live back by one, silently.
+      return toInputDate(detail.goLiveDate);
     }
     if (field === 'value') return detail.contractValue ?? '';
     return detail.commercialTermsSummary ?? '';
@@ -2530,9 +2691,15 @@ function EditableCoreFields({ detail, isTerminal, onSaved, fmtDate, fmtCurrency,
   return (
     <>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
-        {editableCard('goLive', goLiveText,
-          detail.goLiveDate ? `Go-live · ${fmtDate(detail.goLiveDate)}` : 'Go-live',
-          goLiveColor, 'date')}
+        {/* 2026_133. A standing initiative has no go-live, and update() refuses
+            to give it one — so an editable date card here would be a control
+            whose only outcome is a 400. Replaced by a card that says what this
+            thing IS, since that is the question someone landing here has. */}
+        {detail.isStanding
+          ? statCard('Standing', 'Never completes')
+          : editableCard('goLive', goLiveText,
+              detail.goLiveDate ? `Go-live · ${fmtDate(detail.goLiveDate)}` : 'Go-live',
+              goLiveColor, 'date')}
         {editableCard('value',
           detail.contractValue ? fmtCurrency(detail.contractValue) : '—',
           'Contract value', '#111827', 'number')}
@@ -2590,6 +2757,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   const [success,   setSuccess]   = useState('');
   const [closureFor, setClosureFor] = useState(null); // 'completed' | 'cancelled' | null
   const [menuOpen, setMenuOpen] = useState(false);    // header "⋯" overflow menu
+  const [showConvert, setShowConvert] = useState(false);  // tracking mode (2026_133)
   // Checklist layout. Three views now:
   //   compact  — title only, densest (this was 'grid')
   //   table    — task / owner / due / status, the default working view
@@ -3015,6 +3183,16 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
           <div style={{ minWidth: 0 }}>
             <h3 style={{ margin: '0 0 4px', fontSize: 16, color: '#111827', overflowWrap: 'anywhere' }}>
               {detail.projectName || detail.dealName || detail.name || `Project #${detail.id}`}
+              {detail.isStanding && (
+                <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, padding: '2px 6px',
+                               borderRadius: 999, background: '#ede9fe', color: '#5b21b6',
+                               textTransform: 'uppercase', letterSpacing: 0.3 }}>Standing</span>
+              )}
+              {detail.isRetired && (
+                <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: '2px 6px',
+                               borderRadius: 999, background: '#f1f5f9', color: '#475569',
+                               textTransform: 'uppercase', letterSpacing: 0.3 }}>Retired</span>
+              )}
             </h3>
             <div style={{ fontSize: 13, color: '#6b7280' }}>{detail.accountName}</div>
           </div>
@@ -3027,11 +3205,20 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                   style={{ fontSize: 18, lineHeight: 1, padding: '2px 8px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', color: '#6b7280', cursor: 'pointer' }}>⋯</button>
                 {menuOpen && (
                   <div style={{ position: 'absolute', top: '110%', right: 0, background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, boxShadow: '0 6px 20px rgba(0,0,0,0.12)', zIndex: 20, minWidth: 160, overflow: 'hidden' }}>
+                    {/* Conversion, not cancellation: this changes how the work
+                        is TRACKED and destroys nothing. Above the destructive
+                        item so the two are not adjacent by accident. */}
+                    <button onClick={() => { setMenuOpen(false); setShowConvert(true); }}
+                      style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 14px', fontSize: 13, border: 'none', background: '#fff', color: '#5b21b6', cursor: 'pointer' }}
+                      onMouseEnter={e => { e.currentTarget.style.background = '#f5f3ff'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}>
+                      {detail.isStanding ? '→ Make it a project' : '→ Make it standing'}
+                    </button>
                     <button onClick={() => { setMenuOpen(false); setClosureFor('cancelled'); setClosureText(''); }}
                       style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 14px', fontSize: 13, border: 'none', background: '#fff', color: '#b91c1c', cursor: 'pointer' }}
                       onMouseEnter={e => { e.currentTarget.style.background = '#fef2f2'; }}
                       onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}>
-                      ✕ Cancel project
+                      {detail.isStanding ? '✕ Cancel initiative' : '✕ Cancel project'}
                     </button>
                   </div>
                 )}
@@ -3039,6 +3226,16 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
             )}
           </div>
         </div>
+
+        {showConvert && (
+          <ConvertTrackingModeModal
+            detail={detail}
+            users={users}
+            managerLabel={managerLabel}
+            onClose={() => setShowConvert(false)}
+            onConverted={async () => { setShowConvert(false); await load(); onRefresh(); }}
+          />
+        )}
 
         {/* Stat strip — go-live, contract value and commercial terms are
             EDITABLE here.
@@ -3101,7 +3298,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
         )}
 
         {/* Deliverable rollup (past draft, not terminal) */}
-        {!isDraft && !isTerminal && <DeliverableRollup rollup={closeInfo?.rollup} />}
+        {!isDraft && !isTerminal && <DeliverableRollup rollup={closeInfo?.rollup} isStanding={detail?.isStanding === true} />}
 
         {/* Gate progress */}
         {gatesTotal > 0 && !isTerminal && (
@@ -5465,9 +5662,134 @@ function PlaybookPicker({ detail, canEdit, onRefresh }) {
 // Projects that don't come from a won deal. Internal ones carry no account —
 // putting your own company in Accounts to satisfy a foreign key would pollute
 // pipeline, prospecting and every account-grouped report.
+// ── ConvertTrackingModeModal (2026_133) ───────────────────────────────────────
+//
+// Conversion is a real operation, not a migration: standing → time-boxed means
+// naming an owner and a date, and the reverse means dropping them. Work already
+// logged is unaffected either way, because every daily work entry snapshots its
+// own anchor rather than joining back to the project.
+//
+// The 409 path is the reason this is a modal and not a menu item. Clearing the
+// go-live date leaves any task scheduled from it holding a date with nothing
+// behind it, and nothing recomputes those. The server refuses once and returns
+// the affected tasks; this shows them and lets the person go ahead knowingly.
+function ConvertTrackingModeModal({ detail, users = [], managerLabel = 'Project Manager',
+                                    onClose, onConverted }) {
+  const toStanding = !detail.isStanding;
+  const [ownerId, setOwnerId] = useState(detail.assignedServiceOwnerId ? String(detail.assignedServiceOwnerId) : '');
+  const [goLive,  setGoLive]  = useState(toInputDate(detail.goLiveDate));
+  const [saving,  setSaving]  = useState(false);
+  const [err,     setErr]     = useState('');
+  const [stalePlays, setStalePlays] = useState(null);   // non-null = 409 shown
+
+  const submit = async (acknowledge = false) => {
+    setErr('');
+    if (!toStanding && !ownerId) return setErr(`Name ${managerLabel.toLowerCase()}.`);
+    if (!toStanding && !goLive)  return setErr('Give it an end date.');
+    setSaving(true);
+    try {
+      await apiService.handovers.convertTrackingMode(detail.id, {
+        trackingMode: toStanding ? 'standing' : 'timeboxed',
+        ...(toStanding ? {} : { assignedServiceOwnerId: ownerId, goLiveDate: goLive }),
+        ...(acknowledge ? { acknowledgeAnchoredPlays: true } : {}),
+      });
+      onConverted();
+    } catch (e) {
+      const body = e?.response?.data?.error;
+      if (body?.code === 'GO_LIVE_ANCHORED_PLAYS') {
+        setStalePlays(body.details?.plays || []);
+        setErr('');
+      } else {
+        setErr(body?.message || 'Could not convert this.');
+      }
+    } finally { setSaving(false); }
+  };
+
+  const label = { fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 };
+  const input = { width: '100%', fontSize: 14, padding: '9px 10px', borderRadius: 8,
+                  border: '1px solid #d1d5db', minHeight: 44, boxSizing: 'border-box' };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 700,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <div style={{ background: '#fff', borderRadius: 12, width: 'min(520px, 94vw)',
+                    maxHeight: '90vh', overflowY: 'auto', padding: 22 }}>
+        <h3 style={{ margin: '0 0 4px', fontSize: 17, color: '#111827' }}>
+          {toStanding ? 'Convert to a standing initiative' : 'Convert to a time-boxed project'}
+        </h3>
+        <p style={{ margin: '0 0 18px', fontSize: 12, color: '#6b7280', lineHeight: 1.55 }}>
+          {toStanding
+            ? 'It will stop counting toward the project statistics, lose its end date, and never be overdue. It can be retired later, but not completed.'
+            : 'It will count as an active project, get an end date to be measured against, and complete once.'}
+          {' '}Work already logged against it is unaffected either way.
+        </p>
+
+        {stalePlays ? (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ padding: 12, borderRadius: 8, background: '#fffbeb',
+                          border: '1px solid #fde68a', fontSize: 12, color: '#92400e', lineHeight: 1.6 }}>
+              <strong>{stalePlays.length} open task{stalePlays.length === 1 ? '' : 's'}</strong> on this
+              project are scheduled from the go-live date. Removing that date does not recalculate
+              them — they will keep the dates they have now.
+            </div>
+            <ul style={{ margin: '10px 0 0', paddingLeft: 18, fontSize: 12, color: '#374151' }}>
+              {stalePlays.slice(0, 8).map(p => (
+                <li key={p.id} style={{ marginBottom: 3 }}>
+                  {p.title} <span style={{ color: '#9ca3af' }}>· {fmtDate(p.due_date)}</span>
+                </li>
+              ))}
+              {stalePlays.length > 8 && (
+                <li style={{ color: '#9ca3af' }}>…and {stalePlays.length - 8} more</li>
+              )}
+            </ul>
+          </div>
+        ) : !toStanding && (
+          <>
+            <div style={{ marginBottom: 14 }}>
+              <label style={label}>{managerLabel}</label>
+              <select style={input} value={ownerId} onChange={e => setOwnerId(e.target.value)}>
+                <option value="">Select…</option>
+                {users.map(u => (
+                  <option key={u.id} value={u.id}>{u.firstName ? `${u.firstName} ${u.lastName || ''}`.trim() : u.email}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ marginBottom: 14 }}>
+              <label style={label}>End date</label>
+              <input type="date" style={input} value={goLive} onChange={e => setGoLive(e.target.value)} />
+            </div>
+          </>
+        )}
+
+        {err && <div style={{ fontSize: 12, color: '#991b1b', marginBottom: 12 }}>{err}</div>}
+
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" onClick={onClose} disabled={saving} style={{
+            minHeight: 40, padding: '8px 16px', borderRadius: 8, fontSize: 13,
+            border: '1px solid #d1d5db', background: '#fff', color: '#4b5563', cursor: 'pointer',
+          }}>Cancel</button>
+          <button type="button" disabled={saving} onClick={() => submit(stalePlays != null)} style={{
+            minHeight: 40, padding: '8px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600,
+            border: '1px solid #7c3aed', background: '#7c3aed', color: '#fff',
+            cursor: saving ? 'wait' : 'pointer',
+          }}>
+            {saving ? 'Converting…' : stalePlays ? 'Convert anyway' : 'Convert'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CreateProjectModal({ users = [], managerLabel = 'Project Manager',
-                             viewerRole = null, onClose, onCreated }) {
+                             viewerRole = null, canCreateStanding = false,
+                             initialTrackingMode = 'timeboxed', onClose, onCreated }) {
   const [kind, setKind]       = useState('internal');
+  // 2026_133. The second axis, independent of kind: a retainer is customer +
+  // standing and a migration is internal + time-boxed. Seeded from which screen
+  // the person pressed the button on, because that is what they already meant.
+  const [trackingMode, setTrackingMode] = useState(
+    canCreateStanding ? initialTrackingMode : 'timeboxed');
   const [name, setName]       = useState('');
   const [budget, setBudget]   = useState('');
   const [goLive, setGoLive]   = useState('');
@@ -5577,19 +5899,31 @@ function CreateProjectModal({ users = [], managerLabel = 'Project Manager',
     }
   };
 
+  const standing = trackingMode === 'standing';
+
   const submit = async () => {
     setErr('');
     if (!name.trim())                        return setErr('Give the project a name.');
     if (kind === 'customer' && !accountId)   return setErr('A customer project needs an account.');
+    // Checked here as well as on the server, so the person is told before they
+    // wait on a round trip. The server is still the authority — this is a
+    // convenience, not the gate.
+    if (!standing && !ownerId)  return setErr(`A time-boxed project needs ${managerLabel.toLowerCase()}.`);
+    if (!standing && !goLive)   return setErr('A time-boxed project needs an end date. If this work has no end, make it a standing initiative.');
     setSaving(true);
     try {
       await apiService.handovers.createProject({
         kind,
         name: name.trim(),
+        trackingMode,
         ...(kind === 'customer' ? { accountId } : {}),
         ...(kind === 'internal' && budget ? { budget } : {}),
-        ...(goLive  ? { goLiveDate: goLive } : {}),
-        ...(ownerId ? { assignedServiceOwnerId: ownerId } : {}),
+        // Never sent for a standing initiative: the server refuses it rather
+        // than dropping it, which is right — a date on something that never
+        // finishes means the person misunderstood, and silence would let them
+        // keep believing it.
+        ...(!standing && goLive  ? { goLiveDate: goLive } : {}),
+        ...(!standing && ownerId ? { assignedServiceOwnerId: ownerId } : {}),
       });
       onCreated();
     } catch (e) {
@@ -5620,11 +5954,41 @@ function CreateProjectModal({ users = [], managerLabel = 'Project Manager',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
       <div style={{ background: '#fff', borderRadius: 12, width: 'min(520px, 94vw)',
                     maxHeight: '90vh', overflowY: 'auto', padding: 22 }}>
-        <h3 style={{ margin: '0 0 4px', fontSize: 17, color: '#111827' }}>New project</h3>
+        <h3 style={{ margin: '0 0 4px', fontSize: 17, color: '#111827' }}>
+          {standing ? 'New standing initiative' : 'New project'}
+        </h3>
         <p style={{ margin: '0 0 18px', fontSize: 12, color: '#6b7280', lineHeight: 1.55 }}>
-          For work that didn't come from a won deal. Projects created when a deal closes
-          appear here automatically.
+          {standing
+            ? 'An ongoing area of work with no end date. Daily work can be logged against it, and it never completes — it can only be retired.'
+            : "For work that didn't come from a won deal. Projects created when a deal closes appear here automatically."}
         </p>
+
+        {/* Tracking mode, above Type on purpose: it changes which of the fields
+            below are asked for at all, so asking it second would mean showing a
+            date field and then taking it away. Hidden entirely for people who
+            cannot create a standing initiative — a disabled control they can
+            never use is just a question they cannot answer. */}
+        {canCreateStanding && (
+          <div style={{ marginBottom: 14 }}>
+            <span style={label}>How is this tracked?</span>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {[['timeboxed', 'Time-boxed project'], ['standing', 'Standing initiative']].map(([k, l]) => (
+                <button key={k} type="button" onClick={() => setTrackingMode(k)} style={{
+                  flex: 1, minHeight: 44, borderRadius: 8, fontSize: 13, cursor: 'pointer',
+                  border: `1px solid ${trackingMode === k ? '#7c3aed' : '#d1d5db'}`,
+                  background: trackingMode === k ? '#ede9fe' : '#fff',
+                  color: trackingMode === k ? '#5b21b6' : '#4b5563',
+                  fontWeight: trackingMode === k ? 600 : 400,
+                }}>{l}</button>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 6, lineHeight: 1.5 }}>
+              {standing
+                ? 'Never completes and is never overdue. No owner or end date — it is measured by whether work is happening on it.'
+                : 'Has an owner and an end date, completes once, and counts in the project statistics.'}
+            </div>
+          </div>
+        )}
 
         <div style={{ marginBottom: 14 }}>
           <span style={label}>Type</span>
@@ -5647,9 +6011,11 @@ function CreateProjectModal({ users = [], managerLabel = 'Project Manager',
         </div>
 
         <div style={{ marginBottom: 14 }}>
-          <label style={label}>Project name</label>
+          <label style={label}>{standing ? 'Initiative name' : 'Project name'}</label>
           <input style={input} value={name} onChange={e => setName(e.target.value)}
-                 placeholder={kind === 'internal' ? 'e.g. ISO 27001 certification' : 'e.g. Goodwill remediation'} />
+                 placeholder={standing
+                   ? (kind === 'internal' ? 'e.g. Skill Development' : 'e.g. Acme managed service')
+                   : (kind === 'internal' ? 'e.g. ISO 27001 certification' : 'e.g. Goodwill remediation')} />
         </div>
 
         {kind === 'customer' && (
@@ -5817,6 +6183,11 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
   // whose it is.
   const [kindFilter, setKindFilter] = useState('');
   const [showCreate, setShowCreate] = useState(false);
+  // Initiatives screen (2026_133). Retired ones are hidden by default: retire
+  // is the standing equivalent of completion, and a completed thing does not
+  // belong in the working list.
+  const [showRetired, setShowRetired] = useState(false);
+  const [retireBusyId, setRetireBusyId] = useState(null);
   // Off by default: for most people "the deals I closed" is not a useful lens,
   // and they stay attached to those projects through project_members instead.
   const [showFromMyDeals, setShowFromMyDeals] = useState(false);
@@ -5837,13 +6208,45 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
     try {
       // 'mine' on the From My Deals tab means created_by; 'mine' inside My Work
       // means "projects I have a role on", which the API calls 'assigned'.
-      const apiScope = tab === 'mine' ? 'mine' : (scope === 'mine' ? 'assigned' : scope);
-      const res = await apiService.handovers.list(apiScope, undefined, kindFilter || undefined);
+      // The Initiatives screen is org-wide: a standing initiative belongs to
+      // nobody in particular, so scoping it to "projects I have a role on"
+      // would hide the very things everyone logs work against.
+      const apiScope = tab === 'initiatives'
+        ? 'org'
+        : (tab === 'mine' ? 'mine' : (scope === 'mine' ? 'assigned' : scope));
+      const res = await apiService.handovers.list(
+        apiScope, undefined,
+        tab === 'initiatives' ? undefined : (kindFilter || undefined),
+        // Omitted would default to 'timeboxed' on the server, which is right
+        // for every other tab and wrong for exactly this one.
+        tab === 'initiatives' ? 'standing' : undefined);
       setHandovers(res.data.handovers || []);
-    } catch {
-      setHandovers([]);
+    } catch (e) {
+      // 'org' scope 403s when the org has not whitelisted the viewer's role.
+      // Falling back keeps the screen usable rather than showing it empty and
+      // letting someone conclude there are no initiatives.
+      if (tab === 'initiatives' && e?.response?.status === 403) {
+        try {
+          const res = await apiService.handovers.list('assigned', undefined, undefined, 'standing');
+          setHandovers(res.data.handovers || []);
+        } catch { setHandovers([]); }
+      } else setHandovers([]);
     } finally { setLoading(false); }
   }, [tab, scope, kindFilter]);
+
+  const doRetire = useCallback(async (h) => {
+    setRetireBusyId(h.id);
+    try { await apiService.handovers.retire(h.id); await loadList(); }
+    catch (e) { window.alert(e?.response?.data?.error?.message || 'Could not retire that initiative.'); }
+    finally { setRetireBusyId(null); }
+  }, [loadList]);
+
+  const doUnretire = useCallback(async (h) => {
+    setRetireBusyId(h.id);
+    try { await apiService.handovers.unretire(h.id); await loadList(); }
+    catch (e) { window.alert(e?.response?.data?.error?.message || 'Could not un-retire that initiative.'); }
+    finally { setRetireBusyId(null); }
+  }, [loadList]);
 
   useEffect(() => { loadList(); setSelected(null); }, [loadList]);
 
@@ -5888,7 +6291,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
     if (hashSegment(0) !== 'handovers') return;
     if (pendingHashId) return;
     let parts;
-    if (tab === 'dashboard' || tab === 'vendors') {
+    if (tab === 'dashboard' || tab === 'vendors' || (tab === 'initiatives' && !selected)) {
       parts = ['handovers', tab];
     } else if (selected) {
       const sub = (detailSubTab && detailSubTab !== 'summary') ? detailSubTab : null;
@@ -5963,6 +6366,11 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
           // (org/user config); they stay attached through project_members.
           ...(fromMyDealsVisible ? [{ key: 'mine', label: '📤 From My Deals' }] : []),
           { key: 'assigned',  label: '🧭 My Work' },
+          // Its own screen, not a filter on the projects list. Standing
+          // initiatives answer a different question and the projects table's
+          // columns — go-live, overdue, commitments closed — are all about
+          // finishing, which they never do.
+          { key: 'initiatives', label: '🌱 Initiatives' },
           { key: 'dashboard', label: '📊 Dashboard' },
           // Org-wide registry of who we buy from and build with. Lives here
           // rather than beside Accounts so it is gated by the Projects module,
@@ -6011,11 +6419,11 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
           display: 'flex', gap: 6, alignItems: 'center',
           padding: '10px 20px 0', background: '#fff', flexShrink: 0,
         }}>
-          {[
+          {(tab === 'initiatives' ? [] : [
             { key: '',         label: 'All projects' },
             { key: 'customer', label: 'Customer' },
             { key: 'internal', label: 'Internal' },
-          ].map(k => (
+          ]).map(k => (
             <button key={k.key} onClick={() => setKindFilter(k.key)} style={{
               padding: '6px 14px', borderRadius: 8, fontSize: 13, cursor: 'pointer',
               border: `1px solid ${kindFilter === k.key ? '#7c3aed' : '#e2e4ea'}`,
@@ -6028,7 +6436,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
             marginLeft: 'auto', padding: '6px 14px', borderRadius: 8, fontSize: 13,
             border: '1px solid #0369a1', background: '#0369a1', color: '#fff',
             fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap',
-          }}>+ New project</button>
+          }}>{tab === 'initiatives' ? '+ New initiative' : '+ New project'}</button>
         </div>
       )}
 
@@ -6037,6 +6445,10 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
           users={users}
           managerLabel={managerLabel}
           viewerRole={access?.role || null}
+          // Sent by the server from the same helper the POST is gated on, so
+          // the control and the 403 cannot disagree.
+          canCreateStanding={access?.canCreateStanding === true}
+          initialTrackingMode={tab === 'initiatives' ? 'standing' : 'timeboxed'}
           onClose={() => setShowCreate(false)}
           onCreated={() => { setShowCreate(false); loadList(); }}
         />
@@ -6070,6 +6482,19 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
             initialTab={detailSubTab}
             onTabChange={setDetailSubTab}
           />
+        </div>
+      ) : tab === 'initiatives' ? (
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          {loading
+            ? <div style={{ padding: 40, color: '#9ca3af', fontSize: 13, textAlign: 'center' }}>Loading…</div>
+            : <InitiativesBoard
+                initiatives={handovers}
+                searchTerm={searchTerm} setSearchTerm={setSearchTerm}
+                showRetired={showRetired} setShowRetired={setShowRetired}
+                onOpen={(h) => { setSelected(h); setDetailSubTab('summary'); }}
+                onRetire={doRetire} onUnretire={doUnretire}
+                busyId={retireBusyId}
+              />}
         </div>
       ) : (
         /* ── Full-width projects board ──────────────────── */

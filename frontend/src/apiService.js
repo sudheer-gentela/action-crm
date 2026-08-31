@@ -776,14 +776,28 @@ twilio: {
   },
 
   handovers: {
-    list:      (scope = 'mine', status, kind) => {
+    // trackingMode: 'timeboxed' (default on the server) | 'standing' | 'all'.
+    // Omitted means time-boxed projects only — the Projects list. Standing
+    // initiatives have their own screen and must not inflate its counts.
+    list:      (scope = 'mine', status, kind, trackingMode) => {
       const qs = new URLSearchParams({
         scope,
         ...(status && { status }),
         ...(kind && { kind }),        // 'customer' | 'internal'; omit for both
+        ...(trackingMode && { trackingMode }),
       }).toString();
       return api.get(`/handovers/sales?${qs}`);
     },
+    // 2026_133. Separate from update() because that endpoint writes every field
+    // through COALESCE, so it cannot CLEAR the go-live date — which converting
+    // to a standing initiative has to do in the same statement.
+    //
+    // Rejects with 409 + code GO_LIVE_ANCHORED_PLAYS when open tasks are
+    // scheduled from the go-live date. details.plays lists them; resend with
+    // acknowledgeAnchoredPlays to proceed.
+    convertTrackingMode: (id, body) => api.patch(`/handovers/sales/${id}/tracking-mode`, body),
+    retire:   (id) => api.post(`/handovers/sales/${id}/retire`),
+    unretire: (id) => api.delete(`/handovers/sales/${id}/retire`),
     // Projects that don't come from a won deal: internal, or the customer
     // exception. Deal-driven creation stays on create().
     createProject: (data) => api.post('/handovers/projects', data),
