@@ -305,6 +305,14 @@ async function run(f) {
   const rollup = await qsvc.getRollup(f.orgId, { userIds: all, from: FROM, to: TO });
   eq('three people, three rows — not one row per person per day', rollup.length, 3);
 
+  // The bug this caught in production: names came from the entries join, so on
+  // a day nobody had logged the entire team rendered as "Unknown" — and a day
+  // nobody logged is exactly what this screen exists to show.
+  const rn0 = rollup.find(r => r.user_id === f.nikhitha);
+  eq('someone who logged nothing still has a name', rn0.first_name, 'Nikhitha');
+  check('and everyone in the rollup is named',
+    rollup.every(r => r.first_name), JSON.stringify(rollup.map(r => r.first_name)));
+
   const rc = rollup.find(r => r.user_id === f.chandini);
   const rp = rollup.find(r => r.user_id === f.pranay);
   const rn = rollup.find(r => r.user_id === f.nikhitha);

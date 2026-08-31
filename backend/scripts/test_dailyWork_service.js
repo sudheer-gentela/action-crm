@@ -586,6 +586,188 @@ async function run(f) {
   catch { blocked = true; }
   check('evidence cannot be edited afterwards', blocked, 'the UPDATE was allowed');
 
+  console.log('\nRETIRE — stopping recurring work');
+
+  const toRetire = await svc.createItem(f.orgId, f.owner,
+    { kind: 'recurring', title: 'will be stopped' });
+  await svc.saveDay(f.orgId, f.owner,
+    [{ itemId: toRetire.id, description: 'worked on it once', dayStage: 'in_progress' }],
+    { asOf: new Date('2026-09-03T06:00:00Z') });
+
+  const retired = await svc.updateItem(f.orgId, f.owner, toRetire.id, { status: 'retired' });
+  eq('a recurring item can be retired', retired.status, 'retired');
+  check('and closed_at is stamped', retired.closed_at !== null, 'closed_at is null');
+
+  // Retire, not delete: the point is that the history survives.
+  const { rows: [survives] } = await q(
+    `SELECT count(*)::int AS n FROM daily_work_entries WHERE item_id = $1`, [toRetire.id]);
+  eq('everything logged against it stays', survives.n, 1);
+
+  const afterRetire = await svc.getDay(f.orgId, f.owner, { date: '2026-09-04' });
+  check('it is off tomorrow\u2019s list',
+    !afterRetire.rows.some(r => r.item_id === toRetire.id), 'it is still listed');
+
+  const reopened = await svc.updateItem(f.orgId, f.owner, toRetire.id, { status: 'active' });
+  eq('it can be started again', reopened.status, 'active');
+  eq('and closed_at is cleared', reopened.closed_at, null);
+
+  await expectCode('an assigned item cannot be retired this way', 'STATUS_ON_ASSIGNED',
+    () => svc.updateItem(f.orgId, f.owner, asg.id, { status: 'retired' }));
+  await expectCode('an invented status is refused', 'BAD_STATUS',
+    () => svc.updateItem(f.orgId, f.owner, toRetire.id, { status: 'paused' }));
+
+  console.log('\nEVIDENCE — withdraw and replace');
+
+  const evDay2 = await svc.saveDay(f.orgId, f.owner,
+    [{ itemId: rec.id, description: 'a day whose evidence gets corrected', dayStage: 'in_progress' }],
+    { asOf: new Date('2026-09-05T06:00:00Z') });
+  const eid = evDay2.entries[0].id;
+
+  const first = await svc.attachEvidence(f.orgId, f.owner,
+    { entryId: eid, note: 'https://example.invalid/wrong-link' });
+
+  const listed = await svc.listEvidence(f.orgId, f.owner, eid);
+  eq('evidence can be listed', listed.length, 1);
+  eq('and it is not withdrawn', listed[0].revoked_at, null);
+
+  await expectCode('a withdrawal without a reason is refused', 'BLANK_REASON',
+    () => svc.revokeEvidence(f.orgId, f.owner, first.id, '   '));
+  await expectCode('withdrawing someone else\u2019s evidence is refused', 'NOT_YOUR_ENTRY',
+    () => svc.revokeEvidence(f.orgId, f.other, first.id, 'not mine'));
+
+  const revoked = await svc.revokeEvidence(f.orgId, f.owner, first.id, 'wrong link');
+  check('it can be withdrawn with a reason', revoked.revoked_at !== null, 'revoked_at is null');
+  eq('and the reason is stored', revoked.revoke_reason, 'wrong link');
+
+  // The trigger refuses re-revoking, which is what stops a withdrawal being
+  // quietly rewritten after the fact.
+  await expectCode('withdrawing it twice is refused', 'ALREADY_REVOKED',
+    () => svc.revokeEvidence(f.orgId, f.owner, first.id, 'again'));
+
+  const stillThere = await svc.listEvidence(f.orgId, f.owner, eid);
+  eq('the withdrawn row is still listed — the audit trail is the point', stillThere.length, 1);
+  check('marked as withdrawn', stillThere[0].revoked_at !== null, 'not marked');
+
+  const second = await svc.attachEvidence(f.orgId, f.owner,
+    { entryId: eid, note: 'https://example.invalid/right-link' });
+  const swapped = await svc.replaceEvidence(f.orgId, f.owner, second.id,
+    { note: 'https://example.invalid/final-link', reason: 'better source' });
+  eq('replace withdraws the old one', swapped.revoked, second.id);
+  check('and attaches the new one', !!swapped.replacement.id, 'no replacement');
+
+  const finalList = await svc.listEvidence(f.orgId, f.owner, eid);
+  eq('all three rows survive — two withdrawn, one live', finalList.length, 3);
+  eq('exactly one is live', finalList.filter(x => !x.revoked_at).length, 1);
+
+  await expectCode('replacing with nothing is refused', 'BLANK_EVIDENCE',
+    () => svc.replaceEvidence(f.orgId, f.owner, swapped.replacement.id,
+      { note: '  ', reason: 'x' }));
+
+  // Tier 2 content, so a stranger must not read it.
+  await expectCode('someone outside the chain cannot read the evidence', 'NOT_YOUR_ENTRY',
+    () => svc.listEvidence(f.orgId, f.other, eid));
+
+  console.log('\nSETUP — calendars');
+
+  const cal1 = await svc.createCalendar(f.orgId, f.owner, { name: 'India', isDefault: true });
+  eq('a calendar can be created as the default', cal1.is_default, true);
+
+  // uq_holiday_calendars_one_default allows one. Creating a second default must
+  // stand the first down rather than fail with a constraint name.
+  const cal2 = await svc.createCalendar(f.orgId, f.owner, { name: 'UK', isDefault: true });
+  eq('a second default is accepted', cal2.is_default, true);
+  const cals = await svc.listCalendars(f.orgId);
+  eq('and only one calendar is default', cals.filter(c => c.is_default).length, 1);
+  eq('the newer one holds it', cals.find(c => c.is_default).name, 'UK');
+
+  await expectCode('a nameless calendar is refused', 'BLANK_NAME',
+    () => svc.createCalendar(f.orgId, f.owner, { name: '  ' }));
+
+  const added = await svc.addHolidays(f.orgId, cal1.id, [
+    { date: '2026-10-02', label: 'Gandhi Jayanti' },
+    { date: '2026-12-25', label: 'Christmas' },
+  ]);
+  eq('holidays are added in bulk', added.added.length, 2);
+
+  const again3 = await svc.addHolidays(f.orgId, cal1.id, [
+    { date: '2026-10-02', label: 'Duplicate' },
+    { date: '2026-11-14', label: 'New one' },
+  ]);
+  eq('re-adding an existing date is skipped, not an error', again3.skipped.length, 1);
+  eq('and the genuinely new one lands', again3.added.length, 1);
+
+  await expectCode('a malformed date is refused', 'BAD_DATE',
+    () => svc.addHolidays(f.orgId, cal1.id, [{ date: '2 Oct 2026' }]));
+
+  const withDates = (await svc.listCalendars(f.orgId)).find(c => c.id === cal1.id);
+  eq('the calendar reports its dates', withDates.date_count, 3);
+  eq('and returns them as strings', typeof withDates.dates[0].holiday_date, 'string');
+
+  await svc.removeHoliday(f.orgId, withDates.dates[0].id);
+  const trimmed = (await svc.listCalendars(f.orgId)).find(c => c.id === cal1.id);
+  eq('a holiday can be removed', trimmed.date_count, 2);
+
+  console.log('\nSETUP — working weeks');
+
+  const sched = await svc.setSchedule(f.orgId, f.owner, f.owner, {
+    weekdayMask: 31, holidayCalendarId: cal1.id, effectiveFrom: '2026-09-01' });
+  eq('a working week can be set', sched.weekday_mask, 31);
+  eq('and it is effective-dated', sched.effective_from, '2026-09-01');
+
+  // The whole reason schedules are dated rather than updated.
+  const later = await svc.setSchedule(f.orgId, f.owner, f.owner, {
+    weekdayMask: 15, holidayCalendarId: cal1.id, effectiveFrom: '2026-10-01' });
+  eq('a later change adds a row rather than replacing', later.weekday_mask, 15);
+  const { rows: [howMany] } = await q(
+    `SELECT count(*)::int AS n FROM daily_work_schedules WHERE org_id = $1 AND user_id = $2`,
+    [f.orgId, f.owner]);
+  eq('so both weeks are on file', howMany.n, 2);
+
+  const corrected = await svc.setSchedule(f.orgId, f.owner, f.owner, {
+    weekdayMask: 63, holidayCalendarId: cal1.id, effectiveFrom: '2026-10-01' });
+  eq('the same effective date corrects in place', corrected.weekday_mask, 63);
+  const { rows: [stillTwo] } = await q(
+    `SELECT count(*)::int AS n FROM daily_work_schedules WHERE org_id = $1 AND user_id = $2`,
+    [f.orgId, f.owner]);
+  eq('rather than adding a third', stillTwo.n, 2);
+
+  await expectCode('an empty working week is refused', 'BAD_MASK',
+    () => svc.setSchedule(f.orgId, f.owner, f.owner, {
+      weekdayMask: 0, effectiveFrom: '2026-09-01' }));
+  await expectCode('a mask beyond seven days is refused', 'BAD_MASK',
+    () => svc.setSchedule(f.orgId, f.owner, f.owner, {
+      weekdayMask: 128, effectiveFrom: '2026-09-01' }));
+
+  // Deleting a calendar someone is scheduled against would move their working
+  // days with no trace, so it is refused rather than cascaded.
+  await expectCode('a calendar in use cannot be deleted', 'CALENDAR_IN_USE',
+    () => svc.deleteCalendar(f.orgId, cal1.id));
+  await expectOk('an unused one can be', () => svc.deleteCalendar(f.orgId, cal2.id));
+
+  const schedList = await svc.listSchedules(f.orgId);
+  check('schedules list the granted members', Array.isArray(schedList), 'not a list');
+
+  console.log('\nSETUP — timezone');
+
+  const tzSet = await svc.setUserTimezone(f.orgId, f.owner, 'Europe/London');
+  eq('an admin can set a timezone deliberately', tzSet.timezone, 'Europe/London');
+
+  // The whole point of removing the browser capture: a wrong value here shifts
+  // one person's dates by hours and nothing errors.
+  await expectCode('a bogus timezone is refused', 'BAD_TIMEZONE',
+    () => svc.setUserTimezone(f.orgId, f.owner, 'Mars/Olympus'));
+
+  const dayLondon = await svc.getDay(f.orgId, f.owner, {});
+  eq('and the day view resolves against it', dayLondon.timezone, 'Europe/London');
+
+  await svc.setUserTimezone(f.orgId, f.owner, 'Asia/Kolkata');
+
+  console.log('\nDEPARTMENTS');
+
+  const depts = await svc.listDepartments(f.orgId);
+  check('departments come back', depts.some(d => d.id === f.teamId),
+    `expected team ${f.teamId} in ${JSON.stringify(depts)}`);
+
   console.log('\nGET DAY — what the member surface reads');
 
   // Read the SECOND day, so there is a previous day to offer.

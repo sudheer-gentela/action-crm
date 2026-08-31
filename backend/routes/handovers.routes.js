@@ -78,7 +78,7 @@ router.get('/assignable-users', async (req, res) => {
 
 router.get('/sales', async (req, res) => {
   try {
-    const { scope = 'mine', status, kind } = req.query;
+    const { scope = 'mine', status, kind, trackingMode } = req.query;
 
     // 'all' predates the rollup scopes and is kept as an alias for 'org' so any
     // existing caller keeps working.
@@ -87,10 +87,20 @@ router.get('/sales', async (req, res) => {
       return res.status(400).json({ error: { message: 'scope must be mine|assigned|team|org' } });
     }
 
+    // 2026_133. Omitted means 'timeboxed' — the Projects list, which is what
+    // every existing caller of this endpoint is. 'standing' is the Initiatives
+    // screen and 'all' is the combined view, which is deferred; it is accepted
+    // here because the service already supports it and refusing a value the
+    // layer below understands only moves the work later.
+    if (trackingMode != null && !['timeboxed', 'standing', 'all'].includes(trackingMode)) {
+      return res.status(400).json({ error: { message: 'trackingMode must be timeboxed|standing|all' } });
+    }
+
     const handovers = await handoverService.list(req.orgId, req.user.userId, {
       scope: requested,
       status,
       kind,
+      trackingMode: trackingMode === 'all' ? null : (trackingMode || 'timeboxed'),
       // Populated by orgContext on every request; covers solid and dotted lines.
       subordinateIds: req.subordinateIds || [],
       userRole:       await projectSettings.resolveRole(req.orgId, req.user.userId),
@@ -119,8 +129,38 @@ router.get('/portfolio', async (req, res) => {
 // Internal projects (no account, no deal) and the documented exception of a
 // customer project with an account but no deal. Deal-driven creation stays on
 // POST /sales, which is idempotent per deal.
+/**
+ * Who may create a standing initiative: manager and above.
+ *
+ * There is no 'manager' role — org_users.role is exactly
+ * ('owner','admin','member','viewer') and management is a position in
+ * org_hierarchy, not a role. This is the same idiom the project-access config
+ * already uses for canUseTeam: you manage someone if orgContext resolved
+ * subordinates for you.
+ *
+ * The reason for the gate is the one daily work already learned: ten people
+ * free-typing container names produces three spellings of PowerBI inside a
+ * fortnight, which is why daily work anchors are select-only. The set of
+ * things work can be filed against has to stay small and deliberate.
+ *
+ * Note the failure direction. orgContext sets subordinateIds = [] when the
+ * hierarchy lookup errors, so an infrastructure blip narrows this to owners and
+ * admins rather than widening it to everyone. That is the opposite of
+ * requireModule, which fails open — know which one you are behind.
+ */
+async function canCreateStanding(req) {
+  const role = await projectSettings.resolveRole(req.orgId, req.user.userId);
+  if (['owner', 'admin'].includes(role)) return true;
+  return (req.subordinateIds || []).length > 0;
+}
+
 router.post('/projects', async (req, res) => {
   try {
+    if ((req.body || {}).trackingMode === 'standing' && !(await canCreateStanding(req))) {
+      return res.status(403).json({
+        error: { message: 'Only a manager, admin or owner can create a standing initiative.' },
+      });
+    }
     const project = await handoverService.createProject(req.orgId, req.user.userId, req.body || {});
     res.status(201).json({ project });
   } catch (err) {
@@ -211,6 +251,67 @@ router.patch('/sales/:id/status', async (req, res) => {
     res.json({ handover });
   } catch (err) {
     console.error('Advance handover status error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── PATCH /sales/:id/tracking-mode — convert between the two axes (2026_133) ──
+//
+// Separate from PUT /sales/:id because update() cannot clear go_live_date:
+// every field there is COALESCE($n, column), so null means "unchanged".
+
+router.patch('/sales/:id/tracking-mode', async (req, res) => {
+  try {
+    const { trackingMode, assignedServiceOwnerId, goLiveDate, acknowledgeAnchoredPlays } = req.body || {};
+    if (!trackingMode) {
+      return res.status(400).json({ error: { message: 'trackingMode is required' } });
+    }
+    if (trackingMode === 'standing' && !(await canCreateStanding(req))) {
+      return res.status(403).json({
+        error: { message: 'Only a manager, admin or owner can convert a project to a standing initiative.' },
+      });
+    }
+
+    const project = await handoverService.convertTrackingMode(
+      parseInt(req.params.id), req.orgId, req.user.userId, trackingMode,
+      { assignedServiceOwnerId, goLiveDate, acknowledgeAnchoredPlays: acknowledgeAnchoredPlays === true });
+    res.json({ project });
+  } catch (err) {
+    // 409 + GO_LIVE_ANCHORED_PLAYS carries the list of affected tasks so the UI
+    // can show them and offer to proceed, rather than making the person guess
+    // which dates the conversion is about to strand.
+    if (err.code === 'GO_LIVE_ANCHORED_PLAYS') {
+      return res.status(409).json({
+        error: { message: err.message, code: err.code, details: err.details },
+      });
+    }
+    console.error('Convert tracking mode error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── POST/DELETE /sales/:id/retire — standing initiatives only ────────────────
+//
+// Retire, never delete. daily_work_items.anchor_id is a soft reference with no
+// foreign key, so deleting the container does not cascade its logged work away
+// — it leaves rows pointing at an id that resolves to nothing.
+
+router.post('/sales/:id/retire', async (req, res) => {
+  try {
+    const project = await handoverService.retire(parseInt(req.params.id), req.orgId, req.user.userId);
+    res.json({ project });
+  } catch (err) {
+    console.error('Retire initiative error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+router.delete('/sales/:id/retire', async (req, res) => {
+  try {
+    const project = await handoverService.unretire(parseInt(req.params.id), req.orgId);
+    res.json({ project });
+  } catch (err) {
+    console.error('Un-retire initiative error:', err);
     res.status(err.status || 500).json({ error: { message: err.message } });
   }
 });

@@ -149,6 +149,20 @@ function fmt(row) {
     managerLabel:           row.manager_label || null,
     // ── internal projects (2026_87) ──
     projectKind:            row.project_kind || 'customer',
+    // ── tracking mode (2026_133) ──
+    //
+    // The second axis, independent of projectKind. Defaulted here as well as in
+    // the database so a row read through a SELECT that predates the column —
+    // or a fixture built by hand — never surfaces as undefined and silently
+    // fails a === 'timeboxed' test.
+    trackingMode:           row.tracking_mode || 'timeboxed',
+    retiredAt:              row.retired_at ?? null,
+    retiredBy:              row.retired_by ?? null,
+    // Derived, for the same reason isUnassigned is derived on the list rows:
+    // this is compared in a great many places in a 6,000-line view file, and a
+    // string literal repeated thirty times is thirty chances to typo it.
+    isStanding:             (row.tracking_mode || 'timeboxed') === 'standing',
+    isRetired:              row.retired_at != null,
     budget:                 row.budget ?? null,
     name:                   row.name ?? null,
     // One label the UI can rely on. A project with no deal has no deal name to
@@ -514,14 +528,69 @@ async function createProject(orgId, userId, data = {}) {
     ? parseInt(data.assignedServiceOwnerId, 10)
     : null;
 
+  // ── tracking mode (2026_133) ───────────────────────────────────────────────
+  //
+  // The second axis. Defaults to 'timeboxed' so every existing caller — the
+  // current create form, any script, the tests — keeps producing exactly what
+  // it produced before this change.
+  const trackingMode = data.trackingMode === 'standing' ? 'standing' : 'timeboxed';
+  let goLiveDate = data.goLiveDate || null;
+
+  if (trackingMode === 'standing') {
+    // Refused rather than silently dropped, unlike budget above. Budget on a
+    // customer project is a field the form should not have offered; a date on
+    // a standing initiative means the person believes it will finish, and
+    // quietly discarding that is how someone discovers three months later that
+    // their deadline was never stored anywhere.
+    if (goLiveDate) {
+      throw Object.assign(
+        new Error('A standing initiative has no end date. Create it as a time-boxed project if it needs one.'),
+        { status: 400 });
+    }
+    if (serviceOwnerId) {
+      // Not an error — an owner is meaningless rather than harmful here, and
+      // the picker may simply have been left populated. Dropped and not stored,
+      // so it cannot later be read as "this initiative has an owner".
+      console.warn(
+        `[handover] owner ignored on standing initiative "${name}" — standing work has no single owner`);
+    }
+  } else {
+    // THIS IS THE RULE THAT CANNOT BE A CHECK CONSTRAINT.
+    //
+    // Every pre-existing row defaults to 'timeboxed', and many of them have no
+    // owner or no date — the seven internal rows, and any customer project
+    // whose go-live is not yet agreed. A database constraint would have failed
+    // 2026_133 against real data. So it lives here, at CREATION only, where it
+    // constrains new rows without making a liar of the existing ones.
+    //
+    // update() is deliberately NOT given the same rule: clearing an owner on a
+    // live project is an ordinary thing to do while reassigning, and blocking
+    // it would be a new restriction nobody asked for.
+    const missing = [];
+    if (!serviceOwnerId) missing.push('an owner');
+    if (!goLiveDate)     missing.push('an end date');
+    if (missing.length) {
+      throw Object.assign(
+        new Error(
+          `A time-boxed project needs ${missing.join(' and ')}. ` +
+          'If this is ongoing work with no end, create it as a standing initiative instead.'),
+        { status: 400 });
+    }
+  }
+
+  if (trackingMode === 'standing') goLiveDate = null;
+
   return withOrgTransaction(orgId, async (client) => {
     const { rows } = await client.query(
       `INSERT INTO sales_handovers
          (org_id, project_kind, name, account_id, deal_id, budget,
-          assigned_service_owner_id, go_live_date, status, created_by)
-       VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, 'draft', $8)
+          assigned_service_owner_id, go_live_date, status, created_by,
+          tracking_mode)
+       VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, 'draft', $8, $9)
        RETURNING *`,
-      [orgId, kind, name, accountId, budget, serviceOwnerId, data.goLiveDate || null, userId]
+      [orgId, kind, name, accountId, budget,
+       trackingMode === 'standing' ? null : serviceOwnerId,
+       goLiveDate, userId, trackingMode]
     );
     const h = rows[0];
 
@@ -699,7 +768,21 @@ async function setPlaybook(handoverId, orgId, userId, playbookId, stageKey = nul
  *   assigned — handovers where assigned_service_owner_id = userId (service view)
  *   all      — all org handovers (admin)
  */
-async function list(orgId, userId, { scope = 'mine', status, kind = null, subordinateIds = [], userRole = null } = {}) {
+/**
+ * @param {object}  opts
+ * @param {string}  [opts.trackingMode='timeboxed']
+ *   'timeboxed' — the Projects list. THE DEFAULT, and deliberately not `null`.
+ *   'standing'  — the Initiatives screen.
+ *   null        — both, for the combined view that is deferred, not designed.
+ *
+ *   Defaulting to 'timeboxed' rather than "everything" is the change that makes
+ *   the header stop lying. It is safe to do here because this function has
+ *   exactly ONE caller — GET /sales in handovers.routes.js — which was checked
+ *   rather than assumed. getPortfolio, getTeamMemberProjects and the nightly
+ *   sweep each run their own query and are unaffected by this parameter; the
+ *   sweep is handled separately below and the other two are still open.
+ */
+async function list(orgId, userId, { scope = 'mine', status, kind = null, subordinateIds = [], userRole = null, trackingMode = 'timeboxed' } = {}) {
   const params = [orgId];
   const conditions = ['h.org_id = $1'];
 
@@ -786,6 +869,17 @@ async function list(orgId, userId, { scope = 'mine', status, kind = null, subord
     conditions.push(`h.project_kind = $${params.length}`);
   }
 
+  // 'timeboxed' | 'standing' (2026_133). Explicit null means both.
+  //
+  // COALESCE rather than a bare column compare: the column is NOT NULL with a
+  // default, so this can only matter on a row written before the migration by
+  // something that bypassed it — but a projects list that silently drops rows
+  // is the worst failure this filter can have, and the COALESCE costs nothing.
+  if (trackingMode === 'timeboxed' || trackingMode === 'standing') {
+    params.push(trackingMode);
+    conditions.push(`COALESCE(h.tracking_mode, 'timeboxed') = $${params.length}`);
+  }
+
   const { rows } = await pool.query(
     `SELECT
        h.*,
@@ -825,7 +919,14 @@ async function list(orgId, userId, { scope = 'mine', status, kind = null, subord
     ...fmt(r),
     // Explicit rather than letting the UI infer from a null name: an
     // unassigned project is an operational state to act on, not missing data.
-    isUnassigned:    r.assigned_service_owner_id == null,
+    //
+    // 2026_133: a STANDING initiative has no owner by design, so it is not
+    // unassigned — it is a container for recurring work that belongs to
+    // whoever logs against it. Without this clause the seven internal rows
+    // stay in the "7 unassigned" count forever after conversion, which is the
+    // exact complaint this whole change exists to answer.
+    isUnassigned:    r.assigned_service_owner_id == null
+                       && (r.tracking_mode || 'timeboxed') === 'timeboxed',
     totalPlays:      r.total_plays,
     completedPlays:  r.completed_plays,
     stakeholderCount: r.stakeholder_count,
@@ -987,6 +1088,21 @@ async function update(handoverId, orgId, data) {
     commercialTermsSummary,
   } = data;
 
+  // 2026_133. Without this, setting a date on a standing initiative reaches
+  // chk_sh_standing_no_go_live and surfaces as a 500 with a constraint name in
+  // it. Same rule, said in words.
+  //
+  // Note what this function CANNOT do: go_live_date = COALESCE($2, ...) means
+  // null is "leave unchanged", so there is no way to CLEAR a date here. That is
+  // why conversion has its own function rather than being a flag on this one —
+  // loosening the COALESCE would change the meaning of every other caller's
+  // omitted field.
+  if (goLiveDate && (existing.trackingMode || 'timeboxed') === 'standing') {
+    throw Object.assign(
+      new Error('A standing initiative has no end date. Convert it to a time-boxed project first.'),
+      { status: 400 });
+  }
+
   const { rows } = await pool.query(
     `UPDATE sales_handovers
      SET assigned_service_owner_id = COALESCE($1, assigned_service_owner_id),
@@ -1053,8 +1169,196 @@ async function update(handoverId, orgId, data) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ADVANCE STATUS
+// TRACKING MODE — conversion and retirement (2026_133)
 // ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * How many open plays on this project are scheduled from the go-live date.
+ *
+ * Conversion to standing clears go_live_date, and NOTHING recomputes those
+ * dates afterwards — verified against the database, not assumed. Since the
+ * 2026_109 split, project_play_instances has no rescheduling trigger and its
+ * go_live-anchored dates are computed once at insert by computeInstanceDueDate
+ * in PlaybookPlayService. So after conversion those plays keep a date derived
+ * from a go-live the project no longer has.
+ *
+ * Nothing in the database is wrong. The UI would be misleading. The caller is
+ * told so it can say something, rather than the conversion silently producing
+ * a checklist of dates with nothing behind them.
+ */
+async function _goLiveAnchoredOpenPlays(handoverId, orgId) {
+  const { rows } = await pool.query(
+    `SELECT id, title, due_date::text AS due_date
+       FROM project_play_instances
+      WHERE handover_id = $1 AND org_id = $2
+        AND due_anchor = 'go_live'
+        AND due_date IS NOT NULL
+        AND status NOT IN ('completed', 'skipped', 'cancelled')
+      ORDER BY due_date, id`,
+    [handoverId, orgId]);
+  return rows;
+}
+
+/**
+ * Convert a project between the two tracking modes.
+ *
+ * NOT part of update(). update() writes every field through
+ * COALESCE($n, column), so a null means "leave unchanged" and go_live_date can
+ * never be cleared through it. Conversion to standing MUST clear that column in
+ * the same statement that sets tracking_mode, or chk_sh_standing_no_go_live
+ * rejects the write. Two callers, two meanings for null, one function each.
+ *
+ * Work already logged is untouched in both directions. That is not something
+ * this function has to arrange — daily_work_entries snapshot their own anchor,
+ * department, activity type and account, so nothing about an entry is derived
+ * from the project at read time and there is nothing here for a conversion to
+ * disturb. Asserted in verify_project_tracking_133.js rather than trusted.
+ *
+ * @param {'timeboxed'|'standing'} toMode
+ * @param {object} [opts]
+ * @param {number} [opts.assignedServiceOwnerId]  required when going timeboxed
+ * @param {string} [opts.goLiveDate]              required when going timeboxed
+ * @param {boolean} [opts.acknowledgeAnchoredPlays]  proceed despite stale dates
+ */
+async function convertTrackingMode(handoverId, orgId, userId, toMode, opts = {}) {
+  if (toMode !== 'timeboxed' && toMode !== 'standing') {
+    throw Object.assign(new Error("toMode must be 'timeboxed' or 'standing'"), { status: 400 });
+  }
+
+  const existing = await _getHandover(handoverId, orgId);
+  const fromMode = existing.trackingMode || 'timeboxed';
+
+  if (fromMode === toMode) return existing;   // idempotent, not an error
+
+  // A completed or cancelled project is a record of what happened. Same rule
+  // update() applies, and the same reasoning: reopen it first if it genuinely
+  // needs to change.
+  if (TERMINAL_STATUSES.has(existing.status)) {
+    throw Object.assign(
+      new Error(`A ${existing.status} project cannot be converted. Reopen it first if it needs to change.`),
+      { status: 400 });
+  }
+
+  if (existing.retiredAt) {
+    throw Object.assign(
+      new Error('This initiative is retired. Un-retire it before converting it to a project.'),
+      { status: 400 });
+  }
+
+  if (toMode === 'timeboxed') {
+    // Going finite means committing to the two things that make lateness
+    // meaningful. Same rule as createProject, and the same wording, because a
+    // person meeting it in two different places should not have to work out
+    // whether they are the same rule.
+    const ownerId = opts.assignedServiceOwnerId
+      ? parseInt(opts.assignedServiceOwnerId, 10)
+      : (existing.assignedServiceOwnerId || null);
+    const goLive = opts.goLiveDate || null;
+
+    const missing = [];
+    if (!ownerId) missing.push('an owner');
+    if (!goLive)  missing.push('an end date');
+    if (missing.length) {
+      throw Object.assign(
+        new Error(`Converting to a time-boxed project needs ${missing.join(' and ')}.`),
+        { status: 400 });
+    }
+
+    const { rows } = await pool.query(
+      `UPDATE sales_handovers
+          SET tracking_mode             = 'timeboxed',
+              assigned_service_owner_id = $1,
+              go_live_date              = $2,
+              updated_at                = NOW()
+        WHERE id = $3 AND org_id = $4
+        RETURNING *`,
+      [ownerId, goLive, handoverId, orgId]);
+
+    // Setting go_live_date from NULL fires trg_reschedule_go_live, which
+    // schedules go_live-anchored rows in the LEGACY deal_play_instances table
+    // through sales_handover_plays. project_play_instances has no equivalent,
+    // so a project's actual checklist is not scheduled by this. Named here
+    // because the trigger's existence makes it look as though it were.
+    return fmt(rows[0]);
+  }
+
+  // → standing. Dropping the date is the whole operation; the owner is left
+  // in place rather than nulled, because it is real information about who set
+  // this up and no constraint objects to it.
+  const stale = await _goLiveAnchoredOpenPlays(handoverId, orgId);
+  if (stale.length && !opts.acknowledgeAnchoredPlays) {
+    const err = new Error(
+      `${stale.length} open task${stale.length === 1 ? '' : 's'} on this project ` +
+      'are scheduled from the go-live date. Converting to a standing initiative ' +
+      'removes that date, and those dates will not be recalculated. Clear or ' +
+      're-anchor them first, or confirm to convert anyway.');
+    err.status = 409;
+    err.code = 'GO_LIVE_ANCHORED_PLAYS';
+    err.details = { plays: stale };
+    throw err;
+  }
+
+  const { rows } = await pool.query(
+    `UPDATE sales_handovers
+        SET tracking_mode = 'standing',
+            go_live_date  = NULL,
+            updated_at    = NOW()
+      WHERE id = $1 AND org_id = $2
+      RETURNING *`,
+    [handoverId, orgId]);
+
+  return fmt(rows[0]);
+}
+
+/**
+ * Retire a standing initiative.
+ *
+ * Retire, never delete: deleting the container leaves every daily work item
+ * anchored to it pointing at an id that resolves to nothing. anchor_id is a
+ * SOFT reference with no foreign key, so there is no cascade to protect you —
+ * the rows simply survive with a dangling anchor, which is worse than losing
+ * them because it is silent.
+ *
+ * A timestamp pair rather than a seventh sales_handovers.status value. The
+ * reasoning is in 2026_133's header; the short version is that a new status
+ * word would have to be taught to two transition tables, the statusMeta map,
+ * the list filter and the status index, and whichever one missed it would fail
+ * without saying so.
+ */
+async function retire(handoverId, orgId, userId) {
+  const existing = await _getHandover(handoverId, orgId);
+
+  if ((existing.trackingMode || 'timeboxed') !== 'standing') {
+    throw Object.assign(
+      new Error('Only a standing initiative can be retired. Complete or cancel a time-boxed project instead.'),
+      { status: 400 });
+  }
+  if (existing.retiredAt) return existing;   // idempotent
+
+  const { rows } = await pool.query(
+    `UPDATE sales_handovers
+        SET retired_at = NOW(), retired_by = $1, updated_at = NOW()
+      WHERE id = $2 AND org_id = $3
+      RETURNING *`,
+    [userId, handoverId, orgId]);
+
+  return fmt(rows[0]);
+}
+
+/** Un-retire. Both columns move together — chk_sh_retired_shape requires it. */
+async function unretire(handoverId, orgId) {
+  const existing = await _getHandover(handoverId, orgId);
+  if (!existing.retiredAt) return existing;   // idempotent
+
+  const { rows } = await pool.query(
+    `UPDATE sales_handovers
+        SET retired_at = NULL, retired_by = NULL, updated_at = NOW()
+      WHERE id = $1 AND org_id = $2
+      RETURNING *`,
+    [handoverId, orgId]);
+
+  return fmt(rows[0]);
+}
 
 /**
  * @param {number} handoverId
@@ -1067,6 +1371,21 @@ async function advanceStatus(handoverId, orgId, userId, toStatus, closureSummary
   const existing = await _getHandover(handoverId, orgId);
 
   assertTransition(existing.status, toStatus, existing.projectKind || 'customer');
+
+  // 2026_133. A standing initiative never completes — that is its definition,
+  // not a policy. Caught here so the person gets a sentence naming the action
+  // they actually want, rather than a 500 carrying
+  // chk_sh_standing_never_completes.
+  //
+  // 'cancelled' is deliberately still allowed: an initiative created in error
+  // has to go somewhere, and cancellation is a different act from retirement.
+  if (toStatus === 'completed' && (existing.trackingMode || 'timeboxed') === 'standing') {
+    throw Object.assign(
+      new Error(
+        'A standing initiative never completes. Retire it instead, or convert it ' +
+        'to a time-boxed project if the work now has an end.'),
+      { status: 400 });
+  }
 
   // Gate check: cannot submit unless all is_gate plays are complete
   //
@@ -3938,6 +4257,19 @@ async function runNightlySweep(orgId) {
        FROM sales_handovers h
        WHERE h.org_id = $1
          AND h.status NOT IN ('draft', 'completed', 'cancelled')
+         -- 2026_133. handover_stalled fires when nothing has changed on the
+         -- record in STALLED_DAYS. A standing initiative is a container for
+         -- recurring work; its own row is written once and then never touched
+         -- again, so every one of them would raise a stalled alert every night,
+         -- forever. That is the same failure this codebase already has evidence
+         -- of — one rep with 583 overdue actions that grew for 19 days and was
+         -- never opened — arriving by a new route.
+         --
+         -- Excluded here, in the sweep's own query, rather than in
+         -- HandoverRulesEngine: the rules are about what a project's state
+         -- means, and "this row has no meaningful state to be stale" is a
+         -- question of which rows to feed them.
+         AND COALESCE(h.tracking_mode, 'timeboxed') = 'timeboxed'
        ORDER BY h.id ASC`,
       [orgId]
     );
@@ -4191,6 +4523,19 @@ async function getPortfolio(orgId) {
        LEFT JOIN accounts a ON a.id = h.account_id
        LEFT JOIN handover_deliverable_rollup r ON r.handover_id = h.id
       WHERE h.org_id = $1 AND h.status <> 'cancelled'
+        -- 2026_133. The Dashboard KPIs are on_track / in_progress /
+        -- ready_to_start / overdue — every one of them a judgement about
+        -- progress toward an end. A standing initiative has no end, so it
+        -- would sit in whichever bucket it happened to fall into and never
+        -- leave, inflating the denominator permanently. Same reasoning as
+        -- excluding it from the "active projects" count.
+        --
+        -- Note this is the PORTFOLIO. getTeamMemberProjects and
+        -- getPersonDashboard deliberately do NOT filter: at the individual
+        -- level a person's recurring initiatives and their time-boxed projects
+        -- belong on one screen, which is the whole point of not making people
+        -- move between modules to see one person's work.
+        AND COALESCE(h.tracking_mode, 'timeboxed') = 'timeboxed'
       ORDER BY d.close_date NULLS LAST, h.id`,
     [orgId]
   );
@@ -4879,6 +5224,9 @@ module.exports = {
   listAssignableUsers,    // org-scoped member list for owner pickers
   getById,
   update,
+  convertTrackingMode,     // timeboxed <-> standing (2026_133)
+  retire,                  // standing initiative — retire, never delete
+  unretire,
   advanceStatus,
   canSubmit,
   canClose,               // 2026_64 — closure gate
