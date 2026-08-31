@@ -762,7 +762,7 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
                      onToggle, onOpenDay, onOpenPerson }) {
   const key = `p:${person.user_id}`;
   const isOpen = !!expanded[key];
-  const name = `${person.first_name || ''} ${person.last_name || ''}`.trim() || 'Unknown';
+  // The name is rendered by PersonIdentity now, in both branches.
 
   // A day period is already one row per person; there is nothing to roll up, so
   // the row opens the full view rather than expanding.
