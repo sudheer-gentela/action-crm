@@ -59,6 +59,15 @@ export default function DailyWorkTeamView() {
   const [accountSummary, setAccountSummary] = useState(null);
 
   const [assigning, setAssigning] = useState(false);
+  // Hide the two project columns entirely when the org has no Projects module.
+  // A column of zeros reads as "nothing assigned", which is a different and
+  // wrong claim.
+  const [hasProjects, setHasProjects] = useState(false);
+  // The full-page person view. null = the list.
+  const [openPerson, setOpenPerson] = useState(null);
+  // Which attention queue is expanded, if any. One at a time — both open at
+  // once pushes the people off the screen, which is the thing this replaced.
+  const [showQueue, setShowQueue] = useState(null);
   const [expanded, setExpanded] = useState({});   // key -> true
   const [details, setDetails]   = useState({});   // `${user}:${date}` -> rows
   const [notice, setNotice]     = useState(null);
@@ -102,20 +111,24 @@ export default function DailyWorkTeamView() {
       const r = range();
       const params = { ...r, ...apiFilters() };
 
-      const [rollupRes, logRes] = await Promise.all([
-        apiService.dailyWork.teamRollup(params),
+      // /people replaces the plain rollup here: same rows, plus the open and
+      // overdue project counts. It degrades on its own if the Projects module
+      // is off, so this call never needs to know whether the org has it.
+      const [peopleRes, logRes] = await Promise.all([
+        apiService.dailyWork.people(params),
         apiService.dailyWork.teamLog(params),
       ]);
 
-      setRollup(rollupRes.data.rows || []);
+      setRollup(peopleRes.data.people || []);
+      setHasProjects(peopleRes.data.projectsAvailable !== false);
       setLog(logRes.data.rows || []);
-      setWindow({ from: rollupRes.data.from, to: rollupRes.data.to });
+      setWindow({ from: peopleRes.data.from, to: peopleRes.data.to });
 
       // The anchor follows the server's idea of the window the first time, so
       // "today" means the viewer's local today rather than the browser's.
-      if (!anchorDate && rollupRes.data.to) setAnchor(rollupRes.data.to);
+      if (!anchorDate && peopleRes.data.to) setAnchor(peopleRes.data.to);
     } catch (err) {
-      setError(err?.response?.data?.error || 'Could not load your team');
+      setError(err?.response?.data?.error || 'Could not load your people');
     } finally {
       setLoading(false);
     }
@@ -195,12 +208,28 @@ export default function DailyWorkTeamView() {
     : [...rollup].sort(cmpName);
 
   const loggedToday = rollup.filter(r => r.days_logged > 0).length;
+  const totalOverdue = rollup.reduce((n, r) => n + (r.overdueTasks || 0), 0);
+
+  // The person page is a full screen, not an overlay: it replaces the list
+  // rather than sitting on top of it, so the back control is the only way out
+  // and there is never a half-covered list behind it to wonder about.
+  if (openPerson) {
+    const fresh = rollup.find(r => r.user_id === openPerson.user_id) || openPerson;
+    return (
+      <PersonPage
+        person={fresh}
+        range={range()}
+        filters={apiFilters()}
+        onBack={() => setOpenPerson(null)}
+      />
+    );
+  }
 
   return (
     <div className="dw">
       <div className="dw-head">
         <div>
-          <h1>My team</h1>
+          <h1>People</h1>
           <div className="dw-sub">
             {window_.from === window_.to
               ? formatDate(window_.from)
@@ -320,33 +349,36 @@ export default function DailyWorkTeamView() {
         </div>
       )}
 
-      {/* ── the team ────────────────────────────────────────────────── */}
+      {/* ── needs attention ─────────────────────────────────────────
+          The two queues used to be full sections at the BOTTOM of this screen,
+          below every person. As chips they are one glance instead of a scroll,
+          and each still opens the list it summarises. The overdue chip is the
+          project side, which had no home here before. */}
 
-      {rollup.length === 0 ? (
-        <div className="dw-card"><div className="dw-empty">
-          <p>Nobody reports to you yet, or nobody in your team has the module.</p>
-        </div></div>
-      ) : (
-        <div className="dw-items">
-          {sorted.map(person => (
-            <PersonRow
-              key={person.user_id}
-              person={person}
-              period={period}
-              log={log.filter(l => l.user_id === person.user_id)}
-              expanded={expanded}
-              details={details}
-              onToggle={toggle}
-              onOpenDay={openDay}
-            />
-          ))}
+      {(stalled.length > 0 || candidates.length > 0 || totalOverdue > 0) && (
+        <div className="dw-card" style={{ marginBottom: 14 }}>
+          <div className="dw-item-body" style={{ paddingTop: 12, display: 'flex',
+                                                  flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+            <span className="m">Needs attention</span>
+            {stalled.length > 0 && (
+              <button className="dw-btn dw-btn-sm" onClick={() => setShowQueue(q => q === 'stalled' ? null : 'stalled')}>
+                {stalled.length} {stalled.length === 1 ? 'item' : 'items'} not moving
+              </button>
+            )}
+            {candidates.length > 0 && (
+              <button className="dw-btn dw-btn-sm" onClick={() => setShowQueue(q => q === 'vocab' ? null : 'vocab')}>
+                {candidates.length} activity {candidates.length === 1 ? 'type' : 'types'} to review
+              </button>
+            )}
+            {totalOverdue > 0 && (
+              <span className="dw-badge carried">{totalOverdue} project {totalOverdue === 1 ? 'task' : 'tasks'} overdue</span>
+            )}
+          </div>
         </div>
       )}
 
-      {/* ── queues ──────────────────────────────────────────────────── */}
-
-      {stalled.length > 0 && (
-        <div className="dw-card" style={{ marginTop: 16 }}>
+      {showQueue === 'stalled' && stalled.length > 0 && (
+        <div className="dw-card" style={{ marginBottom: 14 }}>
           <div className="dw-card-head">
             <h2>Assigned work that isn't moving</h2>
             <span className="m">Assigned items only — recurring work never completes</span>
@@ -354,9 +386,7 @@ export default function DailyWorkTeamView() {
           <div className="dw-daylog">
             {stalled.map(s => (
               <div className="dw-dayrow" key={s.item_id}>
-                <div className="dw-work">
-                  <b>{s.title}</b> — {s.first_name} {s.last_name}
-                </div>
+                <div className="dw-work"><b>{s.title}</b> — {s.first_name} {s.last_name}</div>
                 <div className="dw-meta">
                   {s.last_entry_date
                     ? `Last entry ${formatDate(s.last_entry_date)}, ${s.days_quiet} days ago`
@@ -369,8 +399,8 @@ export default function DailyWorkTeamView() {
         </div>
       )}
 
-      {candidates.length > 0 && (
-        <div className="dw-card" style={{ marginTop: 16 }}>
+      {showQueue === 'vocab' && candidates.length > 0 && (
+        <div className="dw-card" style={{ marginBottom: 14 }}>
           <div className="dw-card-head">
             <h2>Activity types waiting on you</h2>
             <span className="m">Someone picked "Other" and named it</span>
@@ -381,6 +411,192 @@ export default function DailyWorkTeamView() {
                             targets={activityTypes.filter(t => t.status === 'active' && t.key !== c.key)}
                             onPromote={() => promote(c.key)}
                             onMerge={intoKey => merge(c.key, intoKey)} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── the people ──────────────────────────────────────────────── */}
+
+      {rollup.length === 0 ? (
+        <div className="dw-card"><div className="dw-empty">
+          <p>Nobody reports to you yet, or nobody in your team has the module.</p>
+        </div></div>
+      ) : (
+        <div className="dw-items">
+          {sorted.map(person => (
+            <PersonRow
+              key={person.user_id}
+              person={person}
+              period={period}
+              hasProjects={hasProjects}
+              log={log.filter(l => l.user_id === person.user_id)}
+              expanded={expanded}
+              details={details}
+              onToggle={toggle}
+              onOpenDay={openDay}
+              onOpenPerson={() => setOpenPerson(person)}
+            />
+          ))}
+        </div>
+      )}
+
+    </div>
+  );
+}
+
+/**
+ * One person, everything, on one page.
+ *
+ * THE TIMELINE IS THE POINT. Daily work entries and project tasks arrive as two
+ * separate lists, each with its own date, and are interleaved HERE rather than
+ * on the server — because the two dates mean different things and the label has
+ * to survive the merge. An entry sits on the day it was DONE. A task sits on the
+ * day it is DUE. Flattening them server-side into one sorted list would throw
+ * away exactly the distinction that makes the screen readable.
+ *
+ * Tasks with no due date cannot go on the timeline at all — there is no day to
+ * put them on and inventing one would be a lie — so they get their own short
+ * list underneath, which is also the honest place for them.
+ *
+ * "Not logged" days are shown, not skipped. Holidays and non-working days never
+ * reach the list, so a gap always means a day someone was expected to log and
+ * did not. That is the signal the whole module exists to surface.
+ */
+function PersonPage({ person, range, filters, onBack }) {
+  const [state, setState] = useState({ loading: true, log: [], projectItems: [], projects: [] });
+
+  useEffect(() => {
+    let alive = true;
+    setState(s => ({ ...s, loading: true }));
+    apiService.dailyWork.person(person.user_id, { ...range, ...filters })
+      .then(({ data }) => { if (alive) setState({ loading: false, log: data.log || [],
+        projectItems: data.projectItems || [], projects: data.projects || [] }); })
+      .catch(() => { if (alive) setState({ loading: false, log: [], projectItems: [], projects: [] }); });
+    return () => { alive = false; };
+  }, [person.user_id, range.from, range.to]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const name = `${person.first_name || ''} ${person.last_name || ''}`.trim() || 'Unknown';
+  const { log, projectItems, projects } = state;
+
+  const dated   = projectItems.filter(i => i.dueDate);
+  const undated = projectItems.filter(i => !i.dueDate);
+  const overdue = projectItems.filter(i => i.isOverdue).length;
+
+  // One bucket per working day in the window, newest first, each carrying
+  // whatever landed on it from either side.
+  const byDate = new Map();
+  for (const d of (person.days || [])) byDate.set(d.date, { date: d.date, entries: [], items: [] });
+  for (const l of log) {
+    if (!byDate.has(l.entry_date)) byDate.set(l.entry_date, { date: l.entry_date, entries: [], items: [] });
+    byDate.get(l.entry_date).entries.push(l);
+  }
+  for (const i of dated) {
+    if (!byDate.has(i.dueDate)) byDate.set(i.dueDate, { date: i.dueDate, entries: [], items: [] });
+    byDate.get(i.dueDate).items.push(i);
+  }
+  const days = [...byDate.values()].sort((a, b) => b.date.localeCompare(a.date));
+
+  return (
+    <div className="dw">
+      <div className="dw-head">
+        <div>
+          <h1>{name}</h1>
+          <div className="dw-sub">
+            {person.days_logged} of {person.working_days} days logged
+            {person.rate !== null && ` · ${Math.round(person.rate * 100)}%`}
+            {!person.has_schedule && ' · no schedule set'}
+          </div>
+        </div>
+        <div className="dw-head-actions">
+          <button className="dw-btn" onClick={onBack}>← All people</button>
+        </div>
+      </div>
+
+      {projects.length > 0 && (
+        <div className="dw-card" style={{ marginBottom: 14 }}>
+          <div className="dw-card-head">
+            <h2>Projects and initiatives</h2>
+            {overdue > 0 && <span className="m">{overdue} overdue</span>}
+          </div>
+          <div className="dw-item-body" style={{ paddingTop: 10 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {projects.map(p => (
+                <span className="dw-badge" key={p.handoverId} title={p.account || ''}>
+                  {p.project}
+                  {/* The label: without it a standing initiative and a project
+                      read as the same thing, and "no end date" looks like
+                      missing data rather than the whole point of it. */}
+                  {p.isStanding ? ' · standing' : (p.goLiveDate ? ` · ${formatDate(p.goLiveDate)}` : '')}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {state.loading ? (
+        <div className="dw-spinner">Loading…</div>
+      ) : (
+        <div className="dw-card">
+          <div className="dw-card-head">
+            <h2>Timeline</h2>
+            <span className="m">Work logged, and project tasks on the day they are due</span>
+          </div>
+          <div className="dw-daylog">
+            {days.length === 0 ? (
+              <div className="dw-empty"><p>Nothing in this period.</p></div>
+            ) : days.map(d => (
+              <div className="dw-dayrow" key={d.date}>
+                <div className="dw-meta"><b>{formatDate(d.date)}</b></div>
+
+                {d.entries.map(e => (
+                  <div className="dw-detail-item" key={`e-${e.entry_date}-${e.user_id}`}>
+                    <div className="t">
+                      <span className="dw-badge">logged</span>
+                      <span className="m">{e.item_count} {e.item_count === 1 ? 'item' : 'items'}</span>
+                    </div>
+                    <div className="d">{e.work_done}</div>
+                  </div>
+                ))}
+
+                {d.items.map(i => (
+                  <div className="dw-detail-item" key={i.id}>
+                    <div className="t">
+                      <span className={`dw-badge ${i.isOverdue ? 'carried' : ''}`}>
+                        {i.kind === 'commitment' ? 'commitment due' : 'task due'}
+                      </span>
+                      <b>{i.title}</b>
+                      {i.isOverdue && <span className="dw-badge carried">overdue</span>}
+                    </div>
+                    <div className="dw-meta">{i.project}{i.isStanding ? ' · standing' : ''}</div>
+                  </div>
+                ))}
+
+                {d.entries.length === 0 && d.items.length === 0 && (
+                  <div className="dw-meta">Not logged</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {undated.length > 0 && (
+        <div className="dw-card" style={{ marginTop: 16 }}>
+          <div className="dw-card-head">
+            <h2>Project work with no date</h2>
+            <span className="m">Nothing to place these on, so they sit here rather than on a day</span>
+          </div>
+          <div className="dw-daylog">
+            {undated.map(i => (
+              <div className="dw-dayrow" key={i.id}>
+                <div className="dw-work"><b>{i.title}</b></div>
+                <div className="dw-meta">
+                  {i.project}{i.isStanding ? ' · standing initiative' : ''}
+                  {i.kind === 'commitment' ? ' · commitment' : ''}
+                </div>
+              </div>
             ))}
           </div>
         </div>
@@ -473,7 +689,8 @@ function PersonProjectPanel({ userId }) {
   );
 }
 
-function PersonRow({ person, period, log, expanded, details, onToggle, onOpenDay }) {
+function PersonRow({ person, period, hasProjects = false, log, expanded, details,
+                     onToggle, onOpenDay, onOpenPerson }) {
   const key = `p:${person.user_id}`;
   const isOpen = !!expanded[key];
   const name = `${person.first_name || ''} ${person.last_name || ''}`.trim() || 'Unknown';
@@ -498,6 +715,17 @@ function PersonRow({ person, period, log, expanded, details, onToggle, onOpenDay
               Not logged. The absence is the signal — there is nothing to clear.
             </div>
           )}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+            {hasProjects && person.openTasks > 0 && (
+              <span className="dw-badge">{person.openTasks} project {person.openTasks === 1 ? 'task' : 'tasks'}</span>
+            )}
+            {hasProjects && person.overdueTasks > 0 && (
+              <span className="dw-badge carried">{person.overdueTasks} overdue</span>
+            )}
+            <button className="dw-btn dw-btn-sm" style={{ marginLeft: 'auto' }} onClick={onOpenPerson}>
+              Open full view →
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -520,6 +748,15 @@ function PersonRow({ person, period, log, expanded, details, onToggle, onOpenDay
           {!person.has_schedule && (
             <span className="dw-badge carried">no schedule set</span>
           )}
+          {/* The project half of the row. Hidden entirely when the org has no
+              Projects module — a zero would read as "nothing assigned", which
+              is a different and wrong claim from "we cannot see". */}
+          {hasProjects && person.openTasks > 0 && (
+            <span className="dw-badge">{person.openTasks} project {person.openTasks === 1 ? 'task' : 'tasks'}</span>
+          )}
+          {hasProjects && person.overdueTasks > 0 && (
+            <span className="dw-badge carried">{person.overdueTasks} overdue</span>
+          )}
         </div>
         <div className="dw-item-status">
           {person.entry_count} {person.entry_count === 1 ? 'entry' : 'entries'}
@@ -529,6 +766,11 @@ function PersonRow({ person, period, log, expanded, details, onToggle, onOpenDay
 
       {isOpen && (
         <div className="dw-item-body">
+          <div style={{ display: 'flex', justifyContent: 'flex-end', paddingBottom: 8 }}>
+            <button className="dw-btn dw-btn-sm" onClick={onOpenPerson}>
+              Open full view →
+            </button>
+          </div>
           {log.length === 0 ? (
             <div className="dw-item-status" style={{ paddingTop: 12 }}>
               Nothing logged in this period.

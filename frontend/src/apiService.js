@@ -1077,6 +1077,19 @@ twilio: {
     teamRollup: ({ from, to, users, ...filters } = {}) =>
       api.get('/daily-work/team/rollup', { params: { from, to, users, ...filters } }),
 
+    // ── the People screen ────────────────────────────────────────────────
+    // One row per person the viewer may see, carrying both the logging record
+    // and the open project work owed. Replaced the separate team rollup call
+    // on that screen; teamRollup is still used elsewhere.
+    people: ({ from, to, users, ...filters } = {}) =>
+      api.get('/daily-work/people', { params: { from, to, users, ...filters } }),
+
+    // One person: their daily work log and their project items, returned
+    // SEPARATELY. An entry is anchored to the day it was done, a task to the
+    // day it is due — the client interleaves them and keeps them labelled.
+    person: (userId, { from, to, ...filters } = {}) =>
+      api.get(`/daily-work/people/${userId}`, { params: { from, to, ...filters } }),
+
     accountSummary: ({ account, from, to, users }) =>
       api.get('/daily-work/team/account-summary', { params: { account, from, to, users } }),
 

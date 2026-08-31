@@ -343,7 +343,7 @@ export default function DailyWorkView() {
           </button>
           {hasReports && (
             <button type="button" aria-pressed={tab === 'team'} onClick={() => setTab('team')}>
-              My team
+              People
             </button>
           )}
           {canSetUp && (
@@ -587,7 +587,7 @@ function WaitingPanel({ me, hasReports, rows, drafts, stalled, candidates, onOpe
            (s.last_entry_date
              ? ` — nothing since ${formatDate(s.last_entry_date)}`
              : ' — never logged against'),
-      action: { label: 'Open team', run: onOpenTeam },
+      action: { label: 'Open people', run: onOpenTeam },
     }));
   }
 

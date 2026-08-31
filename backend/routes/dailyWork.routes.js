@@ -81,6 +81,11 @@ const requireModule     = require('../middleware/requireModule.middleware');
 const dailyWork  = require('../services/dailyWork.service');
 const dailyQuery = require('../services/dailyWorkQuery.service');
 const dwDate     = require('../services/dailyWorkDate');
+// Cross-module, for the People screen. Required at the top rather than lazily
+// so a broken import fails at boot instead of on the first request. The two
+// routes that use it degrade gracefully when the Projects module is off for an
+// org — see _projectSideOrEmpty below.
+const handoverService = require('../services/handover.service');
 
 router.use(authenticateToken, orgContext, requireModule('dailywork'));
 
@@ -311,6 +316,99 @@ async function readWindow(req) {
     new Date(Date.parse(today) - 6 * 86400000).toISOString().slice(0, 10), today);
   return { from: dates[0], to: today };
 }
+
+/**
+ * Run a project-side lookup, or fall back to nothing.
+ *
+ * The People screen belongs to Daily Work and must work in an org that has no
+ * Projects module — those rows simply have no project column. Wrapping rather
+ * than checking the module flag keeps this true even if the projects tables are
+ * present but empty, or a query changes shape later.
+ *
+ * The failure is logged, never surfaced: a person's logging record is the point
+ * of this screen and it should not go blank because the project half broke.
+ */
+async function _projectSideOrEmpty(label, fn, fallback) {
+  try {
+    return await fn();
+  } catch (err) {
+    console.warn(`[dailywork] project-side ${label} unavailable:`, err.message);
+    return fallback;
+  }
+}
+
+// ── GET /people — the combined list ──────────────────────────────────────────
+//
+// One row per person the viewer may see, carrying both halves: the logging
+// record from daily work and the open project work owed. This is the screen
+// that replaced "My team".
+//
+// Scope is unchanged — scopeUserIds intersects with the manager chain, so a
+// person outside it yields nothing rather than an error. The project side is
+// then looked up for exactly that set, never wider: project tasks are more
+// broadly visible than daily work descriptions, and this screen must not become
+// the way around the tighter of the two boundaries.
+router.get('/people', async (req, res) => {
+  try {
+    const win = await readWindow(req);
+    if (win.bad) return res.status(400).json({ error: 'from and to must be YYYY-MM-DD' });
+
+    const userIds = await scopeUserIds(req.orgId, req.userId, req.query.users);
+    const filters = readFilters(req.query);
+
+    const [rollup, workload] = await Promise.all([
+      dailyQuery.getRollup(req.orgId, { userIds, from: win.from, to: win.to, filters }),
+      _projectSideOrEmpty('workload',
+        () => handoverService.getProjectWorkloadByUser(req.orgId, userIds),
+        new Map()),
+    ]);
+
+    res.json({
+      ...win,
+      // projectsAvailable lets the client hide the two project columns entirely
+      // rather than render a row of zeros that reads as "nothing assigned".
+      projectsAvailable: workload.size > 0 || userIds.length === 0,
+      people: rollup.map(p => ({
+        ...p,
+        ...(workload.get(p.user_id) || { openTasks: 0, overdueTasks: 0 }),
+      })),
+    });
+  } catch (err) { handle(res, err, 'GET /people'); }
+});
+
+// ── GET /people/:userId — one person, both halves ────────────────────────────
+//
+// The full-page person view. Returns the daily work log and the project items
+// separately, each carrying its own date, and lets the client interleave them.
+//
+// NOT merged server-side on purpose. A daily work entry is anchored to the day
+// it was DONE; a project task is anchored to the day it is DUE. Those are
+// different meanings, and flattening them into one sorted list here would throw
+// away the distinction the client needs to label them.
+router.get('/people/:userId', async (req, res) => {
+  try {
+    const target = asId(req.params.userId);
+    if (!target) return res.status(400).json({ error: 'userId must be a positive integer' });
+
+    const visible = await dailyQuery.getVisibleUserIds(req.orgId, req.userId);
+    if (!visible.includes(target)) return res.json({ log: [], projectItems: [], projects: [] });
+
+    const win = await readWindow(req);
+    if (win.bad) return res.status(400).json({ error: 'from and to must be YYYY-MM-DD' });
+
+    const [log, projectSide] = await Promise.all([
+      dailyQuery.getLog(req.orgId, {
+        userIds: [target], from: win.from, to: win.to, filters: readFilters(req.query) }),
+      _projectSideOrEmpty('person items', async () => ({
+        projectItems: await handoverService.getPersonProjectItems(target, req.orgId),
+        projects: (await handoverService.getTeamMemberProjects(target, req.orgId))
+          .filter(p => !p.isRetired),
+      }), { projectItems: [], projects: [] }),
+    ]);
+
+    res.json({ ...win, log, ...projectSide });
+  } catch (err) { handle(res, err, 'GET /people/:userId'); }
+});
 
 router.get('/team/log', async (req, res) => {
   try {

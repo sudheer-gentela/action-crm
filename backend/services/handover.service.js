@@ -5261,6 +5261,122 @@ async function _personCommitments(userId, orgId, { openOnly = false } = {}) {
  * Deliberately narrow: open commitments and the projects they sit on, nothing
  * else. It is a panel, not a second dashboard.
  */
+/**
+ * Open project work per person, for the People screen in the Daily Work module.
+ *
+ * TWO KINDS OF THING, COUNTED TOGETHER ON PURPOSE. A project_play_instance is a
+ * step on the checklist — the plan. A sales_handover_commitment is something
+ * promised to the customer. They live in different tables and mean different
+ * things, but from the point of view of "what does this person owe" they are
+ * one question, and splitting them into two columns would make the reader do
+ * arithmetic to answer it. They stay distinguishable one level down, in
+ * getPersonProjectSummary, where the type is on each row.
+ *
+ * STANDING INITIATIVES ARE EXCLUDED FROM THE OVERDUE COUNT, not from the open
+ * count. Work on a standing initiative is real and still owed; it just cannot
+ * be late, because there is nothing to be late against. Same rule the rest of
+ * the module applies, and getting it wrong here would put a permanent red
+ * number beside anyone doing recurring work — the exact failure the whole
+ * tracking-mode change existed to remove.
+ *
+ * One query per table rather than a UNION: the two have different shapes and
+ * different join paths, and a UNION that has to COALESCE half its columns is
+ * harder to read than two obvious statements.
+ *
+ * @returns {Map<number, {openTasks:number, overdueTasks:number}>}
+ */
+async function getProjectWorkloadByUser(orgId, userIds) {
+  const out = new Map((userIds || []).map(id => [id, { openTasks: 0, overdueTasks: 0 }]));
+  if (!userIds || userIds.length === 0) return out;
+
+  const today = toDateStr(new Date());
+
+  const { rows: plays } = await pool.query(
+    `SELECT ppi.owner_user_id AS user_id,
+            count(*)::int AS open_count,
+            count(*) FILTER (
+              WHERE ppi.due_date IS NOT NULL
+                AND ppi.due_date < $3::date
+                AND COALESCE(h.tracking_mode, 'timeboxed') = 'timeboxed'
+            )::int AS overdue_count
+       FROM project_play_instances ppi
+       JOIN sales_handovers h ON h.id = ppi.handover_id AND h.org_id = ppi.org_id
+      WHERE ppi.org_id = $1
+        AND ppi.owner_user_id = ANY($2)
+        AND ppi.status NOT IN ('completed', 'skipped', 'cancelled')
+        AND h.status NOT IN ('completed', 'cancelled')
+        AND h.retired_at IS NULL
+      GROUP BY ppi.owner_user_id`,
+    [orgId, userIds, today]);
+
+  const { rows: commitments } = await pool.query(
+    `SELECT c.owner_user_id AS user_id,
+            count(*)::int AS open_count,
+            count(*) FILTER (
+              WHERE c.due_date IS NOT NULL
+                AND c.due_date < $3::date
+                AND COALESCE(h.tracking_mode, 'timeboxed') = 'timeboxed'
+            )::int AS overdue_count
+       FROM sales_handover_commitments c
+       JOIN sales_handovers h ON h.id = c.handover_id AND h.org_id = c.org_id
+      WHERE c.org_id = $1
+        AND c.owner_user_id = ANY($2)
+        AND c.status IN ('open', 'in_progress')
+        AND h.status NOT IN ('completed', 'cancelled')
+        AND h.retired_at IS NULL
+      GROUP BY c.owner_user_id`,
+    [orgId, userIds, today]);
+
+  for (const r of [...plays, ...commitments]) {
+    const acc = out.get(r.user_id);
+    if (!acc) continue;                 // a row for someone outside the request
+    acc.openTasks    += r.open_count;
+    acc.overdueTasks += r.overdue_count;
+  }
+  return out;
+}
+
+/**
+ * One person's project work as individual rows, for the timeline on the People
+ * screen. Checklist steps and commitments, both carrying their due date so the
+ * caller can place them on a day.
+ */
+async function getPersonProjectItems(userId, orgId) {
+  const today = toDateStr(new Date());
+
+  const { rows: plays } = await pool.query(
+    `SELECT ppi.id, ppi.title, ppi.due_date::text AS due_date, ppi.status,
+            COALESCE(h.name, d.name) AS project, h.id AS handover_id,
+            COALESCE(h.tracking_mode, 'timeboxed') AS tracking_mode
+       FROM project_play_instances ppi
+       JOIN sales_handovers h ON h.id = ppi.handover_id AND h.org_id = ppi.org_id
+       LEFT JOIN deals d ON d.id = h.deal_id
+      WHERE ppi.org_id = $2 AND ppi.owner_user_id = $1
+        AND ppi.status NOT IN ('completed', 'skipped', 'cancelled')
+        AND h.status NOT IN ('completed', 'cancelled')
+        AND h.retired_at IS NULL
+      ORDER BY ppi.due_date NULLS LAST, ppi.id`,
+    [userId, orgId]);
+
+  const commitments = await _personCommitments(userId, orgId, { openOnly: true });
+
+  const shape = (r, kind) => ({
+    id:         `${kind}-${r.id}`,
+    kind,
+    title:      r.title || r.description,
+    project:    r.project || `Project #${r.handover_id}`,
+    handoverId: r.handover_id,
+    dueDate:    r.due_date,
+    isStanding: r.tracking_mode === 'standing',
+    isOverdue:  r.tracking_mode !== 'standing' && !!r.due_date && r.due_date < today,
+  });
+
+  return [
+    ...plays.map(r => shape(r, 'task')),
+    ...commitments.map(r => shape(r, 'commitment')),
+  ];
+}
+
 async function getPersonProjectSummary(userId, orgId) {
   const [projects, commitments] = await Promise.all([
     getTeamMemberProjects(userId, orgId),
@@ -5577,6 +5693,8 @@ module.exports = {
   list,
   getTeamMemberProjects,  // person drill-down
   getPersonProjectSummary, // daily work person view — cross-module (2026_133)
+  getProjectWorkloadByUser, // People screen — open/overdue per person
+  getPersonProjectItems,    // People screen — one person's project rows
   getPersonDashboard,     // person side-panel (individual dashboard)
   getContactCommunications, // customer-contact comms drill-down
   getCommitmentActivity,  // deliverable drill-down
