@@ -3164,7 +3164,12 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     } catch {
       setError(`Could not load this ${(h?.isStanding) ? 'initiative' : 'project'}. Try selecting it again.`);
     } finally { setLoading(false); }
-  }, [h.id]);
+    // h?.isStanding is here because the catch reads it to name the thing that
+    // failed to load. It is a primitive off the list row and does not change
+    // for a given initiative, so adding it does not make `load` churn — but
+    // CRA builds with CI=true, where react-hooks/exhaustive-deps is an error
+    // rather than a warning, so an omitted dependency fails the deploy.
+  }, [h.id, h?.isStanding]);
 
   // ── Project stages ────────────────────────────────────────────────────────
   // Declared before the play handlers that call it, and memoised so it can be
