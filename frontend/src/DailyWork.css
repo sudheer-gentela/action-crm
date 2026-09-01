@@ -286,3 +286,66 @@
 @media (prefers-reduced-motion: reduce) {
   .dw * { transition: none !important; animation: none !important; }
 }
+
+/* ── the edit surface: TABLE (desktop only) ─────────────────────────────
+ *
+ * An alternative to the cards above, not a replacement. The cards give each
+ * item ~600px of vertical space on a wide screen, which reads well for one
+ * item and turns a six-item day into scrolling. This is the same four daily
+ * fields laid out as a grid so the whole day is visible at once.
+ *
+ * Rendered only above the mobile breakpoint — DailyWorkView forces cards below
+ * it — so these rules do not need a media query to be safe. They are inside
+ * one anyway, so that a narrow desktop window cannot produce a five-column
+ * table squeezed to unusable widths if the JS breakpoint and the CSS one ever
+ * drift apart.
+ */
+@media (min-width: 769px) {
+  .dw-grid-wrap {
+    border: 1.5px solid var(--dw-line); border-radius: 10px;
+    background: var(--dw-paper); overflow: hidden;
+  }
+
+  /* FIXED, with widths from <colgroup>. Auto sizing lets a long item title
+   * widen its column until the typing space is squeezed off screen — the exact
+   * failure this layout exists to avoid. Fixed makes every cell wrap in place. */
+  .dw-grid { width: 100%; border-collapse: collapse; table-layout: fixed; }
+
+  .dw-grid th {
+    text-align: left; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--dw-ink-3); font-weight: 700;
+    padding: 10px 12px; border-bottom: 1.5px solid var(--dw-line);
+    background: #fbfcfe;
+  }
+
+  /* top, not middle: rows differ in height once one description wraps to four
+   * lines, and centred cells make a tidy grid look ragged. */
+  .dw-grid td {
+    padding: 10px 12px; vertical-align: top;
+    border-bottom: 1px solid var(--dw-line-2);
+  }
+  .dw-grid tbody tr:last-child td { border-bottom: none; }
+  .dw-grid tr.dropped .dw-grid-title { text-decoration: line-through; color: var(--dw-ink-3); }
+
+  /* overflow-wrap, not word-break: an unbroken 40-character item name has to
+   * break somewhere or it widens the column, but ordinary prose should still
+   * break at spaces. */
+  .dw-grid-item { overflow-wrap: anywhere; }
+  .dw-grid-title { font-size: 14px; font-weight: 700; line-height: 1.35; }
+  .dw-grid .dw-item-badges { margin-top: 5px; }
+  .dw-grid-more { margin-top: 6px; font-size: 12px; }
+
+  /* Tighter than the card textareas, whose 96px min-height is a phone
+   * affordance. Three rows is roughly what one day's line needs; resize stays
+   * vertical for the days it does not. */
+  .dw-grid .dw-grid-ta { min-height: 62px; padding: 8px 10px; line-height: 1.45; }
+  .dw-grid select { padding: 8px 10px; }
+  .dw-grid .dw-item-status { margin-top: 5px; font-size: 12px; }
+  .dw-grid .dw-foot { margin-top: 4px; }
+
+  .dw-grid tr.dw-grid-detail td {
+    background: #fbfcfe; padding: 12px 14px 16px;
+    border-bottom: 1px solid var(--dw-line-2);
+  }
+  .dw-grid tr.dw-grid-detail .dw-field:first-child { margin-top: 0; }
+}

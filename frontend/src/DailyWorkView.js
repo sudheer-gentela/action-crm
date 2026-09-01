@@ -100,6 +100,23 @@ export default function DailyWorkView() {
     return (t === 'setup' && !isOrgAdmin()) ? 'day' : t;
   });
   const [mode, setMode] = useState('log');
+  // 'table' | 'cards' for the edit surface. Persisted, because it is a working
+  // preference rather than a per-visit choice — someone who wants the grid
+  // wants it every morning. Read defensively: a corrupt or absent value falls
+  // back to the table, which is the denser of the two and what the screen is
+  // for on a wide monitor.
+  const [layout, setLayout] = useState(() => {
+    try {
+      return localStorage.getItem('gw_dailywork_layout') === 'cards' ? 'cards' : 'table';
+    } catch { return 'table'; }
+  });
+  const setLayoutPref = useCallback((next) => {
+    setLayout(next);
+    try { localStorage.setItem('gw_dailywork_layout', next); } catch { /* private mode */ }
+  }, []);
+  // Which row has its details panel open in the table. One at a time: the panel
+  // spans the full width, so two open at once pushes the rest off screen.
+  const [expandedRow, setExpandedRow] = useState(null);
   const [me] = useState(currentUserId);
   const [canSetUp] = useState(isOrgAdmin);
   const [myRate, setMyRate] = useState(null);  // my row from the rollup
@@ -466,6 +483,17 @@ export default function DailyWorkView() {
               Edit rows
             </button>
           </div>
+          {mode === 'edit' && !isMobile && (
+            // Only in edit mode, and only where a five-column grid fits. On a
+            // phone the cards are the layout, so a toggle offering the other
+            // one would be a control with no effect.
+            <div className="dw-toggle" role="group" aria-label="Layout">
+              <button type="button" aria-pressed={layout === 'table'}
+                      onClick={() => setLayoutPref('table')}>Table</button>
+              <button type="button" aria-pressed={layout === 'cards'}
+                      onClick={() => setLayoutPref('cards')}>Cards</button>
+            </div>
+          )}
           {mode === 'edit' && (
             // On a phone the save lives here rather than in a sticky bottom bar:
             // iOS moves bottom-fixed elements when the keyboard opens.
@@ -510,7 +538,7 @@ export default function DailyWorkView() {
                   </button>
                 </div>
               </div>
-            ) : (
+            ) : (isMobile || layout === 'cards') ? (
               <div className="dw-items">
                 {rows.map(row => (
                   <ItemCard
@@ -529,6 +557,19 @@ export default function DailyWorkView() {
                   />
                 ))}
               </div>
+            ) : (
+              <ItemTable
+                rows={rows}
+                drafts={drafts}
+                rowErrors={rowErrors}
+                activityTypes={activityTypes}
+                expanded={expandedRow}
+                onExpand={setExpandedRow}
+                setDraft={setDraft}
+                setItemActivity={setItemActivity}
+                retireItem={retireItem}
+                onEvidence={load}
+              />
             )}
 
             <div className="dw-add">
@@ -886,6 +927,187 @@ function PastDay({ day }) {
 }
 
 /* ── one work item ──────────────────────────────────────────────────── */
+
+/**
+ * The edit surface as a TABLE — one row per work item.
+ *
+ * WHY THIS EXISTS ALONGSIDE ItemCard. The card layout gives each item a
+ * heading, a prior-entry line, four labelled fields and an evidence block, and
+ * on a wide screen that is roughly 600px of chrome per item. It reads well for
+ * one item and badly for six: logging a day becomes scrolling, and the thing a
+ * person actually wants — to see every item at once and type a line against
+ * each — is the one thing it does not offer.
+ *
+ * WHAT MOVES AND WHAT DOES NOT. The four fields written EVERY day (description,
+ * activity, stage, next steps) are the columns. Everything written rarely or
+ * read occasionally — the prior entry, evidence, retiring a recurring item —
+ * goes behind a per-row expander rather than being dropped, because losing the
+ * only route to attaching evidence would be a worse trade than the space it
+ * costs.
+ *
+ * table-layout: fixed with explicit widths, so a long item title wraps inside
+ * its column instead of stretching the table and pushing the typing space off
+ * screen. That is the whole point of the layout and it does not survive auto
+ * table sizing.
+ *
+ * DESKTOP ONLY. Five columns of inputs do not fit a 380px viewport, and the
+ * cards are already the mobile answer — DailyWorkView keeps them there
+ * regardless of this preference.
+ */
+function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
+                     setDraft, setItemActivity, retireItem, onEvidence }) {
+  return (
+    <div className="dw-grid-wrap">
+      <table className="dw-grid">
+        <colgroup>
+          <col style={{ width: '20%' }} />
+          <col style={{ width: '40%' }} />
+          <col style={{ width: '15%' }} />
+          <col style={{ width: '11%' }} />
+          <col style={{ width: '14%' }} />
+        </colgroup>
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>What did you do today</th>
+            <th>Activity</th>
+            <th>Stage</th>
+            <th>Next steps</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(row => {
+            const draft       = drafts[row.item_id] || {};
+            const description = draft.description || '';
+            const length      = description.length;
+            const overSoft    = length >= SOFT_LIMIT;
+            const overHard    = length > HARD_LIMIT;
+            const stage       = draft.dayStage || 'in_progress';
+            const closed      = stage === 'completed' || stage === 'dropped';
+            const isOpen      = expanded === row.item_id;
+            const error       = rowErrors[row.item_id];
+
+            return (
+              <React.Fragment key={row.item_id}>
+                <tr className={stage === 'dropped' ? 'dropped' : ''}>
+                  <td className="dw-grid-item">
+                    <div className="dw-grid-title">{row.title}</div>
+                    <div className="dw-item-badges">
+                      {row.kind === 'assigned'
+                        ? <span className="dw-badge assigned">one-off</span>
+                        : <span className="dw-badge">recurring</span>}
+                      {row.assigned_by && <span className="dw-badge assigned">assigned</span>}
+                      {row.account_name && <span className="dw-badge">{row.account_name}</span>}
+                      {stage === 'in_review' && <span className="dw-badge review">in review</span>}
+                    </div>
+                    {/* One control for everything that is not a daily field.
+                        Labelled with what it opens rather than a bare chevron,
+                        because evidence is in there and nobody hunts for it. */}
+                    <button type="button" className="dw-btn-link dw-grid-more"
+                            aria-expanded={isOpen}
+                            onClick={() => onExpand(isOpen ? null : row.item_id)}>
+                      {isOpen ? 'Hide details' : 'History, evidence…'}
+                    </button>
+                  </td>
+
+                  <td>
+                    <textarea
+                      aria-label={`What did you do today on ${row.title}`}
+                      className={`dw-grid-ta ${overHard ? 'over' : overSoft ? 'warn' : ''}`}
+                      rows={3}
+                      value={description}
+                      placeholder="What did you actually do?"
+                      onChange={e => setDraft(row.item_id, { description: e.target.value })}
+                    />
+                    {(error || overSoft) && (
+                      <div className="dw-foot">
+                        {error && <span className="dw-err">{error}</span>}
+                        {overSoft && (
+                          <span className={`dw-count ${overHard ? 'over' : 'warn'}`}>
+                            {length} / {HARD_LIMIT}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </td>
+
+                  <td>
+                    <ActivityPicker
+                      id={`dw-grid-activity-${row.item_id}`}
+                      types={activityTypes}
+                      value={row.activity_type_key}
+                      onPick={(value, freeText) => setItemActivity(row.item_id, value, freeText)}
+                    />
+                  </td>
+
+                  <td>
+                    <select aria-label={`Stage for ${row.title}`} value={stage}
+                            onChange={e => setDraft(row.item_id, { dayStage: e.target.value })}>
+                      {STAGES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                    </select>
+                    {row.kind === 'recurring' && closed && (
+                      <div className="dw-item-status">Back tomorrow.</div>
+                    )}
+                  </td>
+
+                  <td>
+                    <textarea
+                      aria-label={`Next steps for ${row.title}`}
+                      className="dw-grid-ta"
+                      rows={3}
+                      value={draft.nextSteps || ''}
+                      placeholder="What happens tomorrow?"
+                      onChange={e => setDraft(row.item_id, { nextSteps: e.target.value })}
+                    />
+                  </td>
+                </tr>
+
+                {isOpen && (
+                  <tr className="dw-grid-detail">
+                    <td colSpan={5}>
+                      {row.prior_description ? (
+                        <div className="dw-prior">
+                          <b>{formatDate(row.prior_date)}:</b> {row.prior_description}
+                          {' '}
+                          <button className="dw-btn-link"
+                                  onClick={() => setDraft(row.item_id,
+                                    { description: row.prior_description })}>
+                            Start from this
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="dw-prior empty"><b>No earlier entry</b> for this item.</div>
+                      )}
+
+                      <div className="dw-field">
+                        <label>Evidence</label>
+                        {!row.entry_id ? (
+                          <div className="dw-item-status">
+                            Save the day first, then you can attach to it.
+                          </div>
+                        ) : (
+                          <EvidenceList entryId={row.entry_id} closed={closed}
+                                        onChange={onEvidence} />
+                        )}
+                      </div>
+
+                      {row.kind === 'recurring' && (
+                        <div className="dw-field">
+                          <RetireControl title={row.title}
+                                         onRetire={() => retireItem(row.item_id)} />
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 function ItemCard({ row, draft, error, isOpen, onToggle, onChange, onEvidence, collapsible,
                    activityTypes, onActivity, onRetire }) {
