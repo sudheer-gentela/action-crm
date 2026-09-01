@@ -1140,6 +1140,24 @@ async function update(handoverId, orgId, data, userId = null) {
     commercialTermsSummary,
   } = data;
 
+  // Trimmed and length-checked here rather than left to the column. name is
+  // plain text with no length limit, so a paste accident becomes a 4,000
+  // character heading on every board it appears on. Undefined stays undefined
+  // so the COALESCE below leaves the existing name alone; a blank string is a
+  // refusal, since sales_handovers_name_required_chk would reject it anyway
+  // and a constraint name is not a message anybody can act on.
+  let name;
+  if (data.name !== undefined) {
+    name = String(data.name).trim();
+    if (!name) {
+      throw Object.assign(new Error('A name is required.'), { status: 400 });
+    }
+    if (name.length > 200) {
+      throw Object.assign(new Error('That name is too long (200 characters max).'),
+        { status: 400 });
+    }
+  }
+
   // 2026_133. Without this, setting a date on a standing initiative reaches
   // chk_sh_standing_no_go_live and surfaces as a 500 with a constraint name in
   // it. Same rule, said in words.
@@ -1165,19 +1183,36 @@ async function update(handoverId, orgId, data, userId = null) {
     await client.query('BEGIN');
 
     ({ rows } = await client.query(
+      // name joins the settable columns here (previously the only way to fix a
+      // typo was to delete the project and everything under it, which for a
+      // standing initiative means losing the container every daily work item
+      // is anchored to).
+      //
+      // Safe to change freely: nothing keys off the name. Daily work anchors
+      // store anchor_id, getAnchorOptions reads the name live, and the two
+      // getPersonProjectItems queries resolve it per call. There is no snapshot
+      // to go stale — unlike department_team_id, which is deliberately frozen
+      // at write time.
+      //
+      // COALESCE like the rest, so omitting name leaves it alone. That does
+      // mean a name cannot be cleared through this path, which is correct:
+      // sales_handovers_name_required_chk demands a non-blank name for any row
+      // without a deal, and every standing initiative is such a row.
       `UPDATE sales_handovers
        SET assigned_service_owner_id = COALESCE($1, assigned_service_owner_id),
            go_live_date              = COALESCE($2, go_live_date),
            contract_value            = COALESCE($3, contract_value),
            commercial_terms_summary  = COALESCE($4, commercial_terms_summary),
+           name                      = COALESCE($5, name),
            updated_at                = NOW()
-       WHERE id = $5 AND org_id = $6
+       WHERE id = $6 AND org_id = $7
        RETURNING *`,
       [
         assignedServiceOwnerId ?? null,
         goLiveDate ?? null,
         contractValue ?? null,
         commercialTermsSummary ?? null,
+        name ?? null,
         handoverId,
         orgId,
       ]

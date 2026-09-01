@@ -2878,6 +2878,35 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   });
   const [expandedPlays, setExpandedPlays] = useState({});
 
+  // Rename, from the header.
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft,   setNameDraft]   = useState('');
+  const [nameErr,     setNameErr]     = useState('');
+
+  // Terminal projects are read-only in update() — it refuses with "A completed
+  // project cannot be edited" — so the control is hidden rather than left to
+  // fail on save. Derived from h directly rather than from the isTerminal
+  // further down this file: that one is a local inside the load callback, so
+  // referencing it here would be a temporal-dead-zone error at render.
+  // dealName being absent is the real condition: see the comment at the render
+  // site.
+  const nameEditable =
+    h?.status !== 'completed' && h?.status !== 'cancelled' &&
+    !h?.dealName && !h?.projectName;
+
+  const saveName = useCallback(async () => {
+    const next = nameDraft.trim();
+    setEditingName(false);
+    if (!next || next === (h?.name || '')) { setNameErr(''); return; }
+    try {
+      await apiService.handovers.update(h.id, { name: next });
+      setNameErr('');
+      onRefresh?.();
+    } catch (err) {
+      setNameErr(err?.response?.data?.error?.message || 'Could not rename that.');
+    }
+  }, [nameDraft, h, onRefresh]);
+
   // The task a deep link asked for. Read from a module-level handoff rather
   // than a prop: HandoverDetail is mounted by HandoverView only AFTER the
   // project resolves, so the event that carried the id fired before this
@@ -2928,6 +2957,20 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   const [detailTab, setDetailTab] = useState(initialTab || 'summary'); // 'summary' | 'details' | 'communications'
   // Keep the parent (and thus the URL hash) in step with the open sub-tab.
   useEffect(() => { onTabChange?.(detailTab); }, [detailTab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A tab that an initiative no longer has must not stay selected. Three ways
+  // to land on one: a saved tab preference from a time-boxed project, a pasted
+  // #/handovers/initiatives/<id>/boq link, or converting a project to standing
+  // while its Bill of quantities tab is open. In each case the rail button is
+  // gone but detailTab still names it, so the content renders with no way back
+  // to it — an orphaned view.
+  //
+  // Runs on detail, not on mount: isStanding is only known once the fetch
+  // returns.
+  useEffect(() => {
+    if (!detail?.isStanding) return;
+    if (['variance', 'boq', 'commercial'].includes(detailTab)) setDetailTab('summary');
+  }, [detail, detailTab]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -3325,7 +3368,34 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
         <div className="gw-wrap-mobile" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
           <div style={{ minWidth: 0 }}>
             <h3 style={{ margin: '0 0 4px', fontSize: 16, color: '#111827', overflowWrap: 'anywhere' }}>
-              {detail.projectName || detail.dealName || detail.name || `Project #${detail.id}`}
+              {/* Click to rename. Offered only where the name is the project's
+                  OWN — a deal-derived project shows detail.dealName, and
+                  editing that here would write sales_handovers.name while the
+                  heading kept rendering the deal's, so the change would look
+                  like it silently failed. Standing initiatives are always in
+                  the editable case: they have no deal by construction. */}
+              {nameEditable ? (
+                editingName ? (
+                  <input
+                    autoFocus value={nameDraft}
+                    onChange={e => setNameDraft(e.target.value)}
+                    onBlur={saveName}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') saveName();
+                      if (e.key === 'Escape') { setEditingName(false); setNameErr(''); }
+                    }}
+                    style={{ fontSize: 16, padding: '2px 6px', borderRadius: 6,
+                             border: '1px solid #93c5fd', minWidth: 260 }} />
+                ) : (
+                  <span onClick={() => { setNameDraft(detail.name || ''); setEditingName(true); }}
+                        title="Click to rename"
+                        style={{ cursor: 'pointer', borderBottom: '1px dashed #d1d5db' }}>
+                    {detail.name || `Project #${detail.id}`}
+                  </span>
+                )
+              ) : (
+                detail.projectName || detail.dealName || detail.name || `Project #${detail.id}`
+              )}
               {detail.isStanding && (
                 <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, padding: '2px 6px',
                                borderRadius: 999, background: '#ede9fe', color: '#5b21b6',
@@ -3337,6 +3407,9 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                                textTransform: 'uppercase', letterSpacing: 0.3 }}>Retired</span>
               )}
             </h3>
+            {nameErr && (
+              <div style={{ fontSize: 12, color: '#991b1b', marginBottom: 4 }}>{nameErr}</div>
+            )}
             <div style={{ fontSize: 13, color: '#6b7280' }}>{detail.accountName}</div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, position: 'relative' }}>
@@ -3604,12 +3677,22 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                       borderRight: '1px solid #e5e7eb', minHeight: 380 }}>
           {[
             { group: null,          items: [{ key: 'summary', label: 'Overview' }] },
+            // Checklist stays for initiatives: getPersonProjectItems returns
+            // tasks on standing projects — tracking_mode only stops them
+            // counting as OVERDUE — and the Daily Work deep link navigates to
+            // scope 'initiatives' with sub 'details', which is this tab. Hide
+            // it and that link lands nowhere.
+            //
+            // Plan vs actual and Bill of quantities go: the first reads
+            // handover_deliverable_rollup, which is go-live drift, and a
+            // standing initiative has no go-live date by constraint; the
+            // second reads boqs, which nothing outside its own tab touches.
             { group: 'Plan',        items: [
                 { key: 'details',  label: 'Checklist' },
-                { key: 'variance', label: 'Plan vs actual' }] },
-            { group: 'Commercial',  items: [
+                ...(detail.isStanding ? [] : [{ key: 'variance', label: 'Plan vs actual' }])] },
+            ...(detail.isStanding ? [] : [{ group: 'Commercial',  items: [
                 ...(detail.canSeeCommercial ? [{ key: 'commercial', label: 'Budget' }] : []),
-                { key: 'boq', label: 'Bill of quantities' }] },
+                { key: 'boq', label: 'Bill of quantities' }] }]),
             { group: 'Records',     items: [
                 { key: 'files',          label: 'Files' },
                 { key: 'communications', label: 'Communications' },
@@ -5175,7 +5258,45 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onG
             </div>
           ) : null,
         };
-        return order.map(k => cardNodes[k] ? (
+        // What an initiative shows.
+        //
+        // Checked against the backend rather than trimmed by eye — each of
+        // these was verified to have no reader that a standing initiative
+        // reaches:
+        //
+        //   customer  project_contacts. A standing initiative here is
+        //             project_kind 'internal', and sales_handovers_kind_shape_chk
+        //             GUARANTEES an internal project has no account. Nothing
+        //             to show and nothing that reads it.
+        //   playbook  the PlaybookPicker plus ServiceOwnerPicker. addPlay needs
+        //             only a title — stage_key defaults to 'custom' and
+        //             auto-registers — so no playbook is required to put tasks
+        //             on an initiative. The owner half is worse than useless:
+        //             createProject DROPS assigned_service_owner_id for
+        //             standing while update() persists it, so the same field
+        //             behaved differently depending on which screen you used.
+        //             Removing it here makes the two agree.
+        //   open_deliverables  a second view of the SAME rows as commitments —
+        //             allCommits.filter(open/in_progress). Redundant, not
+        //             load-bearing.
+        //   where_we_stand / completed  go-live progress. A standing
+        //             initiative has no go-live date by constraint
+        //             (chk_sh_standing_no_go_live), so there is no baseline to
+        //             stand against.
+        //
+        // next_steps (project_actions) is its own table read only by that
+        // panel, so it is safe to drop too.
+        //
+        // KEPT, and both deliberately: team, because members are the only
+        // answer to "whose is this" once an initiative has no owner; and
+        // commitments, because getPersonProjectItems returns commitments on
+        // standing initiatives (isStanding: c.tracking_mode === 'standing'),
+        // so they appear on people's timelines and need somewhere to live.
+        const visible = detail.isStanding
+          ? order.filter(k => ['team', 'commitments'].includes(k))
+          : order;
+
+        return visible.map(k => cardNodes[k] ? (
           <div key={k}
             onDragOver={e => { e.preventDefault(); setDragOverKey(k); }}
             onDragLeave={() => setDragOverKey(d => (d === k ? null : d))}
@@ -6449,11 +6570,23 @@ function CreateProjectModal({ users = [], managerLabel = 'Project Manager',
           </div>
         )}
 
+        {/* Both of these are meaningless for a standing initiative, and the
+            server already says so — createProject REFUSES a goLiveDate on one
+            (400: "A standing initiative has no end date") and silently DROPS
+            the owner, because an initiative has no owner by design and list()
+            explicitly stops counting one as unassigned for that reason.
+            Offering the fields anyway meant you could fill both in and find
+            out on submit — or worse, pick a manager, see it accepted, and
+            never learn it was discarded. Hidden rather than disabled: there is
+            nothing the person could do to make them apply. */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12, marginBottom: 14 }}>
+          {!standing && (
           <div>
             <label style={label}>Target date <span style={{ fontWeight: 400, color: '#9ca3af' }}>(optional)</span></label>
             <input style={input} type="date" value={goLive} onChange={e => setGoLive(e.target.value)} />
           </div>
+          )}
+          {!standing && (
           <div>
             {/* The label follows the org's own vocabulary — set once in
                 Settings and already used by the project list and detail header.
@@ -6519,6 +6652,7 @@ function CreateProjectModal({ users = [], managerLabel = 'Project Manager',
               </div>
             )}
           </div>
+          )}
         </div>
 
         {err && <div style={{ fontSize: 12, color: '#991b1b', marginBottom: 12 }}>{err}</div>}
@@ -6532,7 +6666,7 @@ function CreateProjectModal({ users = [], managerLabel = 'Project Manager',
             minHeight: 44, padding: '9px 18px', borderRadius: 8, fontSize: 13, fontWeight: 600,
             border: '1px solid #0369a1', background: '#0369a1', color: '#fff',
             cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? 0.6 : 1,
-          }}>{saving ? 'Creating…' : 'Create project'}</button>
+          }}>{saving ? 'Creating…' : (standing ? 'Create initiative' : 'Create project')}</button>
         </div>
       </div>
     </div>
