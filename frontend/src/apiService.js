@@ -1014,6 +1014,20 @@ twilio: {
     // add-item form, and the manager's merge target.
     listActivityTypes: () => api.get('/daily-work/activity-types'),
 
+    // The management screen's view: retired types included, so it can show
+    // what it retired and offer to bring it back. Pickers use the plain
+    // listActivityTypes above, which never returns retired ones.
+    listAllActivityTypes: () =>
+      api.get('/daily-work/activity-types', { params: { retired: 'true' } }),
+
+    // Manager/admin: add straight to the shared list, rename, retire, restore.
+    createActivityType: (label) =>
+      api.post('/daily-work/activity-types/manage', { label }),
+    renameActivityType: (key, label) =>
+      api.patch(`/daily-work/activity-types/${encodeURIComponent(key)}`, { label }),
+    setActivityTypeRetired: (key, retired) =>
+      api.patch(`/daily-work/activity-types/${encodeURIComponent(key)}`, { retired }),
+
     proposeActivityType: (label) => api.post('/daily-work/activity-types', { label }),
 
     // Changing an item's activity or anchor affects entries written FROM NOW

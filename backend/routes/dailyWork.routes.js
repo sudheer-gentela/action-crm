@@ -86,6 +86,9 @@ const dwDate     = require('../services/dailyWorkDate');
 // routes that use it degrade gracefully when the Projects module is off for an
 // org — see _projectSideOrEmpty below.
 const handoverService = require('../services/handover.service');
+// Role resolver, for the vocabulary gate below. Same one handovers.routes uses
+// for canManageStanding, so "manager and above" means one thing across both.
+const projectSettings = require('../services/projectSettings.service');
 
 router.use(authenticateToken, orgContext, requireModule('dailywork'));
 
@@ -209,6 +212,7 @@ router.get('/activity-types', async (req, res) => {
     // until a manager looks at it is a proposal nobody makes twice.
     res.json(await dailyWork.listActivityTypes(req.orgId, {
       includeCandidates: req.query.candidates !== 'false',
+      includeRetired: req.query.retired === 'true',
     }));
   } catch (err) { handle(res, err, 'GET /activity-types'); }
 });
@@ -638,14 +642,76 @@ router.post('/items/assign', async (req, res) => {
   } catch (err) { handle(res, err, 'POST /items/assign'); }
 });
 
+/**
+ * Who may reshape the org's shared activity vocabulary: manager and above.
+ *
+ * Promote and merge had NO gate at all — any member could accept a candidate
+ * into the shared list, or fold one type into another and move every entry
+ * with it. That is org-wide vocabulary being edited by anyone, and merge in
+ * particular is destructive in a way a member cannot undo.
+ *
+ * Same rule and same idiom as canManageStanding in handovers.routes: there is
+ * no 'manager' role, so management is a position in org_hierarchy. And the
+ * same failure direction — orgContext leaves subordinateIds empty when the
+ * hierarchy lookup errors, so a blip narrows this to owners and admins rather
+ * than opening it to everyone.
+ */
+async function canManageVocabulary(req) {
+  // Role is resolved, not read off req: orgContext sets req.orgId and
+  // req.subordinateIds and nothing else. Same resolver canManageStanding uses,
+  // so the two gates cannot come to disagree about who counts as an admin.
+  const role = await projectSettings.resolveRole(req.orgId, req.userId);
+  if (['owner', 'admin'].includes(role)) return true;
+  return (req.subordinateIds || []).length > 0;
+}
+
+async function requireVocabularyManager(req, res) {
+  if (await canManageVocabulary(req)) return true;
+  res.status(403).json({
+    error: 'Only a manager, admin or owner can change the shared activity list',
+  });
+  return false;
+}
+
+// Add straight to the shared list. Distinct from POST /activity-types, which
+// is the member's "Other" path and always yields a candidate.
+router.post('/activity-types/manage', async (req, res) => {
+  try {
+    if (!(await requireVocabularyManager(req, res))) return;
+    res.status(201).json(
+      await dailyWork.createActivityType(req.orgId, req.userId, (req.body || {}).label));
+  } catch (err) { handle(res, err, 'POST /activity-types/manage'); }
+});
+
+router.patch('/activity-types/:key', async (req, res) => {
+  try {
+    if (!(await requireVocabularyManager(req, res))) return;
+    const b = req.body || {};
+
+    // Rename and retire are separate operations on purpose. A single PATCH
+    // that did both would have to decide what "rename a retired type" means,
+    // and the screen never asks for both at once.
+    if (typeof b.label === 'string') {
+      return res.json(await dailyWork.renameActivityType(req.orgId, req.params.key, b.label));
+    }
+    if (typeof b.retired === 'boolean') {
+      return res.json(
+        await dailyWork.setActivityTypeRetired(req.orgId, req.params.key, b.retired));
+    }
+    res.status(400).json({ error: 'Send either label (to rename) or retired (to retire)' });
+  } catch (err) { handle(res, err, 'PATCH /activity-types/:key'); }
+});
+
 router.post('/activity-types/:key/promote', async (req, res) => {
   try {
+    if (!(await requireVocabularyManager(req, res))) return;
     res.json(await dailyWork.promoteActivityType(req.orgId, req.userId, req.params.key));
   } catch (err) { handle(res, err, 'POST /activity-types/:key/promote'); }
 });
 
 router.post('/activity-types/:key/merge', async (req, res) => {
   try {
+    if (!(await requireVocabularyManager(req, res))) return;
     const intoKey = (req.body || {}).intoKey;
     if (!intoKey) return res.status(400).json({ error: 'intoKey is required' });
     res.json(await dailyWork.mergeActivityType(req.orgId, req.userId, req.params.key, intoKey));

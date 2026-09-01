@@ -1,8 +1,10 @@
 // DailyWorkSetupView.js
 //
-// Owner and admin only. Two things live here, and both decide the DENOMINATOR
+// Owner and admin only. Three things live here. The last two decide the DENOMINATOR
 // of every rate in the module:
 //
+//   Activity list       the shared vocabulary for the KIND of work, which is
+//                       the only thing comparable across people
 //   Holiday calendars   which days are not expected of anyone on that calendar
 //   Working weeks       which weekdays each person is expected to log, and
 //                       which calendar applies to them
@@ -100,7 +102,7 @@ export default function DailyWorkSetupView() {
         <div>
           <h1>Daily work setup</h1>
           <div className="dw-sub">
-            Holiday calendars and working weeks — what every logging rate is measured against
+            The shared activity list, holiday calendars and working weeks
           </div>
         </div>
       </div>
@@ -125,8 +127,184 @@ export default function DailyWorkSetupView() {
         </div>
       )}
 
+      <ActivityTypeSection onRun={run} />
       <CalendarSection calendars={calendars} onRun={run} />
       <ScheduleSection schedules={schedules} calendars={calendars} onRun={run} />
+    </div>
+  );
+}
+
+
+/* ── activity types ─────────────────────────────────────────────────── */
+
+/**
+ * The org's shared activity vocabulary.
+ *
+ * WHY A SHARED LIST AT ALL. Anchors are select-only for a reason the module
+ * learned early: ten people free-typing container names produce three
+ * spellings of the same thing inside a fortnight. Activity types are the same
+ * bet applied to the KIND of work — and the payoff is the one thing an anchor
+ * cannot give you. The anchor answers "which initiative"; the activity type
+ * answers "what kind of work", and only the second is comparable across
+ * people. Without it "how much went into video editing across the team" has
+ * no answer, because every person's item title is their own wording.
+ *
+ * Loads its own data rather than taking it from the parent: nothing else on
+ * this screen needs it, and threading it through would mean the parent
+ * reloading calendars and schedules every time somebody renames a label.
+ *
+ * Retired types are fetched too. The list has to show what it retired in
+ * order to offer bringing it back — a retire button that makes the row vanish
+ * with no way to undo is a delete wearing a softer word.
+ */
+function ActivityTypeSection({ onRun }) {
+  const [types, setTypes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [label, setLabel] = useState('');
+  const [editing, setEditing] = useState(null);   // key being renamed
+  const [draft, setDraft] = useState('');
+
+  const load = useCallback(() => {
+    setLoading(true);
+    apiService.dailyWork.listAllActivityTypes()
+      .then(({ data }) => setTypes(data || []))
+      .catch(() => setTypes([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  // onRun reloads the PARENT's data, which this section does not use, so each
+  // action reloads locally too. Passed through anyway for its error banner:
+  // the server's message is the useful one, and it already knows how to show
+  // it — "that name was merged into X, use that instead" is worth reading.
+  const act = (fn, okText) => onRun(async () => { await fn(); load(); }, okText);
+
+  const add = () => {
+    const clean = label.trim();
+    if (!clean) return;
+    act(() => apiService.dailyWork.createActivityType(clean),
+        `"${clean}" added to the shared list`);
+    setLabel('');
+  };
+
+  const active    = types.filter(t => t.status === 'active');
+  const candidate = types.filter(t => t.status === 'candidate');
+  const retired   = types.filter(t => t.status === 'retired');
+
+  const row = (t) => (
+    <div className="dw-dayrow" key={t.key}>
+      {editing === t.key ? (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input value={draft} autoFocus onChange={e => setDraft(e.target.value)}
+                 onKeyDown={e => { if (e.key === 'Enter') {
+                   act(() => apiService.dailyWork.renameActivityType(t.key, draft.trim()), 'Renamed');
+                   setEditing(null);
+                 } }} />
+          <button className="dw-btn dw-btn-sm" onClick={() => {
+            act(() => apiService.dailyWork.renameActivityType(t.key, draft.trim()), 'Renamed');
+            setEditing(null);
+          }}>Save</button>
+          <button className="dw-btn dw-btn-sm" onClick={() => setEditing(null)}>Cancel</button>
+        </div>
+      ) : (
+        <>
+          <div className="dw-work">
+            <b>{t.label}</b>
+            {t.status === 'candidate' &&
+              <span className="dw-badge carried" style={{ marginLeft: 8 }}>proposed</span>}
+            {t.status === 'retired' &&
+              <span className="dw-badge" style={{ marginLeft: 8 }}>retired</span>}
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+            {t.status === 'candidate' && (
+              <button className="dw-btn dw-btn-sm" onClick={() =>
+                act(() => apiService.dailyWork.promoteActivityType(t.key),
+                    `"${t.label}" added to the shared list`)}>
+                Accept
+              </button>
+            )}
+            <button className="dw-btn dw-btn-sm" onClick={() => {
+              setEditing(t.key); setDraft(t.label);
+            }}>Rename</button>
+            {t.status === 'retired' ? (
+              <button className="dw-btn dw-btn-sm" onClick={() =>
+                act(() => apiService.dailyWork.setActivityTypeRetired(t.key, false),
+                    `"${t.label}" is back on the list`)}>
+                Bring back
+              </button>
+            ) : (
+              <button className="dw-btn dw-btn-sm" onClick={() =>
+                act(() => apiService.dailyWork.setActivityTypeRetired(t.key, true),
+                    `"${t.label}" retired`)}>
+                Retire
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="dw-card" style={{ marginBottom: 16 }}>
+      <div className="dw-card-head">
+        <h2>Activity list</h2>
+        <span className="m">
+          {loading ? 'Loading…'
+            : active.length === 0
+              ? 'Empty — nobody can classify their work yet'
+              : `${active.length} in use${candidate.length ? ` · ${candidate.length} proposed` : ''}`}
+        </span>
+      </div>
+
+      {/* Empty is the state every org starts in — nothing seeds this table —
+          and it is silent: the picker still works, it just offers only
+          "Other", so the vocabulary accretes one free-typed proposal at a
+          time in whatever wording came first. Say so. */}
+      {!loading && active.length === 0 && (
+        <div className="dw-item-body">
+          <div className="dw-note">
+            Nothing here yet. Until you add some, everyone picking "Kind of activity"
+            sees only <b>Other</b>, and each name they type arrives here as a separate
+            proposal — which is how the same work ends up under three different names.
+          </div>
+        </div>
+      )}
+
+      <div className="dw-item-body" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <input value={label} placeholder="e.g. Editing demo videos"
+               onChange={e => setLabel(e.target.value)}
+               onKeyDown={e => { if (e.key === 'Enter') add(); }}
+               style={{ flex: 1, minWidth: 220 }} />
+        <button className="dw-btn dw-btn-primary" onClick={add}>Add activity</button>
+      </div>
+
+      {candidate.length > 0 && (
+        <>
+          <div className="dw-item-body" style={{ paddingBottom: 0 }}>
+            <div className="dw-meta">
+              Proposed by someone picking "Other". Accept it, or rename it to match
+              something already on the list.
+            </div>
+          </div>
+          <div className="dw-daylog">{candidate.map(row)}</div>
+        </>
+      )}
+
+      {active.length > 0 && <div className="dw-daylog">{active.map(row)}</div>}
+
+      {retired.length > 0 && (
+        <>
+          <div className="dw-item-body" style={{ paddingBottom: 0 }}>
+            <div className="dw-meta">
+              Retired — not offered to anyone, but kept so past entries still read
+              correctly.
+            </div>
+          </div>
+          <div className="dw-daylog">{retired.map(row)}</div>
+        </>
+      )}
     </div>
   );
 }

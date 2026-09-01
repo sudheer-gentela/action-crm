@@ -616,16 +616,172 @@ async function getAnchorOptions(orgId) {
  * Sorted by sort_order then label so the seeded list keeps the order it was
  * seeded in and anything added later lands alphabetically after it.
  */
-async function listActivityTypes(orgId, { includeCandidates = true } = {}) {
+/**
+ * Derive the stable key for an activity label.
+ *
+ * ONE definition, used by both the member's "Other" path and the manager's
+ * add-to-list path. It was inline in propose before there was a second
+ * caller; two copies of this would mean 'LinkedIn Posts' and 'linkedin posts'
+ * could land on different keys depending on which screen typed them, which is
+ * exactly the vocabulary drift the shared list exists to prevent.
+ */
+function activityKey(label) {
+  return String(label).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+}
+
+async function listActivityTypes(orgId, { includeCandidates = true,
+                                          includeRetired = false } = {}) {
   return withOrgTransaction(orgId, async (client) => {
+    // 'merged' is never returned: a merged type has been folded into another
+    // and offering it would let someone file against a key that redirects.
+    // 'retired' IS returned on request, because the management screen has to
+    // show what it retired in order to bring it back, and because label
+    // lookup for historical entries needs it — the rollup groups on the raw
+    // key and has no join, so if a retired key cannot be resolved to a label
+    // it becomes an unlabelled bucket nobody can explain.
+    const statuses = ['active'];
+    if (includeCandidates) statuses.push('candidate');
+    if (includeRetired) statuses.push('retired');
+
     const { rows } = await client.query(
       `SELECT key, label, status, is_system, sort_order
          FROM daily_activity_types
         WHERE org_id = $1
           AND status = ANY($2)
         ORDER BY sort_order, label`,
-      [orgId, includeCandidates ? ['active', 'candidate'] : ['active']]);
+      [orgId, statuses]);
     return rows;
+  });
+}
+
+/**
+ * A manager or admin adds a type straight to the shared list.
+ *
+ * Distinct from proposeActivityType, which exists for MEMBERS and always
+ * produces a candidate. The difference is not the caller's convenience, it is
+ * who is allowed to shape the org's vocabulary: a member proposing gets a
+ * usable key immediately and a manager decides later, while a manager adding
+ * one has already made that decision. Routing an admin through
+ * propose-then-promote would work but would put a candidate in the review
+ * queue that the reviewer themselves just created.
+ *
+ * Reuses the same key derivation as propose, so 'LinkedIn Posts' typed here
+ * and 'linkedin posts' proposed by a member land on the SAME key and collide
+ * loudly rather than becoming two types that differ only in case.
+ */
+async function createActivityType(orgId, userId, label) {
+  const clean = String(label || '').trim();
+  if (!clean) throw new DailyWorkError('Give the activity a name', 'NO_LABEL');
+  const key = activityKey(clean);
+
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows: existing } = await client.query(
+      `SELECT key, label, status, merged_into_key FROM daily_activity_types
+        WHERE org_id = $1 AND key = $2`, [orgId, key]);
+
+    if (existing[0]) {
+      const e = existing[0];
+      // Every pre-existing state gets its own answer rather than one generic
+      // "already exists", because the right next action differs in each case
+      // and the screen shows this text.
+      if (e.status === 'active') {
+        throw new DailyWorkError(`"${e.label}" is already on the list`,
+          'ALREADY_ACTIVE', { key });
+      }
+      if (e.status === 'candidate') {
+        // Adding a name someone already proposed IS accepting it.
+        const { rows } = await client.query(
+          `UPDATE daily_activity_types SET status = 'active', updated_at = now()
+            WHERE org_id = $1 AND key = $2 RETURNING key, label, status`,
+          [orgId, key]);
+        return { ...rows[0], promotedExisting: true };
+      }
+      if (e.status === 'retired') {
+        const { rows } = await client.query(
+          `UPDATE daily_activity_types SET status = 'active', label = $3, updated_at = now()
+            WHERE org_id = $1 AND key = $2 RETURNING key, label, status`,
+          [orgId, key, clean]);
+        return { ...rows[0], reactivatedExisting: true };
+      }
+      throw new DailyWorkError(
+        `"${clean}" was merged into "${e.merged_into_key}" — use that instead`,
+        'ALREADY_MERGED', { key, mergedInto: e.merged_into_key });
+    }
+
+    const { rows } = await client.query(
+      `INSERT INTO daily_activity_types (org_id, key, label, is_system, status, created_by)
+       VALUES ($1,$2,$3,FALSE,'active',$4)
+       RETURNING key, label, status`,
+      [orgId, key, clean, userId]);
+    return rows[0];
+  });
+}
+
+/**
+ * Change what a type is CALLED. The key never moves.
+ *
+ * That separation is the whole point: entries store the key, so renaming is
+ * free and retroactive — every historical entry picks up the new wording. If
+ * the key moved, renaming would orphan every entry written before it.
+ *
+ * The consequence to be aware of: a type keyed 'linkedin_posts' can end up
+ * labelled "Instagram posts". Odd to read in the database, correct for the
+ * user, and the alternative (rewriting keys across every entry) is far worse.
+ */
+async function renameActivityType(orgId, key, label) {
+  const clean = String(label || '').trim();
+  if (!clean) throw new DailyWorkError('Give the activity a name', 'NO_LABEL');
+
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows } = await client.query(
+      `UPDATE daily_activity_types SET label = $3, updated_at = now()
+        WHERE org_id = $1 AND key = $2 AND status <> 'merged'
+        RETURNING key, label, status`,
+      [orgId, key, clean]);
+    if (!rows[0]) {
+      throw new DailyWorkError('No such activity type, or it has been merged away',
+        'NO_SUCH_TYPE', { key });
+    }
+    return rows[0];
+  });
+}
+
+/**
+ * Take a type out of circulation, or put it back.
+ *
+ * Retire, never delete — daily_work_entries.activity_type_key has no foreign
+ * key, so deleting would leave historical entries pointing at nothing and the
+ * manager rollup would group them into an unlabelled bucket rather than fail
+ * visibly. See 2026_134.
+ *
+ * Existing ITEMS keep the retired key too. They are not rewritten: an item is
+ * someone's ongoing work, and silently changing what it is classified as
+ * because an admin tidied the list would be a worse surprise than a stale
+ * label. It stops being offered for anything NEW, which is what retiring means.
+ */
+async function setActivityTypeRetired(orgId, key, retired) {
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows: current } = await client.query(
+      `SELECT status FROM daily_activity_types WHERE org_id = $1 AND key = $2`,
+      [orgId, key]);
+    if (!current[0]) {
+      throw new DailyWorkError('No such activity type', 'NO_SUCH_TYPE', { key });
+    }
+    // A merged type is already out of circulation and points somewhere else.
+    // Retiring it would say nothing; un-retiring it would resurrect a type
+    // whose entries now belong to its merge target.
+    if (current[0].status === 'merged') {
+      throw new DailyWorkError('That type was merged into another one',
+        'IS_MERGED', { key });
+    }
+
+    const next = retired ? 'retired' : 'active';
+    const { rows } = await client.query(
+      `UPDATE daily_activity_types SET status = $3, updated_at = now()
+        WHERE org_id = $1 AND key = $2
+        RETURNING key, label, status`,
+      [orgId, key, next]);
+    return rows[0];
   });
 }
 
@@ -649,7 +805,7 @@ async function proposeActivityType(orgId, userId, label) {
   const clean = (label || '').trim();
   if (!clean) throw new DailyWorkError('An activity type needs a name', 'BLANK_LABEL');
 
-  const key = clean.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+  const key = activityKey(clean);
   if (!key) throw new DailyWorkError('That name has no letters or digits in it', 'BAD_LABEL');
 
   return withOrgTransaction(orgId, async (client) => {
@@ -1215,6 +1371,9 @@ module.exports = {
   replaceEvidence,
   listDepartments,
   listActivityTypes,
+  createActivityType,
+  renameActivityType,
+  setActivityTypeRetired,
   updateItem,
   proposeActivityType,
   promoteActivityType,
