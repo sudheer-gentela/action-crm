@@ -17,16 +17,41 @@
  * `caughtErrors: none`, and React is kept alive by react/jsx-uses-react.
  */
 const fs = require('fs');
-const parser = require('@babel/parser');
-const traverse = require('@babel/traverse').default;
+
+// Same shape as the pg check in the three service harnesses: a missing dev
+// dependency is a setup problem, and a twelve-line MODULE_NOT_FOUND stack
+// buries the one sentence that fixes it.
+//
+// These two are dev-only and belong to this folder, NOT to the repo. Do not
+// add them to backend/package.json — nothing that ships needs a JS parser,
+// and putting them there would grow the deploy for a check that never runs
+// in it.
+let parser, traverse;
+try {
+  parser   = require('@babel/parser');
+  traverse = require('@babel/traverse').default;
+} catch {
+  console.error('\nRun this in this folder first:\n');
+  console.error('  npm install @babel/parser @babel/traverse\n');
+  console.error('Dev-only, and only for this script. Nothing in the repo needs them.\n');
+  process.exit(2);
+}
 
 const files = process.argv.slice(2);
+if (files.length === 0) {
+  console.error('\nUsage: node verify_frontend.js <file.js> [file.js ...]\n');
+  console.error('e.g.  node verify_frontend.js ' +
+    'C:\\Projects\\action-crm-clean\\frontend\\src\\DailyWorkView.js\n');
+  process.exit(2);
+}
 let failures = 0;
 
 const fail = (file, msg) => { failures++; console.log(`  FAIL  ${file}: ${msg}`); };
 
 for (const file of files) {
-  const src = fs.readFileSync(file, 'utf8');
+  let src;
+  try { src = fs.readFileSync(file, 'utf8'); }
+  catch (e) { fail(file, `could not read: ${e.message}`); continue; }
 
   let ast;
   try {
@@ -108,7 +133,7 @@ for (const file of files) {
   const GLOBALS = new Set(['String', 'Object', 'Number', 'Boolean', 'Array', 'Date',
     'Math', 'JSON', 'Promise', 'Map', 'Set', 'WeakMap', 'RegExp', 'Error', 'Intl',
     'Symbol', 'Infinity', 'NaN', 'Fragment', 'FormData', 'Blob', 'File', 'URL',
-    'FileReader', 'Image', 'Event', 'CustomEvent', 'Intersection', 'AbortController', 'URLSearchParams', 'Notification', 'WebSocket']);
+    'FileReader', 'Image', 'Event', 'CustomEvent', 'Intersection', 'AbortController', 'URLSearchParams', 'Notification', 'WebSocket', 'Proxy', 'Reflect', 'Module', 'Buffer']);
 
   for (const n of used) {
     if (GLOBALS.has(n)) continue;

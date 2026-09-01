@@ -32,6 +32,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
 import { hashSegment, writeHash } from './hashNav';
+import { ProjectItemRow } from './dailyWorkProjectLink';
 import DailyWorkTeamView from './DailyWorkTeamView';
 import DailyWorkSetupView from './DailyWorkSetupView';
 import useIsMobile from './useIsMobile';
@@ -474,6 +475,8 @@ export default function DailyWorkView() {
         onOpenTeam={() => setTab('team')}
       />
 
+      <MyProjectWork me={me} />
+
       {mode === 'log'
         ? <DayLog day={day} rows={rows} written={written} drafts={drafts} saved={saved}
                   history={history.filter(h => h.entry_date !== day.entryDate)}
@@ -681,6 +684,75 @@ function WaitingPanel({ me, hasReports, rows, drafts, stalled, candidates, onOpe
             </div>
             <div className="dw-meta">{i.why}</div>
           </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * My own project work — the same rows my manager sees on my timeline.
+ *
+ * Deliberately the SAME component and the SAME endpoint the People screen
+ * uses, not a lighter version. GET /people/:userId already answers for the
+ * viewer themselves, because getVisibleUserIds returns [viewer, ...reports] —
+ * so nothing new was needed on the server, and asking the same question the
+ * same way means the two screens cannot come to disagree about what I am late
+ * for. A manager saying "you have four overdue" and My day showing three is
+ * the failure this shape rules out.
+ *
+ * Only rendered when there is something to show. An empty card on the screen
+ * whose job is logging today is noise, and the module works fine for orgs with
+ * no Projects module at all — where this call returns nothing and this stays
+ * invisible.
+ */
+function MyProjectWork({ me }) {
+  const [items, setItems] = useState([]);
+  const [notice, setNotice] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    apiService.dailyWork.person(me, {})
+      .then(({ data }) => { if (alive) setItems(data.projectItems || []); })
+      // Silent. The Projects module may be off for this org, and My day has to
+      // keep working regardless — the same reason the route wraps its own
+      // project side in _projectSideOrEmpty.
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [me]);
+
+  if (items.length === 0) return null;
+
+  const overdue = items.filter(i => i.isOverdue);
+  // A person row is what ProjectItemRow expects, and on this screen the person
+  // is me. Built here rather than fetched: the crumb only needs an id and a
+  // name to come back to, and the rollup that would supply one is a manager's
+  // call that an individual has no reason to make.
+  const person = { user_id: me, first_name: 'My', last_name: 'day' };
+
+  return (
+    <div className="dw-card" style={{ marginBottom: 14 }}>
+      <div className="dw-card-head">
+        <h2>My project work</h2>
+        <span className="m">
+          {items.length} open
+          {overdue.length > 0 && ` · ${overdue.length} overdue`}
+        </span>
+      </div>
+
+      {notice && (
+        <div className="dw-banner warn" style={{ margin: '10px 12px 0' }}>
+          {notice}
+          <button className="dw-btn dw-btn-sm" style={{ marginLeft: 10 }}
+                  onClick={() => setNotice(null)}>Dismiss</button>
+        </div>
+      )}
+
+      <div className="dw-daylog">
+        {items.map(i => (
+          <ProjectItemRow key={i.id} item={i} person={person}
+                          period={null} anchorDate={null} filters={null}
+                          onRefuse={setNotice} />
         ))}
       </div>
     </div>

@@ -912,7 +912,24 @@ async function list(orgId, userId, { scope = 'mine', status, kind = null, subord
        r.commitments_closed::int                 AS r_commitments_closed,
        r.commitments_overdue::int                AS r_commitments_overdue,
        r.days_to_go_live                         AS r_days_to_go_live,
-       r.is_closeable                            AS r_is_closeable
+       r.is_closeable                            AS r_is_closeable,
+       -- Who is on this project (2026_133 initiatives need it most: an
+       -- initiative has no owner by design, so the member list is the only
+       -- answer to "whose is this").
+       --
+       -- A LATERAL, not another LEFT JOIN. Every join above multiplies rows
+       -- and is absorbed by COUNT(DISTINCT ...); a member join would do the
+       -- same, but array_agg has no DISTINCT-friendly equivalent that also
+       -- preserves order, and stapling it onto the existing GROUP BY would
+       -- make it depend on how many plays the project happens to have. The
+       -- lateral runs once per project and cannot be perturbed by its
+       -- neighbours.
+       --
+       -- Active members only. 'pending' is a REQUEST to join, not membership,
+       -- and counting requests as people on the project would mean a board
+       -- that says three when one person can actually see it.
+       m.member_count::int                       AS member_count,
+       m.member_names                            AS member_names
      FROM sales_handovers h
      LEFT JOIN deals    d ON d.id  = h.deal_id
      LEFT JOIN accounts a ON a.id  = h.account_id
@@ -921,10 +938,21 @@ async function list(orgId, userId, { scope = 'mine', status, kind = null, subord
      LEFT JOIN project_play_instances shp ON shp.handover_id = h.id
      LEFT JOIN project_contacts s  ON s.context_type = 'handover' AND s.context_id = h.id
      LEFT JOIN handover_deliverable_rollup r  ON r.handover_id = h.id
+     LEFT JOIN LATERAL (
+       SELECT COUNT(*)::int AS member_count,
+              array_agg(mu.first_name || ' ' || mu.last_name ORDER BY mu.first_name) AS member_names
+         FROM project_members pm
+         JOIN users mu ON mu.id = pm.user_id
+        WHERE pm.context_type = 'handover'
+          AND pm.context_id   = h.id
+          AND pm.org_id       = h.org_id
+          AND pm.status       = 'active'
+     ) m ON TRUE
      WHERE ${conditions.join(' AND ')}
      GROUP BY h.id, d.name, a.name, u_so.first_name, u_so.last_name, u_cb.first_name, u_cb.last_name,
               r.plays_overdue, r.gates_open, r.commitments_total, r.commitments_closed,
-              r.commitments_overdue, r.days_to_go_live, r.is_closeable
+              r.commitments_overdue, r.days_to_go_live, r.is_closeable,
+              m.member_count, m.member_names
      ORDER BY h.created_at DESC`,
     params
   );
@@ -944,6 +972,10 @@ async function list(orgId, userId, { scope = 'mine', status, kind = null, subord
     totalPlays:      r.total_plays,
     completedPlays:  r.completed_plays,
     stakeholderCount: r.stakeholder_count,
+    memberCount:      r.member_count ?? 0,
+    // array_agg over no rows is NULL, not an empty array — the ?? is doing
+    // real work, not defensive padding.
+    memberNames:      r.member_names ?? [],
     // Deliverable rollup (2026_64) — drives the list-row chips.
     playsOverdue:       r.r_plays_overdue        ?? 0,
     gatesOpen:          r.r_gates_open           ?? 0,

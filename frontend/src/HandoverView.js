@@ -361,6 +361,7 @@ function InitiativesBoard({ initiatives, searchTerm, setSearchTerm, showRetired,
             <thead><tr>
               <th style={th}>Initiative</th>
               <th style={th}>Kind</th>
+              <th style={th}>Who is on it</th>
               <th style={th}>Started</th>
               <th style={{ ...th, textAlign: 'right' }}></th>
             </tr></thead>
@@ -384,6 +385,23 @@ function InitiativesBoard({ initiatives, searchTerm, setSearchTerm, showRetired,
                   </td>
                   <td style={{ ...td, color: '#6b7280' }}>
                     {h.projectKind === 'internal' ? 'Internal' : 'Retainer'}
+                  </td>
+                  {/* An initiative has no owner by design — list() explicitly
+                      stops counting one as unassigned for that reason — so the
+                      member list is the only answer to "whose is this". Nobody
+                      on it is a real state worth seeing from the board, not an
+                      empty cell: it means work can be logged against something
+                      no one is attached to. */}
+                  <td style={td}>
+                    {(h.memberCount || 0) === 0 ? (
+                      <span style={{ fontSize: 12, color: '#b45309' }}>Nobody yet</span>
+                    ) : (
+                      <div style={{ fontSize: 12, color: '#6b7280' }}
+                           title={(h.memberNames || []).join(', ')}>
+                        {(h.memberNames || []).slice(0, 2).join(', ')}
+                        {h.memberCount > 2 && ` +${h.memberCount - 2}`}
+                      </div>
+                    )}
                   </td>
                   <td style={{ ...td, color: '#6b7280' }}>{h.createdAt ? fmtDate(h.createdAt) : '—'}</td>
                   <td style={{ ...td, textAlign: 'right' }}>

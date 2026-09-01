@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict E9fPsqjKbEYzvnDybYqe0J1p4mH7JtdIdh00U5SZkd8MiIGcArgS36Lu9NpbJ6r
+\restrict flbzoHfjjbzvFTDogSto4bwCiP9AQCoqqHOWQbkiMpvHqLoZr6RLBFJnlUNjxBK
 
 -- Dumped from database version 17.11 (Debian 17.11-1.pgdg13+2)
 -- Dumped by pg_dump version 18.1
@@ -26516,5 +26516,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict E9fPsqjKbEYzvnDybYqe0J1p4mH7JtdIdh00U5SZkd8MiIGcArgS36Lu9NpbJ6r
+\unrestrict flbzoHfjjbzvFTDogSto4bwCiP9AQCoqqHOWQbkiMpvHqLoZr6RLBFJnlUNjxBK
 

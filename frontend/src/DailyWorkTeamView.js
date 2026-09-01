@@ -32,6 +32,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
 import { hashIdSegment, hashSegment, writeHash } from './hashNav';
+import { ProjectItemRow } from './dailyWorkProjectLink';
 import './DailyWork.css';
 
 const PERIODS = [
@@ -691,107 +692,6 @@ function CopyLinkButton() {
     <button className="dw-btn" onClick={copy}
             title="Link to this person. Opens on the recipient's own period and filters.">
       {state === 'done' ? 'Link copied' : 'Copy link'}
-    </button>
-  );
-}
-
-/**
- * The return crumb.
- *
- * Written when someone leaves Daily Work for a project, read by HandoverView
- * to offer a way back. Same shape as AgencyView's 'gwc_agency_deeplink':
- * JSON in sessionStorage, plus a CustomEvent for the case where the target
- * view is already mounted.
- *
- * sessionStorage rather than the URL, for three reasons that all point the
- * same way. writeHash uses history.replaceState on purpose — see hashNav.js,
- * "so the Back button keeps meaning leave the app" — so browser Back was
- * never going to bring anyone back here, and the return has to be explicit UI
- * either way. It survives a refresh, which is what someone mid-task needs. And
- * a pasted link must NOT tell the recipient to go back to Priya's day: they
- * were never there, and that crumb would be a lie about their own history.
- *
- * The period and anchor date travel with it because the People screen keeps
- * them in component state, not in the URL, and the module unmounts on tab
- * switch. Without them a manager on Week comes back to Day and has to find
- * their place again, which is the exact friction this is meant to remove.
- */
-const RETURN_KEY = 'gwc_dailywork_return';
-
-function writeReturnCrumb(person, period, anchorDate, filters) {
-  try {
-    sessionStorage.setItem(RETURN_KEY, JSON.stringify({
-      userId:  person.user_id,
-      name:    `${person.first_name} ${person.last_name}`.trim(),
-      period:  period || null,
-      anchor:  anchorDate || null,
-      filters: filters || null,
-    }));
-  } catch { /* private mode, quota — the link still works, just no crumb back */ }
-}
-
-/**
- * One project task or commitment on someone's timeline.
- *
- * Checks the link before navigating rather than after. The basis for offering
- * it is derived — this person, in your team, has this task open — and that can
- * lapse between the page loading and the click. Navigating first and
- * discovering it there would dump the manager on a project with no explanation
- * of why they are looking at it.
- *
- * Commitments are NOT linked. They live on the same details tab, but nothing
- * scrolls to a specific one and the derived check keys on project tasks, so a
- * link would land somewhere vague. Left as a plain row until that is built.
- */
-function ProjectItemRow({ item, person, period, anchorDate, filters, onRefuse }) {
-  const [busy, setBusy] = useState(false);
-  const linkable = item.kind === 'task' && !!item.handoverId;
-
-  const open = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const { data } = await apiService.dailyWork.checkProjectLink(person.user_id, item.handoverId);
-      writeReturnCrumb(person, period, anchorDate, filters);
-      window.dispatchEvent(new CustomEvent('open-project-task', {
-        detail: { handoverId: item.handoverId, scope: data.scope, sub: 'details' },
-      }));
-    } catch (err) {
-      // The server's sentence, not ours. It knows which of the several ways
-      // the basis can lapse actually happened; a generic "could not open"
-      // here would throw that away.
-      onRefuse?.(err?.response?.data?.reason
-        || 'That project could not be opened just now.');
-      setBusy(false);
-    }
-  };
-
-  const body = (
-    <>
-      <div className="t">
-        <span className={`dw-badge ${item.isOverdue ? 'carried' : ''}`}>
-          {item.kind === 'commitment' ? 'commitment due' : 'task due'}
-        </span>
-        <b>{item.title}</b>
-        {item.isOverdue && <span className="dw-badge carried">overdue</span>}
-      </div>
-      <div className="dw-meta">
-        {item.project}{item.isStanding ? ' · standing' : ''}
-        {linkable && <> · {busy ? 'opening…' : 'open in Projects'}</>}
-      </div>
-    </>
-  );
-
-  if (!linkable) return <div className="dw-detail-item">{body}</div>;
-
-  // A button, not an anchor: there is no URL to put in href — the destination
-  // is decided by the server's scope answer, which arrives after the click.
-  // A bare <a> with no href is unreachable by keyboard and announces nothing.
-  return (
-    <button type="button" className="dw-detail-item" onClick={open} disabled={busy}
-            style={{ display: 'block', width: '100%', textAlign: 'left',
-                     background: 'none', font: 'inherit', cursor: busy ? 'wait' : 'pointer' }}>
-      {body}
     </button>
   );
 }
