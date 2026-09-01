@@ -1033,6 +1033,10 @@ twilio: {
 
     listDepartments: () => api.get('/daily-work/departments'),
 
+    // The rows behind the overdue chip. Carries userId, not a name — the
+    // People screen already has names from the rollup.
+    overdue: () => api.get('/daily-work/people/overdue'),
+
     // Ask whether a project task link is still worth following before
     // navigating. Resolves with { ok, scope, project } or rejects with a 403
     // whose body carries `reason` — the caller shows that text rather than

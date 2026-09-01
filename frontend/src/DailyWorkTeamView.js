@@ -57,6 +57,15 @@ export default function DailyWorkTeamView() {
   const [departments, setDepartments] = useState([]);
   const [stalled, setStalled]       = useState([]);
   const [candidates, setCandidates] = useState([]);
+  // The rows behind the overdue chip, and — separately — whether the people
+  // list below is narrowed to the people who appear in them.
+  //
+  // Two pieces of state, not one, because they are two views of the same fact
+  // and a manager uses each at a different moment: "what is late" when
+  // something is on fire, "who is behind" on a Monday. Collapsing them into
+  // one mode would force a choice the screen has no basis to make.
+  const [overdue, setOverdue] = useState([]);
+  const [overdueOnly, setOverdueOnly] = useState(false);
   const [accountSummary, setAccountSummary] = useState(null);
 
   const [assigning, setAssigning] = useState(false);
@@ -208,6 +217,7 @@ export default function DailyWorkTeamView() {
     apiService.dailyWork.getAnchors().then(({ data }) => setAnchors(data || [])).catch(() => {});
     apiService.dailyWork.stalled().then(({ data }) => setStalled(data || [])).catch(() => {});
     apiService.dailyWork.candidates().then(({ data }) => setCandidates(data || [])).catch(() => {});
+    apiService.dailyWork.overdue().then(({ data }) => setOverdue(data.items || [])).catch(() => {});
     apiService.dailyWork.listActivityTypes()
       .then(({ data }) => setActivityTypes(data || [])).catch(() => {});
     apiService.dailyWork.listDepartments()
@@ -277,6 +287,26 @@ export default function DailyWorkTeamView() {
 
   const loggedToday = rollup.filter(r => r.days_logged > 0).length;
   const totalOverdue = rollup.reduce((n, r) => n + (r.overdueTasks || 0), 0);
+
+  // Who appears in the overdue rows. Derived from the ROWS rather than from
+  // r.overdueTasks > 0 so the filter and the queue can never disagree about
+  // which people they are talking about — one of them would otherwise be
+  // reading a count and the other a list.
+  const overduePeopleIds = new Set(overdue.map(o => o.userId));
+
+  // Names for the queue. The rollup is the single source: the queue endpoint
+  // deliberately returns userId only.
+  const nameOf = (userId) => {
+    const r = rollup.find(x => x.user_id === userId);
+    return r ? `${r.first_name} ${r.last_name}`.trim() : 'Someone on your team';
+  };
+
+  // The narrowed list. Applied AFTER sorting so the order a manager chose is
+  // preserved through the filter rather than reshuffled by it.
+  const visiblePeople = overdueOnly
+    ? sorted.filter(p => overduePeopleIds.has(p.user_id))
+    : sorted;
+
   const activeFilterCount =
     ['account', 'anchor', 'activity', 'department'].filter(k => filters[k]).length;
 
@@ -469,7 +499,10 @@ export default function DailyWorkTeamView() {
               </button>
             )}
             {totalOverdue > 0 && (
-              <span className="dw-badge carried">{totalOverdue} project {totalOverdue === 1 ? 'task' : 'tasks'} overdue</span>
+              <button className="dw-btn dw-btn-sm"
+                      onClick={() => setShowQueue(q => q === 'overdue' ? null : 'overdue')}>
+                {totalOverdue} project {totalOverdue === 1 ? 'task' : 'tasks'} overdue
+              </button>
             )}
           </div>
         </div>
@@ -514,6 +547,49 @@ export default function DailyWorkTeamView() {
         </div>
       )}
 
+      {showQueue === 'overdue' && (
+        <div className="dw-card" style={{ marginBottom: 14 }}>
+          <div className="dw-card-head">
+            <h2>Project work past its date</h2>
+            {/* The count comes from the same place the chip's does — the
+                rollup — while the rows come from a separate query. If these
+                two numbers ever differ, the two queries have drifted; see the
+                lockstep note on getOverdueProjectItemsByUsers. Showing both
+                makes that visible instead of silent. */}
+            <span className="m">
+              {overdue.length} {overdue.length === 1 ? 'item' : 'items'}
+              {overdue.length !== totalOverdue && ` (chip says ${totalOverdue})`}
+              {' · worst first'}
+            </span>
+          </div>
+
+          <div className="dw-item-body" style={{ paddingTop: 10 }}>
+            <button className="dw-btn dw-btn-sm"
+                    onClick={() => { setOverdueOnly(true); setShowQueue(null); }}>
+              Show these {overduePeopleIds.size} in the list
+            </button>
+          </div>
+
+          <div className="dw-daylog">
+            {overdue.length === 0 ? (
+              <div className="dw-dayrow"><div className="dw-meta">
+                Nothing overdue, or the Projects module is off for this org.
+              </div></div>
+            ) : overdue.map(o => (
+              <div className="dw-dayrow" key={o.id}>
+                <div className="dw-work">
+                  <b>{o.title}</b> — {nameOf(o.userId)}
+                </div>
+                <div className="dw-meta">
+                  {o.project} · due {formatDate(o.dueDate)} · {o.daysOver} {o.daysOver === 1 ? 'day' : 'days'} over
+                  {o.kind === 'commitment' && ' · commitment'}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* ── the people ──────────────────────────────────────────────── */}
 
       {rollup.length === 0 ? (
@@ -522,7 +598,25 @@ export default function DailyWorkTeamView() {
         </div></div>
       ) : (
         <div className="dw-items">
-          {sorted.map(person => (
+          {overdueOnly && (
+            <div className="dw-banner info" style={{ marginBottom: 10 }}>
+              Showing only people with overdue project work — {visiblePeople.length} of {rollup.length}.
+              <button className="dw-btn dw-btn-sm" style={{ marginLeft: 10 }}
+                      onClick={() => setShowQueue('overdue')}>Back to the task list</button>
+              <button className="dw-btn dw-btn-sm" style={{ marginLeft: 6 }}
+                      onClick={() => setOverdueOnly(false)}>Show everyone</button>
+            </div>
+          )}
+          {/* A filter that hides every row is worse than no filter: the screen
+              looks broken and gives no way out. Only reachable if the rows and
+              the rollup disagree about who is late, which is exactly when
+              someone needs telling. */}
+          {overdueOnly && visiblePeople.length === 0 && (
+            <div className="dw-card"><div className="dw-empty">
+              <p>Nobody in the current list has overdue project work.</p>
+            </div></div>
+          )}
+          {visiblePeople.map(person => (
             <PersonRow
               key={person.user_id}
               person={person}

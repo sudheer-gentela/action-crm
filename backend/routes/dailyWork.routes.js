@@ -405,6 +405,30 @@ router.get('/people', async (req, res) => {
   } catch (err) { handle(res, err, 'GET /people'); }
 });
 
+// ── GET /people/overdue — the queue behind the overdue chip ──────────────────
+//
+// Same visible set as GET /people, so the queue can never show work belonging
+// to someone whose row the manager cannot see on the list above it.
+//
+// Returns userId and NO NAME. The caller is the People screen, which already
+// holds first_name and last_name for every visible person in the rollup it
+// rendered the list from. Joining users again here would be a second source
+// for the same string, and the two would eventually disagree on someone who
+// had just been renamed.
+//
+// Declared BEFORE '/people/:userId'. Express matches in order, and with the
+// parameterised route first 'overdue' would be captured as a :userId, asId
+// would reject it, and this would 400 instead of ever running — the same
+// hazard the plays/reorder route documents in handovers.routes.js.
+router.get('/people/overdue', async (req, res) => {
+  try {
+    const userIds = await dailyQuery.getVisibleUserIds(req.orgId, req.userId);
+    const items = await _projectSideOrEmpty('overdue queue',
+      () => handoverService.getOverdueProjectItemsByUsers(req.orgId, userIds), []);
+    res.json({ items });
+  } catch (err) { handle(res, err, 'GET /people/overdue'); }
+});
+
 // ── GET /people/:userId/project/:handoverId — is this link still honest? ─────
 //
 // Called when a manager clicks a project task on someone's timeline, before

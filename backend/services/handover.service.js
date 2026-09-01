@@ -5337,6 +5337,84 @@ async function getProjectWorkloadByUser(orgId, userIds) {
 }
 
 /**
+ * The overdue project work behind the count, as individual rows.
+ *
+ * MUST STAY IN LOCKSTEP WITH getProjectWorkloadByUser's overdue_count above.
+ * The People screen's chip reads "N project tasks overdue" by summing that
+ * count across the rollup; this list is what opens when you press it. If the
+ * two disagree about what overdue means, the chip says nine and the panel
+ * shows seven, and the screen is lying in a way nobody can debug from the UI.
+ *
+ * So the predicates below are copied from it deliberately rather than
+ * simplified, and both halves are here for the same reason: that count
+ * includes commitments as well as checklist steps, so dropping them to keep
+ * this query tidy would silently break the match. A change to either query is
+ * a change to both.
+ *
+ * Standing initiatives are excluded by the tracking_mode predicate, not by
+ * omission — an initiative has no end, so work on one is never late. Same rule
+ * as getPersonProjectItems, where isOverdue carries the identical guard.
+ */
+async function getOverdueProjectItemsByUsers(orgId, userIds) {
+  if (!userIds || userIds.length === 0) return [];
+
+  const today = toDateStr(new Date());
+
+  const { rows } = await pool.query(
+    `SELECT 'task'::text AS kind, ppi.id AS id, ppi.title AS title,
+            ppi.due_date::text AS due_date, ppi.owner_user_id AS user_id,
+            h.id AS handover_id, COALESCE(h.name, d.name) AS project
+       FROM project_play_instances ppi
+       JOIN sales_handovers h ON h.id = ppi.handover_id AND h.org_id = ppi.org_id
+       LEFT JOIN deals d ON d.id = h.deal_id
+      WHERE ppi.org_id = $1
+        AND ppi.owner_user_id = ANY($2)
+        AND ppi.status NOT IN ('completed', 'skipped', 'cancelled')
+        AND h.status NOT IN ('completed', 'cancelled')
+        AND h.retired_at IS NULL
+        AND ppi.due_date IS NOT NULL
+        AND ppi.due_date < $3::date
+        AND COALESCE(h.tracking_mode, 'timeboxed') = 'timeboxed'
+
+      UNION ALL
+
+     SELECT 'commitment'::text, c.id, c.description,
+            c.due_date::text, c.owner_user_id,
+            h.id, COALESCE(h.name, d.name)
+       FROM sales_handover_commitments c
+       JOIN sales_handovers h ON h.id = c.handover_id AND h.org_id = c.org_id
+       LEFT JOIN deals d ON d.id = h.deal_id
+      WHERE c.org_id = $1
+        AND c.owner_user_id = ANY($2)
+        AND c.status IN ('open', 'in_progress')
+        AND h.status NOT IN ('completed', 'cancelled')
+        AND h.retired_at IS NULL
+        AND c.due_date IS NOT NULL
+        AND c.due_date < $3::date
+        AND COALESCE(h.tracking_mode, 'timeboxed') = 'timeboxed'
+
+      ORDER BY due_date, id`,
+    [orgId, userIds, today]);
+
+  const msDay = 24 * 60 * 60 * 1000;
+  const todayMs = Date.parse(`${today}T00:00:00Z`);
+
+  return rows.map(r => ({
+    id:         `${r.kind}-${r.id}`,
+    kind:       r.kind,
+    title:      r.title,
+    project:    r.project || `Project #${r.handover_id}`,
+    handoverId: r.handover_id,
+    userId:     r.user_id,
+    dueDate:    r.due_date,
+    // Computed here, not in the browser: 'how late' has to agree with the
+    // 'overdue' the query just applied, and a client comparing against its own
+    // clock is how the two drift apart.
+    daysOver:   Math.round((todayMs - Date.parse(`${r.due_date}T00:00:00Z`)) / msDay),
+  }));
+}
+
+/**
  * One person's project work as individual rows, for the timeline on the People
  * screen. Checklist steps and commitments, both carrying their due date so the
  * caller can place them on a day.
@@ -5695,6 +5773,7 @@ module.exports = {
   getPersonProjectSummary, // daily work person view — cross-module (2026_133)
   getProjectWorkloadByUser, // People screen — open/overdue per person
   getPersonProjectItems,    // People screen — one person's project rows
+  getOverdueProjectItemsByUsers, // People screen — the overdue chip's queue
   getPersonDashboard,     // person side-panel (individual dashboard)
   getContactCommunications, // customer-contact comms drill-down
   getCommitmentActivity,  // deliverable drill-down
