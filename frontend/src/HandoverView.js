@@ -983,7 +983,7 @@ function StagePicker({ value, onChange, stages, label = 'Stage' }) {
       <select value={value || ''}
         onChange={e => { if (e.target.value === '__new__') { setCreating(true); onChange(''); } else onChange(e.target.value); }}
         style={{ marginLeft: 6, fontSize: 12, padding: '4px 6px', borderRadius: 4, border: '1px solid #d1d5db' }}>
-        <option value="">Added on this project</option>
+        <option value="">Added here, outside the plan</option>
         {(stages || []).filter(st => st.key !== 'custom')
           .map(st => <option key={st.key} value={st.key}>{st.name}</option>)}
         <option value="__new__">+ New stage…</option>
@@ -1910,7 +1910,7 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
             <button onClick={confirm} disabled={evidenceNeeded && !snippet.trim()}
               title={evidenceNeeded && !snippet.trim()
                 ? (isGate ? 'This is a gate task — evidence is required.'
-                          : 'Evidence is required to close tasks on this project.')
+                          : 'Evidence is required to close tasks here.')
                 : ''}
               style={{ fontSize: 12, padding: '5px 14px', borderRadius: 4,
                        background: (evidenceNeeded && !snippet.trim()) ? '#e5e7eb' : '#059669',
@@ -1999,7 +1999,7 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
 // ── Stage grouping for the handover checklist ─────────────────────────────────
 const STAGE_LABELS = {
   mobilize: 'Mobilization', groundwork: 'Groundwork', installation: 'Installation',
-  finishing: 'Finishing', signoff: 'Sign-off', custom: 'Added on this project',
+  finishing: 'Finishing', signoff: 'Sign-off', custom: 'Added here, outside the plan',
 };
 function stageLabel(key) {
   if (!key) return 'Other';
@@ -2373,7 +2373,7 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
           )}
           <button onClick={request} style={{ fontSize: 12, padding: '5px 12px', borderRadius: 6, border: 'none', background: '#1d4ed8', color: '#fff', cursor: 'pointer' }}>Request</button>
           <button onClick={() => { setAdding(false); setErr(''); }} style={{ fontSize: 12, padding: '5px 10px', borderRadius: 6, border: 'none', background: '#f1f5f9', color: '#374151', cursor: 'pointer' }}>Cancel</button>
-          {byEmail && <div style={{ fontSize: 11, color: '#6b7280', width: '100%' }}>New users are invited by email after an admin approves; they'll get access to this project's module.</div>}
+          {byEmail && <div style={{ fontSize: 11, color: '#6b7280', width: '100%' }}>New users are invited by email after an admin approves; they'll get access to this {isStanding ? 'initiative' : 'project'}'s module.</div>}
         </div>
       )}
       {msg && <div style={{ fontSize: 11, color: '#059669', marginTop: 6 }}>{msg}</div>}
@@ -3113,7 +3113,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
       setCanSubmit(submitRes.data?.canSubmit || false);
       setCloseInfo(closeRes.data || null);
     } catch {
-      setError('Could not load this project. Try selecting it again.');
+      setError(`Could not load this ${(h?.isStanding) ? 'initiative' : 'project'}. Try selecting it again.`);
     } finally { setLoading(false); }
   }, [h.id]);
 
@@ -3199,7 +3199,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     setActioning(true);
     try {
       await apiService.handovers.setStatus(h.id, newStatus, closureSummary);
-      flash('success', `${SUCCESS_MSG[newStatus] || 'Project updated'} ✓`);
+      flash('success', `${SUCCESS_MSG[newStatus] || `${noun} updated`} ✓`);
       setClosureFor(null);
       setClosureText('');
       await load();
@@ -3426,7 +3426,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     </div>
   );
 
-  if (!detail) return <div style={{ padding: 24, color: '#9ca3af', fontSize: 13 }}>Could not load project.</div>;
+  if (!detail) return <div style={{ padding: 24, color: '#9ca3af', fontSize: 13 }}>Could not load {noun.toLowerCase()}.</div>;
 
   // Derived
   // "Sales-side" actions — submit a project, pull it back to draft — used to
@@ -3524,7 +3524,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                   <span onClick={() => { setNameDraft(detail.name || ''); setEditingName(true); }}
                         title="Click to rename"
                         style={{ cursor: 'pointer', borderBottom: '1px dashed #d1d5db' }}>
-                    {detail.name || `Project #${detail.id}`}
+                    {detail.name || `${noun} #${detail.id}`}
                   </span>
                 )
               ) : (
@@ -3800,7 +3800,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
         {/* Blockers explaining a disabled Complete button */}
         {completeBlocked && closeInfo?.blockers?.length > 0 && (
           <div style={{ marginTop: 10, padding: '8px 12px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, fontSize: 12, color: '#92400e' }}>
-            <div style={{ fontWeight: 700, marginBottom: 4 }}>Before this project can be completed:</div>
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>Before this {noun.toLowerCase()} can be completed:</div>
             <ul style={{ margin: 0, paddingLeft: 18 }}>
               {closeInfo.blockers.map((b, i) => <li key={i}>{b}</li>)}
             </ul>
@@ -3872,7 +3872,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
           problem was not its length but that Summary, Files and Commercial sat
           at equal weight with no indication of what belonged together.       */}
       <div style={{ display: 'flex', alignItems: 'flex-start', background: '#fff' }}>
-        <nav aria-label="Project sections"
+        <nav aria-label={`${noun} sections`}
              style={{ width: 152, flexShrink: 0, padding: '14px 0 24px 20px',
                       borderRight: '1px solid #e5e7eb', minHeight: 380 }}>
           {[
@@ -3932,7 +3932,21 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
       {/* ── Summary ─────────────────────────────────────── */}
       {detailTab === 'summary' && (
         <div style={{ padding: '16px 20px' }}>
-          <HandoverSummary detail={detail} users={users} canEdit={isServiceView || salesCanEdit} managerLabel={ownerLabel} onRefresh={load} onOpenProject={onOpenProject} onGoToDetails={() => setDetailTab('details')} />
+          {/* DEFECT FIXED — onRefresh was `load`, the DETAIL fetch only.
+              ProjectMembersSection calls this after every add, remove, approve
+              and reject, so a membership change updated the panel in front of
+              you and left HandoverView's `handovers` array untouched. That
+              array is what the Initiatives board renders memberCount and
+              memberNames from, so "Who is on it" kept showing whoever was on
+              the initiative when the tab last loaded — and "← All initiatives"
+              only does setSelected(null), with no refetch, so going back did
+              not correct it either. The names reappeared on a hard reload,
+              which is what made it look like the add had not saved.
+
+              Both, in the order the rest of this file already uses (see
+              EditableCoreFields' onSaved): await the detail so the panel is
+              right, then the list so the board agrees with it. */}
+          <HandoverSummary detail={detail} users={users} canEdit={isServiceView || salesCanEdit} managerLabel={ownerLabel} onRefresh={async () => { await load(); onRefresh(); }} onOpenProject={onOpenProject} onGoToDetails={() => setDetailTab('details')} />
         </div>
       )}
 
@@ -3945,7 +3959,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
         {/* Handover Checklist (plays) — grouped by stage */}
         <section style={{ marginBottom: 24 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 12px' }}>
-            <h4 style={{ margin: 0, fontSize: 14, color: '#374151' }}>📋 Project checklist <span style={{ fontSize: 11, fontWeight: 400, color: '#9ca3af' }}>· steps grouped by stage</span></h4>
+            <h4 style={{ margin: 0, fontSize: 14, color: '#374151' }}>📋 {noun} checklist <span style={{ fontSize: 11, fontWeight: 400, color: '#9ca3af' }}>· steps grouped by stage</span></h4>
             {salesCanEdit && (
               <button onClick={() => setShowStageMgr(v => !v)}
                 style={{ marginLeft: 'auto', fontSize: 11, padding: '4px 10px', borderRadius: 6, fontWeight: 600,
