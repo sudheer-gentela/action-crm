@@ -569,6 +569,7 @@ export default function DailyWorkView() {
                 setItemActivity={setItemActivity}
                 retireItem={retireItem}
                 onEvidence={load}
+                entryDate={day.entryDate}
               />
             )}
 
@@ -955,24 +956,28 @@ function PastDay({ day }) {
  * regardless of this preference.
  */
 function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
-                     setDraft, setItemActivity, retireItem, onEvidence }) {
+                     setDraft, setItemActivity, retireItem, onEvidence, entryDate }) {
   return (
     <div className="dw-grid-wrap">
       <table className="dw-grid">
         <colgroup>
+          <col style={{ width: '8%' }} />
           <col style={{ width: '20%' }} />
-          <col style={{ width: '40%' }} />
+          <col style={{ width: '28%' }} />
           <col style={{ width: '15%' }} />
           <col style={{ width: '11%' }} />
           <col style={{ width: '14%' }} />
+          <col style={{ width: '4%' }} />
         </colgroup>
         <thead>
           <tr>
+            <th>Date</th>
             <th>Item</th>
             <th>What did you do today</th>
             <th>Activity</th>
             <th>Stage</th>
             <th>Next steps</th>
+            <th><span className="dw-sr-only">Details</span></th>
           </tr>
         </thead>
         <tbody>
@@ -990,31 +995,30 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
             return (
               <React.Fragment key={row.item_id}>
                 <tr className={stage === 'dropped' ? 'dropped' : ''}>
+                  {/* The date being logged. Every row carries the same one —
+                      Edit rows only ever writes today — so this is orientation
+                      rather than data: the grid otherwise gives no clue which
+                      day the typing lands on, and the heading scrolls away. */}
+                  <td className="dw-grid-date">{formatDateShort(entryDate)}</td>
+
                   <td className="dw-grid-item">
-                    <div className="dw-grid-title">{row.title}</div>
-                    <div className="dw-item-badges">
-                      {row.kind === 'assigned'
-                        ? <span className="dw-badge assigned">one-off</span>
-                        : <span className="dw-badge">recurring</span>}
-                      {row.assigned_by && <span className="dw-badge assigned">assigned</span>}
-                      {row.account_name && <span className="dw-badge">{row.account_name}</span>}
-                      {stage === 'in_review' && <span className="dw-badge review">in review</span>}
-                    </div>
-                    {/* One control for everything that is not a daily field.
-                        Labelled with what it opens rather than a bare chevron,
-                        because evidence is in there and nobody hunts for it. */}
-                    <button type="button" className="dw-btn-link dw-grid-more"
-                            aria-expanded={isOpen}
-                            onClick={() => onExpand(isOpen ? null : row.item_id)}>
-                      {isOpen ? 'Hide details' : 'History, evidence…'}
-                    </button>
+                    <span className="dw-grid-title">{row.title}</span>
+                    {/* Inline with the title rather than on their own line, so
+                        the row stays one line deep. target_date is back: it was
+                        on the card header and dropping it lost the only place a
+                        one-off item's due date was visible. */}
+                    {row.kind === 'assigned' && <span className="dw-badge assigned">one-off</span>}
+                    {row.assigned_by && <span className="dw-badge assigned">assigned</span>}
+                    {row.target_date && <span className="dw-badge">by {formatDateShort(row.target_date)}</span>}
+                    {row.account_name && <span className="dw-badge">{row.account_name}</span>}
+                    {stage === 'in_review' && <span className="dw-badge review">in review</span>}
                   </td>
 
                   <td>
                     <textarea
                       aria-label={`What did you do today on ${row.title}`}
                       className={`dw-grid-ta ${overHard ? 'over' : overSoft ? 'warn' : ''}`}
-                      rows={3}
+                      rows={1}
                       value={description}
                       placeholder="What did you actually do?"
                       onChange={e => setDraft(row.item_id, { description: e.target.value })}
@@ -1045,26 +1049,38 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
                             onChange={e => setDraft(row.item_id, { dayStage: e.target.value })}>
                       {STAGES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
                     </select>
-                    {row.kind === 'recurring' && closed && (
-                      <div className="dw-item-status">Back tomorrow.</div>
-                    )}
                   </td>
 
                   <td>
                     <textarea
                       aria-label={`Next steps for ${row.title}`}
                       className="dw-grid-ta"
-                      rows={3}
+                      rows={1}
                       value={draft.nextSteps || ''}
                       placeholder="What happens tomorrow?"
                       onChange={e => setDraft(row.item_id, { nextSteps: e.target.value })}
                     />
                   </td>
+
+                  {/* Icon, not a text link: the label sat under the title and
+                      made every row two lines deep to carry a control most
+                      rows never need. title and aria-label do the naming that
+                      the visible text used to, so it stays findable by hover
+                      and reachable by screen reader. */}
+                  <td className="dw-grid-actions">
+                    <button type="button" className="dw-icon-btn"
+                            aria-expanded={isOpen}
+                            aria-label={`History and evidence for ${row.title}`}
+                            title="History, evidence, and settings for this item"
+                            onClick={() => onExpand(isOpen ? null : row.item_id)}>
+                      {isOpen ? '×' : '⋯'}
+                    </button>
+                  </td>
                 </tr>
 
                 {isOpen && (
                   <tr className="dw-grid-detail">
-                    <td colSpan={5}>
+                    <td colSpan={7}>
                       {row.prior_description ? (
                         <div className="dw-prior">
                           <b>{formatDate(row.prior_date)}:</b> {row.prior_description}
@@ -1077,6 +1093,10 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
                         </div>
                       ) : (
                         <div className="dw-prior empty"><b>No earlier entry</b> for this item.</div>
+                      )}
+
+                      {row.kind === 'recurring' && closed && (
+                        <div className="dw-item-status">Done for today. It returns tomorrow.</div>
                       )}
 
                       <div className="dw-field">
@@ -1486,6 +1506,23 @@ function formatDate(dateStr) {
   if (!y || !m || !d) return dateStr;
   return new Date(y, m - 1, d).toLocaleDateString(undefined, {
     weekday: 'long', day: 'numeric', month: 'long',
+  });
+}
+
+/**
+ * The same date, short, for the table's Date column.
+ *
+ * Parsed the same way as formatDate — component-wise into a LOCAL Date rather
+ * than new Date('2026-09-01'), which the spec says to read as UTC and which
+ * therefore renders as the previous day for anyone west of Greenwich. The
+ * entry date is a calendar date the person chose, not an instant.
+ */
+function formatDateShort(dateStr) {
+  if (!dateStr || typeof dateStr !== 'string') return '';
+  const [y, m, d] = dateStr.split('-').map(Number);
+  if (!y || !m || !d) return dateStr;
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, {
+    day: 'numeric', month: 'short',
   });
 }
 

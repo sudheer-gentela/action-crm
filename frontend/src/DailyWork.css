@@ -330,22 +330,59 @@
   /* overflow-wrap, not word-break: an unbroken 40-character item name has to
    * break somewhere or it widens the column, but ordinary prose should still
    * break at spaces. */
-  .dw-grid-item { overflow-wrap: anywhere; }
-  .dw-grid-title { font-size: 14px; font-weight: 700; line-height: 1.35; }
-  .dw-grid .dw-item-badges { margin-top: 5px; }
-  .dw-grid-more { margin-top: 6px; font-size: 12px; }
+  /* Title and badges share ONE line and wrap together, so a row is a row.
+   * overflow-wrap, not word-break: an unbroken 40-character item name has to
+   * break somewhere or it widens the column, but ordinary prose should still
+   * break at spaces. */
+  .dw-grid-item { overflow-wrap: anywhere; line-height: 1.6; }
+  .dw-grid-title { font-size: 14px; font-weight: 700; margin-right: 6px; }
+  .dw-grid-item .dw-badge { vertical-align: middle; }
 
-  /* Tighter than the card textareas, whose 96px min-height is a phone
-   * affordance. Three rows is roughly what one day's line needs; resize stays
-   * vertical for the days it does not. */
-  .dw-grid .dw-grid-ta { min-height: 62px; padding: 8px 10px; line-height: 1.45; }
+  /* The date column: quiet, because every row repeats it. Not wrapped —
+   * "1 Sep" has nowhere useful to break. */
+  .dw-grid-date {
+    font-size: 12.5px; color: var(--dw-ink-3); white-space: nowrap;
+    padding-top: 16px;
+  }
+
+  /* ONE LINE TALL at rest. 38px is a single line of text plus the border and
+   * padding; resize stays vertical, so a long day is still typed in place by
+   * dragging the corner. min-height on the card textareas is 96px, which is a
+   * phone affordance and the main reason the grid looked like stacked cards. */
+  .dw-grid .dw-grid-ta {
+    min-height: 38px; height: 38px; padding: 8px 10px; line-height: 1.4;
+  }
   .dw-grid select { padding: 8px 10px; }
   .dw-grid .dw-item-status { margin-top: 5px; font-size: 12px; }
   .dw-grid .dw-foot { margin-top: 4px; }
+
+  /* The details trigger. Sized to the 36px tap target the other controls use
+   * even though it carries a single glyph, so the row does not gain height
+   * from its own affordance. */
+  .dw-grid-actions { text-align: right; }
+  .dw-icon-btn {
+    width: 30px; height: 30px; padding: 0; line-height: 1;
+    font: inherit; font-size: 16px; cursor: pointer;
+    border: 1.5px solid var(--dw-line); border-radius: 8px;
+    background: var(--dw-paper); color: var(--dw-ink-3);
+  }
+  .dw-icon-btn:hover { border-color: var(--dw-accent); color: var(--dw-accent); }
+  .dw-icon-btn:focus-visible { outline: 2px solid var(--dw-accent); outline-offset: 2px; }
+  .dw-icon-btn[aria-expanded="true"] {
+    border-color: var(--dw-accent); color: var(--dw-accent); background: var(--dw-accent-wash);
+  }
 
   .dw-grid tr.dw-grid-detail td {
     background: #fbfcfe; padding: 12px 14px 16px;
     border-bottom: 1px solid var(--dw-line-2);
   }
   .dw-grid tr.dw-grid-detail .dw-field:first-child { margin-top: 0; }
+}
+
+/* Visually hidden but read aloud. The actions column header carries no visible
+ * text — a caption above a column of icons is noise — but a table header with
+ * no accessible name leaves the column unannounced. */
+.dw-sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
