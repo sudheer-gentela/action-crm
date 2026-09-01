@@ -310,6 +310,22 @@ function MyReviewQueue({ projects, onOpen }) {
 // still shared. Only the table differs.
 function InitiativesBoard({ initiatives, searchTerm, setSearchTerm, showRetired, setShowRetired,
                             onOpen, onRetire, onUnretire, busyId, canManage = false }) {
+  // Which rows have had their member list expanded, keyed by initiative id.
+  // Per row rather than one board-wide flag: expanding every row at once would
+  // reflow the whole table to answer a question about one initiative.
+  const [expandedMembers, setExpandedMembers] = useState({});
+
+  // How many names the collapsed cell shows. Two lines' worth at this column
+  // width, which is what was asked for — the previous value was 2, one line.
+  //
+  // A NAME BUDGET, NOT A PIXEL CLAMP. -webkit-line-clamp would cap the height
+  // exactly regardless of how long the names are, but the "+N" beside it is
+  // computed from the COUNT, so a clamp that swallowed a name would leave the
+  // two disagreeing — five members, four rendered, one hidden by CSS, and a
+  // badge still reading "+1". Budgeting by name keeps the number honest at the
+  // cost of a third line when several names are unusually long.
+  const NAMES_SHOWN = 4;
+
   // A cancelled initiative is not a live one. list() applies no status filter
   // and this board has no status column — deliberately, since "a standing
   // initiative has one meaningful state, live or retired" — so before this a
@@ -423,13 +439,46 @@ function InitiativesBoard({ initiatives, searchTerm, setSearchTerm, showRetired,
                   <td style={td}>
                     {(h.memberCount || 0) === 0 ? (
                       <span style={{ fontSize: 12, color: '#b45309' }}>Nobody yet</span>
-                    ) : (
-                      <div style={{ fontSize: 12, color: '#6b7280' }}
-                           title={(h.memberNames || []).join(', ')}>
-                        {(h.memberNames || []).slice(0, 2).join(', ')}
-                        {h.memberCount > 2 && ` +${h.memberCount - 2}`}
-                      </div>
-                    )}
+                    ) : (() => {
+                      // Counted off memberNames rather than memberCount so the
+                      // badge can never promise a name the cell does not have.
+                      // The two come from the same LATERAL and should agree,
+                      // but "+2" that expands to reveal nothing is a worse
+                      // failure than a number that is merely conservative.
+                      const names    = h.memberNames || [];
+                      const expanded = !!expandedMembers[h.id];
+                      const hidden   = Math.max(0, names.length - NAMES_SHOWN);
+                      const shown    = expanded ? names : names.slice(0, NAMES_SHOWN);
+                      return (
+                        <div style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.5 }}
+                             title={expanded ? undefined : names.join(', ')}>
+                          {shown.join(', ')}
+                          {hidden > 0 && (
+                            <>
+                              {!expanded && ' '}
+                              {/* stopPropagation is load-bearing: the whole
+                                  <tr> carries onClick={() => onOpen(h)}, so
+                                  without it every attempt to see the rest of
+                                  the names would navigate into the initiative
+                                  instead — the row would appear to swallow the
+                                  click. */}
+                              <button
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  setExpandedMembers(m => ({ ...m, [h.id]: !expanded }));
+                                }}
+                                title={expanded ? 'Show fewer' : `Show all ${names.length}`}
+                                style={{ background: 'none', border: 'none', padding: 0,
+                                         marginLeft: expanded ? 6 : 0, fontSize: 12,
+                                         color: '#0369a1', cursor: 'pointer',
+                                         borderBottom: '1px dashed #93c5fd' }}>
+                                {expanded ? 'Show fewer' : `+${hidden}`}
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </td>
                   <td style={{ ...td, color: '#6b7280' }}>{h.createdAt ? fmtDate(h.createdAt) : '—'}</td>
                   <td style={{ ...td, textAlign: 'right' }}>
