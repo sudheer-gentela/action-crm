@@ -259,7 +259,21 @@ export default function DailyWorkView() {
       .then(({ data }) => setActivityTypes(data || []))
       .catch(() => {});
   }, []);
-  useEffect(() => { loadActivityTypes(); }, [loadActivityTypes]);
+  // Refetched on every TAB CHANGE, not once on mount.
+  //
+  // DEFECT FIXED. Setup is not a separate screen — DailyWorkView renders
+  // <DailyWorkSetupView /> as a child and stays mounted the whole time, so
+  // this component's state survives the round trip. The effect used to depend
+  // on [loadActivityTypes] alone, which is useCallback([]) and therefore
+  // stable forever, so the list was fetched once when Daily Work first opened
+  // and never again. Rename an activity in Setup, switch back to My day, and
+  // the picker still offered the labels from before the rename — with the
+  // right KEYS underneath, so picking one worked and simply showed the wrong
+  // name. Only a full page reload corrected it.
+  //
+  // Adding `tab` costs one small GET per tab switch and removes the entire
+  // class of staleness: whatever Setup did, coming back re-reads it.
+  useEffect(() => { loadActivityTypes(); }, [tab, loadActivityTypes]);
 
   /**
    * Set an item's activity type.
@@ -1264,11 +1278,35 @@ function groupAnchors(anchors) {
     account: 'Accounts',
     campaign: 'Campaigns',
   };
+
+  // EXPLICIT GROUP ORDER, with Accounts last.
+  //
+  // The server sorts `ORDER BY group_key, label` and this function used to
+  // take Object.keys(groups), i.e. insertion order — so the groups came out in
+  // ALPHABETICAL order of the internal key, which puts 'account' first. Every
+  // account in the org therefore sat at the top of the picker, and the three
+  // groups people actually anchor to were below a scroll of company names.
+  // Alphabetical order of an internal identifier is not a ranking of anything.
+  //
+  // Accounts is not removed, because anchoring straight at a customer with no
+  // project is a real case getAnchorOptions supports deliberately. It is just
+  // the longest list and the least often wanted, so it goes to the bottom
+  // where its length costs nothing.
+  const ORDER = ['campaign', 'internal_project', 'standing', 'customer_project', 'account'];
+
   const groups = {};
   (anchors || []).forEach(a => {
     (groups[a.group_key] = groups[a.group_key] || []).push(a);
   });
-  return Object.keys(groups).map(k => ({ label: labels[k] || k, options: groups[k] }));
+
+  // Sorted by position in ORDER; anything not listed keeps its old behaviour of
+  // appearing after the known groups rather than vanishing, so a group_key
+  // added server-side later still shows up.
+  const rank = k => { const i = ORDER.indexOf(k); return i === -1 ? ORDER.length : i; };
+
+  return Object.keys(groups)
+    .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+    .map(k => ({ label: labels[k] || k, options: groups[k] }));
 }
 
 function readError(err, fallback) {

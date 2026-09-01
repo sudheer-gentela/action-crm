@@ -1340,9 +1340,17 @@ function groupAnchors(anchors) {
     account: 'Accounts',
     campaign: 'Campaigns',
   };
+  // Kept identical to DailyWorkView's copy on purpose. This function is
+  // duplicated in the two screens rather than shared, so a fix applied to one
+  // and not the other means the same picker orders itself differently
+  // depending on which screen opened it. See ORDER's rationale there.
+  const ORDER = ['campaign', 'internal_project', 'standing', 'customer_project', 'account'];
   const groups = {};
   (anchors || []).forEach(a => { (groups[a.group_key] = groups[a.group_key] || []).push(a); });
-  return Object.keys(groups).map(k => ({ label: labels[k] || k, options: groups[k] }));
+  const rank = k => { const i = ORDER.indexOf(k); return i === -1 ? ORDER.length : i; };
+  return Object.keys(groups)
+    .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+    .map(k => ({ label: labels[k] || k, options: groups[k] }));
 }
 
 function accountOptions(anchors) {
