@@ -2818,6 +2818,39 @@ function EditableCoreFields({ detail, isTerminal, onSaved, fmtDate, fmtCurrency,
   );
 }
 
+/**
+ * One-shot handoff for "open this project AND focus this task".
+ *
+ * Module-level rather than a prop or React state, because of an ordering
+ * problem neither can solve. The deep-link event arrives at HandoverView,
+ * which then has to FETCH the project before HandoverDetail is mounted at
+ * all — so at the moment the id is known there is no component to hand it to
+ * and no prop to put it on. Parking it here lets whichever side gets there
+ * second pick it up.
+ *
+ * Keyed by handoverId so a stale focus cannot leak onto a different project:
+ * click a task, change your mind, open something else, and the claim finds a
+ * mismatched key and leaves the value alone rather than expanding a random row.
+ *
+ * TAKEN, not read. One deep link focuses one task once — leaving it set would
+ * re-expand the same row every time the detail remounts, hours later.
+ */
+let pendingPlayFocus = null;   // { handoverId, playInstanceId } | null
+
+function setPendingPlayFocus(handoverId, playInstanceId) {
+  pendingPlayFocus = (handoverId && playInstanceId)
+    ? { handoverId, playInstanceId } : null;
+  window.dispatchEvent(new CustomEvent('handover-focus-play'));
+}
+
+function takePendingPlayFocus(handoverId) {
+  if (!pendingPlayFocus || !handoverId) return null;
+  if (pendingPlayFocus.handoverId !== handoverId) return null;
+  const { playInstanceId } = pendingPlayFocus;
+  pendingPlayFocus = null;
+  return playInstanceId;
+}
+
 function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject, initialTab, onTabChange, managerLabel = 'Project Manager'}) {
   const [detail,    setDetail]    = useState(null);
   const [canSubmit, setCanSubmit] = useState(false);
@@ -2844,6 +2877,45 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     } catch { return 'table'; }
   });
   const [expandedPlays, setExpandedPlays] = useState({});
+
+  // The task a deep link asked for. Read from a module-level handoff rather
+  // than a prop: HandoverDetail is mounted by HandoverView only AFTER the
+  // project resolves, so the event that carried the id fired before this
+  // component existed and there was no prop to put it on.
+  const [focusPlayId, setFocusPlayId] = useState(null);
+
+  useEffect(() => {
+    const claim = () => {
+      const id = takePendingPlayFocus(h?.id);
+      if (id) setFocusPlayId(id);
+    };
+    claim();                                   // arrived before we mounted
+    window.addEventListener('handover-focus-play', claim);  // or after
+    return () => window.removeEventListener('handover-focus-play', claim);
+  }, [h?.id]);
+
+  // Open it and bring it into view, once the checklist has actually painted.
+  //
+  // Waits for the row to EXIST rather than firing on load: the checklist
+  // renders after its own fetch, and a scroll issued before that finds
+  // nothing and silently does nothing. Retries a few frames, then gives up —
+  // the task may sit in a stage group that is collapsed, or have been closed
+  // by someone else between the click and the arrival, and neither is worth
+  // spinning over.
+  useEffect(() => {
+    if (!focusPlayId) return;
+    setExpandedPlays(prev => ({ ...prev, [focusPlayId]: true }));
+
+    let tries = 0;
+    let raf;
+    const find = () => {
+      const el = document.getElementById(`play-row-${focusPlayId}`);
+      if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); return; }
+      if (++tries < 40) raf = requestAnimationFrame(find);
+    };
+    raf = requestAnimationFrame(find);
+    return () => cancelAnimationFrame(raf);
+  }, [focusPlayId]);
   // Project stages, loaded alongside the checklist. Drives the stage picker on
   // both item forms and the stage manager.
   const [stages, setStages] = useState([]);
@@ -3707,8 +3779,18 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                                      verticalAlign: 'middle', whiteSpace: 'nowrap' };
                         return (
                           <React.Fragment key={play.id}>
-                            <tr onClick={() => togglePlay(play.id)} title="Click for detail"
-                                style={{ cursor: 'pointer', background: isOpen ? '#f8fafc' : '#fff' }}>
+                            {/* id, not a ref. The row that a deep link wants
+                                may be inside a collapsed stage group that has
+                                not rendered yet, so a ref captured at mount
+                                would be null exactly when it is needed; a
+                                getElementById after paint finds it whenever it
+                                exists and harmlessly returns null when it does
+                                not. */}
+                            <tr id={`play-row-${play.id}`}
+                                onClick={() => togglePlay(play.id)} title="Click for detail"
+                                style={{ cursor: 'pointer',
+                                         background: focusPlayId === play.id ? '#eff6ff'
+                                                   : isOpen ? '#f8fafc' : '#fff' }}>
                               <td style={{ ...td, fontSize: 13,
                                            color: done ? '#6b7280' : '#111827',
                                            textDecoration: done ? 'line-through' : 'none' }}>
@@ -6596,8 +6678,11 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
   // basis, and says so.
   useEffect(() => {
     const onDeepLink = async (e) => {
-      const { handoverId, scope, sub } = e.detail || {};
+      const { handoverId, playInstanceId, scope, sub } = e.detail || {};
       if (!handoverId) return;
+      // Parked before the project is opened, so it is already waiting whether
+      // the detail mounts fresh or is re-used for a project already on screen.
+      setPendingPlayFocus(handoverId, playInstanceId);
       if (scope) setTab(scope);
       setDetailSubTab(sub || 'details');
       const known = handovers.find(h => h.id === handoverId);

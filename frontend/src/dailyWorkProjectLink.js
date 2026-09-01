@@ -62,9 +62,19 @@ export function writeReturnCrumb(person, period, anchorDate, filters) {
  * scrolls to a specific one and the derived check keys on project tasks, so a
  * link would land somewhere vague. Left as a plain row until that is built.
  */
-export function ProjectItemRow({ item, person, period, anchorDate, filters, onRefuse }) {
+/**
+ * @param who  optional trailing meta — the person's name, on screens that mix
+ *             several people's work into one list. Omitted on a single
+ *             person's timeline, where repeating their name on every row is
+ *             noise.
+ */
+export function ProjectItemRow({ item, person, period, anchorDate, filters, onRefuse, who = null }) {
   const [busy, setBusy] = useState(false);
-  const linkable = item.kind === 'task' && !!item.handoverId;
+  // Both required. handoverId says which project; playInstanceId says which
+  // row inside it. Without the second the link still works but lands on a
+  // checklist of thirty tasks with nothing open, which is the hunt this was
+  // built to remove — so it is a condition of offering the link, not a bonus.
+  const linkable = item.kind === 'task' && !!item.handoverId && !!item.playInstanceId;
 
   const open = async () => {
     if (busy) return;
@@ -73,7 +83,12 @@ export function ProjectItemRow({ item, person, period, anchorDate, filters, onRe
       const { data } = await apiService.dailyWork.checkProjectLink(person.user_id, item.handoverId);
       writeReturnCrumb(person, period, anchorDate, filters);
       window.dispatchEvent(new CustomEvent('open-project-task', {
-        detail: { handoverId: item.handoverId, scope: data.scope, sub: 'details' },
+        detail: {
+          handoverId: item.handoverId,
+          playInstanceId: item.playInstanceId,
+          scope: data.scope,
+          sub: 'details',
+        },
       }));
     } catch (err) {
       // The server's sentence, not ours. It knows which of the several ways
@@ -95,8 +110,10 @@ export function ProjectItemRow({ item, person, period, anchorDate, filters, onRe
         {item.isOverdue && <span className="dw-badge carried">overdue</span>}
       </div>
       <div className="dw-meta">
-        {item.project}{item.isStanding ? ' · standing' : ''}
-        {linkable && <> · {busy ? 'opening…' : 'open in Projects'}</>}
+        {who ? `${who} · ` : ''}{item.project}{item.isStanding ? ' · standing' : ''}
+        {typeof item.daysOver === 'number' &&
+          ` · ${item.daysOver} ${item.daysOver === 1 ? 'day' : 'days'} over`}
+        {linkable && <> · {busy ? 'opening…' : 'open this task'}</>}
       </div>
     </>
   );

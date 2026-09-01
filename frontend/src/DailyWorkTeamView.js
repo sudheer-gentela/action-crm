@@ -577,15 +577,16 @@ export default function DailyWorkTeamView() {
                 Nothing overdue, or the Projects module is off for this org.
               </div></div>
             ) : overdue.map(o => (
-              <div className="dw-dayrow" key={o.id}>
-                <div className="dw-work">
-                  <b>{o.title}</b> — {nameOf(o.userId)}
-                </div>
-                <div className="dw-meta">
-                  {o.project} · due {formatDate(o.dueDate)} · {o.daysOver} {o.daysOver === 1 ? 'day' : 'days'} over
-                  {o.kind === 'commitment' && ' · commitment'}
-                </div>
-              </div>
+              /* The same row the timelines use, so a manager can go straight
+                 from the queue to the task and close it out. person is built
+                 from the row rather than looked up: the crumb only needs an id
+                 and a name to come back to. */
+              <ProjectItemRow
+                key={o.id} item={o}
+                person={{ user_id: o.userId, first_name: nameOf(o.userId), last_name: '' }}
+                period={period} anchorDate={anchorDate} filters={apiFilters()}
+                who={nameOf(o.userId)}
+                onRefuse={(text) => setNotice({ kind: 'warn', text })} />
             ))}
           </div>
         </div>

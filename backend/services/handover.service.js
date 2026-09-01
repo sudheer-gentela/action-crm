@@ -5434,6 +5434,9 @@ async function getOverdueProjectItemsByUsers(orgId, userIds) {
   return rows.map(r => ({
     id:         `${r.kind}-${r.id}`,
     kind:       r.kind,
+    // Same reasoning as getPersonProjectItems: the prefixed id is for display,
+    // this one is for the deep link.
+    playInstanceId: r.kind === 'task' ? r.id : null,
     title:      r.title,
     project:    r.project || `Project #${r.handover_id}`,
     handoverId: r.handover_id,
@@ -5473,6 +5476,12 @@ async function getPersonProjectItems(userId, orgId) {
   const shape = (r, kind) => ({
     id:         `${kind}-${r.id}`,
     kind,
+    // The raw project_play_instances.id, separate from the prefixed `id`
+    // above. That prefix exists to keep tasks and commitments apart in a React
+    // key and is a DISPLAY id — the client must not have to slice 'task-' off
+    // it to get something load-bearing, or renaming the prefix silently breaks
+    // the deep link. Null for commitments: the checklist has no row to open.
+    playInstanceId: kind === 'task' ? r.id : null,
     title:      r.title || r.description,
     project:    r.project || `Project #${r.handover_id}`,
     handoverId: r.handover_id,
