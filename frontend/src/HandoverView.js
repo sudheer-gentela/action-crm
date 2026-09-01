@@ -2095,7 +2095,8 @@ function AddPlayForm({ users, onAdd, stages }) {
 // ── StakeholderSection ────────────────────────────────────────────────────────
 
 function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRefresh, onOpenMember,
-                                serviceOwnerId = null, managerLabel = 'Project Manager' }) {
+                                serviceOwnerId = null, managerLabel = 'Project Manager',
+                                isStanding = false }) {
   // The stored custom_role for the accountable person is the literal string
   // 'Project owner'. That string is an internal marker — the demote query keys
   // on it, so renaming it would break ownership handling — but it must not leak
@@ -2104,11 +2105,22 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
   //
   // Derived from serviceOwnerId rather than by string-matching the stored role,
   // so the two can never disagree.
-  const displayRole = (m) => (
-    serviceOwnerId && m.userId === serviceOwnerId
-      ? managerLabel
-      : (m.roleName || m.customRole || '—')
-  );
+  //
+  // 'Project creator' gets the same treatment on an initiative, and for the
+  // same reason it is a DISPLAY mapping rather than a different value written
+  // at creation. createProject inserts the literal 'Project creator' into
+  // project_members.custom_role for every project it makes; writing
+  // 'Initiative creator' for standing ones instead would leave two stored
+  // strings meaning one thing, so anything that later groups or filters on
+  // custom_role has to know both — and every initiative created before the
+  // change (including 169) would keep the old label anyway. Mapped here, the
+  // column stays single-valued and existing rows read correctly immediately.
+  const displayRole = (m) => {
+    if (serviceOwnerId && m.userId === serviceOwnerId) return managerLabel;
+    const stored = m.roleName || m.customRole || '—';
+    if (isStanding && stored === 'Project creator') return 'Initiative creator';
+    return stored;
+  };
 
   const [adding, setAdding]   = useState(false);
   const [users, setUsers]     = useState([]);
@@ -2277,10 +2289,22 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
               {users.map(u => <option key={u.id} value={u.id}>{u.name || `${u.first_name} ${u.last_name}`}{u.email ? ` · ${u.email}` : ''}</option>)}
             </select>
           )}
-          <select value={roleId} onChange={e => setRoleId(e.target.value)} style={inp}>
-            <option value="">Role (optional)…</option>
-            {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-          </select>
+          {/* Role picker dropped on an initiative. The roles come from
+              contact_roles, which is delivery vocabulary — and an initiative
+              has no delivery structure to place someone in: it has no owner by
+              design, no playbook, and its member list answers "who works on
+              this", not "in what capacity". roleId stays '' and is sent as
+              null, exactly as it would be if the picker were left untouched,
+              so nothing downstream sees a new shape. Still rendered on
+              projects, and the per-member role editor above is untouched on
+              both — an initiative member who somehow has a role can still have
+              it changed or cleared. */}
+          {!isStanding && (
+            <select value={roleId} onChange={e => setRoleId(e.target.value)} style={inp}>
+              <option value="">Role (optional)…</option>
+              {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+            </select>
+          )}
           <button onClick={request} style={{ fontSize: 12, padding: '5px 12px', borderRadius: 6, border: 'none', background: '#1d4ed8', color: '#fff', cursor: 'pointer' }}>Request</button>
           <button onClick={() => { setAdding(false); setErr(''); }} style={{ fontSize: 12, padding: '5px 10px', borderRadius: 6, border: 'none', background: '#f1f5f9', color: '#374151', cursor: 'pointer' }}>Cancel</button>
           {byEmail && <div style={{ fontSize: 11, color: '#6b7280', width: '100%' }}>New users are invited by email after an admin approves; they'll get access to this project's module.</div>}
@@ -2902,14 +2926,28 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
 
   // Terminal projects are read-only in update() — it refuses with "A completed
   // project cannot be edited" — so the control is hidden rather than left to
-  // fail on save. Derived from h directly rather than from the isTerminal
-  // further down this file: that one is a local inside the load callback, so
-  // referencing it here would be a temporal-dead-zone error at render.
-  // dealName being absent is the real condition: see the comment at the render
-  // site.
+  // fail on save.
+  //
+  // DEFECT FIXED. This also carried `&& !h?.projectName`, which contradicted
+  // the comment beside it ("dealName being absent is the real condition") and
+  // silently disabled rename on EVERY project, initiatives included. fmt()
+  // maps `projectName: row.name || row.deal_name`, so a project that has its
+  // own name always has a truthy projectName — the clause was true exactly
+  // when renaming was most appropriate, and false only for an unnamed row.
+  //
+  // dealName alone is the right test, and it is the one the render site
+  // describes: the heading falls back to `projectName || dealName || name`, so
+  // the only case where an edit would look like it silently failed is a
+  // deal-derived project showing the DEAL's name while update() writes
+  // sales_handovers.name. Those still have dealName set and stay locked. A
+  // standing initiative has no deal by construction (createProject inserts
+  // deal_id NULL), so it is now editable, as intended.
+  //
+  // Derived from h directly rather than from the isTerminal further down this
+  // file: that one is a local inside the load callback, so referencing it here
+  // would be a temporal-dead-zone error at render.
   const nameEditable =
-    h?.status !== 'completed' && h?.status !== 'cancelled' &&
-    !h?.dealName && !h?.projectName;
+    h?.status !== 'completed' && h?.status !== 'cancelled' && !h?.dealName;
 
   const saveName = useCallback(async () => {
     const next = nameDraft.trim();
@@ -5164,9 +5202,19 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onG
         const cardNodes = {
           team: (
             <div style={card}>
-              <h4 style={h4}>👥 Project team &amp; roles</h4>
+              {/* An initiative has no owner by design, so this member list is
+                  the only answer to "whose is this" — which makes the wording
+                  matter more here than on a project. "Project team" also names
+                  a thing the Initiatives tab does not otherwise mention. */}
+              <h4 style={h4}>
+                👥 {detail.isStanding ? 'Team Working on Initiative' : <>Project team &amp; roles</>}
+              </h4>
               {team.length === 0 ? (
-                <div style={{ fontSize: 12, color: '#9ca3af' }}>No project team assigned yet.</div>
+                <div style={{ fontSize: 12, color: '#9ca3af' }}>
+                  {detail.isStanding
+                    ? 'No User Assigned to Initiative'
+                    : 'No project team assigned yet.'}
+                </div>
               ) : (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 10 }}>
                   {team.map(m => (
@@ -5193,6 +5241,7 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onG
                 onRefresh={onRefresh}
                 serviceOwnerId={detail.assignedServiceOwnerId}
                 managerLabel={managerLabel}
+                isStanding={detail.isStanding === true}
               />
             </div>
           ),
@@ -7160,7 +7209,12 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
           <div style={{ padding: '10px 16px 0' }}>
             <button onClick={() => { setSelected(null); setDetailSubTab('summary'); }}
               style={{ fontSize: 13, padding: '5px 12px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', cursor: 'pointer' }}>
-              ← All projects
+              {/* The button returns to whichever board you came from, and this
+                  detail pane is shared by both. On the Initiatives tab it goes
+                  back to the initiatives list, which contains no projects at
+                  all — so the old fixed label named a destination that does not
+                  exist on that route. */}
+              ← All {tab === 'initiatives' ? 'initiatives' : 'projects'}
             </button>
           </div>
           <HandoverDetail
