@@ -2771,14 +2771,30 @@ function EditableCoreFields({ detail, isTerminal, onSaved, fmtDate, fmtCurrency,
           : editableCard('goLive', goLiveText,
               detail.goLiveDate ? `Go-live · ${fmtDate(detail.goLiveDate)}` : 'Go-live',
               goLiveColor, 'date')}
-        {editableCard('value',
+        {/* Contract value is dropped on a standing initiative for the same
+            reason the Commercial rail group already is: there is no contract.
+            An initiative is internal recurring work with no counterparty and
+            no deal — createProject never copies contract_value onto one (only
+            initiate() does, from the deal), so the card could only ever render
+            '—' with an edit affordance next to it, inviting someone to type a
+            number that nothing in the product then reads. The two consumers of
+            contractValue are PlaybookActionGenerator and the Projects board's
+            Revenue metric, and neither sees a standing row. */}
+        {!detail.isStanding && editableCard('value',
           detail.contractValue ? fmtCurrency(detail.contractValue) : '—',
           'Contract value', '#111827', 'number')}
         {detail.serviceOwnerName ? statCard(detail.serviceOwnerName, ownerLabel) : null}
         {gatesTotal > 0 ? statCard(`${gatesDone} / ${gatesTotal}`, 'Gate plays') : null}
       </div>
 
-      {/* Commercial terms is prose, so it gets a row rather than a card. */}
+      {/* Commercial terms is prose, so it gets a row rather than a card.
+          Dropped on a standing initiative, with contract value above it. The
+          Commercial rail group — which is where the full commercial_terms_summary
+          is READ, in CommercialTab — is already hidden for standing, so this row
+          was the last surviving way to write a field whose only other reader is
+          the nightly diagnostic sweep, and that sweep excludes standing rows in
+          its own query. Writing here meant filing prose nothing would ever open. */}
+      {!detail.isStanding && (
       <div style={{ marginTop: 8 }}>
         {editing === 'terms' ? (
           <div style={{ background: '#fff', border: '1px solid #93c5fd', borderRadius: 8, padding: 10 }}>
@@ -2814,6 +2830,7 @@ function EditableCoreFields({ detail, isTerminal, onSaved, fmtDate, fmtCurrency,
           </div>
         )}
       </div>
+      )}
     </>
   );
 }
@@ -3413,8 +3430,25 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
             <div style={{ fontSize: 13, color: '#6b7280' }}>{detail.accountName}</div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, position: 'relative' }}>
-            <span style={{ fontSize: 10, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: 0.4, fontWeight: 700 }}>Status</span>
-            <StatusBadge status={detail.status} />
+            {/* Follows the Start button above. With no way to leave draft, a
+                standing initiative would wear "Draft" permanently — a label
+                that reads as "not set up yet" on something that is in fact
+                live, being logged against, and carrying tasks on people's
+                timelines. The board already declines to show a status for
+                initiatives for exactly this reason.
+
+                Still shown when the status is NOT draft, which covers both
+                cancelled (reachable from the ⋯ menu, and a real state) and any
+                initiative left in_progress by a Start pressed before this
+                change — hiding those would be hiding something true. The
+                STANDING and RETIRED pills next to the name carry the states
+                that do mean something here. */}
+            {!(detail.isStanding && detail.status === 'draft') && (
+              <>
+                <span style={{ fontSize: 10, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: 0.4, fontWeight: 700 }}>Status</span>
+                <StatusBadge status={detail.status} />
+              </>
+            )}
             {!isTerminal && (
               <>
                 <button onClick={() => setMenuOpen(o => !o)} title="More"
@@ -3559,7 +3593,39 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
 
         {/* Action buttons */}
         <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
-          {isSalesView && isDraft && (
+          {/* REMOVED for standing initiatives rather than relabelled.
+              "Start initiative" would have been a button that costs the user
+              something and gives back nothing:
+
+              COSTS. salesCanEdit is `isDraft && viewMode !== 'dashboard'`, and
+              it is the only gate on AddPlayForm and on every edit/remove
+              control in the Checklist. Leaving draft therefore makes the
+              checklist permanently read-only — and on this screen there is no
+              way back. The recall-to-draft button is gated on `isSubmitted`,
+              which an internal project never reaches (draft → in_progress
+              directly), and "Complete project" is gated on isServiceView,
+              which is `viewMode === 'assigned'` — an initiative is opened from
+              the Initiatives tab, and has no service owner to be assigned to
+              anyway. So Start is one-way, and it ends with an initiative you
+              can never add another task to. On a time-boxed project that lock
+              is the point: the plan becomes a commitment. On something that
+              never completes, tasks arrive forever.
+
+              GIVES NOTHING. Every consumer that could care about the status
+              already ignores it here. getAnchorOptions excludes only
+              cancelled/completed/retired, so daily work anchors to a draft
+              initiative fine. getPersonProjectItems excludes only
+              completed/cancelled, so its tasks and commitments are already on
+              people's timelines. The portfolio dashboard and the nightly sweep
+              both filter tracking_mode = 'timeboxed' and never see it at all.
+              And freezePlanOnStart — the actual work Start does — promotes
+              baselines for plan-vs-actual, a tab hidden for standing because
+              there is no go-live to drift from.
+
+              This also matches the board, which deliberately has no status
+              filter: "a standing initiative has one meaningful state — live or
+              retired". The detail screen now says the same thing. */}
+          {isSalesView && isDraft && !detail.isStanding && (
             <button onClick={() => requestAction(isInternal ? 'in_progress' : 'submitted')}
               disabled={actioning || !canSubmit}
               title={!canSubmit ? `Complete all gate plays before ${isInternal ? 'starting' : 'submitting'}` : ''}

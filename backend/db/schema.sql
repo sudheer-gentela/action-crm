@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict flbzoHfjjbzvFTDogSto4bwCiP9AQCoqqHOWQbkiMpvHqLoZr6RLBFJnlUNjxBK
+\restrict nknZCl1ChGYSnkQ9fwD4XKlSPqLopaVmN5IyoG9w5A4cgW10dGVY0u8VnvLihBD
 
 -- Dumped from database version 17.11 (Debian 17.11-1.pgdg13+2)
 -- Dumped by pg_dump version 18.1
@@ -3659,7 +3659,7 @@ CREATE TABLE public.daily_activity_types (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT chk_dat_merge_shape CHECK ((((status = 'merged'::text) AND (merged_into_key IS NOT NULL)) OR ((status <> 'merged'::text) AND (merged_into_key IS NULL)))),
-    CONSTRAINT chk_dat_status CHECK ((status = ANY (ARRAY['active'::text, 'candidate'::text, 'merged'::text])))
+    CONSTRAINT chk_dat_status CHECK ((status = ANY (ARRAY['active'::text, 'candidate'::text, 'merged'::text, 'retired'::text])))
 );
 
 
@@ -3668,6 +3668,13 @@ CREATE TABLE public.daily_activity_types (
 --
 
 COMMENT ON TABLE public.daily_activity_types IS 'Org-configurable activity vocabulary for daily work tracking. Modelled on team_dimensions: system entries are seeded per org, renameable and deactivatable but never deleted. As of 2026_131.';
+
+
+--
+-- Name: COLUMN daily_activity_types.status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.daily_activity_types.status IS 'active: in the shared list, offered by every picker. candidate: proposed by a member via "Other", usable by them while it waits for a manager. merged: folded into merged_into_key; never offered, kept so historical entries still resolve. retired: deliberately taken out of circulation. Never offered in a picker, kept so historical entries still resolve. Reversible ΓÇö see 2026_134.';
 
 
 --
@@ -26516,5 +26523,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict flbzoHfjjbzvFTDogSto4bwCiP9AQCoqqHOWQbkiMpvHqLoZr6RLBFJnlUNjxBK
+\unrestrict nknZCl1ChGYSnkQ9fwD4XKlSPqLopaVmN5IyoG9w5A4cgW10dGVY0u8VnvLihBD
 
