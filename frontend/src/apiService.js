@@ -1033,6 +1033,14 @@ twilio: {
 
     listDepartments: () => api.get('/daily-work/departments'),
 
+    // Ask whether a project task link is still worth following before
+    // navigating. Resolves with { ok, scope, project } or rejects with a 403
+    // whose body carries `reason` — the caller shows that text rather than
+    // inventing its own, so the explanation stays with the rule that produced
+    // it.
+    checkProjectLink: (userId, handoverId) =>
+      api.get(`/daily-work/people/${userId}/project/${handoverId}`),
+
     // ── setup, owner and admin only ──────────────────────────────────
     listCalendars:      () => api.get('/daily-work/calendars'),
     createCalendar:     ({ name, isDefault }) => api.post('/daily-work/calendars', { name, isDefault }),

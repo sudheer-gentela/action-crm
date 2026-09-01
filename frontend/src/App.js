@@ -928,6 +928,47 @@ function Dashboard({ user, onLogout }) {
     return () => window.removeEventListener('open-handover', handleOpenHandover);
   }, [orgModules]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Daily Work → Projects, for a project task on someone's timeline.
+  //
+  // Deliberately NOT folded into open-handover above. That path sets
+  // pendingHandoverId, which HandoverView answers by forcing the Summary
+  // sub-tab — and the whole point of this one is landing on the Checklist.
+  // Re-emitted rather than held in App state because the payload is
+  // HandoverView's business (scope, sub-tab), and App has no reason to know
+  // the shape of it.
+  //
+  // The re-emit is deferred a tick so HandoverView is mounted and listening
+  // when it arrives; on a cold switch the tab has not rendered yet.
+  useEffect(() => {
+    const handleOpenProjectTask = (e) => {
+      if (!orgModules.handovers) return;
+      const detail = e.detail || {};
+      if (!detail.handoverId) return;
+      handleNavClick('handovers');
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('handover-deeplink', { detail }));
+      }, 0);
+    };
+    window.addEventListener('open-project-task', handleOpenProjectTask);
+    return () => window.removeEventListener('open-project-task', handleOpenProjectTask);
+  }, [orgModules]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ...and back again. Same deferred re-emit, same reason: on a cold switch
+  // DailyWorkView has not mounted yet, so a synchronous dispatch would be
+  // shouted into an empty room.
+  useEffect(() => {
+    const handleReturn = (e) => {
+      if (!orgModules.dailywork) return;
+      const detail = e.detail || {};
+      handleNavClick('dailywork');
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('dailywork-restore', { detail }));
+      }, 0);
+    };
+    window.addEventListener('return-to-dailywork', handleReturn);
+    return () => window.removeEventListener('return-to-dailywork', handleReturn);
+  }, [orgModules]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Listen for module toggle events dispatched from OAModules (OrgAdminView)
   // Updates orgModules state instantly — no refresh needed.
   useEffect(() => {

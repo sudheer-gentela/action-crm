@@ -6558,6 +6558,67 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
     }
   }, [pendingOpenId, handovers]);
 
+  // ── Daily Work deep link ────────────────────────────────────────────────
+  //
+  // Every other open-by-id path here searches `handovers` and gives up if the
+  // project is not there. That works for the dashboard and the hash, which
+  // only ever name projects already on the viewer's board — but a manager
+  // following a task from someone's timeline is usually NOT a member of that
+  // project, so the list will not contain it and the search would silently do
+  // nothing.
+  //
+  // So this path fetches the project by id instead. That is not a widening:
+  // GET /sales/:id is org-scoped with no membership check, so this fetches
+  // exactly what the viewer could already have fetched. The board's scope
+  // filtering is untouched — the project does not join their list, it is just
+  // open in front of them, and it disappears again when they leave.
+  //
+  // The daily-work side has already confirmed the link is still honest before
+  // dispatching, so a failure here is a genuine fault rather than a lapsed
+  // basis, and says so.
+  useEffect(() => {
+    const onDeepLink = async (e) => {
+      const { handoverId, scope, sub } = e.detail || {};
+      if (!handoverId) return;
+      if (scope) setTab(scope);
+      setDetailSubTab(sub || 'details');
+      const known = handovers.find(h => h.id === handoverId);
+      if (known) { setSelected(known); return; }
+      try {
+        const { data } = await apiService.handovers.getById(handoverId);
+        const project = data?.handover || data;
+        if (project?.id) setSelected(project);
+      } catch {
+        setError('That project could not be opened. It may have been deleted.');
+      }
+    };
+    window.addEventListener('handover-deeplink', onDeepLink);
+    return () => window.removeEventListener('handover-deeplink', onDeepLink);
+  }, [handovers]);
+
+  // The way back. Read once on mount and held in state — NOT read from
+  // sessionStorage on every render, or dismissing it would have nothing to
+  // dismiss. Cleared from storage on use so it does not resurface days later
+  // on an unrelated visit to a project.
+  const [returnCrumb, setReturnCrumb] = useState(() => {
+    try {
+      const raw = sessionStorage.getItem('gwc_dailywork_return');
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  });
+
+  const dismissCrumb = useCallback(() => {
+    try { sessionStorage.removeItem('gwc_dailywork_return'); } catch { /* ignore */ }
+    setReturnCrumb(null);
+  }, []);
+
+  const followCrumb = useCallback(() => {
+    const c = returnCrumb;
+    dismissCrumb();
+    if (!c) return;
+    window.dispatchEvent(new CustomEvent('return-to-dailywork', { detail: c }));
+  }, [returnCrumb, dismissCrumb]);
+
   // Refresh-survival: once the (scope-matched) list is loaded, open the handover
   // named in the URL hash. The sub-tab was restored into detailSubTab already.
   useEffect(() => {
@@ -6747,6 +6808,25 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
       ) : selected ? (
         /* ── Full-width detail ─────────────────────────── */
         <div style={{ flex: 1, overflowY: 'auto' }}>
+          {returnCrumb && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+                          padding: '8px 16px', background: '#eff6ff',
+                          borderBottom: '1px solid #dbeafe' }}>
+              <button onClick={followCrumb}
+                style={{ fontSize: 13, padding: '4px 10px', borderRadius: 6,
+                         border: '1px solid #bfdbfe', background: '#fff', color: '#1e40af',
+                         cursor: 'pointer' }}>
+                ← Back to {returnCrumb.name || 'Daily Work'}
+                {returnCrumb.period ? ` · ${returnCrumb.period}` : ''}
+              </button>
+              <button onClick={dismissCrumb} aria-label="Dismiss"
+                style={{ marginLeft: 'auto', fontSize: 13, padding: '4px 8px',
+                         border: 'none', background: 'none', color: '#1e40af',
+                         cursor: 'pointer' }}>
+                ✕
+              </button>
+            </div>
+          )}
           <div style={{ padding: '10px 16px 0' }}>
             <button onClick={() => { setSelected(null); setDetailSubTab('summary'); }}
               style={{ fontSize: 13, padding: '5px 12px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', color: '#374151', cursor: 'pointer' }}>

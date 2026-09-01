@@ -202,6 +202,15 @@ export default function DailyWorkView() {
     if (tab === 'team' && !hasReports) setTab('day');
   }, [reportsResolved, hasReports, tab]);
 
+  // Coming back from a project. The tab has to move too — the crumb is only
+  // ever written from the People screen, and restoring the person while My day
+  // is showing would put them somewhere they cannot see.
+  useEffect(() => {
+    const onRestore = () => setTab('team');
+    window.addEventListener('dailywork-restore', onRestore);
+    return () => window.removeEventListener('dailywork-restore', onRestore);
+  }, []);
+
   // Mirror the open tab into segment 1, leaving segment 2 alone.
   //
   // The guard is load-bearing: writeHash truncates at the first empty part, so

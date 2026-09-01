@@ -405,6 +405,79 @@ router.get('/people', async (req, res) => {
   } catch (err) { handle(res, err, 'GET /people'); }
 });
 
+// ── GET /people/:userId/project/:handoverId — is this link still honest? ─────
+//
+// Called when a manager clicks a project task on someone's timeline, before
+// navigating to Projects.
+//
+// WHAT THIS IS NOT. It is not an access gate. GET /sales/:id is org-scoped
+// with no membership check, so anyone in the org can already fetch any project
+// by id; the scope filtering on the Projects board is a view convenience, not
+// a security boundary. Nothing here unlocks data that was previously out of
+// reach, and no permission was widened to add this.
+//
+// WHAT IT IS. The link is offered on a DERIVED basis: you may open this
+// project because this person, who is in your team, has an open task on it.
+// That basis can evaporate between the page loading and the click — the task
+// gets reassigned, completed, the project is retired or cancelled. When it
+// does, the honest answer is to say why rather than to open a project the
+// reason for opening no longer applies to.
+//
+// The two checks mirror the two halves of that sentence:
+//
+//   1. getVisibleUserIds — the same check GET /people/:userId already runs.
+//      If you are not allowed to see that this person has the task, you are
+//      not being handed a link because of it.
+//   2. the project is in THIS PERSON's items. getPersonProjectItems already
+//      excludes completed/skipped/cancelled tasks, completed/cancelled
+//      projects and retired initiatives, so every one of the ways the basis
+//      can lapse is covered by asking it again rather than by a second list
+//      of conditions here that would drift from it.
+//
+// Returns the scope segment too, because the caller has to know which board
+// tab to land on and only the tracking mode decides that.
+router.get('/people/:userId/project/:handoverId', async (req, res) => {
+  try {
+    const target = asId(req.params.userId);
+    const handoverId = asId(req.params.handoverId);
+    if (!target || !handoverId) {
+      return res.status(400).json({ error: 'userId and handoverId must be positive integers' });
+    }
+
+    const visible = await dailyQuery.getVisibleUserIds(req.orgId, req.userId);
+    if (!visible.includes(target)) {
+      // Same shape as the refusals below rather than a 403 with no body: the
+      // client renders `reason` verbatim, so every path has to carry one.
+      return res.status(403).json({
+        ok: false,
+        reason: 'They are not in your team any more, so this link no longer applies.',
+      });
+    }
+
+    const items = await handoverService.getPersonProjectItems(target, req.orgId);
+    const match = items.find(i => i.handoverId === handoverId);
+    if (!match) {
+      return res.status(403).json({
+        ok: false,
+        reason: 'This task is no longer open and assigned to them — it may have been '
+              + 'reassigned or completed, or the project closed or retired.',
+      });
+    }
+
+    res.json({
+      ok: true,
+      handoverId,
+      // 'initiatives' and 'assigned' are the hash words HandoverView parses,
+      // not internal names. Decided here because tracking_mode is a server
+      // fact and the client should not be re-deriving which tab a project
+      // lives on from a boolean.
+      scope: match.isStanding ? 'initiatives' : 'assigned',
+      project: match.project,
+      title: match.title,
+    });
+  } catch (err) { handle(res, err, 'GET /people/:userId/project/:handoverId'); }
+});
+
 // ── GET /people/:userId — one person, both halves ────────────────────────────
 //
 // The full-page person view. Returns the daily work log and the project items
