@@ -309,7 +309,7 @@ function MyReviewQueue({ projects, onOpen }) {
 // The shared parts — the row click, the detail panel, the create modal — are
 // still shared. Only the table differs.
 function InitiativesBoard({ initiatives, searchTerm, setSearchTerm, showRetired, setShowRetired,
-                            onOpen, onRetire, onUnretire, busyId }) {
+                            onOpen, onRetire, onUnretire, busyId, canManage = false }) {
   const rows = initiatives
     .filter(h => showRetired || !h.isRetired)
     .filter(h => !searchTerm ||
@@ -390,7 +390,14 @@ function InitiativesBoard({ initiatives, searchTerm, setSearchTerm, showRetired,
                     {/* Retire, never delete. Deleting the container would leave
                         every daily work item anchored to it pointing at an id
                         that resolves to nothing — there is no foreign key, so
-                        nothing stops it and nothing reports it. */}
+                        nothing stops it and nothing reports it.
+
+                        Hidden rather than disabled for a non-manager: the server
+                        403s either way, and a permanently greyed control on
+                        every row is a worse answer than no control. Same source
+                        as the create button (viewer.canCreateStanding), so the
+                        button and the 403 cannot disagree. */}
+                    {canManage && (
                     <button
                       disabled={busyId === h.id}
                       onClick={e => { e.stopPropagation(); h.isRetired ? onUnretire(h) : onRetire(h); }}
@@ -400,6 +407,7 @@ function InitiativesBoard({ initiatives, searchTerm, setSearchTerm, showRetired,
                                cursor: busyId === h.id ? 'wait' : 'pointer' }}>
                       {busyId === h.id ? '…' : (h.isRetired ? 'Un-retire' : 'Retire')}
                     </button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -6768,6 +6776,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
                 onOpen={(h) => { setSelected(h); setDetailSubTab('summary'); }}
                 onRetire={doRetire} onUnretire={doUnretire}
                 busyId={retireBusyId}
+                canManage={access?.canCreateStanding === true}
               />}
         </div>
       ) : (

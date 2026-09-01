@@ -31,6 +31,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
+import { hashIdSegment, hashSegment, writeHash } from './hashNav';
 import './DailyWork.css';
 
 const PERIODS = [
@@ -64,7 +65,17 @@ export default function DailyWorkTeamView() {
   // wrong claim.
   const [hasProjects, setHasProjects] = useState(false);
   // The full-page person view. null = the list.
+  //
+  // Holds the whole rollup ROW, not an id — PersonPage renders the name, the
+  // day strip and the logged/working counts straight off it. So a person named
+  // in the URL cannot be opened until the rollup has arrived and we can find
+  // their row, which is the same two-step HandoverView uses for a deep-linked
+  // project.
   const [openPerson, setOpenPerson] = useState(null);
+  // A userId from the URL, waiting for the rollup. Cleared once resolved,
+  // whether or not a matching row turned up.
+  const [pendingPersonId, setPendingPersonId] = useState(
+    () => (hashSegment(1) === 'people' ? hashIdSegment(2) : null));
   // Which attention queue is expanded, if any. One at a time — both open at
   // once pushes the people off the screen, which is the thing this replaced.
   const [showQueue, setShowQueue] = useState(null);
@@ -140,6 +151,37 @@ export default function DailyWorkTeamView() {
   }, [range]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { load(); }, [period, anchorDate, filters]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ── the person in the URL ────────────────────────────────────────── */
+
+  // Once the rollup lands, open whoever the link named.
+  //
+  // SAY SO WHEN IT CANNOT. A link can name someone outside the sender's
+  // manager chain, someone who has left, or someone the current filters
+  // exclude — and the three are indistinguishable from here. Silently landing
+  // on the list would leave the recipient thinking the link was stale when it
+  // may be their own filter hiding the row, so the screen says which it is
+  // not, and does not guess.
+  useEffect(() => {
+    if (!pendingPersonId) return;
+    if (loading || rollup.length === 0) return;
+    const row = rollup.find(r => r.user_id === pendingPersonId);
+    if (row) setOpenPerson(row);
+    else setNotice({ kind: 'warn', text:
+      'That link points at somebody who is not in this list — they may be outside your team, or hidden by the filters or period above.' });
+    setPendingPersonId(null);
+  }, [pendingPersonId, rollup, loading]);
+
+  // Mirror the open person into segment 2. Held until any restore resolves, or
+  // this would clear the very id it is waiting on. Segment 1 belongs to
+  // DailyWorkView, so it is passed through unchanged rather than assumed:
+  // this component is only ever mounted under 'people', but writing the word
+  // it reads keeps the two from drifting.
+  useEffect(() => {
+    if (hashSegment(0) !== 'dailywork' || hashSegment(1) !== 'people') return;
+    if (pendingPersonId) return;
+    writeHash(['dailywork', 'people', openPerson ? openPerson.user_id : null]);
+  }, [openPerson, pendingPersonId]);
 
   useEffect(() => {
     apiService.dailyWork.getAnchors().then(({ data }) => setAnchors(data || [])).catch(() => {});
@@ -492,6 +534,46 @@ export default function DailyWorkTeamView() {
  * reach the list, so a gap always means a day someone was expected to log and
  * did not. That is the signal the whole module exists to surface.
  */
+/**
+ * Copy the current URL.
+ *
+ * Reads window.location at click time rather than holding the URL in state:
+ * the effect that writes the hash has already run by the time this is on
+ * screen, and re-deriving it here would be a second place for the link to be
+ * wrong.
+ *
+ * The period and the filters are deliberately NOT in the URL, so the recipient
+ * gets this person on their own default window rather than the sender's. That
+ * is a decision, not an omission — say it, so nobody reports it as a bug.
+ *
+ * clipboard.writeText is unavailable on an insecure origin and can be refused
+ * even on a secure one, so the failure path shows the URL to copy by hand
+ * instead of a dead button.
+ */
+function CopyLinkButton() {
+  const [state, setState] = useState('idle');   // 'idle' | 'done' | 'failed'
+
+  const copy = async () => {
+    const url = window.location.href;
+    try {
+      await navigator.clipboard.writeText(url);
+      setState('done');
+      setTimeout(() => setState('idle'), 2000);
+    } catch {
+      setState('failed');
+      window.prompt('Copy this link', url);
+      setTimeout(() => setState('idle'), 2000);
+    }
+  };
+
+  return (
+    <button className="dw-btn" onClick={copy}
+            title="Link to this person. Opens on the recipient's own period and filters.">
+      {state === 'done' ? 'Link copied' : 'Copy link'}
+    </button>
+  );
+}
+
 function PersonPage({ person, range, filters, onBack }) {
   const [state, setState] = useState({ loading: true, log: [], projectItems: [], projects: [] });
 
@@ -538,6 +620,7 @@ function PersonPage({ person, range, filters, onBack }) {
           </div>
         </div>
         <div className="dw-head-actions">
+          <CopyLinkButton />
           <button className="dw-btn" onClick={onBack}>← All people</button>
         </div>
       </div>
@@ -1123,6 +1206,7 @@ function formatDate(dateStr) {
 
 function groupAnchors(anchors) {
   const labels = {
+    standing: 'Standing initiatives',
     customer_project: 'Customer projects',
     internal_project: 'Internal projects',
     account: 'Accounts',

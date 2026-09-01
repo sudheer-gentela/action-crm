@@ -130,7 +130,12 @@ router.get('/portfolio', async (req, res) => {
 // customer project with an account but no deal. Deal-driven creation stays on
 // POST /sales, which is idempotent per deal.
 /**
- * Who may create a standing initiative: manager and above.
+ * Who may change the SET of standing initiatives: manager and above.
+ *
+ * Four operations, one rule: create one, convert a project into one, retire
+ * one, un-retire one. Every one of them adds to or removes from the list of
+ * containers the whole org files daily work against, so they are the same
+ * decision wearing four hats and they must not drift apart.
  *
  * There is no 'manager' role — org_users.role is exactly
  * ('owner','admin','member','viewer') and management is a position in
@@ -143,12 +148,18 @@ router.get('/portfolio', async (req, res) => {
  * fortnight, which is why daily work anchors are select-only. The set of
  * things work can be filed against has to stay small and deliberate.
  *
+ * Retirement is on this list rather than on ownership because a standing
+ * initiative HAS no owner — that is the point of the mode, and
+ * list() explicitly stops counting one as unassigned for exactly that reason.
+ * There is nobody to check against, so the gate is the same org-wide manager
+ * gate that governs creation.
+ *
  * Note the failure direction. orgContext sets subordinateIds = [] when the
  * hierarchy lookup errors, so an infrastructure blip narrows this to owners and
  * admins rather than widening it to everyone. That is the opposite of
  * requireModule, which fails open — know which one you are behind.
  */
-async function canCreateStanding(req) {
+async function canManageStanding(req) {
   const role = await projectSettings.resolveRole(req.orgId, req.user.userId);
   if (['owner', 'admin'].includes(role)) return true;
   return (req.subordinateIds || []).length > 0;
@@ -156,7 +167,7 @@ async function canCreateStanding(req) {
 
 router.post('/projects', async (req, res) => {
   try {
-    if ((req.body || {}).trackingMode === 'standing' && !(await canCreateStanding(req))) {
+    if ((req.body || {}).trackingMode === 'standing' && !(await canManageStanding(req))) {
       return res.status(403).json({
         error: { message: 'Only a manager, admin or owner can create a standing initiative.' },
       });
@@ -271,7 +282,7 @@ router.patch('/sales/:id/tracking-mode', async (req, res) => {
     if (!trackingMode) {
       return res.status(400).json({ error: { message: 'trackingMode is required' } });
     }
-    if (trackingMode === 'standing' && !(await canCreateStanding(req))) {
+    if (trackingMode === 'standing' && !(await canManageStanding(req))) {
       return res.status(403).json({
         error: { message: 'Only a manager, admin or owner can convert a project to a standing initiative.' },
       });
@@ -301,8 +312,20 @@ router.patch('/sales/:id/tracking-mode', async (req, res) => {
 // foreign key, so deleting the container does not cascade its logged work away
 // — it leaves rows pointing at an id that resolves to nothing.
 
+//
+// Both directions are gated by canManageStanding — manager and above, the same
+// rule that governs creating one. Retiring removes a container from the picker
+// the whole org files work against; un-retiring puts it back. Gating only one
+// half would mean a member could not retire an initiative but could resurrect
+// one, which is the wider of the two powers.
+
 router.post('/sales/:id/retire', async (req, res) => {
   try {
+    if (!(await canManageStanding(req))) {
+      return res.status(403).json({
+        error: { message: 'Only a manager, admin or owner can retire a standing initiative.' },
+      });
+    }
     const project = await handoverService.retire(parseInt(req.params.id), req.orgId, req.user.userId);
     res.json({ project });
   } catch (err) {
@@ -313,6 +336,11 @@ router.post('/sales/:id/retire', async (req, res) => {
 
 router.delete('/sales/:id/retire', async (req, res) => {
   try {
+    if (!(await canManageStanding(req))) {
+      return res.status(403).json({
+        error: { message: 'Only a manager, admin or owner can un-retire a standing initiative.' },
+      });
+    }
     const project = await handoverService.unretire(parseInt(req.params.id), req.orgId);
     res.json({ project });
   } catch (err) {
@@ -1320,7 +1348,7 @@ router.get('/admin/project-access', async (req, res) => {
         // ANDs in team_scope_enabled, an unrelated org setting, so a manager
         // in an org with team scope switched off would be shown no option and
         // then allowed by the server.
-        canCreateStanding: await canCreateStanding(req),
+        canCreateStanding: await canManageStanding(req),
       },
     });
   } catch (err) {

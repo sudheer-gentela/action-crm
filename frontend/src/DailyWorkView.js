@@ -31,6 +31,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
+import { hashSegment, writeHash } from './hashNav';
 import DailyWorkTeamView from './DailyWorkTeamView';
 import DailyWorkSetupView from './DailyWorkSetupView';
 import useIsMobile from './useIsMobile';
@@ -67,15 +68,46 @@ const STAGES = [
 ];
 const stageLabel = v => (STAGES.find(s => s.value === v) || {}).label || v;
 
+// ── URL hash ──────────────────────────────────────────────────────────
+//
+//   #/dailywork                  My day
+//   #/dailywork/people           the People list
+//   #/dailywork/people/<userId>  one person
+//   #/dailywork/setup            Setup
+//
+// Ownership, per hashNav.js: App owns segment 0, THIS view owns segment 1
+// (the tab), and DailyWorkTeamView owns segment 2 (the person). Each writes
+// only its own segment — a parent that rewrites unconditionally wipes the
+// person id on every render.
+//
+// The URL word is 'people' while the internal state word is still 'team'.
+// The screen was renamed and the state was not; the URL is the thing people
+// paste into Slack, so it gets the current name and the mapping lives here
+// rather than being smeared across the file.
+const TAB_FROM_SEGMENT = { people: 'team', setup: 'setup' };
+const SEGMENT_FROM_TAB = { team: 'people', setup: 'setup' };
+
 export default function DailyWorkView() {
   const isMobile = useIsMobile(768);
 
-  const [tab, setTab] = useState('day');        // 'day' | 'team'
+  // 'day' | 'team' | 'setup', restored from the hash so a refresh — or a
+  // pasted link — lands where it says it does. Setup is demoted immediately
+  // for a non-admin: its tab button would not render, so honouring the hash
+  // would leave them on a screen with no way back to the others.
+  const [tab, setTab] = useState(() => {
+    const t = TAB_FROM_SEGMENT[hashSegment(1)] || 'day';
+    return (t === 'setup' && !isOrgAdmin()) ? 'day' : t;
+  });
   const [mode, setMode] = useState('log');
   const [me] = useState(currentUserId);
   const [canSetUp] = useState(isOrgAdmin);
   const [myRate, setMyRate] = useState(null);  // my row from the rollup
   const [hasReports, setHasReports] = useState(false);
+  // Whether the rollup that decides hasReports has come back yet. Needed
+  // because hasReports starts false and only turns true after a call: without
+  // this, a hash-restored People tab would be demoted to My day in the moment
+  // between mount and that response, which is every single load.
+  const [reportsResolved, setReportsResolved] = useState(false);
   const [history, setHistory] = useState([]);  // person-days before today
   const [candidates, setCandidates] = useState([]);
   const [stalled, setStalled] = useState([]);
@@ -154,8 +186,35 @@ export default function DailyWorkView() {
         setHasReports(rows.length > 1);
         setMyRate(rows.find(r => r.user_id === me) || null);
       })
-      .catch(() => {});
+      .catch(() => {})
+      // Resolved on BOTH paths. On the error path hasReports stays false, so
+      // a hash-restored People tab is demoted — which is the right direction:
+      // this call failing is indistinguishable from having no reports, and
+      // failing closed matches how orgContext treats the same uncertainty.
+      .finally(() => setReportsResolved(true));
   }, [me]);
+
+  // Demote a tab the viewer cannot actually use, once we know. Only after the
+  // lookup resolves, and only downward — this never selects a tab, it only
+  // gives up on one the hash asked for.
+  useEffect(() => {
+    if (!reportsResolved) return;
+    if (tab === 'team' && !hasReports) setTab('day');
+  }, [reportsResolved, hasReports, tab]);
+
+  // Mirror the open tab into segment 1, leaving segment 2 alone.
+  //
+  // The guard is load-bearing: writeHash truncates at the first empty part, so
+  // an unconditional write from here would erase the person id that
+  // DailyWorkTeamView just put there. Rewrite only when OUR segment is
+  // actually wrong — which on a genuine tab switch is correct, because leaving
+  // a stale person id under a different tab would be worse.
+  useEffect(() => {
+    if (hashSegment(0) !== 'dailywork') return;
+    const seg = SEGMENT_FROM_TAB[tab] || null;
+    if ((hashSegment(1) || null) === seg) return;
+    writeHash(['dailywork', seg]);
+  }, [tab]);
 
   // The last week of my own days, so the log reads as a log rather than as a
   // single row. Same endpoint the manager uses, scoped to myself — it is gated
@@ -1114,7 +1173,11 @@ function formatDate(dateStr) {
 }
 
 function groupAnchors(anchors) {
+  // Keys come from getAnchorOptions. Unknown keys fall through to the raw key
+  // below rather than rendering blank, but every key the server can emit should
+  // be named here — 'standing' arrived with 2026_133.
   const labels = {
+    standing: 'Standing initiatives',
     customer_project: 'Customer projects',
     internal_project: 'Internal projects',
     account: 'Accounts',

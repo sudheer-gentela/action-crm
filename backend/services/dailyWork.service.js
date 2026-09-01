@@ -536,10 +536,17 @@ async function getDay(orgId, userId, { date = null, asOf = new Date() } = {}) {
  * "Power BI" and "PowerBi" as three separate projects inside a fortnight, and
  * no amount of reporting recovers from that.
  *
- * Four kinds come back, and the difference between the middle two is the whole
- * basis of the account view:
+ * Five kinds come back, and the difference between customer and internal
+ * projects is the whole basis of the account view:
  *
- *   customer project — a handover with an account. Work here is attributed.
+ *   standing         — a standing initiative (2026_133). Grouped by TRACKING
+ *                      MODE ahead of project_kind, because "the recurring
+ *                      things I log against" is one bucket to the person
+ *                      picking, whether or not it happens to have an account.
+ *                      Before this, initiatives were scattered through the two
+ *                      project groups and there was nowhere to look for them.
+ *   customer project — a time-boxed handover with an account. Work here is
+ *                      attributed.
  *   internal project — project_kind 'internal'. The schema GUARANTEES no
  *                      account (sales_handovers_kind_shape_chk), so this is
  *                      the Internal Projects bucket exactly, not a heuristic.
@@ -550,18 +557,31 @@ async function getDay(orgId, userId, { date = null, asOf = new Date() } = {}) {
  * Cancelled and completed projects are excluded: you should not be able to
  * start logging against something that finished. Work already anchored to them
  * keeps its anchor, because the entry holds a snapshot.
+ *
+ * RETIRED INITIATIVES ARE EXCLUDED TOO, and the predicate is separate from the
+ * status one on purpose. Retirement (2026_133) is a TIMESTAMP, not a seventh
+ * status value — see that migration's header for why — so `status NOT IN (...)`
+ * cannot see it. This query predates retirement and had no idea it existed,
+ * which meant a retired initiative stayed in this picker and people could keep
+ * filing new work against it. That is precisely what retirement exists to stop.
+ *
+ * Work already anchored to a retired initiative is untouched, for the same
+ * reason as a completed project: the entry holds a snapshot, and retire never
+ * deletes.
  */
 async function getAnchorOptions(orgId) {
   return withOrgTransaction(orgId, async (client) => {
     const { rows } = await client.query(
       `SELECT 'handover'::text AS anchor_kind, h.id AS anchor_id, h.name AS label,
-              CASE WHEN h.project_kind = 'internal' THEN 'internal_project'
+              CASE WHEN COALESCE(h.tracking_mode, 'timeboxed') = 'standing' THEN 'standing'
+                   WHEN h.project_kind = 'internal' THEN 'internal_project'
                    ELSE 'customer_project' END AS group_key,
               h.account_id, a.name AS account_name
          FROM sales_handovers h
          LEFT JOIN accounts a ON a.id = h.account_id AND a.org_id = h.org_id
         WHERE h.org_id = $1
           AND h.status NOT IN ('cancelled','completed')
+          AND h.retired_at IS NULL
           AND h.name IS NOT NULL
 
         UNION ALL

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict QLTtEo2bZ6SdXcrOhDeQmfioBmWXzi7Rp0pElZdTTLzCSQiWoa0EU3qHX88dYkU
+\restrict E9fPsqjKbEYzvnDybYqe0J1p4mH7JtdIdh00U5SZkd8MiIGcArgS36Lu9NpbJ6r
 
 -- Dumped from database version 17.11 (Debian 17.11-1.pgdg13+2)
 -- Dumped by pg_dump version 18.1
@@ -5166,6 +5166,12 @@ CREATE TABLE public.sales_handovers (
     started_at timestamp with time zone,
     baseline_frozen_at timestamp with time zone,
     evidence_config jsonb,
+    tracking_mode text DEFAULT 'timeboxed'::text NOT NULL,
+    retired_at timestamp with time zone,
+    retired_by integer,
+    CONSTRAINT chk_sh_retired_shape CHECK ((((retired_at IS NULL) AND (retired_by IS NULL)) OR ((retired_at IS NOT NULL) AND (retired_by IS NOT NULL) AND (tracking_mode = 'standing'::text)))),
+    CONSTRAINT chk_sh_standing_never_completes CHECK (((tracking_mode = 'timeboxed'::text) OR (((status)::text <> 'completed'::text) AND (completed_at IS NULL)))),
+    CONSTRAINT chk_sh_standing_no_go_live CHECK (((go_live_date IS NULL) OR (tracking_mode = 'timeboxed'::text))),
     CONSTRAINT sales_handovers_budget_internal_chk CHECK (((budget IS NULL) OR (project_kind = 'internal'::text))),
     CONSTRAINT sales_handovers_kind_shape_chk CHECK ((((project_kind = 'internal'::text) AND (account_id IS NULL) AND (deal_id IS NULL)) OR ((project_kind = 'customer'::text) AND ((account_id IS NOT NULL) OR (deal_id IS NOT NULL))))),
     CONSTRAINT sales_handovers_manager_label_chk CHECK (((manager_label IS NULL) OR (btrim(manager_label) <> ''::text))),
@@ -5173,7 +5179,8 @@ CREATE TABLE public.sales_handovers (
     CONSTRAINT sales_handovers_name_required_chk CHECK (((deal_id IS NOT NULL) OR ((name IS NOT NULL) AND (btrim(name) <> ''::text)))),
     CONSTRAINT sales_handovers_project_kind_chk CHECK ((project_kind = ANY (ARRAY['customer'::text, 'internal'::text]))),
     CONSTRAINT sales_handovers_signoff_shape_chk CHECK ((((signed_off_at IS NULL) AND (signed_off_by IS NULL)) OR ((signed_off_at IS NOT NULL) AND (signed_off_by IS NOT NULL)))),
-    CONSTRAINT sales_handovers_status_check CHECK (((status)::text = ANY ((ARRAY['draft'::character varying, 'submitted'::character varying, 'acknowledged'::character varying, 'in_progress'::character varying, 'completed'::character varying, 'cancelled'::character varying])::text[])))
+    CONSTRAINT sales_handovers_status_check CHECK (((status)::text = ANY ((ARRAY['draft'::character varying, 'submitted'::character varying, 'acknowledged'::character varying, 'in_progress'::character varying, 'completed'::character varying, 'cancelled'::character varying])::text[]))),
+    CONSTRAINT sales_handovers_tracking_mode_chk CHECK ((tracking_mode = ANY (ARRAY['timeboxed'::text, 'standing'::text])))
 );
 
 
@@ -5266,6 +5273,27 @@ COMMENT ON COLUMN public.sales_handovers.baseline_frozen_at IS 'When the plan st
 --
 
 COMMENT ON COLUMN public.sales_handovers.evidence_config IS 'Per-project override of the org default in organizations.settings.evidence. Keys: required (bool), requiredForGates (bool). NULL = inherit the org setting.';
+
+
+--
+-- Name: COLUMN sales_handovers.tracking_mode; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sales_handovers.tracking_mode IS 'Does this project ever finish? timeboxed = owner and end date, completes once, counts in the project statistics. standing = no end date, never completes, can only be retired, excluded from the active count. ORTHOGONAL to project_kind: a retainer is customer+standing and a migration is internal+timeboxed. Never fold the two into one column.';
+
+
+--
+-- Name: COLUMN sales_handovers.retired_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sales_handovers.retired_at IS 'Retirement, the standing-initiative equivalent of completion. Deliberately a timestamp and NOT a seventh sales_handovers.status value: a new status word would have to be taught to two transition tables, the statusMeta map, the status filter and the status index, and every one that missed it would fail silently. Retiring a timeboxed project is refused by chk_sh_retired_shape.';
+
+
+--
+-- Name: COLUMN sales_handovers.retired_by; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.sales_handovers.retired_by IS 'Who retired it. Moves with retired_at ΓÇö never set one alone.';
 
 
 --
@@ -19288,6 +19316,13 @@ CREATE INDEX idx_sales_handovers_service_owner ON public.sales_handovers USING b
 
 
 --
+-- Name: idx_sales_handovers_standing; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_sales_handovers_standing ON public.sales_handovers USING btree (org_id, retired_at, created_at DESC) WHERE (tracking_mode = 'standing'::text);
+
+
+--
 -- Name: idx_se_experiment; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -25008,6 +25043,14 @@ ALTER TABLE ONLY public.sales_handovers
 
 
 --
+-- Name: sales_handovers sales_handovers_retired_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sales_handovers
+    ADD CONSTRAINT sales_handovers_retired_by_fkey FOREIGN KEY (retired_by) REFERENCES public.users(id);
+
+
+--
 -- Name: sales_handovers sales_handovers_signed_off_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -26473,5 +26516,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict QLTtEo2bZ6SdXcrOhDeQmfioBmWXzi7Rp0pElZdTTLzCSQiWoa0EU3qHX88dYkU
+\unrestrict E9fPsqjKbEYzvnDybYqe0J1p4mH7JtdIdh00U5SZkd8MiIGcArgS36Lu9NpbJ6r
 
