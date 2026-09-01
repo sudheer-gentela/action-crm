@@ -2283,10 +2283,14 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
             {editing === m.id && (
               <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                 {/* Same rule as the add form and the row label: no role
-                    vocabulary on an initiative for anyone but the creator.
-                    Left in place on projects, and on the creator's own row, so
-                    a role that DOES exist can still be changed or cleared. */}
-                {(!isStanding || displayRole(m)) && (
+                    vocabulary on an initiative at all — the creator included.
+                    "Initiative creator" is a LABEL derived from the stored
+                    custom_role, not a role you pick from contact_roles, so
+                    offering the picker on that row invited someone to
+                    overwrite it with delivery vocabulary and lose the only
+                    marker of who holds closure rights. Left in place on
+                    projects, where the picker is the point. */}
+                {!isStanding && (
                   <select defaultValue={m.roleId || ''} onChange={e => saveRole(m.id, e.target.value)} style={inp}>
                     <option value="">No role</option>
                     {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
@@ -3145,13 +3149,26 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     setTimeout(() => { setSuccess(''); setError(''); }, 4000);
   };
 
+  // The noun follows the thing acted on. Only the transitions an initiative can
+  // actually reach are branched: with Start removed and completion refused by
+  // the server (advanceStatus throws on completed + standing), 'cancelled' is
+  // the only one of these a standing initiative ever produces — but 'draft' is
+  // branched too, since an initiative left in_progress by a Start pressed
+  // before that button was removed can still be sent back.
+  // Optional chaining is load-bearing, not defensive. `detail` is
+  // useState(null) and this runs on every render including the first, well
+  // above the `if (!detail)` guard further down — reading .isStanding off it
+  // directly throws before the fetch resolves. Falls back to the list row `h`,
+  // which carries isStanding from the same fmt() mapper, so the noun is right
+  // even on that first pass.
+  const noun = (detail?.isStanding ?? h?.isStanding) ? 'Initiative' : 'Project';
   const SUCCESS_MSG = {
     submitted:    'Project submitted',
-    draft:        'Project recalled to draft',
+    draft:        `${noun} recalled to draft`,
     acknowledged: 'Project acknowledged',
     in_progress:  'Project marked in progress',
     completed:    'Project completed',
-    cancelled:    'Project cancelled',
+    cancelled:    `${noun} cancelled`,
   };
 
   // Leaving draft freezes the plan, so it gets a review step first. Other
@@ -3794,15 +3811,32 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
         {closureFor && (
           <div style={{ marginTop: 12, padding: 12, background: '#f8fafc', borderRadius: 8, border: '1px solid #e5e7eb' }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: '#374151', marginBottom: 6 }}>
-              {closureFor === 'cancelled' ? 'Cancel this project' : 'Complete this project'}
+              {/* The ⋯ menu already says "Cancel initiative"; this panel is what
+                  that menu item opens, so it said "project" one click after
+                  saying "initiative" about the same act. */}
+              {closureFor === 'cancelled'
+                ? (detail.isStanding ? 'Cancel this initiative' : 'Cancel this project')
+                : 'Complete this project'}
             </div>
             <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 6 }}>
               {closureFor === 'cancelled'
-                ? 'Cancelling ends the delivery commitment. A reason is required and stays on the record.'
+                ? (detail.isStanding
+                    // "Ends the delivery commitment" describes a time-boxed
+                    // project. An initiative has no delivery and no
+                    // counterparty; what matters is that cancelling is
+                    // terminal (the transition map gives 'cancelled' no exits)
+                    // and that Retire is the reversible alternative — which is
+                    // the choice someone at this prompt is actually making.
+                    ? 'Cancelling is permanent and cannot be undone — it is for an initiative created in error. '
+                      + 'To close down real work that has run its course, retire it instead. '
+                      + 'A reason is required and stays on the record.'
+                    : 'Cancelling ends the delivery commitment. A reason is required and stays on the record.')
                 : 'Add an optional closing note for the record.'}
             </div>
             <textarea value={closureText} onChange={e => setClosureText(e.target.value)} rows={2}
-              placeholder={closureFor === 'cancelled' ? 'Why is this project being cancelled?' : 'Closing note (optional)'}
+              placeholder={closureFor === 'cancelled'
+                ? (detail.isStanding ? 'Why is this initiative being cancelled?' : 'Why is this project being cancelled?')
+                : 'Closing note (optional)'}
               style={{ width: '100%', fontSize: 12, padding: '6px 8px', borderRadius: 4, border: '1px solid #d1d5db', resize: 'vertical', boxSizing: 'border-box' }} />
             <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
               <button onClick={submitClosure}
@@ -3891,7 +3925,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
       {/* ── Daily work (2026_133) ───────────────────────── */}
       {detailTab === 'dailywork' && (
         <div style={{ padding: '16px 20px' }}>
-          <ProjectDailyWork handoverId={detail.id} />
+          <ProjectDailyWork handoverId={detail.id} isStanding={detail.isStanding === true} />
         </div>
       )}
 
@@ -6243,7 +6277,13 @@ function GoLiveDriftBanner({ handoverId, goLiveDate }) {
 // 2. AVAILABILITY. requireModule returns 404 when Daily Work is off for the
 //    org. Rendered as "not enabled" rather than an error, because that is what
 //    it is.
-function ProjectDailyWork({ handoverId }) {
+function ProjectDailyWork({ handoverId, isStanding = false }) {
+  // The noun this tab uses throughout. Every string here named "project",
+  // including on an initiative reached from the Initiatives tab — and the last
+  // line is the one that mattered most, because it tells someone where to go
+  // and log the work, so naming the wrong thing sends them looking for a
+  // project in a picker that groups initiatives separately.
+  const thing = isStanding ? 'initiative' : 'project';
   const [days, setDays] = useState(90);
   const [state, setState] = useState({ loading: true, rows: [], unavailable: false, error: '' });
 
@@ -6304,7 +6344,7 @@ function ProjectDailyWork({ handoverId }) {
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
         <h4 style={{ margin: 0, fontSize: 14, color: '#374151' }}>
-          📋 Daily work on this project
+          📋 Daily work on this {thing}
         </h4>
         <select value={days} onChange={e => setDays(Number(e.target.value))}
           style={{ fontSize: 13, padding: '5px 8px', borderRadius: 7, border: '1px solid #d1d5db' }}>
@@ -6325,9 +6365,9 @@ function ProjectDailyWork({ handoverId }) {
         <div style={{ padding: 30, textAlign: 'center', color: '#9ca3af', fontSize: 13 }}>Loading…</div>
       ) : people.length === 0 ? (
         <div style={{ padding: 30, textAlign: 'center', color: '#9ca3af', fontSize: 13, lineHeight: 1.6 }}>
-          No daily work logged against this project in the period.
+          No daily work logged against this {thing} in the period.
           <div style={{ fontSize: 12, marginTop: 6 }}>
-            Work is logged in the Daily Work module and anchored to a project there.
+            Work is logged in the Daily Work module and anchored to {isStanding ? 'an initiative' : 'a project'} there.
           </div>
         </div>
       ) : (
