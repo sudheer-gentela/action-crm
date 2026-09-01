@@ -310,14 +310,30 @@ function MyReviewQueue({ projects, onOpen }) {
 // still shared. Only the table differs.
 function InitiativesBoard({ initiatives, searchTerm, setSearchTerm, showRetired, setShowRetired,
                             onOpen, onRetire, onUnretire, busyId, canManage = false }) {
+  // A cancelled initiative is not a live one. list() applies no status filter
+  // and this board has no status column — deliberately, since "a standing
+  // initiative has one meaningful state, live or retired" — so before this a
+  // cancelled row sat here indistinguishable from an active one: counted in
+  // the Initiatives metric, offering a Retire button, and only revealing
+  // itself as cancelled once opened. Cancel is the answer for an initiative
+  // created in error, and an error that stays on the board is not cleared.
+  //
+  // Folded into the existing "Show retired" toggle rather than given a filter
+  // of its own. Both mean "no longer live, kept for the record", the toggle
+  // already exists, and a second checkbox next to it would be two controls for
+  // one question. Badged separately once shown, because the two are NOT the
+  // same act: retire is reversible and cancel is terminal.
+  const isPast = h => h.isRetired || h.status === 'cancelled';
+
   const rows = initiatives
-    .filter(h => showRetired || !h.isRetired)
+    .filter(h => showRetired || !isPast(h))
     .filter(h => !searchTerm ||
       (h.projectName || h.name || '').toLowerCase().includes(searchTerm.toLowerCase()))
     .sort((a, b) => (a.projectName || a.name || '').localeCompare(b.projectName || b.name || ''));
 
-  const live    = initiatives.filter(h => !h.isRetired).length;
-  const retired = initiatives.filter(h => h.isRetired).length;
+  const live      = initiatives.filter(h => !isPast(h)).length;
+  const retired   = initiatives.filter(h => h.isRetired).length;
+  const cancelled = initiatives.filter(h => h.status === 'cancelled' && !h.isRetired).length;
 
   const metric = (label, value, color) => (
     <div style={{ flex: 1, minWidth: 130, background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '12px 14px' }}>
@@ -334,16 +350,18 @@ function InitiativesBoard({ initiatives, searchTerm, setSearchTerm, showRetired,
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
         {metric('Initiatives', live, '#7c3aed')}
         {retired > 0 && metric('Retired', retired)}
+        {cancelled > 0 && metric('Cancelled', cancelled, '#b91c1c')}
       </div>
 
       {/* No status filter and no overdue toggle: a standing initiative has one
-          meaningful state — live or retired — and nothing to be late for. */}
+          meaningful live state and nothing to be late for. The toggle covers
+          both ways of leaving that state — retired and cancelled. */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
         <input value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
           placeholder="Search initiatives…" style={{ ...inp, minWidth: 240 }} />
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#374151' }}>
           <input type="checkbox" checked={showRetired} onChange={e => setShowRetired(e.target.checked)} />
-          Show retired
+          {cancelled > 0 ? 'Show retired and cancelled' : 'Show retired'}
         </label>
         <span style={{ marginLeft: 'auto', fontSize: 12, color: '#9ca3af' }}>{rows.length} shown</span>
       </div>
@@ -367,7 +385,7 @@ function InitiativesBoard({ initiatives, searchTerm, setSearchTerm, showRetired,
             </tr></thead>
             <tbody>
               {rows.map(h => (
-                <tr key={h.id} onClick={() => onOpen(h)} style={{ cursor: 'pointer', opacity: h.isRetired ? 0.55 : 1 }}
+                <tr key={h.id} onClick={() => onOpen(h)} style={{ cursor: 'pointer', opacity: isPast(h) ? 0.55 : 1 }}
                   onMouseEnter={e => { e.currentTarget.style.background = '#f9fafb'; }}
                   onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}>
                   <td style={td}>
@@ -377,6 +395,16 @@ function InitiativesBoard({ initiatives, searchTerm, setSearchTerm, showRetired,
                         <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, padding: '2px 6px',
                                        borderRadius: 999, background: '#f1f5f9', color: '#475569',
                                        textTransform: 'uppercase', letterSpacing: 0.3 }}>Retired</span>
+                      )}
+                      {/* Its own badge, not folded into Retired. Retire is
+                          reversible and this is not — the transition map gives
+                          'cancelled' no exits — so reading one as the other
+                          would be reading a permanent state as an undoable
+                          one. */}
+                      {h.status === 'cancelled' && (
+                        <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, padding: '2px 6px',
+                                       borderRadius: 999, background: '#fee2e2', color: '#991b1b',
+                                       textTransform: 'uppercase', letterSpacing: 0.3 }}>Cancelled</span>
                       )}
                     </div>
                     <div style={{ fontSize: 12, color: '#6b7280' }}>
@@ -415,7 +443,12 @@ function InitiativesBoard({ initiatives, searchTerm, setSearchTerm, showRetired,
                         every row is a worse answer than no control. Same source
                         as the create button (viewer.canCreateStanding), so the
                         button and the 403 cannot disagree. */}
-                    {canManage && (
+                    {/* Not offered on a cancelled initiative. Retiring one
+                        would be recording that live work has ended on
+                        something that was never live — and the Un-retire it
+                        then offers implies a way back that 'cancelled' does
+                        not have. */}
+                    {canManage && h.status !== 'cancelled' && (
                     <button
                       disabled={busyId === h.id}
                       onClick={e => { e.stopPropagation(); h.isRetired ? onUnretire(h) : onRetire(h); }}
@@ -2118,7 +2151,22 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
   const displayRole = (m) => {
     if (serviceOwnerId && m.userId === serviceOwnerId) return managerLabel;
     const stored = m.roleName || m.customRole || '—';
-    if (isStanding && stored === 'Project creator') return 'Initiative creator';
+    if (isStanding) {
+      // On an initiative the only role that carries meaning is the creator's,
+      // and it is meaningful for a reason that is not decorative:
+      // canManageProject grants closure rights to org admin/owner, the
+      // assigned service owner, or the CREATOR — and a standing initiative has
+      // no service owner, so the creator is its only per-project route to
+      // managing it. That is worth naming on the row.
+      //
+      // Everyone else is simply on it. Their stored custom_role is either
+      // absent (the picker is gone from the add form now) or delivery
+      // vocabulary that means nothing here, and it rendered as a bare '—'
+      // beside the name — a dash that looks like a missing value someone
+      // ought to fill in. Returning null lets the render site drop the
+      // element rather than print an empty one.
+      return stored === 'Project creator' ? 'Initiative creator' : null;
+    }
     return stored;
   };
 
@@ -2208,17 +2256,25 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
               style={{ fontWeight: 600, background: 'none', border: 'none', padding: 0,
                        cursor: onOpenMember && m.userId ? 'pointer' : 'default',
                        color: '#111827', fontSize: 13 }}>{m.name}</button>
+            {/* displayRole returns null on an initiative for anyone who is not
+                the creator. The element is dropped rather than printed empty —
+                but the ADMIN branch keeps a button, because clicking the role
+                is what opens the inline editor and that editor is also the only
+                place phone and WhatsApp can be set. Hiding the button outright
+                would have removed contact editing from every initiative member
+                as a side effect of a wording change. Relabelled instead, so the
+                opener says what it now opens. */}
             {isAdmin ? (
               <button
                 onClick={() => setEditing(x => (x === m.id ? null : m.id))}
-                title="Change this person's role"
+                title={displayRole(m) ? "Change this person's role" : 'Contact details'}
                 style={{ marginLeft: 8, fontSize: 11, color: '#0369a1', background: 'none',
                          border: 'none', borderBottom: '1px dashed #93c5fd', padding: 0, cursor: 'pointer' }}>
-                {displayRole(m)}
+                {displayRole(m) || 'Contact'}
               </button>
-            ) : (
+            ) : displayRole(m) ? (
               <span style={{ marginLeft: 8, fontSize: 11, color: '#6b7280' }}>{displayRole(m)}</span>
-            )}
+            ) : null}
             {m.side === 'internal_customer' && (
               <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, padding: '1px 7px',
                              borderRadius: 999, background: '#f5f3ff', color: '#6d28d9',
@@ -2226,10 +2282,16 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
             )}
             {editing === m.id && (
               <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                <select defaultValue={m.roleId || ''} onChange={e => saveRole(m.id, e.target.value)} style={inp}>
-                  <option value="">No role</option>
-                  {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-                </select>
+                {/* Same rule as the add form and the row label: no role
+                    vocabulary on an initiative for anyone but the creator.
+                    Left in place on projects, and on the creator's own row, so
+                    a role that DOES exist can still be changed or cleared. */}
+                {(!isStanding || displayRole(m)) && (
+                  <select defaultValue={m.roleId || ''} onChange={e => saveRole(m.id, e.target.value)} style={inp}>
+                    <option value="">No role</option>
+                    {roles.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+                  </select>
+                )}
 
                 {/* On an internal project the team IS users, and a user could
                     only ever edit their own phone — so a member with no number
@@ -5154,6 +5216,21 @@ function readCurrentUserId() {
 function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onGoToDetails, managerLabel = 'Project Manager'}) {
   const currentUserId = readCurrentUserId();
   const team      = detail.dealTeam || [];
+  // Who this card actually lists. `team` above is the DEAL team
+  // (deal_team_members, keyed on deal_id) and drives the avatar grid;
+  // ProjectMembersSection below it renders detail.projectMembers, a different
+  // table entirely. On a standing initiative deal_id is NULL by construction,
+  // so _getDealTeam returns [] every time and the avatar grid can never render
+  // anything — which meant the "nobody assigned" line was keyed on a list that
+  // is permanently empty and sat there contradicting the member rows printed
+  // directly beneath it.
+  //
+  // Counted across both, so the line means "this card lists nobody" rather
+  // than "one of the two sources this card reads is empty". Length, not an
+  // approved-only filter: ProjectMembersSection renders pending and rejected
+  // rows too (badged), and a visible row under a "nobody assigned" heading is
+  // the contradiction being fixed.
+  const anyoneListed = team.length > 0 || (detail.projectMembers || []).length > 0;
   const pb        = detail.playbook;
   const allCommits = detail.commitments || [];
   const openItems  = allCommits.filter(c => ['open', 'in_progress'].includes(c.status));
@@ -5209,13 +5286,13 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onG
               <h4 style={h4}>
                 👥 {detail.isStanding ? 'Team Working on Initiative' : <>Project team &amp; roles</>}
               </h4>
-              {team.length === 0 ? (
+              {!anyoneListed ? (
                 <div style={{ fontSize: 12, color: '#9ca3af' }}>
                   {detail.isStanding
                     ? 'No User Assigned to Initiative'
                     : 'No project team assigned yet.'}
                 </div>
-              ) : (
+              ) : team.length === 0 ? null : (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 10 }}>
                   {team.map(m => (
                     <div key={m.userId} onClick={() => m.userId && setOpenMember(m)}

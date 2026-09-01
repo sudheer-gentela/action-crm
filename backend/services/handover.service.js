@@ -928,6 +928,21 @@ async function list(orgId, userId, { scope = 'mine', status, kind = null, subord
        -- Active members only. 'pending' is a REQUEST to join, not membership,
        -- and counting requests as people on the project would mean a board
        -- that says three when one person can actually see it.
+       --
+       -- DEFECT FIXED. This read pm.status = 'active', and 'active' is not a
+       -- value project_members.status ever takes. The vocabulary is pending /
+       -- approved / rejected / declined / left — approve() writes 'approved',
+       -- request() writes 'approved' or 'pending', and createProject seeds the
+       -- creator as 'approved'. So the predicate matched no row anywhere,
+       -- member_count was 0 for every project in the org and member_names was
+       -- always NULL. The board's "Who is on it" column therefore rendered
+       -- "Nobody yet" in amber permanently — including on an initiative that
+       -- had just had someone added to it, which is exactly the state that
+       -- column exists to make visible.
+       --
+       -- exited_at is not tested because it cannot disagree: 2026_88's CHECK
+       -- constrains a non-NULL exited_at to status IN ('declined','left'), so
+       -- 'approved' already implies it is NULL.
        m.member_count::int                       AS member_count,
        m.member_names                            AS member_names
      FROM sales_handovers h
@@ -946,7 +961,7 @@ async function list(orgId, userId, { scope = 'mine', status, kind = null, subord
         WHERE pm.context_type = 'handover'
           AND pm.context_id   = h.id
           AND pm.org_id       = h.org_id
-          AND pm.status       = 'active'
+          AND pm.status       = 'approved'
      ) m ON TRUE
      WHERE ${conditions.join(' AND ')}
      GROUP BY h.id, d.name, a.name, u_so.first_name, u_so.last_name, u_cb.first_name, u_cb.last_name,
