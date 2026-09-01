@@ -37,6 +37,28 @@ try {
   process.exit(2);
 }
 
+// Globals CRA's eslint env provides. Not exhaustive by design — an unknown
+// name here is reported, which is the safe direction for a check whose whole
+// job is catching names that resolve to nothing at runtime.
+const BROWSER_GLOBALS = new Set([
+  'window', 'document', 'console', 'navigator', 'location', 'history', 'screen',
+  'fetch', 'alert', 'confirm', 'prompt', 'localStorage', 'sessionStorage',
+  'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval',
+  'requestAnimationFrame', 'cancelAnimationFrame', 'queueMicrotask',
+  'String', 'Object', 'Number', 'Boolean', 'Array', 'Date', 'Math', 'JSON',
+  'Promise', 'Map', 'Set', 'WeakMap', 'WeakSet', 'RegExp', 'Error', 'Intl',
+  'Symbol', 'Infinity', 'NaN', 'undefined', 'isNaN', 'parseInt', 'parseFloat',
+  'encodeURIComponent', 'decodeURIComponent', 'encodeURI', 'decodeURI',
+  'URL', 'URLSearchParams', 'Blob', 'File', 'FileReader', 'FormData',
+  'Image', 'Event', 'CustomEvent', 'AbortController', 'Notification',
+  'WebSocket', 'Proxy', 'Reflect', 'BigInt', 'structuredClone',
+  'process', 'require', 'module', 'exports', '__dirname', 'globalThis',
+  'Uint8Array', 'Int8Array', 'Float32Array', 'ArrayBuffer', 'TextEncoder',
+  'TextDecoder', 'crypto', 'performance', 'Intersection', 'IntersectionObserver',
+  'ResizeObserver', 'MutationObserver', 'getComputedStyle', 'matchMedia',
+  'atob', 'btoa', 'Headers', 'Request', 'Response', 'DOMParser', 'Node',
+]);
+
 const files = process.argv.slice(2);
 if (files.length === 0) {
   console.error('\nUsage: node verify_frontend.js <file.js> [file.js ...]\n');
@@ -107,6 +129,26 @@ for (const file of files) {
         }
         p = p.parentPath;
       }
+    },
+  });
+
+  // ── 2b. undefined identifiers (no-undef) ────────────────────────────
+  //
+  // The check that was missing. Step 3 below only looks at Capitalised names,
+  // so it catches <MissingComponent> but sailed straight past setError(...) —
+  // a call to a setter that was never declared. CRA fails the build on
+  // no-undef, so that shipped as a broken deploy rather than a warning.
+  //
+  // Scope-aware: a name resolves if any enclosing scope binds it, which is
+  // what distinguishes a genuine typo from an outer-scope reference.
+  traverse(ast, {
+    ReferencedIdentifier(path) {
+      const name = path.node.name;
+      if (path.scope.hasBinding(name, true)) return;
+      if (BROWSER_GLOBALS.has(name)) return;
+      // JSX attribute names and object keys are not references to anything.
+      if (path.parentPath.isJSXAttribute() || path.parentPath.isJSXOpeningElement()) return;
+      problems.push(`'${name}' is not defined (line ${path.node.loc?.start.line})`);
     },
   });
 

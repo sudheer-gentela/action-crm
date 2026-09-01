@@ -6685,14 +6685,16 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
       setPendingPlayFocus(handoverId, playInstanceId);
       if (scope) setTab(scope);
       setDetailSubTab(sub || 'details');
+      setDeepLinkError(null);
       const known = handovers.find(h => h.id === handoverId);
       if (known) { setSelected(known); return; }
       try {
         const { data } = await apiService.handovers.getById(handoverId);
         const project = data?.handover || data;
         if (project?.id) setSelected(project);
+        else setDeepLinkError('That project could not be opened. It may have been deleted.');
       } catch {
-        setError('That project could not be opened. It may have been deleted.');
+        setDeepLinkError('That project could not be opened. It may have been deleted.');
       }
     };
     window.addEventListener('handover-deeplink', onDeepLink);
@@ -6703,6 +6705,12 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
   // sessionStorage on every render, or dismissing it would have nothing to
   // dismiss. Cleared from storage on use so it does not resurface days later
   // on an unrelated visit to a project.
+  // A deep link that could not be opened. Its own state rather than a shared
+  // 'error': everything else in this component reports failure by leaving the
+  // list empty, and this is the one case where the user asked for a specific
+  // thing and needs telling that it is not there.
+  const [deepLinkError, setDeepLinkError] = useState(null);
+
   const [returnCrumb, setReturnCrumb] = useState(() => {
     try {
       const raw = sessionStorage.getItem('gwc_dailywork_return');
@@ -6832,6 +6840,25 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
           }}>{t.label}</button>
         ))}
       </div>
+
+      {/* Shown on the list, not in the detail pane: a deep link that failed
+          left nothing selected, so there is no detail pane to put it in. This
+          is the case the Daily Work side cannot pre-empt — it checks the link
+          is still honest before navigating, so reaching here means the project
+          went missing between that check and this fetch. */}
+      {deepLinkError && (
+        <div style={{ margin: '10px 20px 0', padding: '8px 12px', borderRadius: 8,
+                      background: '#fef2f2', border: '1px solid #fecaca',
+                      color: '#b91c1c', fontSize: 13, display: 'flex',
+                      alignItems: 'center', gap: 10 }}>
+          <span>{deepLinkError}</span>
+          <button onClick={() => setDeepLinkError(null)}
+                  style={{ marginLeft: 'auto', border: 'none', background: 'none',
+                           color: '#b91c1c', cursor: 'pointer', fontSize: 13 }}>
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Scope applies to My Work only: which people's projects, as opposed to
           which view. Hidden entirely when the viewer has neither team nor org
