@@ -192,11 +192,23 @@ function ActivityTypeSection({ onRun }) {
   const candidate = types.filter(t => t.status === 'candidate');
   const retired   = types.filter(t => t.status === 'retired');
 
+  // COMPACT ROWS. Each entry used to stack — name on one line, buttons on a
+  // second with marginTop — inside .dw-dayrow's 14px vertical padding, so a
+  // list of nine ran close to 700px and the screen was mostly gap. One flex
+  // line with the name left and the controls right roughly halves that.
+  //
+  // Styled inline rather than by editing .dw-dayrow, which is shared with the
+  // day list on the main Daily Work screen. Tightening the shared class would
+  // have quietly reflowed a screen nobody asked about.
+  const ROW = { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+                padding: '7px 16px', borderBottom: '1px solid var(--dw-line-2)' };
+
   const row = (t) => (
-    <div className="dw-dayrow" key={t.key}>
+    <div style={ROW} key={t.key}>
       {editing === t.key ? (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', width: '100%' }}>
           <input value={draft} autoFocus onChange={e => setDraft(e.target.value)}
+                 style={{ flex: 1, minWidth: 200 }}
                  onKeyDown={e => { if (e.key === 'Enter') {
                    act(() => apiService.dailyWork.renameActivityType(t.key, draft.trim()), 'Renamed');
                    setEditing(null);
@@ -209,14 +221,17 @@ function ActivityTypeSection({ onRun }) {
         </div>
       ) : (
         <>
-          <div className="dw-work">
+          <div className="dw-work" style={{ flex: 1, minWidth: 160, lineHeight: 1.3 }}>
             <b>{t.label}</b>
             {t.status === 'candidate' &&
               <span className="dw-badge carried" style={{ marginLeft: 8 }}>proposed</span>}
             {t.status === 'retired' &&
               <span className="dw-badge" style={{ marginLeft: 8 }}>retired</span>}
           </div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+          {/* Right-aligned and no longer wrapped in its own block: the buttons
+              sit on the same line as the name they act on. dw-btn-sm keeps a
+              36px min-height, which is the tap target and stays. */}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {t.status === 'candidate' && (
               <button className="dw-btn dw-btn-sm" onClick={() =>
                 act(() => apiService.dailyWork.promoteActivityType(t.key),
@@ -272,7 +287,10 @@ function ActivityTypeSection({ onRun }) {
         </div>
       )}
 
-      <div className="dw-item-body" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      {/* padding overridden from .dw-item-body's 0 16px 16px: the add row sits
+          directly above the list, and 16px under it plus the first row's own
+          padding read as a gap between the control and what it adds to. */}
+      <div className="dw-item-body" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', padding: '10px 16px' }}>
         <input value={label} placeholder="e.g. Editing demo videos"
                onChange={e => setLabel(e.target.value)}
                onKeyDown={e => { if (e.key === 'Enter') add(); }}
@@ -282,7 +300,7 @@ function ActivityTypeSection({ onRun }) {
 
       {candidate.length > 0 && (
         <>
-          <div className="dw-item-body" style={{ paddingBottom: 0 }}>
+          <div className="dw-item-body" style={{ padding: '8px 16px 4px' }}>
             <div className="dw-meta">
               Proposed by someone picking "Other". Accept it, or rename it to match
               something already on the list.
@@ -296,7 +314,7 @@ function ActivityTypeSection({ onRun }) {
 
       {retired.length > 0 && (
         <>
-          <div className="dw-item-body" style={{ paddingBottom: 0 }}>
+          <div className="dw-item-body" style={{ padding: '8px 16px 4px' }}>
             <div className="dw-meta">
               Retired — not offered to anyone, but kept so past entries still read
               correctly.
