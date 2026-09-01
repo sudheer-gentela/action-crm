@@ -313,6 +313,26 @@ export default function DailyWorkView() {
     }
   };
 
+  /**
+   * Change the item itself — its name, or what it is anchored to.
+   *
+   * The endpoint has always accepted these. PATCH /daily-work/items/:id takes
+   * title, activityTypeKey, anchorKind/anchorId and targetDate, and patches
+   * only the keys actually present. The UI just never sent anything but
+   * activityTypeKey, so a typo in an item name was permanent and an item
+   * anchored to the wrong initiative could only be retired and recreated —
+   * which loses its history, because entries belong to the item.
+   */
+  const patchItem = async (itemId, patch) => {
+    try {
+      await apiService.dailyWork.updateItem(itemId, patch);
+      await load();
+      setNotice({ kind: 'info', text: 'Item updated.' });
+    } catch (err) {
+      setNotice({ kind: 'stop', text: readError(err, 'Could not update that item') });
+    }
+  };
+
   const setItemActivity = async (itemId, value, freeText) => {
     try {
       let key = value;
@@ -570,6 +590,8 @@ export default function DailyWorkView() {
                 retireItem={retireItem}
                 onEvidence={load}
                 entryDate={day.entryDate}
+                anchors={anchors}
+                onPatchItem={patchItem}
               />
             )}
 
@@ -955,8 +977,84 @@ function PastDay({ day }) {
  * cards are already the mobile answer — DailyWorkView keeps them there
  * regardless of this preference.
  */
+/**
+ * Rename an item, or move it to a different anchor.
+ *
+ * Its own component so each row's draft lives with the row rather than in a
+ * map keyed by item id in the parent — the panel is mounted only while it is
+ * open, so unmounting is what discards an abandoned edit, and there is no
+ * stale draft to clear when a different row is expanded.
+ *
+ * Saved explicitly rather than on blur. Both fields change the ITEM, which is
+ * shared with every past entry's display, so an accidental keystroke that
+ * commits itself is a worse failure here than one extra click.
+ */
+function ItemSettings({ row, anchors, onSave }) {
+  const [title, setTitle] = useState(row.title || '');
+  const [anchor, setAnchor] = useState(
+    row.anchor_kind && row.anchor_id ? `${row.anchor_kind}:${row.anchor_id}` : '');
+  const [busy, setBusy] = useState(false);
+
+  const current = row.anchor_kind && row.anchor_id ? `${row.anchor_kind}:${row.anchor_id}` : '';
+  const dirty = title.trim() !== (row.title || '') || anchor !== current;
+
+  const save = async () => {
+    if (!title.trim()) return;
+    setBusy(true);
+    const patch = {};
+    if (title.trim() !== (row.title || '')) patch.title = title.trim();
+    if (anchor !== current) {
+      // Sent as a pair. The service re-resolves account_id only when the anchor
+      // is part of the patch, so sending one without the other would leave the
+      // account pointing at the old anchor.
+      const [kind, id] = anchor ? anchor.split(':') : [null, null];
+      patch.anchorKind = kind;
+      patch.anchorId = id ? Number(id) : null;
+    }
+    await onSave(patch);
+    setBusy(false);
+  };
+
+  return (
+    <div className="dw-field">
+      <label>Item settings</label>
+      <div className="dw-addbar">
+        <input type="text" value={title} aria-label="Item name" disabled={busy}
+               placeholder="Item name"
+               onChange={e => setTitle(e.target.value)} />
+        <select value={anchor} aria-label="Project or client" disabled={busy}
+                onChange={e => setAnchor(e.target.value)}>
+          <option value="">Not tied to one</option>
+          {groupAnchors(anchors).map(g => (
+            <optgroup key={g.label} label={g.label}>
+              {g.options.map(o => (
+                <option key={`${o.anchor_kind}:${o.anchor_id}`}
+                        value={`${o.anchor_kind}:${o.anchor_id}`}>
+                  {o.label}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+        <button className="dw-btn dw-btn-primary" onClick={save}
+                disabled={busy || !dirty || !title.trim()}>
+          {busy ? 'Saving…' : 'Save changes'}
+        </button>
+      </div>
+      {/* Renaming is retroactive by construction: entries reference the item by
+          id, so every past line re-reads under the new name. Worth saying,
+          because the alternative assumption — that old entries keep the old
+          name — is equally reasonable and wrong. */}
+      <div className="dw-meta">
+        The name applies to every entry on this item, past ones included.
+      </div>
+    </div>
+  );
+}
+
 function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
-                     setDraft, setItemActivity, retireItem, onEvidence, entryDate }) {
+                     setDraft, setItemActivity, retireItem, onEvidence, entryDate,
+                     anchors, onPatchItem }) {
   return (
     <div className="dw-grid-wrap">
       <table className="dw-grid">
@@ -1085,6 +1183,9 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
                 {isOpen && (
                   <tr className="dw-grid-detail">
                     <td colSpan={7}>
+                      <ItemSettings row={row} anchors={anchors}
+                                    onSave={patch => onPatchItem(row.item_id, patch)} />
+
                       {row.prior_description ? (
                         <div className="dw-prior">
                           <b>{formatDate(row.prior_date)}:</b> {row.prior_description}
