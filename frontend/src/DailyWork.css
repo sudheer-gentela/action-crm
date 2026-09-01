@@ -386,3 +386,27 @@
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
+
+/* ── the add-item bar ───────────────────────────────────────────────────
+ *
+ * One row of controls instead of a three-column card of labelled fields.
+ * Adding an item is a small act — a title and two optional pickers — and the
+ * card gave it more visual weight than the day's actual work sitting above it.
+ *
+ * Wraps rather than scrolls: on a narrow window the controls stack, which is
+ * the same thing the card did, without needing a second layout to say so.
+ */
+.dw-addbar {
+  display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+}
+/* The title is the only required field, so it takes the slack. min-width keeps
+ * it typable once the bar wraps. */
+.dw-addbar > input[type="text"] { flex: 3 1 240px; }
+.dw-addbar > select { flex: 1 1 170px; }
+.dw-addbar > .dw-btn { flex: 0 0 auto; }
+/* ActivityPicker renders a <select> plus, in its "Other" state, a text input,
+ * so it is targeted as a whole rather than by tag. */
+.dw-addbar > select#dw-new-activity { flex: 1 1 170px; }
+/* Full width forces the note onto its own line under the controls, whatever
+ * the bar wrapped to. */
+.dw-addbar-note { flex: 1 0 100%; margin-top: 2px; }

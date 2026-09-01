@@ -577,59 +577,59 @@ export default function DailyWorkView() {
               {!adding ? (
                 <button className="dw-btn" onClick={() => setAdding(true)}>+ Add a work item</button>
               ) : (
-                <div className="dw-addform">
-                  <div className="dw-addgrid">
-                    <div className="dw-field" style={{ marginTop: 0 }}>
-                      <label htmlFor="dw-new-title">What is the work</label>
-                      <input id="dw-new-title" type="text" value={newItem.title}
-                             placeholder="e.g. LinkedIn outreach"
-                             onChange={e => setNewItem({ ...newItem, title: e.target.value })} />
-                    </div>
-                    <div className="dw-field" style={{ marginTop: 0 }}>
-                      <label htmlFor="dw-new-activity">Kind of activity</label>
-                      <ActivityPicker
-                        id="dw-new-activity"
-                        types={activityTypes}
-                        value={newItem.activityTypeKey}
-                        onPick={(value, freeText) => {
-                          if (value !== '__other__') {
-                            setNewItem({ ...newItem, activityTypeKey: value });
-                            return;
-                          }
-                          apiService.dailyWork.proposeActivityType(freeText)
-                            .then(({ data }) => {
-                              setNewItem({ ...newItem, activityTypeKey: data.key });
-                              loadActivityTypes();
-                            })
-                            .catch(err => setNotice({ kind: 'stop', text: readError(err, 'Could not add that') }));
-                        }}
-                      />
-                    </div>
-                    <div className="dw-field" style={{ marginTop: 0 }}>
-                      <label htmlFor="dw-new-anchor">Project or client</label>
-                      <select id="dw-new-anchor" value={newItem.anchor}
-                              onChange={e => setNewItem({ ...newItem, anchor: e.target.value })}>
-                        <option value="">Not tied to one</option>
-                        {groupAnchors(anchors).map(g => (
-                          <optgroup key={g.label} label={g.label}>
-                            {g.options.map(o => (
-                              <option key={`${o.anchor_kind}:${o.anchor_id}`}
-                                      value={`${o.anchor_kind}:${o.anchor_id}`}>
-                                {o.label}
-                              </option>
-                            ))}
-                          </optgroup>
+                <div className="dw-addform dw-addbar">
+                  {/* ONE ROW, not a three-column card with stacked labels.
+                      The card gave each of three fields its own uppercase
+                      label and a full-width block, which is ~200px of form to
+                      type a title into. Labels move to placeholders and
+                      aria-label: the fields are self-describing once their
+                      placeholder text says what they are, and the note below
+                      already explains what the button does. */}
+                  <input id="dw-new-title" type="text" value={newItem.title}
+                         aria-label="What is the work"
+                         placeholder="What is the work — e.g. LinkedIn outreach"
+                         onKeyDown={e => { if (e.key === 'Enter' && newItem.title.trim()) addItem(); }}
+                         onChange={e => setNewItem({ ...newItem, title: e.target.value })} />
+                  <ActivityPicker
+                    id="dw-new-activity"
+                    types={activityTypes}
+                    value={newItem.activityTypeKey}
+                    onPick={(value, freeText) => {
+                      if (value !== '__other__') {
+                        setNewItem({ ...newItem, activityTypeKey: value });
+                        return;
+                      }
+                      apiService.dailyWork.proposeActivityType(freeText)
+                        .then(({ data }) => {
+                          setNewItem({ ...newItem, activityTypeKey: data.key });
+                          loadActivityTypes();
+                        })
+                        .catch(err => setNotice({ kind: 'stop', text: readError(err, 'Could not add that') }));
+                    }}
+                  />
+                  <select id="dw-new-anchor" value={newItem.anchor}
+                          aria-label="Project or client"
+                          onChange={e => setNewItem({ ...newItem, anchor: e.target.value })}>
+                    <option value="">Not tied to one</option>
+                    {groupAnchors(anchors).map(g => (
+                      <optgroup key={g.label} label={g.label}>
+                        {g.options.map(o => (
+                          <option key={`${o.anchor_kind}:${o.anchor_id}`}
+                                  value={`${o.anchor_kind}:${o.anchor_id}`}>
+                            {o.label}
+                          </option>
                         ))}
-                      </select>
-                    </div>
-                  </div>
-                  <div className="dw-note">
+                      </optgroup>
+                    ))}
+                  </select>
+                  <button className="dw-btn dw-btn-primary" onClick={addItem}>Add item</button>
+                  <button className="dw-btn" onClick={() => setAdding(false)}>Cancel</button>
+                  {/* Kept, on its own line under the bar. It is the one thing a
+                      first-time user genuinely needs: that this is not a line
+                      for today but a thing that comes back tomorrow. */}
+                  <div className="dw-note dw-addbar-note">
                     This creates a <b>work item</b>, not just a line for today. It stays on
                     your list every day until you mark it complete or dropped.
-                  </div>
-                  <div className="dw-addform-actions">
-                    <button className="dw-btn dw-btn-primary" onClick={addItem}>Add item</button>
-                    <button className="dw-btn" onClick={() => setAdding(false)}>Cancel</button>
                   </div>
                 </div>
               )}
@@ -1051,13 +1051,17 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
                     </select>
                   </td>
 
+                  {/* The placeholder is shorter than the card's "What happens
+                      tomorrow?" because this column is 14% wide: the longer
+                      text wrapped to two lines inside a one-line box and put a
+                      scrollbar on an empty field. */}
                   <td>
                     <textarea
                       aria-label={`Next steps for ${row.title}`}
                       className="dw-grid-ta"
                       rows={1}
                       value={draft.nextSteps || ''}
-                      placeholder="What happens tomorrow?"
+                      placeholder="Tomorrow?"
                       onChange={e => setDraft(row.item_id, { nextSteps: e.target.value })}
                     />
                   </td>
