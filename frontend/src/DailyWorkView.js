@@ -100,20 +100,6 @@ export default function DailyWorkView() {
     return (t === 'setup' && !isOrgAdmin()) ? 'day' : t;
   });
   const [mode, setMode] = useState('log');
-  // 'table' | 'cards' for the edit surface. Persisted, because it is a working
-  // preference rather than a per-visit choice — someone who wants the grid
-  // wants it every morning. Read defensively: a corrupt or absent value falls
-  // back to the table, which is the denser of the two and what the screen is
-  // for on a wide monitor.
-  const [layout, setLayout] = useState(() => {
-    try {
-      return localStorage.getItem('gw_dailywork_layout') === 'cards' ? 'cards' : 'table';
-    } catch { return 'table'; }
-  });
-  const setLayoutPref = useCallback((next) => {
-    setLayout(next);
-    try { localStorage.setItem('gw_dailywork_layout', next); } catch { /* private mode */ }
-  }, []);
   // Which row has its details panel open in the table. One at a time: the panel
   // spans the full width, so two open at once pushes the rest off screen.
   const [expandedRow, setExpandedRow] = useState(null);
@@ -503,17 +489,6 @@ export default function DailyWorkView() {
               Edit rows
             </button>
           </div>
-          {mode === 'edit' && !isMobile && (
-            // Only in edit mode, and only where a five-column grid fits. On a
-            // phone the cards are the layout, so a toggle offering the other
-            // one would be a control with no effect.
-            <div className="dw-toggle" role="group" aria-label="Layout">
-              <button type="button" aria-pressed={layout === 'table'}
-                      onClick={() => setLayoutPref('table')}>Table</button>
-              <button type="button" aria-pressed={layout === 'cards'}
-                      onClick={() => setLayoutPref('cards')}>Cards</button>
-            </div>
-          )}
           {mode === 'edit' && (
             // On a phone the save lives here rather than in a sticky bottom bar:
             // iOS moves bottom-fixed elements when the keyboard opens.
@@ -558,7 +533,12 @@ export default function DailyWorkView() {
                   </button>
                 </div>
               </div>
-            ) : (isMobile || layout === 'cards') ? (
+            ) : isMobile ? (
+              /* Cards are the phone layout now, not a choice. The Table/Cards
+                 toggle is gone: two layouts for one screen meant two places to
+                 fix anything, and the table is what the screen is for on a
+                 wide monitor. ItemCard stays because five columns of inputs
+                 genuinely do not fit 380px. */
               <div className="dw-items">
                 {rows.map(row => (
                   <ItemCard
@@ -978,93 +958,72 @@ function PastDay({ day }) {
  * regardless of this preference.
  */
 /**
- * Rename an item, or move it to a different anchor.
+ * The item name, renamed in place.
  *
- * Its own component so each row's draft lives with the row rather than in a
- * map keyed by item id in the parent — the panel is mounted only while it is
- * open, so unmounting is what discards an abandoned edit, and there is no
- * stale draft to clear when a different row is expanded.
+ * Click the name, type, press Enter. Escape abandons; blur saves, because a
+ * click elsewhere after typing means the edit is finished, not discarded.
  *
- * Saved explicitly rather than on blur. Both fields change the ITEM, which is
- * shared with every past entry's display, so an accidental keystroke that
- * commits itself is a worse failure here than one extra click.
+ * REPLACES the Item settings block that used to sit in the details panel. That
+ * put the field a long way from the name it edits and, being inside an
+ * expanding row, pushed every item below it down the screen to rename one.
+ *
+ * An empty name is refused rather than saved: title is NOT NULL on
+ * daily_work_items, and an item with a blank name cannot be picked out of a
+ * list afterwards. Reverting to the current value is the least surprising
+ * response — nothing was typed, so nothing changes.
  */
-function ItemSettings({ row, anchors, onSave }) {
-  const [title, setTitle] = useState(row.title || '');
-  const [anchor, setAnchor] = useState(
-    row.anchor_kind && row.anchor_id ? `${row.anchor_kind}:${row.anchor_id}` : '');
-  const [busy, setBusy] = useState(false);
+function InlineTitle({ title, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(title || '');
 
-  const current = row.anchor_kind && row.anchor_id ? `${row.anchor_kind}:${row.anchor_id}` : '';
-  const dirty = title.trim() !== (row.title || '') || anchor !== current;
-
-  const save = async () => {
-    if (!title.trim()) return;
-    setBusy(true);
-    const patch = {};
-    if (title.trim() !== (row.title || '')) patch.title = title.trim();
-    if (anchor !== current) {
-      // Sent as a pair. The service re-resolves account_id only when the anchor
-      // is part of the patch, so sending one without the other would leave the
-      // account pointing at the old anchor.
-      const [kind, id] = anchor ? anchor.split(':') : [null, null];
-      patch.anchorKind = kind;
-      patch.anchorId = id ? Number(id) : null;
-    }
-    await onSave(patch);
-    setBusy(false);
+  const commit = () => {
+    const next = draft.trim();
+    setEditing(false);
+    if (!next) { setDraft(title || ''); return; }
+    if (next === (title || '')) return;
+    onSave(next);
   };
 
+  if (!editing) {
+    return (
+      <button type="button" className="dw-grid-title dw-grid-title-btn"
+              title="Click to rename"
+              onClick={() => { setDraft(title || ''); setEditing(true); }}>
+        {title}
+      </button>
+    );
+  }
   return (
-    <div className="dw-field">
-      <label>Item settings</label>
-      <div className="dw-addbar">
-        <input type="text" value={title} aria-label="Item name" disabled={busy}
-               placeholder="Item name"
-               onChange={e => setTitle(e.target.value)} />
-        <select value={anchor} aria-label="Project or client" disabled={busy}
-                onChange={e => setAnchor(e.target.value)}>
-          <option value="">Not tied to one</option>
-          {groupAnchors(anchors).map(g => (
-            <optgroup key={g.label} label={g.label}>
-              {g.options.map(o => (
-                <option key={`${o.anchor_kind}:${o.anchor_id}`}
-                        value={`${o.anchor_kind}:${o.anchor_id}`}>
-                  {o.label}
-                </option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
-        <button className="dw-btn dw-btn-primary" onClick={save}
-                disabled={busy || !dirty || !title.trim()}>
-          {busy ? 'Saving…' : 'Save changes'}
-        </button>
-      </div>
-      {/* Renaming is retroactive by construction: entries reference the item by
-          id, so every past line re-reads under the new name. Worth saying,
-          because the alternative assumption — that old entries keep the old
-          name — is equally reasonable and wrong. */}
-      <div className="dw-meta">
-        The name applies to every entry on this item, past ones included.
-      </div>
-    </div>
+    <input
+      className="dw-grid-title-input"
+      autoFocus value={draft} aria-label="Item name"
+      onChange={e => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => {
+        if (e.key === 'Enter') commit();
+        if (e.key === 'Escape') { setDraft(title || ''); setEditing(false); }
+      }}
+    />
   );
 }
 
 function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
                      setDraft, setItemActivity, retireItem, onEvidence, entryDate,
                      anchors, onPatchItem }) {
+  // Which row has had "+ Next steps" clicked. A row whose draft already has
+  // next steps shows the field regardless, so this only tracks the empty ones
+  // someone has opened.
+  const [nextOpenFor, setNextOpenFor] = useState(null);
   return (
     <div className="dw-grid-wrap">
       <table className="dw-grid">
         <colgroup>
-          <col style={{ width: '8%' }} />
-          <col style={{ width: '20%' }} />
-          <col style={{ width: '28%' }} />
+          <col style={{ width: '7%' }} />
+          <col style={{ width: '17%' }} />
+          <col style={{ width: '30%' }} />
           <col style={{ width: '15%' }} />
-          <col style={{ width: '11%' }} />
-          <col style={{ width: '14%' }} />
+          <col style={{ width: '17%' }} />
+          <col style={{ width: '10%' }} />
           <col style={{ width: '4%' }} />
         </colgroup>
         <thead>
@@ -1073,8 +1032,8 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
             <th>Item</th>
             <th>What did you do today</th>
             <th>Activity</th>
+            <th>Initiative</th>
             <th>Stage</th>
-            <th>Next steps</th>
             <th><span className="dw-sr-only">Details</span></th>
           </tr>
         </thead>
@@ -1089,6 +1048,7 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
             const closed      = stage === 'completed' || stage === 'dropped';
             const isOpen      = expanded === row.item_id;
             const error       = rowErrors[row.item_id];
+            const nextOpen    = nextOpenFor === row.item_id;
 
             return (
               <React.Fragment key={row.item_id}>
@@ -1100,7 +1060,12 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
                   <td className="dw-grid-date">{formatDateShort(entryDate)}</td>
 
                   <td className="dw-grid-item">
-                    <span className="dw-grid-title">{row.title}</span>
+                    {/* Click to rename, in place. It was a text field in a
+                        settings block below the row, which meant renaming
+                        pushed every other row down and put the field a long way
+                        from the name it edits. */}
+                    <InlineTitle title={row.title}
+                                 onSave={next => onPatchItem(row.item_id, { title: next })} />
                     {/* Inline with the title rather than on their own line, so
                         the row stays one line deep. target_date is back: it was
                         on the card header and dropping it lost the only place a
@@ -1131,6 +1096,28 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
                         )}
                       </div>
                     )}
+                    {/* Next steps lost its column to Initiative and lives here
+                        instead, under the description it follows on from. It
+                        is optional and usually empty, so an always-present
+                        column spent 14% of the width on blank boxes. Shown
+                        when it has content or when asked for; otherwise one
+                        small link. */}
+                    {(draft.nextSteps || nextOpen) ? (
+                      <textarea
+                        aria-label={`Next steps for ${row.title}`}
+                        className="dw-grid-ta dw-grid-next"
+                        rows={1}
+                        autoFocus={nextOpen && !draft.nextSteps}
+                        value={draft.nextSteps || ''}
+                        placeholder="What happens tomorrow?"
+                        onChange={e => setDraft(row.item_id, { nextSteps: e.target.value })}
+                      />
+                    ) : (
+                      <button type="button" className="dw-btn-link dw-grid-next-add"
+                              onClick={() => setNextOpenFor(row.item_id)}>
+                        + Next steps
+                      </button>
+                    )}
                   </td>
 
                   <td>
@@ -1142,26 +1129,45 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
                     />
                   </td>
 
+                  {/* Which initiative this item feeds. It was not shown at all
+                      — only account_name, which a standing initiative never
+                      has — so the one thing the anchor exists to record was
+                      invisible on the row that records it. Editable in place
+                      for the same reason the title is. */}
+                  <td>
+                    <select aria-label={`Initiative for ${row.title}`}
+                            value={row.anchor_kind && row.anchor_id
+                              ? `${row.anchor_kind}:${row.anchor_id}` : ''}
+                            onChange={e => {
+                              const [kind, id] = e.target.value ? e.target.value.split(':') : [null, null];
+                              // Sent as a pair: updateItem re-resolves
+                              // account_id only when the anchor is in the
+                              // patch, so one without the other would leave
+                              // the account pointing at the old anchor.
+                              onPatchItem(row.item_id, {
+                                anchorKind: kind,
+                                anchorId: id ? Number(id) : null,
+                              });
+                            }}>
+                      <option value="">Not tied to one</option>
+                      {groupAnchors(anchors).map(g => (
+                        <optgroup key={g.label} label={g.label}>
+                          {g.options.map(o => (
+                            <option key={`${o.anchor_kind}:${o.anchor_id}`}
+                                    value={`${o.anchor_kind}:${o.anchor_id}`}>
+                              {o.label}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </td>
+
                   <td>
                     <select aria-label={`Stage for ${row.title}`} value={stage}
                             onChange={e => setDraft(row.item_id, { dayStage: e.target.value })}>
                       {STAGES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
                     </select>
-                  </td>
-
-                  {/* The placeholder is shorter than the card's "What happens
-                      tomorrow?" because this column is 14% wide: the longer
-                      text wrapped to two lines inside a one-line box and put a
-                      scrollbar on an empty field. */}
-                  <td>
-                    <textarea
-                      aria-label={`Next steps for ${row.title}`}
-                      className="dw-grid-ta"
-                      rows={1}
-                      value={draft.nextSteps || ''}
-                      placeholder="Tomorrow?"
-                      onChange={e => setDraft(row.item_id, { nextSteps: e.target.value })}
-                    />
                   </td>
 
                   {/* Icon, not a text link: the label sat under the title and
@@ -1183,9 +1189,6 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
                 {isOpen && (
                   <tr className="dw-grid-detail">
                     <td colSpan={7}>
-                      <ItemSettings row={row} anchors={anchors}
-                                    onSave={patch => onPatchItem(row.item_id, patch)} />
-
                       {row.prior_description ? (
                         <div className="dw-prior">
                           <b>{formatDate(row.prior_date)}:</b> {row.prior_description}

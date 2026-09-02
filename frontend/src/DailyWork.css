@@ -335,7 +335,22 @@
    * break somewhere or it widens the column, but ordinary prose should still
    * break at spaces. */
   .dw-grid-item { overflow-wrap: anywhere; line-height: 1.6; }
+  /* The title is a BUTTON so it is keyboard-reachable and announces itself as
+   * activatable, but it must read as text — a button that looks like a button
+   * in a name column would suggest it does something other than edit itself. */
   .dw-grid-title { font-size: 14px; font-weight: 700; margin-right: 6px; }
+  .dw-grid-title-btn {
+    background: none; border: none; padding: 0; font: inherit; font-weight: 700;
+    color: var(--dw-ink); text-align: left; cursor: pointer;
+    border-bottom: 1px dashed transparent;
+  }
+  .dw-grid-title-btn:hover { border-bottom-color: var(--dw-line); }
+  .dw-grid-title-btn:focus-visible { outline: 2px solid var(--dw-accent); outline-offset: 2px; }
+  .dw-grid-title-input { font-weight: 700; padding: 4px 8px; }
+
+  /* Next steps, under the description rather than in its own column. */
+  .dw-grid-next { margin-top: 6px; }
+  .dw-grid-next-add { display: inline-block; margin-top: 4px; font-size: 12px; }
   .dw-grid-item .dw-badge { vertical-align: middle; }
 
   /* The date column: quiet, because every row repeats it. Not wrapped —
