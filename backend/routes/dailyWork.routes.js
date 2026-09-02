@@ -156,7 +156,11 @@ router.get('/day', async (req, res) => {
     const date = asDate(req.query.date);
     if (date === undefined) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
     const day = await dailyWork.getDay(req.orgId, req.userId, { date });
-    res.json(day);
+    // Told to the client rather than hardcoded there, so the window is defined
+    // in one place. The UI uses it to bound its date navigation; the service
+    // still enforces it on save, because a bound the client is told is a bound
+    // the client can ignore.
+    res.json({ ...day, backfillDays: dailyWork.BACKFILL_DAYS });
   } catch (err) { handle(res, err, 'GET /day'); }
 });
 
@@ -166,15 +170,21 @@ router.post('/day', async (req, res) => {
     if (!Array.isArray(entries)) {
       return res.status(400).json({ error: 'entries must be a list', code: 'BAD_BODY' });
     }
-    // asOf is NOT taken from the body. The entry date is the owner's local
-    // date resolved server-side; accepting it from the client would let a
-    // browser choose which day its work counted for.
+    const date = asDate(req.body?.date);
+    if (date === undefined) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+
+    // asOf is still NOT taken from the body, and that is the whole design.
+    // The client may now propose which DAY the work belongs to, but "today"
+    // is resolved server-side in the owner's timezone, and saveDay measures
+    // the proposal against it — so a browser cannot widen its own window by
+    // lying about the clock, only choose a day inside a window the server
+    // computed. Omit date entirely and it means today, exactly as before.
     const saved = await dailyWork.saveDay(req.orgId, req.userId, entries.map(e => ({
       itemId: asId(e.itemId),
       description: e.description,
       nextSteps: e.nextSteps,
       dayStage: e.dayStage,
-    })));
+    })), { date });
     res.json(saved);
   } catch (err) { handle(res, err, 'POST /day'); }
 });

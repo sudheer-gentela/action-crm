@@ -69,6 +69,7 @@ const ENTRY_COLUMNS = `
   entry_date::text AS entry_date,
   description, next_steps, day_stage, department_team_id, activity_type_key,
   anchor_kind, anchor_id, account_id, is_continuation,
+  written_on::text AS written_on,
   created_at, updated_at, last_edited_by`;
 
 const MAX_DESCRIPTION = 2000;
@@ -379,7 +380,18 @@ function validateEntry(entry, index) {
  * entry_date is resolved from the OWNER's timezone, never posted. `asOf` exists
  * so the reminder and tests can pin the instant; it is not a client input.
  */
-async function saveDay(orgId, userId, entries, { asOf = new Date() } = {}) {
+/**
+ * How many days back a person may write. Five working-ish days, so Friday's
+ * work is still writable the following Wednesday, and a Monday-morning writeup
+ * of the previous week is not a special case.
+ *
+ * A CONSTANT, not a per-org setting, until someone asks for one. The value is
+ * policy and lives here rather than in a CHECK constraint precisely so it can
+ * become a setting without a migration.
+ */
+const BACKFILL_DAYS = 5;
+
+async function saveDay(orgId, userId, entries, { asOf = new Date(), date = null } = {}) {
   if (!Array.isArray(entries) || entries.length === 0) {
     throw new DailyWorkError('Nothing to save', 'EMPTY_SAVE');
   }
@@ -400,7 +412,32 @@ async function saveDay(orgId, userId, entries, { asOf = new Date() } = {}) {
 
     const tz = await dwDate.resolveTimezone(
       (sql, params) => client.query(sql, params), orgId, userId);
-    const entryDate = dwDate.localDate(tz, asOf);
+    const today = dwDate.localDate(tz, asOf);
+
+    // The requested date, checked against the window. `today` is still resolved
+    // server-side from the owner's timezone — the client proposes a date, it
+    // does not get to decide what "today" is, so it cannot widen its own window
+    // by lying about the clock.
+    let entryDate = today;
+    if (date != null) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        throw new DailyWorkError('Date must be YYYY-MM-DD', 'BAD_DATE', { date });
+      }
+      if (date > today) {
+        // Structurally impossible to store anyway (2026_135's CHECK), but
+        // caught here so the person gets a sentence rather than a constraint
+        // violation.
+        throw new DailyWorkError('You cannot log work for a future day',
+          'FUTURE_DATE', { date });
+      }
+      const earliest = dwDate.addDays(today, -BACKFILL_DAYS);
+      if (date < earliest) {
+        throw new DailyWorkError(
+          `You can only log work for the last ${BACKFILL_DAYS} days. ${date} is further back than that.`,
+          'OUTSIDE_BACKFILL_WINDOW', { date, earliest });
+      }
+      entryDate = date;
+    }
 
     const teamId = await resolvePrimaryTeamId(client, orgId, userId);
     const saved = [];
@@ -408,7 +445,7 @@ async function saveDay(orgId, userId, entries, { asOf = new Date() } = {}) {
     for (const entry of entries) {
       const { rows: itemRows } = await client.query(
         `SELECT id, kind, status, owner_user_id, activity_type_key,
-                anchor_kind, anchor_id, account_id
+                anchor_kind, anchor_id, account_id, opened_on::text AS opened_on
            FROM daily_work_items
           WHERE id = $1 AND org_id = $2`,
         [entry.itemId, orgId]);
@@ -425,6 +462,17 @@ async function saveDay(orgId, userId, entries, { asOf = new Date() } = {}) {
           'NOT_YOUR_ITEM', { itemId: entry.itemId });
       }
 
+      // An entry cannot predate its item. Without this, backfilling five days
+      // lets someone log work against an item created this morning onto a day
+      // when it did not exist — which reads, later, as a record that was always
+      // there. opened_on is the item's own local-date field, so this compares
+      // like with like.
+      if (item.opened_on && entryDate < item.opened_on) {
+        throw new DailyWorkError(
+          'That item did not exist yet on the day you are logging',
+          'ITEM_NOT_OPEN_YET', { itemId: entry.itemId, entryDate, openedOn: item.opened_on });
+      }
+
       // Carried over, rather than started today. Cheap to compute here and
       // impossible to reconstruct later once the days blur together.
       const { rows: priorRows } = await client.query(
@@ -439,8 +487,9 @@ async function saveDay(orgId, userId, entries, { asOf = new Date() } = {}) {
         `INSERT INTO daily_work_entries
            (org_id, item_id, user_id, entry_date, description, next_steps,
             day_stage, department_team_id, activity_type_key,
-            anchor_kind, anchor_id, account_id, is_continuation, last_edited_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$3)
+            anchor_kind, anchor_id, account_id, is_continuation, last_edited_by,
+            written_on)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$3,$14)
          ON CONFLICT (org_id, item_id, entry_date) DO UPDATE
             SET description    = EXCLUDED.description,
                 next_steps     = EXCLUDED.next_steps,
@@ -451,7 +500,13 @@ async function saveDay(orgId, userId, entries, { asOf = new Date() } = {}) {
         [orgId, entry.itemId, userId, entryDate,
          entry.description.trim(), entry.nextSteps || null, entry.dayStage,
          teamId, item.activity_type_key,
-         item.anchor_kind, item.anchor_id, item.account_id, isContinuation]);
+         item.anchor_kind, item.anchor_id, item.account_id, isContinuation,
+         // Deliberately absent from the DO UPDATE list. written_on records when
+         // the day was first written up; re-saving today to fix a typo is an
+         // edit, not a second writing, and updated_at/last_edited_by already
+         // carry that. Letting it move would turn "written late" into "last
+         // touched late" and quietly erase the distinction the column exists for.
+         today]);
 
       // Rule 4. The stage means different things for the two kinds.
       if (item.kind === 'assigned') {
@@ -490,7 +545,13 @@ async function getDay(orgId, userId, { date = null, asOf = new Date() } = {}) {
   return withOrgTransaction(orgId, async (client) => {
     const tz = await dwDate.resolveTimezone(
       (sql, params) => client.query(sql, params), orgId, userId);
-    const entryDate = date || dwDate.localDate(tz, asOf);
+    // Both, always. entryDate is the day being shown; today is what the server
+    // considers today in the owner's timezone, and the client needs it to know
+    // whether it is looking at the past and how far back it may still go. A
+    // browser computing today itself would disagree the moment its clock or
+    // timezone differed from the one the save will use.
+    const today = dwDate.localDate(tz, asOf);
+    const entryDate = date || today;
 
     const { rows } = await client.query(
       `SELECT i.id                AS item_id,
@@ -523,7 +584,7 @@ async function getDay(orgId, userId, { date = null, asOf = new Date() } = {}) {
         ORDER BY i.created_at, i.id`,
       [orgId, userId, entryDate]);
 
-    return { entryDate, timezone: tz, rows };
+    return { entryDate, today, timezone: tz, rows };
   });
 }
 
@@ -1356,6 +1417,9 @@ async function setUserTimezone(orgId, userId, timezone) {
 }
 
 module.exports = {
+  // Exported so the route and any future settings screen read the same number
+  // the validation uses, rather than repeating 5 in three places.
+  BACKFILL_DAYS,
   getAnchorOptions,
   setUserTimezone,
   listCalendars,

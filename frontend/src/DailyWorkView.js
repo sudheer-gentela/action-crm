@@ -132,11 +132,17 @@ export default function DailyWorkView() {
 
   /* ── load ─────────────────────────────────────────────────────────── */
 
+  // Which day is on screen. null means "today, whatever the server says it is"
+  // — the browser never computes today itself, because the entry date is the
+  // OWNER's local date resolved server-side and a laptop with a wrong clock or
+  // a different timezone would disagree with the day its work actually lands on.
+  const [viewDate, setViewDate] = useState(null);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const { data } = await apiService.dailyWork.getDay();
+      const { data } = await apiService.dailyWork.getDay(viewDate || undefined);
       setDay(data);
 
       // Seed drafts from whatever is already saved for today. The description
@@ -159,7 +165,7 @@ export default function DailyWorkView() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [viewDate]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -380,7 +386,11 @@ export default function DailyWorkView() {
     setSaving(true);
     setNotice(null);
     try {
-      const { data } = await apiService.dailyWork.saveDay(entries);
+      // day.entryDate, not viewDate: the server told us which day this is, and
+      // sending back what it said keeps the save aimed at the day on screen even
+      // if viewDate is null (today). Sending null here would still mean today,
+      // but only by coincidence of the two agreeing.
+      const { data } = await apiService.dailyWork.saveDay(entries, day.entryDate);
       setSaved(true);
       setMode('log');
       setNotice({ kind: 'info', text: `Saved ${data.entries.length} ${data.entries.length === 1 ? 'entry' : 'entries'} for ${data.entryDate}.` });
@@ -438,6 +448,14 @@ export default function DailyWorkView() {
 
   const rows = day.rows || [];
   const written = rows.filter(r => (drafts[r.item_id]?.description || '').trim());
+  // Everything the date navigation needs, derived from what the server sent.
+  // backfillDays has a fallback because an older server will not send it — in
+  // which case navigation stays put at today rather than guessing a window.
+  const backfillDays = day?.backfillDays ?? 0;
+  const isToday      = !!day && (!day.today || day.entryDate === day.today);
+  const earliestDay  = day?.today ? addDaysStr(day.today, -backfillDays) : null;
+  const canGoBack    = !!day && !!earliestDay && day.entryDate > earliestDay;
+
   const openRows = rows.filter(r => !['completed', 'dropped', 'retired'].includes(r.status));
 
   return (
@@ -466,6 +484,29 @@ export default function DailyWorkView() {
       <div className="dw-head">
         <div>
           <h1>{formatDate(day.entryDate)}</h1>
+          {/* Date navigation, bounded by the window the SERVER reported. The
+              browser never computes "today" or the earliest allowed day itself:
+              the entry date is the owner's local date resolved server-side, and
+              a laptop in the wrong timezone would offer days the save would then
+              refuse. day.today is what the server called today. */}
+          <div className="dw-daynav">
+            <button type="button" className="dw-btn dw-btn-sm"
+                    disabled={!canGoBack}
+                    title={canGoBack ? 'Previous day' : `You can only log the last ${backfillDays} days`}
+                    onClick={() => setViewDate(addDaysStr(day.entryDate, -1))}>←</button>
+            <button type="button" className="dw-btn dw-btn-sm"
+                    disabled={isToday}
+                    title="Next day"
+                    onClick={() => setViewDate(addDaysStr(day.entryDate, 1))}>→</button>
+            {!isToday && (
+              <button type="button" className="dw-btn dw-btn-sm" onClick={() => setViewDate(null)}>
+                Today
+              </button>
+            )}
+            {!isToday && (
+              <span className="dw-badge review">writing up an earlier day</span>
+            )}
+          </div>
           <div className="dw-sub">
             Your local date{day.timezone ? ` · ${day.timezone}` : ''}
             {openRows.length > 0 && ` · ${openRows.length} open ${openRows.length === 1 ? 'item' : 'items'}`}
@@ -1672,6 +1713,26 @@ function formatDate(dateStr) {
  * therefore renders as the previous day for anyone west of Greenwich. The
  * entry date is a calendar date the person chose, not an instant.
  */
+/**
+ * Shift a YYYY-MM-DD string by whole days, staying a calendar date.
+ *
+ * Built the same component-wise way as the formatters: a local Date, shifted by
+ * setDate, read back through local getters. Doing it with new Date(str) would
+ * parse as UTC and hand back the wrong day for anyone west of Greenwich, and
+ * doing it with millisecond arithmetic would drift by an hour across a DST
+ * boundary — which is precisely the week someone is most likely to be writing
+ * up an earlier day.
+ */
+function addDaysStr(dateStr, n) {
+  if (!dateStr || typeof dateStr !== 'string') return dateStr;
+  const [y, m, d] = dateStr.split('-').map(Number);
+  if (!y || !m || !d) return dateStr;
+  const at = new Date(y, m - 1, d);
+  at.setDate(at.getDate() + n);
+  const pad = v => String(v).padStart(2, '0');
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+}
+
 function formatDateShort(dateStr) {
   if (!dateStr || typeof dateStr !== 'string') return '';
   const [y, m, d] = dateStr.split('-').map(Number);

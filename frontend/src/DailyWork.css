@@ -467,3 +467,11 @@
   .dw-logtable .dw-col-stage { display: none; }
   .dw-logtable { min-width: 420px; }
 }
+
+/* ── date navigation ────────────────────────────────────────────────────
+ * Sits under the heading rather than beside it: the heading is the date, and
+ * putting the controls next to it made two things competing to be the title.
+ */
+.dw-daynav { display: flex; gap: 6px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+.dw-daynav .dw-btn { min-width: 34px; padding: 4px 10px; }
+.dw-daynav .dw-btn:disabled { opacity: 0.4; cursor: not-allowed; }

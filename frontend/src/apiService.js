@@ -1001,7 +1001,7 @@ twilio: {
   dailyWork: {
     // ── member ───────────────────────────────────────────────────────────
     getDay:  (date)    => api.get('/daily-work/day', { params: date ? { date } : {} }),
-    saveDay: (entries) => api.post('/daily-work/day', { entries }),
+    saveDay: (entries, date) => api.post('/daily-work/day', date ? { entries, date } : { entries }),
 
     getAnchors: () => api.get('/daily-work/anchors'),
 
