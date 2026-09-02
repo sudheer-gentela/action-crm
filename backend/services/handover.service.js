@@ -159,6 +159,13 @@ function fmt(row) {
     // is UTC midnight and renders as the day BEFORE west of UTC, which is the
     // same trap from the other side.
     goLiveDate:             toDateStr(row.go_live_date),
+    // 2026_136. Whether the plan is COMMITTED. The checklist is editable after
+    // draft now, so the screen has to be able to say which of the two states it
+    // is in: before the freeze a date change is a correction to a provisional
+    // plan, after it the same keystroke is a slip recorded against a baseline
+    // somebody committed to. Hiding the control used to make that distinction
+    // moot; showing it makes saying so necessary.
+    baselineFrozenAt:       row.baseline_frozen_at ?? null,
     contractValue:          row.contract_value,
     managerLabel:           row.manager_label || null,
     // ── internal projects (2026_87) ──

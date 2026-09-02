@@ -1643,7 +1643,7 @@ function NoteCountBadge({ count }) {
 
 // ── PlaySection ───────────────────────────────────────────────────────────────
 
-function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus, onSetDeps, siblings, users, stages, evidencePolicy,
+function PlaySection({ play, canEdit, canDelete = canEdit, onComplete, onRemove, onEdit, onSetStatus, onSetDeps, siblings, users, stages, evidencePolicy,
                        handoverId, canAddNotes, canMarkNotesInternal, onNoteCountChange,
                        onReview, isManager = false, canAct = false }) {
   // Done-state mirrors the backend gate, which treats a play as satisfied when
@@ -1908,7 +1908,10 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
               Edit
             </button>
           )}
-          {play.isCustom && canEdit && onRemove && (
+          {/* Draft only — see canDeletePlays. canDelete defaults to canEdit
+              so any caller that has not been updated keeps its old
+              behaviour rather than silently losing the control. */}
+          {play.isCustom && canDelete && onRemove && (
             <button onClick={() => onRemove(play.playInstanceId)} title="Remove this item" style={{
               fontSize: 15, lineHeight: 1, padding: '2px 6px', borderRadius: 4,
               background: 'none', color: '#9ca3af', border: 'none', cursor: 'pointer' }}>×</button>
@@ -3565,6 +3568,53 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   // while the project is a draft. So the real rule is simply "draft, and you
   // are in a working view rather than the read-only dashboard".
   const salesCanEdit   = isDraft && viewMode !== 'dashboard';
+
+  // ── Editing the PLAN after draft (2026_136) ──────────────────────────────
+  //
+  // salesCanEdit above used to gate the whole checklist, which meant leaving
+  // draft made it permanently read-only: no rename, no reassign, no date
+  // change, no new task. Correcting a typo required recalling the project to
+  // draft — and that unfreezes the baseline and demotes every 'original' to
+  // 'inferred', permanently degrading Plan vs Actual. The cure was worse than
+  // the typo.
+  //
+  // This is the same change update() already made one level up, for the same
+  // reason and in almost the same words: "a project is a live thing — dates
+  // move, owners change, budgets get revised — and locking those fields the
+  // moment work starts forced people to recall a project to draft to correct a
+  // typo." It now blocks only on terminal statuses. The checklist is the level
+  // that was never brought into line.
+  //
+  // WHAT ACTUALLY PROTECTED THE COMMITMENT, and still does — none of it lives
+  // here, and none of it is weakened by this:
+  //
+  //   - once baseline_frozen_at is set, moving a due date moves due_date and
+  //     leaves baseline_due_date alone, so the move reads as slip
+  //   - resetting the baseline needs rebaseline: true, a written reason, and
+  //     canRebaseline permission
+  //   - every date move is written to play_due_date_revisions in the same
+  //     transaction, and an unattributed change is refused outright
+  //   - DUE_DATE_LOCKED stops an assignee moving their own task's date unless
+  //     the org allows it
+  //
+  // The server never enforced the draft rule at all: updatePlay, addPlay,
+  // removePlay and the stage endpoints all accept writes at any status. So
+  // this was a convention in one file, not an invariant — and conventions that
+  // only one client honours are the ones that mislead.
+  const canEditPlan = !isTerminal && viewMode !== 'dashboard';
+
+  // Deleting stays DRAFT-ONLY, deliberately, and is the one thing not opened
+  // up here. A task on a live plan is a row Plan vs Actual is measuring and
+  // that people may have logged daily work against; removing it destroys both.
+  // Cancelling is the action that means "we are not doing this" — it keeps the
+  // record, and trg_close_daily_work_items_for_play closes the linked daily
+  // work with it.
+  const canDeletePlays = salesCanEdit;
+
+  // Is the plan COMMITTED? Before the freeze a date edit is a correction to a
+  // provisional plan; after it the same keystroke is slip against a baseline.
+  // The screen now has to say which, because it no longer hides the control.
+  const planFrozen = !!detail.baselineFrozenAt;
   // Commitments are tracked THROUGH implementation, so they stay editable by
   // either side until the handover is terminal. (The backend permits any org
   // member; the two tabs represent the two legitimate actors.)
@@ -3803,19 +3853,23 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
               "Start initiative" would have been a button that costs the user
               something and gives back nothing:
 
-              COSTS. salesCanEdit is `isDraft && viewMode !== 'dashboard'`, and
-              it is the only gate on AddPlayForm and on every edit/remove
-              control in the Checklist. Leaving draft therefore makes the
-              checklist permanently read-only — and on this screen there is no
-              way back. The recall-to-draft button is gated on `isSubmitted`,
-              which an internal project never reaches (draft → in_progress
-              directly), and "Complete project" is gated on isServiceView,
-              which is `viewMode === 'assigned'` — an initiative is opened from
-              the Initiatives tab, and has no service owner to be assigned to
-              anyway. So Start is one-way, and it ends with an initiative you
-              can never add another task to. On a time-boxed project that lock
-              is the point: the plan becomes a commitment. On something that
-              never completes, tasks arrive forever.
+              COSTS. This argument was written when salesCanEdit — `isDraft &&
+              viewMode !== 'dashboard'` — was the only gate on AddPlayForm and
+              on every edit control in the Checklist, so leaving draft made the
+              checklist permanently read-only with no way back on this screen.
+              THAT IS NO LONGER TRUE: the checklist now gates on canEditPlan,
+              which blocks only on a terminal status, so an initiative that
+              left draft could still gain tasks.
+
+              The conclusion survives the premise anyway, because the second
+              half never depended on it. Start still gives a standing
+              initiative nothing, and the recall route is still missing: the
+              recall-to-draft button is gated on `isSubmitted`, which an
+              internal project never reaches (draft → in_progress directly),
+              and "Complete project" is gated on isServiceView, which is
+              `viewMode === 'assigned'` — an initiative is opened from the
+              Initiatives tab and has no service owner to be assigned to
+              anyway. So Start remains one-way, and one-way for no gain.
 
               GIVES NOTHING. Every consumer that could care about the status
               already ignores it here. getAnchorOptions excludes only
@@ -4049,7 +4103,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
         <section style={{ marginBottom: 24 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 12px' }}>
             <h4 style={{ margin: 0, fontSize: 14, color: '#374151' }}>📋 {noun} checklist <span style={{ fontSize: 11, fontWeight: 400, color: '#9ca3af' }}>· steps grouped by stage</span></h4>
-            {salesCanEdit && (
+            {canEditPlan && (
               <button onClick={() => setShowStageMgr(v => !v)}
                 style={{ marginLeft: 'auto', fontSize: 11, padding: '4px 10px', borderRadius: 6, fontWeight: 600,
                          border: '1px solid #d1d5db', background: showStageMgr ? '#eff6ff' : '#fff',
@@ -4057,7 +4111,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                 ⚙ Manage stages
               </button>
             )}
-            <div style={{ marginLeft: salesCanEdit ? 8 : 'auto', display: 'inline-flex', border: '1px solid #d1d5db', borderRadius: 6, overflow: 'hidden' }}>
+            <div style={{ marginLeft: canEditPlan ? 8 : 'auto', display: 'inline-flex', border: '1px solid #d1d5db', borderRadius: 6, overflow: 'hidden' }}>
               {CHECKLIST_LAYOUTS.map(([k, label]) => (
                 <button key={k} onClick={() => setLayout(k)} style={{ padding: '4px 12px', fontSize: 11, fontWeight: 600, border: 'none', cursor: 'pointer',
                   background: checklistLayout === k ? '#0369a1' : '#fff', color: checklistLayout === k ? '#fff' : '#374151' }}>{label}</button>
@@ -4065,7 +4119,22 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
             </div>
           </div>
 
-          {salesCanEdit && showStageMgr && (
+          {/* The plan's state, said out loud. The checklist is editable
+              after draft now, and the same keystroke means two different
+              things either side of the freeze: before it a correction to a
+              provisional plan, after it a slip recorded against a baseline.
+              Hiding the controls used to make the distinction moot. */}
+          {canEditPlan && planFrozen && (
+            <div style={{ fontSize: 11, color: '#92400e', background: '#fffbeb',
+                          border: '1px solid #fde68a', borderRadius: 6,
+                          padding: '6px 10px', marginBottom: 10 }}>
+              This plan is committed. Titles and owners can be corrected freely;
+              moving a date is recorded as slip against the baseline, and a task
+              added now is baselined to the date you give it.
+            </div>
+          )}
+
+          {canEditPlan && showStageMgr && (
             <StageManager
               stages={stages}
               onSave={handleSaveStages}
@@ -4103,7 +4172,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                           </div>
                           {isOpen && (
                             <div style={{ paddingBottom: 8 }}>
-                              <PlaySection play={play} canEdit={salesCanEdit} onComplete={handleCompletePlay} onRemove={handleRemovePlay} onEdit={handleUpdatePlay} onSetStatus={handleSetPlayStatus} onSetDeps={handleSetPlayDeps} evidencePolicy={evidencePolicy}
+                              <PlaySection play={play} canEdit={canEditPlan} canDelete={canDeletePlays} onComplete={handleCompletePlay} onRemove={handleRemovePlay} onEdit={handleUpdatePlay} onSetStatus={handleSetPlayStatus} onSetDeps={handleSetPlayDeps} evidencePolicy={evidencePolicy}
                                 siblings={plays.filter(x => x.playInstanceId !== play.playInstanceId)}
                                 users={users} stages={stages}
                                 handoverId={h.id} canAddNotes={detail.canAddNotes}
@@ -4182,7 +4251,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                                            textDecoration: done ? 'line-through' : 'none' }}>
                                 <InlineCell
                                   value={play.title} display={play.title}
-                                  canEdit={salesCanEdit && !done}
+                                  canEdit={canEditPlan && !done}
                                   onSave={v => v && handleInlineSave(play.playInstanceId, 'title', v)}
                                 />
                                 {play.isGate && !done && (
@@ -4204,20 +4273,41 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                                     // in this file (line ~1395).
                                     label: u.name || `${u.first_name || ''} ${u.last_name || ''}`.trim() || u.email,
                                   }))}
-                                  canEdit={salesCanEdit && !done}
+                                  canEdit={canEditPlan && !done}
                                   onSave={v => handleInlineSave(play.playInstanceId, 'ownerUserId', v)}
                                 />
                               </td>
                               <td style={td}>
                                 {done && play.completedAt
                                   ? <span style={{ fontSize: 11, color: '#059669', whiteSpace: 'nowrap' }}>✓ {fmtDate(play.completedAt)}</span>
+                                  : planFrozen
+                                  /* Once the plan is committed, a date change
+                                     is a slip against a baseline somebody
+                                     agreed to — so it goes through the dialog
+                                     that shows the baseline, takes a reason and
+                                     offers a rebaseline, rather than an inline
+                                     field that records it silently. The server
+                                     accepts either; this is about the person
+                                     knowing which of the two they just did. */
+                                  ? (
+                                    <button onClick={e => { e.stopPropagation(); setDateModal(play); }}
+                                      title="Change this date — recorded as slip against the baseline"
+                                      disabled={!canEditPlan}
+                                      style={{ background: 'none', border: 'none', padding: 0,
+                                               font: 'inherit', textAlign: 'left',
+                                               cursor: canEditPlan ? 'pointer' : 'default' }}>
+                                      {play.dueDate
+                                        ? <DueChip dueDate={play.dueDate} isOverdue={play.isOverdue} daysOverdue={play.daysOverdue} />
+                                        : <span style={{ fontSize: 11, color: '#9ca3af' }}>Set a date</span>}
+                                    </button>
+                                  )
                                   : <InlineCell
                                       type="date"
                                       value={play.dueDate ? String(play.dueDate).slice(0, 10) : ''}
                                       display={play.dueDate
                                         ? <DueChip dueDate={play.dueDate} isOverdue={play.isOverdue} daysOverdue={play.daysOverdue} />
                                         : null}
-                                      canEdit={salesCanEdit}
+                                      canEdit={canEditPlan}
                                       onSave={v => handleInlineSave(play.playInstanceId, 'dueDate', v)}
                                     />}
                               </td>
@@ -4232,18 +4322,24 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                                 </span>
                               </td>
                               <td style={td}>
-                                {salesCanEdit && (
+                                {canEditPlan && (
                                   <span style={{ display: 'inline-flex', gap: 4 }}>
                                     <button title="Duplicate this task"
                                       onClick={e => { e.stopPropagation(); handleDuplicatePlay(play); }}
                                       style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4,
                                                border: '1px solid #e5e7eb', background: '#fff',
                                                color: '#6b7280', cursor: 'pointer', lineHeight: 1.4 }}>⧉</button>
-                                    <button title="Delete this task"
-                                      onClick={e => { e.stopPropagation(); handleDeletePlay(play); }}
-                                      style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4,
-                                               border: '1px solid #fecaca', background: '#fff',
-                                               color: '#991b1b', cursor: 'pointer', lineHeight: 1.4 }}>🗑</button>
+                                    {/* Draft only. On a live plan the row is
+                                        being measured by Plan vs Actual and may
+                                        carry other people's logged work —
+                                        cancel it instead, which keeps both. */}
+                                    {canDeletePlays && (
+                                      <button title="Delete this task"
+                                        onClick={e => { e.stopPropagation(); handleDeletePlay(play); }}
+                                        style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4,
+                                                 border: '1px solid #fecaca', background: '#fff',
+                                                 color: '#991b1b', cursor: 'pointer', lineHeight: 1.4 }}>🗑</button>
+                                    )}
                                   </span>
                                 )}
                               </td>
@@ -4252,7 +4348,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                             {isOpen && (
                               <tr>
                                 <td colSpan={6} style={{ padding: '0 10px 8px', background: '#f8fafc', borderTop: 'none' }}>
-                                  <PlaySection play={play} canEdit={salesCanEdit} onComplete={handleCompletePlay}
+                                  <PlaySection play={play} canEdit={canEditPlan} canDelete={canDeletePlays} onComplete={handleCompletePlay}
                                     onRemove={handleRemovePlay} onEdit={handleUpdatePlay} onSetStatus={handleSetPlayStatus} onSetDeps={handleSetPlayDeps} evidencePolicy={evidencePolicy}
                                 siblings={plays.filter(x => x.playInstanceId !== play.playInstanceId)}
                                 users={users} stages={stages}
@@ -4295,7 +4391,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                         opacity: dragPlay && dragPlay.id === play.id ? 0.45 : 1,
                       }}
                     >
-                      {salesCanEdit && (
+                      {canEditPlan && (
                         <span
                           draggable
                           onDragStart={() => setDragPlay({ id: play.id, stageKey: group.key })}
@@ -4307,7 +4403,8 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                       )}
                       <PlaySection
                         play={play}
-                        canEdit={salesCanEdit}
+                        canEdit={canEditPlan}
+                        canDelete={canDeletePlays}
                         onComplete={handleCompletePlay}
                         onRemove={handleRemovePlay}
                         onEdit={handleUpdatePlay}
@@ -4325,7 +4422,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                         isManager={canReviewPlays}
                         canAct={canActOnPlay(play)}
                       />
-                      {salesCanEdit && (
+                      {canEditPlan && (
                         <div style={{ display: 'flex', gap: 10, margin: '-4px 0 10px 2px' }}>
                           <button onClick={() => setDateModal(play)}
                             style={{ fontSize: 11, padding: '2px 8px', borderRadius: 5,
@@ -4347,7 +4444,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
               );
             })
           )}
-          {salesCanEdit && (
+          {canEditPlan && (
             <div style={{ marginTop: 4 }}>
               <AddPlayForm users={users} onAdd={handleAddPlay} stages={stages} />
             </div>
