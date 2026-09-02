@@ -32,7 +32,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
 import { hashSegment, writeHash } from './hashNav';
-import { ProjectItemRow } from './dailyWorkProjectLink';
+import { ProjectItemRow, daysBetween } from './dailyWorkProjectLink';
 import DailyWorkTeamView from './DailyWorkTeamView';
 import DailyWorkSetupView from './DailyWorkSetupView';
 import useIsMobile from './useIsMobile';
@@ -566,7 +566,7 @@ export default function DailyWorkView() {
           creates a daily work item, and the log underneath has to pick it up —
           without this the person posts an update and their own day still says
           nothing was written. */}
-      <MyProjectWork me={me} onPosted={load} />
+      <MyProjectWork me={me} today={day.today} onPosted={load} />
 
       {mode === 'log'
         ? <DayLog day={day} rows={rows} written={written} drafts={drafts} saved={saved}
@@ -804,6 +804,42 @@ function WaitingPanel({ me, hasReports, rows, drafts, stalled, candidates, onOpe
 }
 
 /**
+ * How far ahead the My project work card looks.
+ *
+ * A VIEW FILTER, applied here in the browser — NOT a predicate added to
+ * getPersonProjectItems. That query is shared with the People screen and with
+ * the link check behind every "open this task"; narrowing it server-side would
+ * make a manager's timeline shorter and, worse, would make checkProjectLink
+ * refuse a link to a task that fell outside the window, since it validates by
+ * asking that same query whether the task is still there.
+ *
+ * The design's reasoning against a window still holds and is what shapes the
+ * rules below: a task due in three weeks that somebody worked on today has to
+ * stay loggable, or that person goes back to typing a free-text item. So
+ * nothing is ever unreachable — the count of what is hidden is shown with a
+ * one-click way to see it, and two categories are never hidden at all:
+ *
+ *   - anything OVERDUE, which is the opposite of "not due yet"
+ *   - anything with NO due date, including every task on a standing
+ *     initiative, which would otherwise be permanently invisible here
+ */
+const DUE_WINDOWS = [
+  { key: '7',   label: '7 days',  days: 7 },
+  { key: '14',  label: '2 weeks', days: 14 },
+  { key: '30',  label: '1 month', days: 30 },
+  { key: 'all', label: 'All',     days: null },
+];
+
+function withinWindow(item, today, days) {
+  if (days == null) return true;
+  if (item.isOverdue) return true;
+  if (!item.dueDate) return true;
+  if (!today) return true;          // no server date to measure against
+  const ahead = daysBetween(today, item.dueDate);
+  return ahead == null || ahead <= days;
+}
+
+/**
  * My own project work — the same rows my manager sees on my timeline.
  *
  * Deliberately the SAME component and the SAME endpoint the People screen
@@ -819,9 +855,10 @@ function WaitingPanel({ me, hasReports, rows, drafts, stalled, candidates, onOpe
  * no Projects module at all — where this call returns nothing and this stays
  * invisible.
  */
-function MyProjectWork({ me, onPosted }) {
+function MyProjectWork({ me, today, onPosted }) {
   const [items, setItems] = useState([]);
   const [notice, setNotice] = useState(null);
+  const [window_, setWindow] = useState('7');
 
   useEffect(() => {
     let alive = true;
@@ -836,7 +873,10 @@ function MyProjectWork({ me, onPosted }) {
 
   if (items.length === 0) return null;
 
-  const overdue = items.filter(i => i.isOverdue);
+  const days = (DUE_WINDOWS.find(w => w.key === window_) || DUE_WINDOWS[0]).days;
+  const shown = items.filter(i => withinWindow(i, today, days));
+  const hidden = items.length - shown.length;
+  const overdue = shown.filter(i => i.isOverdue);
   // A person row is what ProjectItemRow expects, and on this screen the person
   // is me. Built here rather than fetched: the crumb only needs an id and a
   // name to come back to, and the rollup that would supply one is a manager's
@@ -848,9 +888,19 @@ function MyProjectWork({ me, onPosted }) {
       <div className="dw-card-head">
         <h2>My project work</h2>
         <span className="m">
-          {items.length} open
+          {shown.length} of {items.length}
           {overdue.length > 0 && ` · ${overdue.length} overdue`}
         </span>
+        <select aria-label="Due within" value={window_}
+                onChange={e => setWindow(e.target.value)}
+                style={{ width: 'auto', marginLeft: 'auto', fontSize: 13,
+                         padding: '4px 8px', alignSelf: 'center' }}>
+          {DUE_WINDOWS.map(w => (
+            <option key={w.key} value={w.key}>
+              {w.days == null ? 'All open tasks' : `Due within ${w.label}`}
+            </option>
+          ))}
+        </select>
       </div>
 
       {notice && (
@@ -862,17 +912,33 @@ function MyProjectWork({ me, onPosted }) {
       )}
 
       <div className="dw-daylog">
-        {items.map(i => (
+        {shown.map(i => (
           // canLog only here. On the People screen this same row belongs to
           // somebody else's timeline, and saveDay refuses an entry written for
           // another owner — so the composer is offered on the one screen where
           // the reader is the person who did the work.
           <ProjectItemRow key={i.id} item={i} person={person}
                           period={null} anchorDate={null} filters={null}
-                          canLog onPosted={onPosted}
+                          canLog today={today} onPosted={onPosted}
                           onRefuse={setNotice} />
         ))}
+        {shown.length === 0 && (
+          <div className="dw-detail-item">
+            <div className="dw-meta">Nothing due in this window.</div>
+          </div>
+        )}
       </div>
+
+      {/* Never a dead end. Someone who worked today on a task due in three
+          weeks has to be able to reach it, or they fall back to typing a
+          free-text item and the link to the project is lost. */}
+      {hidden > 0 && (
+        <div style={{ padding: '6px 12px 10px' }}>
+          <button type="button" className="dw-btn-link" onClick={() => setWindow('all')}>
+            {hidden} more further out — show {hidden === 1 ? 'it' : 'them'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

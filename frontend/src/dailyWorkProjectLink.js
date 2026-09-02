@@ -64,6 +64,50 @@ export function writeReturnCrumb(person, period, anchorDate, filters) {
  * link would land somewhere vague. Left as a plain row until that is built.
  */
 /**
+ * How the due date reads on a row.
+ *
+ * The LATE flag is the server's — item.isOverdue, computed in
+ * getPersonProjectItems against the server's clock, because "overdue" has to
+ * mean the same thing here as it does in the manager's count and a browser
+ * comparing a date string against its own clock is how the two drift apart.
+ *
+ * The countdown is presentation only, and needs a `today` the browser did not
+ * invent: My day passes the server-resolved local date it already has. Without
+ * it there is no countdown, just the date — which is still an improvement on
+ * what was here before, which was a badge reading "task due" on a task due in
+ * three weeks.
+ */
+function dueText(item, today) {
+  if (!item.dueDate) return item.isStanding ? 'no end date' : 'no due date';
+
+  const fmt = (iso) => new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-GB',
+    { day: 'numeric', month: 'short', timeZone: 'UTC' });
+
+  if (item.isOverdue) {
+    const over = typeof item.daysOver === 'number' ? item.daysOver : daysBetween(today, item.dueDate);
+    return over != null && over > 0
+      ? `overdue by ${over} ${over === 1 ? 'day' : 'days'} · was due ${fmt(item.dueDate)}`
+      : `overdue · was due ${fmt(item.dueDate)}`;
+  }
+
+  const days = daysBetween(today, item.dueDate);
+  if (days == null) return `due ${fmt(item.dueDate)}`;
+  if (days < 0)  return `due ${fmt(item.dueDate)}`;
+  if (days === 0) return `due today`;
+  if (days === 1) return `due tomorrow · ${fmt(item.dueDate)}`;
+  return `due in ${days} days · ${fmt(item.dueDate)}`;
+}
+
+/** Whole days from `from` to `to`, both YYYY-MM-DD. Null if either is missing. */
+export function daysBetween(from, to) {
+  if (!from || !to) return null;
+  const a = Date.parse(`${from}T00:00:00Z`);
+  const b = Date.parse(`${to}T00:00:00Z`);
+  if (Number.isNaN(a) || Number.isNaN(b)) return null;
+  return Math.round((b - a) / 86400000);
+}
+
+/**
  * @param who  optional trailing meta — the person's name, on screens that mix
  *             several people's work into one list. Omitted on a single
  *             person's timeline, where repeating their name on every row is
@@ -76,11 +120,12 @@ export function writeReturnCrumb(person, period, anchorDate, filters) {
  *             cannot succeed. Defaults to false, which is the safe direction:
  *             a screen that forgets to pass it loses a convenience rather
  *             than offering an impossible write.
+ * @param today   the server-resolved local date, for the due countdown only.
  * @param onPosted  bubbled up so the surrounding screen can refresh; a new
  *             update creates a daily work item that My day's log has to pick up.
  */
 export function ProjectItemRow({ item, person, period, anchorDate, filters, onRefuse,
-                                who = null, canLog = false, onPosted = null }) {
+                                who = null, canLog = false, today = null, onPosted = null }) {
   const [busy, setBusy] = useState(false);
   const [logging, setLogging] = useState(false);
   // Both required. handoverId says which project; playInstanceId says which
@@ -117,19 +162,22 @@ export function ProjectItemRow({ item, person, period, anchorDate, filters, onRe
     }
   };
 
+  // TITLE AND DUE ON ONE LINE, project and controls on the next. It was three
+  // lines: a badge reading "task due", the title, then the project — and the
+  // badge said the same words whether the task was six days late or three
+  // weeks away, which is the one thing someone scanning this list needs to
+  // tell apart.
   const body = (
     <>
       <div className="t">
-        <span className={`dw-badge ${item.isOverdue ? 'carried' : ''}`}>
-          {item.kind === 'commitment' ? 'commitment due' : 'task due'}
-        </span>
         <b>{item.title}</b>
-        {item.isOverdue && <span className="dw-badge carried">overdue</span>}
+        <span className={`dw-badge ${item.isOverdue ? 'carried' : ''}`}>
+          {dueText(item, today)}
+        </span>
+        {item.kind === 'commitment' && <span className="dw-badge">commitment</span>}
       </div>
       <div className="dw-meta">
         {who ? `${who} · ` : ''}{item.project}{item.isStanding ? ' · standing' : ''}
-        {typeof item.daysOver === 'number' &&
-          ` · ${item.daysOver} ${item.daysOver === 1 ? 'day' : 'days'} over`}
       </div>
     </>
   );

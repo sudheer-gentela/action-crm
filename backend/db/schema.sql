@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict pLoSik7vkGr3e0cGu8xtbtLbc9gZrtDSJQxHtq1i4QyONlO8Vu11AMjtu5xRbPp
+\restrict bb9iLHCQZCndxrlHmD5ewHgjZJNNpML0xpmq09ZYrOSKo9G5uG17r96yRLQSL9G
 
 -- Dumped from database version 17.11 (Debian 17.11-1.pgdg13+2)
 -- Dumped by pg_dump version 18.1
@@ -87,6 +87,74 @@ $$;
 --
 
 COMMENT ON FUNCTION public.clear_session_media_ref() IS 'Drops the mediaKey once the attachment is stored, expired or removed. The key only needs to outlive the download; keeping it afterwards is a decryption key at rest with no remaining purpose.';
+
+
+--
+-- Name: close_daily_work_items_for_play(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.close_daily_work_items_for_play() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  -- Statement-level no-ops are common on this table: due-date shifts,
+  -- sort_order rewrites and baseline promotion all UPDATE rows without
+  -- touching status. AFTER UPDATE OF status still fires for those if the
+  -- column is in the SET list at all, so the comparison is what actually
+  -- decides.
+  IF NEW.status IS NOT DISTINCT FROM OLD.status THEN
+    RETURN NULL;
+  END IF;
+
+  IF NEW.status NOT IN ('completed', 'skipped', 'cancelled') THEN
+    RETURN NULL;
+  END IF;
+
+  UPDATE public.daily_work_items
+     SET status     = CASE WHEN NEW.status = 'completed'
+                           THEN 'completed' ELSE 'dropped' END,
+         closed_at  = now(),
+         updated_at = now()
+   WHERE play_instance_id = NEW.id
+     AND org_id = NEW.org_id
+     AND status NOT IN ('completed', 'dropped');
+
+  RETURN NULL;
+END $$;
+
+
+--
+-- Name: close_daily_work_items_for_project(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.close_daily_work_items_for_project() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT (
+       (NEW.status IN ('completed', 'cancelled')
+        AND NEW.status IS DISTINCT FROM OLD.status)
+    OR (NEW.retired_at IS NOT NULL AND OLD.retired_at IS NULL)
+  ) THEN
+    RETURN NULL;
+  END IF;
+
+  UPDATE public.daily_work_items i
+     SET status     = CASE WHEN NEW.status = 'completed'
+                           THEN 'completed' ELSE 'dropped' END,
+         closed_at  = now(),
+         updated_at = now()
+   WHERE i.org_id = NEW.org_id
+     AND i.play_instance_id IS NOT NULL
+     AND i.status NOT IN ('completed', 'dropped')
+     AND EXISTS (
+           SELECT 1 FROM public.project_play_instances p
+            WHERE p.id = i.play_instance_id
+              AND p.handover_id = NEW.id
+              AND p.org_id = NEW.org_id);
+
+  RETURN NULL;
+END $$;
 
 
 --
@@ -3832,9 +3900,11 @@ CREATE TABLE public.daily_work_items (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     account_id integer,
     target_date date,
+    play_instance_id integer,
     CONSTRAINT chk_dwi_anchor_kind CHECK (((anchor_kind IS NULL) OR (anchor_kind = ANY (ARRAY['handover'::text, 'account'::text, 'campaign'::text])))),
     CONSTRAINT chk_dwi_anchor_shape CHECK ((((anchor_kind IS NULL) AND (anchor_id IS NULL)) OR ((anchor_kind IS NOT NULL) AND (anchor_id IS NOT NULL)))),
     CONSTRAINT chk_dwi_kind CHECK ((kind = ANY (ARRAY['recurring'::text, 'assigned'::text]))),
+    CONSTRAINT chk_dwi_linked_is_assigned CHECK (((play_instance_id IS NULL) OR (kind = 'assigned'::text))),
     CONSTRAINT chk_dwi_status_by_kind CHECK ((((kind = 'assigned'::text) AND (status = ANY (ARRAY['yet_to_start'::text, 'in_progress'::text, 'in_review'::text, 'completed'::text, 'dropped'::text]))) OR ((kind = 'recurring'::text) AND (status = ANY (ARRAY['active'::text, 'retired'::text]))))),
     CONSTRAINT chk_dwi_target_date_kind CHECK (((target_date IS NULL) OR (kind = 'assigned'::text))),
     CONSTRAINT chk_dwi_title_not_blank CHECK ((btrim(title) <> ''::text))
@@ -3860,6 +3930,13 @@ COMMENT ON COLUMN public.daily_work_items.account_id IS 'Snapshot, resolved once
 --
 
 COMMENT ON COLUMN public.daily_work_items.target_date IS 'ADVISORY. Display and sort only. Generates no status, no notification, and no overdue state anywhere. Recurring work cannot carry one.';
+
+
+--
+-- Name: COLUMN daily_work_items.play_instance_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.daily_work_items.play_instance_id IS 'The project task this item tracks. NULL for ordinary items. Set once at creation and never moved: the link cannot be severed or repointed, because a second way for the project record and the person''s log to disagree is exactly what one shared row exists to prevent. As of 2026_136.';
 
 
 --
@@ -17498,6 +17575,13 @@ CREATE INDEX idx_dwi_owner_open ON public.daily_work_items USING btree (org_id, 
 
 
 --
+-- Name: idx_dwi_play_instance; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dwi_play_instance ON public.daily_work_items USING btree (play_instance_id) WHERE (play_instance_id IS NOT NULL);
+
+
+--
 -- Name: idx_dwi_target; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -20361,6 +20445,13 @@ CREATE UNIQUE INDEX uq_dhd_grain ON public.domain_health_daily USING btree (org_
 
 
 --
+-- Name: uq_dwi_owner_play; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_dwi_owner_play ON public.daily_work_items USING btree (owner_user_id, play_instance_id) WHERE (play_instance_id IS NOT NULL);
+
+
+--
 -- Name: uq_ecf_entity_field_campaign; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -20813,6 +20904,20 @@ CREATE TRIGGER trg_cfd_updated_at BEFORE UPDATE ON public.custom_field_defs FOR 
 --
 
 CREATE TRIGGER trg_clear_session_media_ref BEFORE INSERT OR UPDATE OF media_status ON public.whatsapp_messages FOR EACH ROW EXECUTE FUNCTION public.clear_session_media_ref();
+
+
+--
+-- Name: project_play_instances trg_close_daily_work_items_for_play; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_close_daily_work_items_for_play AFTER UPDATE OF status ON public.project_play_instances FOR EACH ROW EXECUTE FUNCTION public.close_daily_work_items_for_play();
+
+
+--
+-- Name: sales_handovers trg_close_daily_work_items_for_project; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_close_daily_work_items_for_project AFTER UPDATE OF status, retired_at ON public.sales_handovers FOR EACH ROW EXECUTE FUNCTION public.close_daily_work_items_for_project();
 
 
 --
@@ -22569,6 +22674,14 @@ ALTER TABLE ONLY public.daily_work_items
 
 ALTER TABLE ONLY public.daily_work_items
     ADD CONSTRAINT daily_work_items_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: daily_work_items daily_work_items_play_instance_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_items
+    ADD CONSTRAINT daily_work_items_play_instance_fkey FOREIGN KEY (play_instance_id) REFERENCES public.project_play_instances(id);
 
 
 --
@@ -26539,5 +26652,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict pLoSik7vkGr3e0cGu8xtbtLbc9gZrtDSJQxHtq1i4QyONlO8Vu11AMjtu5xRbPp
+\unrestrict bb9iLHCQZCndxrlHmD5ewHgjZJNNpML0xpmq09ZYrOSKo9G5uG17r96yRLQSL9G
 

@@ -74,22 +74,40 @@ function daysInWindow(today, earliest) {
   return out;
 }
 
+// ── Why every control carries an explicit width and height ───────────
+//
+// DailyWork.css sets `.dw select, .dw textarea { width: 100% }` and
+// `.dw textarea { min-height: 96px }`. Inside My day this composer renders
+// under `.dw`, so a bare inline style that omits those properties loses to the
+// stylesheet: the stage and date pickers stretched to full width and stacked,
+// and both textareas opened three lines taller than they need to be. Inline
+// wins on the properties it actually names, so they are named.
+//
+// The same values then apply inside HandoverView, which has no daily work
+// stylesheet at all — which is the point of styling this component inline in
+// the first place.
 const S = {
-  wrap:   { marginTop: 8, padding: 10, background: '#f8fafc',
+  wrap:   { marginTop: 8, padding: '8px 10px', background: '#f8fafc',
             border: '1px solid #e5e7eb', borderRadius: 6, fontSize: 12 },
-  label:  { fontSize: 11, color: '#6b7280', marginBottom: 4 },
   ta:     { width: '100%', fontSize: 12, padding: '6px 8px', borderRadius: 4,
-            border: '1px solid #d1d5db', boxSizing: 'border-box', resize: 'vertical' },
-  select: { fontSize: 12, padding: '5px 6px', borderRadius: 4, border: '1px solid #d1d5db' },
+            border: '1px solid #d1d5db', boxSizing: 'border-box', resize: 'vertical',
+            minHeight: 46, lineHeight: 1.45, fontFamily: 'inherit' },
+  taNext: { width: '100%', fontSize: 12, padding: '6px 8px', borderRadius: 4,
+            border: '1px solid #d1d5db', boxSizing: 'border-box', resize: 'vertical',
+            minHeight: 34, lineHeight: 1.45, fontFamily: 'inherit' },
+  select: { width: 'auto', minWidth: 120, fontSize: 12, padding: '4px 6px',
+            borderRadius: 4, border: '1px solid #d1d5db', fontFamily: 'inherit' },
   row:    { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 6 },
-  primary:{ fontSize: 11, padding: '4px 10px', borderRadius: 4, background: '#0369a1',
+  primary:{ fontSize: 11, padding: '5px 12px', borderRadius: 4, background: '#0369a1',
             color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600 },
   quiet:  { fontSize: 11, padding: '4px 10px', borderRadius: 4, background: '#fff',
             color: '#374151', border: '1px solid #d1d5db', cursor: 'pointer' },
+  link:   { fontSize: 11, padding: 0, background: 'none', border: 'none',
+            color: '#0369a1', cursor: 'pointer', textDecoration: 'underline' },
   err:    { marginTop: 6, fontSize: 11, color: '#991b1b', background: '#fef2f2',
             border: '1px solid #fecaca', borderRadius: 4, padding: '5px 8px' },
   note:   { fontSize: 11, color: '#6b7280' },
-  entry:  { padding: '6px 0', borderTop: '1px solid #e5e7eb' },
+  entry:  { padding: '5px 0', borderTop: '1px solid #e5e7eb' },
   badge:  { fontSize: 10, fontWeight: 600, color: '#374151', background: '#f3f4f6',
             border: '1px solid #e5e7eb', borderRadius: 10, padding: '1px 7px' },
 };
@@ -114,6 +132,7 @@ export default function TaskWorkComposer({ playInstanceId, onPosted, startOpen =
   const [date, setDate]       = useState(null);
   const [description, setDescription] = useState('');
   const [nextSteps, setNextSteps]     = useState('');
+  const [nextOpen, setNextOpen]       = useState(false);
   const [stage, setStage]     = useState('in_progress');
   const [saving, setSaving]   = useState(false);
   const [saved, setSaved]     = useState(false);
@@ -145,6 +164,7 @@ export default function TaskWorkComposer({ playInstanceId, onPosted, startOpen =
   useEffect(() => {
     setDescription(mine?.description || '');
     setNextSteps(mine?.next_steps || '');
+    setNextOpen(false);
     setStage(mine?.day_stage || 'in_progress');
     setSaved(false);
     // Keyed on the row identity rather than the object: `mine` is a fresh
@@ -220,14 +240,13 @@ export default function TaskWorkComposer({ playInstanceId, onPosted, startOpen =
       )}
 
       {open && state.canPost && (
-        <div style={{ marginTop: 8 }}>
-          <div style={S.label}>What did you do on this task?</div>
+        <div style={{ marginTop: 6 }}>
           <textarea
             aria-label="What did you do on this task"
-            rows={3}
+            rows={2}
             style={{ ...S.ta, borderColor: overHard ? '#fca5a5' : '#d1d5db' }}
             value={description}
-            placeholder="What you actually did — this is what your manager and the project both read."
+            placeholder="What did you actually do on this task?"
             onChange={e => setDescription(e.target.value)}
           />
           {overSoft && (
@@ -237,13 +256,22 @@ export default function TaskWorkComposer({ playInstanceId, onPosted, startOpen =
             </div>
           )}
 
-          <div style={{ marginTop: 6 }}>
-            <div style={S.label}>Next steps (optional)</div>
-            <textarea aria-label="Next steps" rows={2} style={S.ta}
+          {/* Next steps is optional and usually empty, so it costs a line only
+              when it has content or is asked for. Same treatment as the My day
+              grid, and for the same reason: an always-present second box spends
+              a third of the panel on a field most updates never use. */}
+          {(nextSteps || nextOpen) ? (
+            <textarea aria-label="Next steps" rows={1} style={{ ...S.taNext, marginTop: 5 }}
+                      autoFocus={nextOpen && !nextSteps}
                       value={nextSteps}
                       placeholder="What happens next?"
                       onChange={e => setNextSteps(e.target.value)} />
-          </div>
+          ) : (
+            <button type="button" style={{ ...S.link, marginTop: 5 }}
+                    onClick={() => setNextOpen(true)}>
+              + Next steps
+            </button>
+          )}
 
           <div style={S.row}>
             {/* Only the stages the server will accept. Finishing the task is
@@ -275,11 +303,9 @@ export default function TaskWorkComposer({ playInstanceId, onPosted, startOpen =
               {saving ? 'Saving…' : mine ? 'Save changes' : 'Post update'}
             </button>
             {saved && !saving && <span style={S.note}>Saved</span>}
-          </div>
-
-          <div style={{ ...S.note, marginTop: 6 }}>
-            This appears on your day log and on your manager's view of it.
-            Finishing the task is a separate action on the task itself.
+            <span style={{ ...S.note, marginLeft: 'auto' }}>
+              Finishing the task is a separate action on the task itself.
+            </span>
           </div>
         </div>
       )}
