@@ -64,6 +64,57 @@ export function writeReturnCrumb(person, period, anchorDate, filters) {
  * link would land somewhere vague. Left as a plain row until that is built.
  */
 /**
+ * "Open this task", as a hook.
+ *
+ * EXTRACTED so the row layout and the table layout share one copy. The check
+ * before navigating, the crumb, the event shape and the refusal text are four
+ * things two layouts would otherwise each own, and the drift would be
+ * invisible because each looks right on its own — the same argument that put
+ * ProjectItemRow in this file rather than in two screens.
+ *
+ * Checks the link BEFORE navigating rather than after. The basis for offering
+ * it is derived — this person has this task open — and that can lapse between
+ * the page loading and the click. Navigating first and discovering it there
+ * would dump the reader on a project with no explanation of why they are
+ * looking at it.
+ */
+export function useOpenProjectTask({ item, person, period, anchorDate, filters, onRefuse }) {
+  const [busy, setBusy] = useState(false);
+
+  // Both required. handoverId says which project; playInstanceId says which
+  // row inside it. Without the second the link still works but lands on a
+  // checklist of thirty tasks with nothing open, which is the hunt this was
+  // built to remove — so it is a condition of offering the link, not a bonus.
+  const linkable = item.kind === 'task' && !!item.handoverId && !!item.playInstanceId;
+
+  const open = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const { data } = await apiService.dailyWork.checkProjectLink(person.user_id, item.handoverId);
+      writeReturnCrumb(person, period, anchorDate, filters);
+      window.dispatchEvent(new CustomEvent('open-project-task', {
+        detail: {
+          handoverId: item.handoverId,
+          playInstanceId: item.playInstanceId,
+          scope: data.scope,
+          sub: 'details',
+        },
+      }));
+    } catch (err) {
+      // The server's sentence, not ours. It knows which of the several ways
+      // the basis can lapse actually happened; a generic "could not open"
+      // here would throw that away.
+      onRefuse?.(err?.response?.data?.reason
+        || 'That project could not be opened just now.');
+      setBusy(false);
+    }
+  };
+
+  return { open, busy, linkable };
+}
+
+/**
  * How the due date reads on a row.
  *
  * The LATE flag is the server's — item.isOverdue, computed in
@@ -77,7 +128,7 @@ export function writeReturnCrumb(person, period, anchorDate, filters) {
  * what was here before, which was a badge reading "task due" on a task due in
  * three weeks.
  */
-function dueText(item, today) {
+export function dueText(item, today) {
   if (!item.dueDate) return item.isStanding ? 'no end date' : 'no due date';
 
   const fmt = (iso) => new Date(`${iso}T00:00:00Z`).toLocaleDateString('en-GB',
@@ -126,41 +177,13 @@ export function daysBetween(from, to) {
  */
 export function ProjectItemRow({ item, person, period, anchorDate, filters, onRefuse,
                                 who = null, canLog = false, today = null, onPosted = null }) {
-  const [busy, setBusy] = useState(false);
   const [logging, setLogging] = useState(false);
-  // Both required. handoverId says which project; playInstanceId says which
-  // row inside it. Without the second the link still works but lands on a
-  // checklist of thirty tasks with nothing open, which is the hunt this was
-  // built to remove — so it is a condition of offering the link, not a bonus.
-  const linkable = item.kind === 'task' && !!item.handoverId && !!item.playInstanceId;
+  const { open, busy, linkable } = useOpenProjectTask({
+    item, person, period, anchorDate, filters, onRefuse });
   // Commitments carry no playInstanceId and have no link column behind them,
   // so there is nothing for an update to attach to. Left as a plain row, the
   // same way they are left unlinked above.
   const loggable = canLog && item.kind === 'task' && !!item.playInstanceId;
-
-  const open = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const { data } = await apiService.dailyWork.checkProjectLink(person.user_id, item.handoverId);
-      writeReturnCrumb(person, period, anchorDate, filters);
-      window.dispatchEvent(new CustomEvent('open-project-task', {
-        detail: {
-          handoverId: item.handoverId,
-          playInstanceId: item.playInstanceId,
-          scope: data.scope,
-          sub: 'details',
-        },
-      }));
-    } catch (err) {
-      // The server's sentence, not ours. It knows which of the several ways
-      // the basis can lapse actually happened; a generic "could not open"
-      // here would throw that away.
-      onRefuse?.(err?.response?.data?.reason
-        || 'That project could not be opened just now.');
-      setBusy(false);
-    }
-  };
 
   // TITLE AND DUE ON ONE LINE, project and controls on the next. It was three
   // lines: a badge reading "task due", the title, then the project — and the

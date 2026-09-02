@@ -353,10 +353,26 @@
   .dw-grid-next-add { display: inline-block; margin-top: 4px; font-size: 12px; }
   .dw-grid-item .dw-badge { vertical-align: middle; }
 
-  /* 2026_136. A task-linked row shows its initiative as a fact rather than a
-   * picker — the anchor belongs to the project task and updateItem refuses to
-   * move it. Sized to sit level with the selects in the rows either side, so
-   * the column does not visibly jump between editable and fixed rows. */
+  /* 2026_136. The project work table on My day: task · project · due · two
+   * actions, with the composer opening in a full-width row underneath the task
+   * it belongs to. Sits on .dw-grid so it inherits the fixed layout, header
+   * treatment and cell borders the edit grid already defines — a second set of
+   * table rules would drift from those on the first change to either. */
+  .dw-projtable td { vertical-align: middle; }
+  .dw-projtable .dw-projtable-task { overflow-wrap: anywhere; line-height: 1.5; }
+  .dw-projtable .dw-projtable-task b { font-size: 14px; }
+  .dw-projtable .dw-badge { vertical-align: middle; }
+  /* The composer row carries its own panel background, so the cell gives it
+   * room rather than styling of its own. No top padding: the panel's own
+   * margin already separates it from the task row above. */
+  .dw-projtable-detail > td { padding: 0 12px 12px; background: #f8fafc; }
+
+  .dw-grid-wrap.dw-projtable-wrap { border-radius: 0; border: none; }
+
+  /* A task-linked row shows its initiative as a fact rather than a picker —
+   * the anchor belongs to the project task and updateItem refuses to move it.
+   * Sized to sit level with the selects in the rows either side, so the column
+   * does not visibly jump between editable and fixed rows. */
   .dw-grid-anchor {
     display: inline-block; font-size: 13px; color: var(--dw-ink-2);
     padding: 8px 0; overflow-wrap: anywhere;

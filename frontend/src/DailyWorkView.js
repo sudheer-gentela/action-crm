@@ -32,7 +32,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
 import { hashSegment, writeHash } from './hashNav';
-import { ProjectItemRow, daysBetween } from './dailyWorkProjectLink';
+import { ProjectItemRow, daysBetween, dueText, useOpenProjectTask } from './dailyWorkProjectLink';
+import TaskWorkComposer from './TaskWorkComposer';
 import DailyWorkTeamView from './DailyWorkTeamView';
 import DailyWorkSetupView from './DailyWorkSetupView';
 import useIsMobile from './useIsMobile';
@@ -840,6 +841,111 @@ function withinWindow(item, today, days) {
 }
 
 /**
+ * One row of the project work table, plus the composer it opens.
+ *
+ * SEPARATE COMPONENT because each row owns whether its composer is open, and
+ * a map() in the parent cannot hold per-row state without a hook inside a
+ * loop. It shares the open-task action and the due wording with the card
+ * layout through dailyWorkProjectLink, so the two layouts cannot come to
+ * disagree about either.
+ */
+function ProjectWorkRow({ item, person, today, onRefuse, onPosted }) {
+  const [logging, setLogging] = useState(false);
+  const { open, busy, linkable } = useOpenProjectTask({
+    item, person, period: null, anchorDate: null, filters: null, onRefuse });
+  const loggable = item.kind === 'task' && !!item.playInstanceId;
+
+  return (
+    <>
+      <tr>
+        <td className="dw-projtable-task">
+          <b>{item.title}</b>
+          {item.kind === 'commitment' && <span className="dw-badge">commitment</span>}
+        </td>
+        <td>
+          {item.project}
+          {item.isStanding && <span className="dw-badge">standing</span>}
+        </td>
+        <td>
+          <span className={`dw-badge ${item.isOverdue ? 'carried' : ''}`}>
+            {dueText(item, today)}
+          </span>
+        </td>
+        <td>
+          {linkable && (
+            <button type="button" className="dw-btn-link" onClick={open} disabled={busy}>
+              {busy ? 'opening…' : 'Open this task'}
+            </button>
+          )}
+        </td>
+        <td>
+          {loggable && (
+            <button type="button" className="dw-btn-link"
+                    aria-expanded={logging}
+                    onClick={() => setLogging(v => !v)}>
+              {logging ? 'Hide' : 'Log work on this'}
+            </button>
+          )}
+        </td>
+      </tr>
+      {logging && loggable && (
+        <tr className="dw-projtable-detail">
+          <td colSpan={5}>
+            <TaskWorkComposer playInstanceId={item.playInstanceId}
+                              startOpen onPosted={onPosted} />
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+/**
+ * The project work list as a table — task, project, due, and the two actions.
+ *
+ * WHY THIS EXISTS ALONGSIDE THE CARD LAYOUT, which is the same argument
+ * ItemTable makes against ItemCard: five columns of controls do not fit 380px,
+ * and a stacked row does not let someone scan ten tasks for the one they
+ * worked on. So the table is the desktop layout and the cards are the phone
+ * one, chosen by the same useIsMobile breakpoint the rest of this screen uses.
+ *
+ * The composer opens INSIDE the table, in a full-width row under the task it
+ * belongs to, rather than in a panel elsewhere on the screen. Someone logging
+ * three tasks in a row stays in one place and never loses which task they are
+ * writing about.
+ */
+function ProjectWorkTable({ items, person, today, onRefuse, onPosted }) {
+  return (
+    <div className="dw-grid-wrap dw-projtable-wrap">
+      <table className="dw-grid dw-projtable">
+        <colgroup>
+          <col style={{ width: '34%' }} />
+          <col style={{ width: '24%' }} />
+          <col style={{ width: '18%' }} />
+          <col style={{ width: '12%' }} />
+          <col style={{ width: '12%' }} />
+        </colgroup>
+        <thead>
+          <tr>
+            <th>Task</th>
+            <th>Project</th>
+            <th>Due</th>
+            <th><span className="dw-sr-only">Open</span></th>
+            <th><span className="dw-sr-only">Log work</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map(i => (
+            <ProjectWorkRow key={i.id} item={i} person={person} today={today}
+                            onRefuse={onRefuse} onPosted={onPosted} />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/**
  * My own project work — the same rows my manager sees on my timeline.
  *
  * Deliberately the SAME component and the SAME endpoint the People screen
@@ -859,6 +965,7 @@ function MyProjectWork({ me, today, onPosted }) {
   const [items, setItems] = useState([]);
   const [notice, setNotice] = useState(null);
   const [window_, setWindow] = useState('7');
+  const isMobile = useIsMobile(768);
 
   useEffect(() => {
     let alive = true;
@@ -911,23 +1018,36 @@ function MyProjectWork({ me, today, onPosted }) {
         </div>
       )}
 
-      <div className="dw-daylog">
-        {shown.map(i => (
-          // canLog only here. On the People screen this same row belongs to
-          // somebody else's timeline, and saveDay refuses an entry written for
-          // another owner — so the composer is offered on the one screen where
-          // the reader is the person who did the work.
-          <ProjectItemRow key={i.id} item={i} person={person}
-                          period={null} anchorDate={null} filters={null}
-                          canLog today={today} onPosted={onPosted}
-                          onRefuse={setNotice} />
-        ))}
-        {shown.length === 0 && (
-          <div className="dw-detail-item">
-            <div className="dw-meta">Nothing due in this window.</div>
-          </div>
-        )}
-      </div>
+      {/* Table on a wide screen, stacked rows on a phone — the same
+          breakpoint and the same reasoning as ItemTable vs ItemCard above.
+          Five columns do not fit 380px, and a stacked row does not let anyone
+          scan ten tasks for the one they worked on. */}
+      {isMobile ? (
+        <div className="dw-daylog">
+          {shown.map(i => (
+            // canLog only here. On the People screen this same row belongs to
+            // somebody else's timeline, and saveDay refuses an entry written
+            // for another owner — so the composer is offered on the one screen
+            // where the reader is the person who did the work.
+            <ProjectItemRow key={i.id} item={i} person={person}
+                            period={null} anchorDate={null} filters={null}
+                            canLog today={today} onPosted={onPosted}
+                            onRefuse={setNotice} />
+          ))}
+          {shown.length === 0 && (
+            <div className="dw-detail-item">
+              <div className="dw-meta">Nothing due in this window.</div>
+            </div>
+          )}
+        </div>
+      ) : shown.length === 0 ? (
+        <div className="dw-detail-item">
+          <div className="dw-meta">Nothing due in this window.</div>
+        </div>
+      ) : (
+        <ProjectWorkTable items={shown} person={person} today={today}
+                          onRefuse={setNotice} onPosted={onPosted} />
+      )}
 
       {/* Never a dead end. Someone who worked today on a task due in three
           weeks has to be able to reach it, or they fall back to typing a
