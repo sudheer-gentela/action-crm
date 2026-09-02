@@ -565,10 +565,33 @@ async function getDay(orgId, userId, { date = null, asOf = new Date() } = {}) {
               prior.entry_date::text AS prior_date,
               prior.description   AS prior_description,
               (SELECT count(*)::int FROM play_evidence pe
-                WHERE pe.daily_work_entry_id = e.id) AS evidence_count
+                WHERE pe.daily_work_entry_id = e.id) AS evidence_count,
+              -- The anchor as a WORD. The row already carried anchor_kind and
+              -- anchor_id, which is what gets stored, and the day log rendered
+              -- "—" for every item because a key is not a name and the client
+              -- had nothing to resolve it against — DailyWorkView fetches the
+              -- anchor list only in edit mode.
+              --
+              -- Read live rather than snapshotted, matching getDayDetail: a
+              -- renamed initiative reads under its current name, which is the
+              -- rule the anchor picker already follows.
+              CASE i.anchor_kind
+                WHEN 'handover' THEN h.name
+                WHEN 'account'  THEN aa.name
+                WHEN 'campaign' THEN pc.name
+              END AS anchor_label
          FROM daily_work_items i
          LEFT JOIN accounts a
                 ON a.id = i.account_id AND a.org_id = i.org_id
+         -- Each guarded by anchor_kind as well as the id, so an id that happens
+         -- to exist in another table cannot supply a name for the wrong kind of
+         -- anchor.
+         LEFT JOIN sales_handovers h
+                ON i.anchor_kind = 'handover' AND h.id = i.anchor_id AND h.org_id = i.org_id
+         LEFT JOIN accounts aa
+                ON i.anchor_kind = 'account'  AND aa.id = i.anchor_id AND aa.org_id = i.org_id
+         LEFT JOIN prospecting_campaigns pc
+                ON i.anchor_kind = 'campaign' AND pc.id = i.anchor_id AND pc.org_id = i.org_id
          LEFT JOIN daily_work_entries e
                 ON e.item_id = i.id AND e.org_id = i.org_id AND e.entry_date = $3
          LEFT JOIN LATERAL (

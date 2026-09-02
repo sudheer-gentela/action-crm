@@ -304,12 +304,33 @@ export default function DailyWorkTeamView() {
 
   // The narrowed list. Applied AFTER sorting so the order a manager chose is
   // preserved through the filter rather than reshuffled by it.
-  const visiblePeople = overdueOnly
-    ? sorted.filter(p => overduePeopleIds.has(p.user_id))
-    : sorted;
-
   const activeFilterCount =
     ['account', 'anchor', 'activity', 'department'].filter(k => filters[k]).length;
+
+  // FILTERS NARROW THE PEOPLE LIST, not just the numbers in it.
+  //
+  // getRollup returns a row for EVERY user in scope by design — "the absence
+  // of a row is exactly the case this screen exists to show", so somebody who
+  // logged nothing still appears with a zero rather than vanishing. That is
+  // right with no filter applied. With one applied it made the filters look
+  // broken: picking department "General Management" left all eight people on
+  // screen, Marketing/BD included, because only the aggregates were filtered.
+  //
+  // Applying a filter changes the question from "who is keeping up" to "who
+  // did work matching this", and somebody with no matching entry is not part
+  // of that answer. entry_count is computed by getRollup WITH the filters
+  // applied, so it is already the right test — no second request needed.
+  //
+  // The filters match the ENTRY's snapshot, not the person: the department
+  // filter finds entries filed under a department, which is what makes it
+  // meaningful for someone who moved teams mid-period.
+  const filtered = activeFilterCount > 0
+    ? sorted.filter(p => (p.entry_count || 0) > 0)
+    : sorted;
+
+  const visiblePeople = overdueOnly
+    ? filtered.filter(p => overduePeopleIds.has(p.user_id))
+    : filtered;
 
   // The person page is a full screen, not an overlay: it replaces the list
   // rather than sitting on top of it, so the back control is the only way out
@@ -618,6 +639,18 @@ export default function DailyWorkTeamView() {
               <p>Nobody in the current list has overdue project work.</p>
             </div></div>
           )}
+          {/* Same reasoning as the overdue banner above: a filter that empties
+              the screen has to say so and offer the way back, or the page just
+              looks broken. */}
+          {!overdueOnly && activeFilterCount > 0 && visiblePeople.length === 0 && (
+            <div className="dw-card"><div className="dw-empty">
+              <p>Nobody logged work matching these filters in this period.</p>
+              <button className="dw-btn dw-btn-sm"
+                      onClick={() => setFilters({ account: '', anchor: '', activity: '', department: '' })}>
+                Clear filters
+              </button>
+            </div></div>
+          )}
           {/* ONE TABLE, one row per person. This was a stack of cards, each
               with a two-line head and a nested block body, so comparing eight
               people meant reading eight paragraphs — and the numbers that
@@ -658,7 +691,6 @@ export default function DailyWorkTeamView() {
                     details={details}
                     onToggle={toggle}
                     onOpenDay={openDay}
-                    onOpenPerson={() => setOpenPerson(person)}
                   />
                 ))}
               </tbody>
@@ -1004,8 +1036,13 @@ function PersonIdentity({ person }) {
   );
 }
 
+// onOpenPerson is gone with the "Open full view" button it drove. The person
+// page itself is not dead — setOpenPerson still runs from the hash route, which
+// is what Copy link produces — but it is no longer reachable by clicking a row.
+// Left unused it would be a no-unused-vars warning, and CRA builds with CI=true
+// where a warning fails the build.
 function PersonRow({ person, period, hasProjects = false, log, expanded, details,
-                     onToggle, onOpenDay, onOpenPerson }) {
+                     onToggle, onOpenDay }) {
   const key = `p:${person.user_id}`;
   const isOpen = !!expanded[key];
 
@@ -1060,11 +1097,6 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
         {dayOpen && (
           <tr className="dw-person-detail">
             <td colSpan={5}>
-              <div className="dw-detail-head">
-                <button className="dw-btn dw-btn-sm" onClick={onOpenPerson}>
-                  Open full view →
-                </button>
-              </div>
               {/* THE SAME TABLE the week and month periods use, minus the day
                   rows — with one day in range there is nothing to list above
                   the items. Switching shape between periods meant the detail
@@ -1139,10 +1171,7 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
     <>
       <tr className={`dw-person-row ${isOpen ? 'dw-open' : ''}`}>
         <td>
-          {/* The name expands the person; "Open full view" in the detail panel
-              is the way through to their own page. Two different destinations,
-              so two different controls — the whole row being clickable would
-              make which one you got depend on where you happened to click. */}
+          {/* The name expands the person in place. */}
           <button type="button" className="dw-person-toggle" aria-expanded={isOpen}
                   onClick={() => onToggle(key)}>
             <PersonIdentity person={person} />
@@ -1187,11 +1216,6 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
       {isOpen && (
         <tr className="dw-person-detail">
           <td colSpan={5}>
-            <div className="dw-detail-head">
-              <button className="dw-btn dw-btn-sm" onClick={onOpenPerson}>
-                Open full view →
-              </button>
-            </div>
 
             {log.length === 0 ? (
               <div className="dw-item-status">Nothing logged in this period.</div>
