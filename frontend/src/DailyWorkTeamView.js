@@ -118,7 +118,10 @@ export default function DailyWorkTeamView() {
 
   /* ── load ─────────────────────────────────────────────────────────── */
 
-  const apiFilters = () => {
+  // useCallback, so it can be a dependency of `load` without rebuilding it on
+  // every render — which, with the effect below keyed on load, would be an
+  // endless fetch loop. Keyed on `filters`, which is the only thing it reads.
+  const apiFilters = useCallback(() => {
     const f = {};
     if (filters.account) f.account = filters.account;
     if (filters.activity) f.activity = filters.activity;
@@ -128,7 +131,7 @@ export default function DailyWorkTeamView() {
       f.anchorKind = kind; f.anchorId = id;
     }
     return f;
-  };
+  }, [filters]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -158,9 +161,29 @@ export default function DailyWorkTeamView() {
     } finally {
       setLoading(false);
     }
-  }, [range]); // eslint-disable-line react-hooks/exhaustive-deps
+    // DEFECT FIXED. This was [range], with the exhaustive-deps rule silenced.
+    //
+    // `range` depends on [period, anchorDate], so `load` was rebuilt only when
+    // the period or the date moved — never when the FILTERS changed. But load
+    // calls apiFilters(), which reads `filters` from the closure it was built
+    // in. The effect below did list `filters`, so a filter change re-ran the
+    // effect, which then called the STALE load, which sent the filters as they
+    // were one change ago. The first filter you picked sent none at all.
+    //
+    // That is the whole "filters do not work" report: the list was showing
+    // unfiltered data. It also explains why expanding a row returned nothing —
+    // openDay is a plain function, rebuilt every render, so IT sent the current
+    // filters while the rollup beside it had been built from the previous ones.
+    // The two disagreeing is the signature of this bug, not a second one.
+    //
+    // The disable comment goes with it. It was hiding exactly the dependency
+    // that mattered.
+  }, [range, apiFilters, anchorDate]);
 
-  useEffect(() => { load(); }, [period, anchorDate, filters]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Keyed on `load` alone now. load already closes over period, anchorDate
+  // (through range) and filters, so listing them again would be three ways to
+  // say one thing — and the version that drifts is the one that gets silenced.
+  useEffect(() => { load(); }, [load]);
 
   // Restore where the manager was before they left for a project.
   //

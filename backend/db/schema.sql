@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict nknZCl1ChGYSnkQ9fwD4XKlSPqLopaVmN5IyoG9w5A4cgW10dGVY0u8VnvLihBD
+\restrict pLoSik7vkGr3e0cGu8xtbtLbc9gZrtDSJQxHtq1i4QyONlO8Vu11AMjtu5xRbPp
 
 -- Dumped from database version 17.11 (Debian 17.11-1.pgdg13+2)
 -- Dumped by pg_dump version 18.1
@@ -3719,11 +3719,13 @@ CREATE TABLE public.daily_work_entries (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     last_edited_by integer,
     account_id integer,
+    written_on date,
     CONSTRAINT chk_dwen_anchor_shape CHECK ((((anchor_kind IS NULL) AND (anchor_id IS NULL)) OR ((anchor_kind IS NOT NULL) AND (anchor_id IS NOT NULL)))),
     CONSTRAINT chk_dwen_day_stage CHECK ((day_stage = ANY (ARRAY['yet_to_start'::text, 'in_progress'::text, 'in_review'::text, 'completed'::text, 'dropped'::text]))),
     CONSTRAINT chk_dwen_description_len CHECK ((length(description) <= 2000)),
     CONSTRAINT chk_dwen_description_not_blank CHECK ((btrim(description) <> ''::text)),
-    CONSTRAINT chk_dwen_next_steps_len CHECK (((next_steps IS NULL) OR (length(next_steps) <= 2000)))
+    CONSTRAINT chk_dwen_next_steps_len CHECK (((next_steps IS NULL) OR (length(next_steps) <= 2000))),
+    CONSTRAINT daily_work_entries_written_on_not_before_entry CHECK (((written_on IS NULL) OR (written_on >= entry_date)))
 );
 
 
@@ -3739,6 +3741,13 @@ COMMENT ON COLUMN public.daily_work_entries.entry_date IS 'The OWNER''s local da
 --
 
 COMMENT ON COLUMN public.daily_work_entries.account_id IS 'Snapshot copied from the item at write time. Account filters read THIS column, not the item and not a join, so a project re-parented later cannot move work that was already logged.';
+
+
+--
+-- Name: COLUMN daily_work_entries.written_on; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.daily_work_entries.written_on IS 'Author local date at save time. NULL or = entry_date means written the same day; later than entry_date means backfilled within the allowed window. Set once at insert and left alone by later edits to the same entry, so it records when the day was first written up, not when it was last touched.';
 
 
 --
@@ -17181,6 +17190,13 @@ CREATE INDEX idx_csig_contract ON public.contract_signatories USING btree (contr
 
 
 --
+-- Name: idx_daily_work_entries_backfilled; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_daily_work_entries_backfilled ON public.daily_work_entries USING btree (org_id, user_id, entry_date) WHERE ((written_on IS NOT NULL) AND (written_on > entry_date));
+
+
+--
 -- Name: idx_deal_activities_created; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -26523,5 +26539,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict nknZCl1ChGYSnkQ9fwD4XKlSPqLopaVmN5IyoG9w5A4cgW10dGVY0u8VnvLihBD
+\unrestrict pLoSik7vkGr3e0cGu8xtbtLbc9gZrtDSJQxHtq1i4QyONlO8Vu11AMjtu5xRbPp
 
