@@ -1065,7 +1065,13 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
                   Open full view →
                 </button>
               </div>
-              {/* undefined and [] mean different things. openDay caches under
+              {/* THE SAME TABLE the week and month periods use, minus the day
+                  rows — with one day in range there is nothing to list above
+                  the items. Switching shape between periods meant the detail
+                  you get depended on which button was pressed, and the columns
+                  moved underneath you.
+
+                  undefined and [] mean different things: openDay caches under
                   the key only once the fetch resolves, so undefined is "still
                   loading" and an empty array is "loaded, and there was
                   nothing". Collapsing them with `|| []` would assert nothing
@@ -1074,23 +1080,54 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
                 <div className="dw-item-status">Loading…</div>
               ) : details[dayKey].length === 0 ? (
                 <div className="dw-item-status">No items recorded for that day.</div>
-              ) : details[dayKey].map(item => (
-                <div className="dw-day-item" key={item.entry_id}>
-                  <div className="t">
-                    <b>{item.title}</b>
-                    <span className="dw-badge">{item.day_stage.replace(/_/g, ' ')}</span>
-                    {item.account_name && <span className="dw-badge">{item.account_name}</span>}
-                    {item.evidence_count > 0
-                      ? <span className="dw-badge">{item.evidence_count} evidence</span>
-                      : ['completed', 'dropped'].includes(item.day_stage)
-                        && <span className="dw-badge carried">unverified</span>}
-                  </div>
-                  <div className="d">{item.description}</div>
-                  {item.next_steps && (
-                    <div className="dw-meta"><b>Next:</b> {item.next_steps}</div>
-                  )}
-                </div>
-              ))}
+              ) : (
+                <table className="dw-logtable dw-daytable">
+                  <colgroup>
+                    <col style={{ width: '15%' }} />
+                    <col style={{ width: '18%' }} />
+                    <col style={{ width: '31%' }} />
+                    <col style={{ width: '14%' }} />
+                    <col style={{ width: '14%' }} />
+                    <col style={{ width: '8%' }} />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Item</th>
+                      <th>What was done</th>
+                      <th className="dw-col-activity">Activity</th>
+                      <th className="dw-col-initiative">Initiative</th>
+                      <th><span className="dw-sr-only">Actions</span></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {details[dayKey].map(item => (
+                      <tr key={item.entry_id}>
+                        <td className="dw-logdate">{formatDate(today.entry_date)}</td>
+                        <td className="dw-logitem">
+                          {item.title}
+                          <span className="dw-badge">{item.day_stage.replace(/_/g, ' ')}</span>
+                          {item.evidence_count > 0
+                            ? <span className="dw-badge">{item.evidence_count} evidence</span>
+                            : ['completed', 'dropped'].includes(item.day_stage)
+                              && <span className="dw-badge carried">unverified</span>}
+                        </td>
+                        <td>
+                          {item.description}
+                          {item.next_steps && (
+                            <div className="dw-meta"><b>Next:</b> {item.next_steps}</div>
+                          )}
+                        </td>
+                        <td className="dw-col-activity dw-meta">{item.activity_label || '—'}</td>
+                        <td className="dw-col-initiative dw-meta">
+                          {item.anchor_label || item.account_name || '—'}
+                        </td>
+                        <td className="dw-logactions" />
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </td>
           </tr>
         )}
@@ -1167,16 +1204,20 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
                  day of every person on screen. */
               <table className="dw-logtable dw-daytable">
                 <colgroup>
+                  <col style={{ width: '15%' }} />
                   <col style={{ width: '18%' }} />
-                  <col style={{ width: '10%' }} />
-                  <col style={{ width: '60%' }} />
-                  <col style={{ width: '12%' }} />
+                  <col style={{ width: '31%' }} />
+                  <col style={{ width: '14%' }} />
+                  <col style={{ width: '14%' }} />
+                  <col style={{ width: '8%' }} />
                 </colgroup>
                 <thead>
                   <tr>
                     <th>Date</th>
-                    <th>Items</th>
+                    <th>Item</th>
                     <th>What was done</th>
+                    <th className="dw-col-activity">Activity</th>
+                    <th className="dw-col-initiative">Initiative</th>
                     <th><span className="dw-sr-only">Actions</span></th>
                   </tr>
                 </thead>
@@ -1188,10 +1229,17 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
                       <React.Fragment key={d.entry_date}>
                         <tr>
                           <td className="dw-logdate">{formatDate(d.entry_date)}</td>
-                          <td>{d.item_count}</td>
+                          <td className="dw-logitem muted">
+                            {d.item_count} {d.item_count === 1 ? 'item' : 'items'}
+                          </td>
                           <td>
                             <div className={dayOpen ? '' : 'dw-clamp'}>{d.work_done}</div>
                           </td>
+                          {/* Empty on the day row: a day rolls up items that may
+                              carry different activities and initiatives, so there
+                              is no one value to print. */}
+                          <td className="dw-col-activity" />
+                          <td className="dw-col-initiative" />
                           <td className="dw-logactions">
                             <button className="dw-btn-link"
                                     onClick={() => onOpenDay(person.user_id, d.entry_date)}>
@@ -1202,21 +1250,25 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
                         {dayOpen && (details[dayKey] || []).map(item => (
                           <tr className="dw-item-detail" key={item.entry_id}>
                             <td />
-                            <td className="dw-logitem">{item.title}</td>
+                            <td className="dw-logitem">
+                              {item.title}
+                              <span className="dw-badge">{item.day_stage.replace(/_/g, ' ')}</span>
+                              {item.evidence_count > 0
+                                ? <span className="dw-badge">{item.evidence_count} evidence</span>
+                                : ['completed', 'dropped'].includes(item.day_stage)
+                                  && <span className="dw-badge carried">unverified</span>}
+                            </td>
                             <td>
                               {item.description}
                               {item.next_steps && (
                                 <div className="dw-meta"><b>Next:</b> {item.next_steps}</div>
                               )}
                             </td>
-                            <td className="dw-logactions">
-                              <span className="dw-badge">{item.day_stage.replace(/_/g, ' ')}</span>
-                              {item.account_name && <span className="dw-badge">{item.account_name}</span>}
-                              {item.evidence_count > 0
-                                ? <span className="dw-badge">{item.evidence_count} evidence</span>
-                                : ['completed', 'dropped'].includes(item.day_stage)
-                                  && <span className="dw-badge carried">unverified</span>}
+                            <td className="dw-col-activity dw-meta">{item.activity_label || '—'}</td>
+                            <td className="dw-col-initiative dw-meta">
+                              {item.anchor_label || item.account_name || '—'}
                             </td>
+                            <td className="dw-logactions" />
                           </tr>
                         ))}
                       </React.Fragment>

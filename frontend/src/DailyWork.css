@@ -522,3 +522,20 @@
 .dw-day-item:first-child { border-top: none; }
 .dw-day-item .t { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 13px; }
 .dw-day-item .d { font-size: 13px; color: var(--dw-ink-2); margin-top: 2px; }
+
+/* Activity and Initiative columns. Quiet: they are context for the description
+ * beside them, not the thing being read, and at full weight two extra columns
+ * of text compete with the sentence that matters. */
+.dw-logtable .dw-col-activity,
+.dw-logtable .dw-col-initiative { font-size: 12.5px; color: var(--dw-ink-3); }
+
+/* A per-item row under its day, in the daily log. The empty first cell is the
+ * indent, so the description still lines up with the concatenation above it. */
+.dw-logtable .dw-item-row td { background: #fbfcfe; font-size: 13px; }
+
+@media (max-width: 768px) {
+  /* Dropped before the description: they are context, and the sentence is the
+   * content. Initiative goes first because it repeats most. */
+  .dw-logtable .dw-col-initiative { display: none; }
+  .dw-logtable .dw-col-activity { display: none; }
+}

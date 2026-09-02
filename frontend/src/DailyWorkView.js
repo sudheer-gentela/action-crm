@@ -558,7 +558,7 @@ export default function DailyWorkView() {
       {mode === 'log'
         ? <DayLog day={day} rows={rows} written={written} drafts={drafts} saved={saved}
                   history={history.filter(h => h.entry_date !== day.entryDate)}
-                  me={me}
+                  me={me} activityTypes={activityTypes}
                   onEdit={itemId => { setOpenItem(itemId); setMode('edit'); }} />
         : (
           <>
@@ -867,7 +867,13 @@ function MyProjectWork({ me }) {
  * row is built from the drafts so unsaved work shows immediately; earlier days
  * come from the server already grouped and concatenated.
  */
-function DayLog({ day, rows, written, drafts, saved, history, onEdit, me }) {
+function DayLog({ day, rows, written, drafts, saved, history, onEdit, me, activityTypes }) {
+  // key -> label, for the Activity column. Built once per render rather than
+  // scanned per row: a day with six items would otherwise walk the whole
+  // vocabulary six times to print six words.
+  const activityLabel = (key) =>
+    (activityTypes || []).find(t => t.key === key)?.label || null;
+
   const past = history || [];
 
   if (!written.length && !past.length) {
@@ -914,19 +920,25 @@ function DayLog({ day, rows, written, drafts, saved, history, onEdit, me }) {
        */}
       <div className="dw-logtable-wrap">
         <table className="dw-logtable">
+          {/* The same columns as Edit rows, in the same order. Reading back
+              what you wrote should not mean re-learning where things are —
+              and the expanded per-item rows below now line up cell for cell
+              with the day rows above them, which was the point. */}
           <colgroup>
-            <col style={{ width: '13%' }} />
-            <col style={{ width: '22%' }} />
-            <col style={{ width: '45%' }} />
-            <col style={{ width: '12%' }} />
-            <col style={{ width: '8%' }} />
+            <col style={{ width: '11%' }} />
+            <col style={{ width: '18%' }} />
+            <col style={{ width: '33%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '10%' }} />
           </colgroup>
           <thead>
             <tr>
               <th>Date</th>
               <th>Item</th>
               <th>What was done</th>
-              <th className="dw-col-stage">Stage</th>
+              <th className="dw-col-activity">Activity</th>
+              <th className="dw-col-initiative">Initiative</th>
               <th><span className="dw-sr-only">Actions</span></th>
             </tr>
           </thead>
@@ -939,19 +951,24 @@ function DayLog({ day, rows, written, drafts, saved, history, onEdit, me }) {
                 <td className="dw-logdate">
                   {i === 0 ? <>{formatDateShort(day.entryDate)} <span className="dw-today-tag">today</span></> : ''}
                 </td>
-                <td className="dw-logitem">{r.title}</td>
+                <td className="dw-logitem">
+                  {r.title}
+                  {/* Stage rides with the item rather than holding a column of
+                      its own: it is one short word, and the width it was using
+                      is worth more to Activity and Initiative. */}
+                  <span className="dw-badge">{stageLabel(drafts[r.item_id]?.dayStage)}</span>
+                  {r.evidence_count > 0 && (
+                    <span className="dw-badge">{r.evidence_count} evidence</span>
+                  )}
+                </td>
                 <td>
                   {drafts[r.item_id]?.description}
                   {drafts[r.item_id]?.nextSteps && (
                     <div className="dw-meta"><b>Next:</b> {drafts[r.item_id].nextSteps}</div>
                   )}
                 </td>
-                <td className="dw-col-stage">
-                  <span className="dw-badge">{stageLabel(drafts[r.item_id]?.dayStage)}</span>
-                  {r.evidence_count > 0 && (
-                    <span className="dw-badge">{r.evidence_count} evidence</span>
-                  )}
-                </td>
+                <td className="dw-col-activity dw-meta">{activityLabel(r.activity_type_key) || '—'}</td>
+                <td className="dw-col-initiative dw-meta">{r.anchor_label || r.account_name || '—'}</td>
                 <td className="dw-logactions">
                   <button className="dw-btn-link" onClick={() => onEdit(r.item_id)}>Edit</button>
                 </td>
@@ -961,7 +978,7 @@ function DayLog({ day, rows, written, drafts, saved, history, onEdit, me }) {
                 <td className="dw-logdate">
                   {formatDateShort(day.entryDate)} <span className="dw-today-tag">today</span>
                 </td>
-                <td colSpan={4}>
+                <td colSpan={5}>
                   <span className="dw-none">Not logged yet.</span>
                   <button className="dw-btn dw-btn-sm dw-btn-primary" style={{ marginLeft: 10 }}
                           onClick={() => onEdit(rows[0]?.item_id)}>
@@ -971,7 +988,7 @@ function DayLog({ day, rows, written, drafts, saved, history, onEdit, me }) {
               </tr>
             )}
 
-            {past.map(d => <PastDayRow key={d.entry_date} day={d} me={me} />)}
+            {past.map(d => <PastDayRow key={d.entry_date} day={d} me={me} activityLabel={activityLabel} />)}
           </tbody>
         </table>
       </div>
@@ -1003,7 +1020,7 @@ function DayLog({ day, rows, written, drafts, saved, history, onEdit, me }) {
  * the server allows. Editing from a summary row would be a second way to write
  * the same entry, bypassing that window check.
  */
-function PastDayRow({ day, me }) {
+function PastDayRow({ day, me, activityLabel }) {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -1017,13 +1034,9 @@ function PastDayRow({ day, me }) {
     setBusy(true);
     setFailed(false);
     try {
-      // The existing client method, unchanged. Adding a second one for the
-      // member case would be two callers of one endpoint that could drift.
       const { data } = await apiService.dailyWork.teamDayDetail({ user: me, date: day.entry_date });
       setItems(data || []);
     } catch {
-      // The summary is already on screen and still true, so a failed detail
-      // fetch degrades to "could not load" rather than taking the row with it.
       setFailed(true);
     } finally {
       setBusy(false);
@@ -1042,12 +1055,17 @@ function PastDayRow({ day, me }) {
         </td>
         {/* The clamp goes on an inner div, never the cell. .dw-clamp sets
             display:-webkit-box, and a cell whose display is overridden drops
-            out of the table layout — the column widths stop applying and the
-            row collapses. */}
+            out of the table layout — the column widths stop applying. */}
         <td>
           <div className={open || !long ? '' : 'dw-clamp'}>{day.work_done}</div>
         </td>
-        <td className="dw-col-stage" />
+        {/* Empty on the DAY row, filled on the item rows below. A day rolls up
+            several items that may carry different activities and different
+            initiatives, so there is no single value to put here — and inventing
+            one ("mixed", or the first item's) would be a claim the data does
+            not make. */}
+        <td className="dw-col-activity" />
+        <td className="dw-col-initiative" />
         <td className="dw-logactions">
           <button className="dw-btn-link" onClick={toggle} aria-expanded={open}>
             {open ? 'Hide' : 'Details'}
@@ -1055,34 +1073,52 @@ function PastDayRow({ day, me }) {
         </td>
       </tr>
 
-      {open && (
-        <tr className="dw-day-items">
-          <td />
-          <td colSpan={4}>
-            {busy && <span className="dw-item-status">Loading…</span>}
-            {failed && <span className="dw-item-status">Could not load that day&apos;s items.</span>}
-            {!busy && !failed && items && items.length === 0 && (
-              <span className="dw-item-status">No items recorded for that day.</span>
-            )}
-            {!busy && !failed && (items || []).map(item => (
-              <div className="dw-day-item" key={item.entry_id}>
-                <div className="t">
-                  <b>{item.title}</b>
-                  <span className="dw-badge">{item.day_stage.replace(/_/g, ' ')}</span>
-                  {item.account_name && <span className="dw-badge">{item.account_name}</span>}
-                  {item.evidence_count > 0 && (
-                    <span className="dw-badge">{item.evidence_count} evidence</span>
-                  )}
-                </div>
-                <div className="d">{item.description}</div>
-                {item.next_steps && (
-                  <div className="dw-meta"><b>Next:</b> {item.next_steps}</div>
-                )}
-              </div>
-            ))}
-          </td>
+      {/* ONE ROW PER ITEM, in the same six columns as everything else. These
+          were free-form blocks inside a colSpan cell, which put an item's title
+          under the Item header but its description under it rather than beside
+          it — the columns stopped meaning anything the moment a row was
+          expanded. */}
+      {open && busy && (
+        <tr className="dw-item-row"><td /><td colSpan={5} className="dw-item-status">Loading…</td></tr>
+      )}
+      {open && failed && (
+        <tr className="dw-item-row">
+          <td /><td colSpan={5} className="dw-item-status">Could not load that day&apos;s items.</td>
         </tr>
       )}
+      {open && !busy && !failed && items && items.length === 0 && (
+        <tr className="dw-item-row">
+          <td /><td colSpan={5} className="dw-item-status">No items recorded for that day.</td>
+        </tr>
+      )}
+      {open && !busy && !failed && (items || []).map(item => (
+        <tr className="dw-item-row" key={item.entry_id}>
+          <td />
+          <td className="dw-logitem">
+            {item.title}
+            <span className="dw-badge">{item.day_stage.replace(/_/g, ' ')}</span>
+            {item.evidence_count > 0 && (
+              <span className="dw-badge">{item.evidence_count} evidence</span>
+            )}
+          </td>
+          <td>
+            {item.description}
+            {item.next_steps && (
+              <div className="dw-meta"><b>Next:</b> {item.next_steps}</div>
+            )}
+          </td>
+          {/* activity_label comes from the server now; activityLabel() is the
+              fallback for a key whose type has since been deleted, which the
+              join would return as NULL. */}
+          <td className="dw-col-activity dw-meta">
+            {item.activity_label || activityLabel(item.activity_type_key) || '—'}
+          </td>
+          <td className="dw-col-initiative dw-meta">
+            {item.anchor_label || item.account_name || '—'}
+          </td>
+          <td className="dw-logactions" />
+        </tr>
+      ))}
     </React.Fragment>
   );
 }

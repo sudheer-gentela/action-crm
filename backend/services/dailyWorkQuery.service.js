@@ -166,11 +166,40 @@ async function getDayDetail(orgId, userId, entryDate, filters = {}) {
               i.id AS item_id, i.title, i.kind, i.status,
               i.target_date::text AS target_date, i.assigned_by,
               a.name AS account_name,
+              -- LABELS, resolved here rather than in the client.
+              --
+              -- The row already carried activity_type_key and anchor_kind/id,
+              -- which are the SNAPSHOT — correct, and unreadable. Turning them
+              -- into words client-side needs the activity list and the anchor
+              -- list both loaded, and DailyWorkView only fetches anchors in edit
+              -- mode, so the day log had the keys and no way to render them.
+              --
+              -- Read live, not snapshotted, and deliberately: a renamed
+              -- initiative should read under its current name everywhere, which
+              -- is the same rule the anchor picker already follows. The key
+              -- stays the thing of record; this is only how it is shown.
+              at.label AS activity_label,
+              CASE e.anchor_kind
+                WHEN 'handover' THEN h.name
+                WHEN 'account'  THEN aa.name
+                WHEN 'campaign' THEN pc.name
+              END AS anchor_label,
               (SELECT count(*)::int FROM play_evidence pv
                 WHERE pv.daily_work_entry_id = e.id) AS evidence_count
          FROM daily_work_entries e
          JOIN daily_work_items i ON i.id = e.item_id AND i.org_id = e.org_id
          LEFT JOIN accounts a    ON a.id = e.account_id AND a.org_id = e.org_id
+         -- Each join is guarded by anchor_kind as well as the id, so an id that
+         -- happens to exist in another table cannot supply a name for the wrong
+         -- kind of anchor.
+         LEFT JOIN daily_activity_types at
+                ON at.org_id = e.org_id AND at.key = e.activity_type_key
+         LEFT JOIN sales_handovers h
+                ON e.anchor_kind = 'handover' AND h.id = e.anchor_id AND h.org_id = e.org_id
+         LEFT JOIN accounts aa
+                ON e.anchor_kind = 'account'  AND aa.id = e.anchor_id AND aa.org_id = e.org_id
+         LEFT JOIN prospecting_campaigns pc
+                ON e.anchor_kind = 'campaign' AND pc.id = e.anchor_id AND pc.org_id = e.org_id
         WHERE e.org_id = $1 AND e.user_id = $2 AND e.entry_date = $3
           ${filterSql}
         ORDER BY i.created_at, i.id`,
