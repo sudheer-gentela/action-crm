@@ -390,7 +390,11 @@ async function commit(handoverId, orgId, userId, { rows = [] } = {}) {
 
     let stagesCreated = 0;
     for (let i = 0; i < seen.length; i++) {
-      const { rowCount } = await client.query(
+      // rowCount is 1 for BOTH arms of an upsert — DO UPDATE returns a row too
+      // — so it cannot tell "created" from "joined". xmax is 0 only on a true
+      // insert, which is what actually answers the question, and it is why the
+      // RETURNING clause is here at all.
+      const { rows: [stage] } = await client.query(
         `INSERT INTO project_stages
            (handover_id, org_id, key, name, sort_order, source, created_by)
          VALUES ($1,$2,$3,$4,$5,'custom',$6)
@@ -398,7 +402,7 @@ async function commit(handoverId, orgId, userId, { rows = [] } = {}) {
            SET is_active = TRUE, updated_at = now()
          RETURNING (xmax = 0) AS inserted`,
         [handoverId, orgId, seen[i].key, seen[i].name, baseOrder + i * 10, userId]);
-      if (rowCount) stagesCreated++;
+      if (stage && stage.inserted) stagesCreated++;
     }
 
     // ── tasks ─────────────────────────────────────────────────────────
