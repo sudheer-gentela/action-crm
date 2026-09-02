@@ -69,6 +69,15 @@ const STAGES = [
 ];
 const stageLabel = v => (STAGES.find(s => s.value === v) || {}).label || v;
 
+// 2026_136. What a row owned by a project task may be logged at — the same
+// three the server's LINKED_DAY_STAGES accepts. Finishing is deliberately
+// absent: it happens on the task, so it keeps passing through whatever gating,
+// review and evidence rules that project applies. Derived from STAGES rather
+// than typed out again, so a change to the vocabulary cannot update one list
+// and leave the other behind.
+const CLOSING_STAGES = ['completed', 'dropped'];
+const LINKED_STAGES = STAGES.filter(s => !CLOSING_STAGES.includes(s.value));
+
 // ── URL hash ──────────────────────────────────────────────────────────
 //
 //   #/dailywork                  My day
@@ -553,7 +562,11 @@ export default function DailyWorkView() {
         onOpenTeam={() => setTab('team')}
       />
 
-      <MyProjectWork me={me} />
+      {/* onPosted reloads the day. Logging against a project task from here
+          creates a daily work item, and the log underneath has to pick it up —
+          without this the person posts an update and their own day still says
+          nothing was written. */}
+      <MyProjectWork me={me} onPosted={load} />
 
       {mode === 'log'
         ? <DayLog day={day} rows={rows} written={written} drafts={drafts} saved={saved}
@@ -806,7 +819,7 @@ function WaitingPanel({ me, hasReports, rows, drafts, stalled, candidates, onOpe
  * no Projects module at all — where this call returns nothing and this stays
  * invisible.
  */
-function MyProjectWork({ me }) {
+function MyProjectWork({ me, onPosted }) {
   const [items, setItems] = useState([]);
   const [notice, setNotice] = useState(null);
 
@@ -850,8 +863,13 @@ function MyProjectWork({ me }) {
 
       <div className="dw-daylog">
         {items.map(i => (
+          // canLog only here. On the People screen this same row belongs to
+          // somebody else's timeline, and saveDay refuses an entry written for
+          // another owner — so the composer is offered on the one screen where
+          // the reader is the person who did the work.
           <ProjectItemRow key={i.id} item={i} person={person}
                           period={null} anchorDate={null} filters={null}
+                          canLog onPosted={onPosted}
                           onRefuse={setNotice} />
         ))}
       </div>
@@ -1243,6 +1261,14 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
             const isOpen      = expanded === row.item_id;
             const error       = rowErrors[row.item_id];
             const nextOpen    = nextOpenFor === row.item_id;
+            // 2026_136. A row owned by a project task: the title, the
+            // initiative and the two closing stages all belong to the task,
+            // and the server refuses each of them here. The controls are
+            // hidden rather than left to fail, and the composer on the task
+            // (or on the My project work card above) is where the work is
+            // actually logged.
+            const linked      = !!row.play_instance_id;
+            const stages      = linked ? LINKED_STAGES : STAGES;
 
             return (
               <React.Fragment key={row.item_id}>
@@ -1257,14 +1283,22 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
                     {/* Click to rename, in place. It was a text field in a
                         settings block below the row, which meant renaming
                         pushed every other row down and put the field a long way
-                        from the name it edits. */}
-                    <InlineTitle title={row.title}
-                                 onSave={next => onPatchItem(row.item_id, { title: next })} />
+                        from the name it edits.
+
+                        NOT offered on a task-linked row (2026_136): the title
+                        belongs to the project task, updateItem refuses to
+                        change it, and an editor that always fails is worse
+                        than no editor. */}
+                    {linked
+                      ? <span className="dw-grid-title">{row.title}</span>
+                      : <InlineTitle title={row.title}
+                                     onSave={next => onPatchItem(row.item_id, { title: next })} />}
+                    {linked && <span className="dw-badge">project task</span>}
                     {/* Inline with the title rather than on their own line, so
                         the row stays one line deep. target_date is back: it was
                         on the card header and dropping it lost the only place a
                         one-off item's due date was visible. */}
-                    {row.kind === 'assigned' && <span className="dw-badge assigned">one-off</span>}
+                    {row.kind === 'assigned' && !linked && <span className="dw-badge assigned">one-off</span>}
                     {row.assigned_by && <span className="dw-badge assigned">assigned</span>}
                     {row.target_date && <span className="dw-badge">by {formatDateShort(row.target_date)}</span>}
                     {row.account_name && <span className="dw-badge">{row.account_name}</span>}
@@ -1329,6 +1363,13 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
                       invisible on the row that records it. Editable in place
                       for the same reason the title is. */}
                   <td>
+                    {linked ? (
+                      // The anchor is the task's project and updateItem
+                      // refuses to move it, so this is a fact rather than a
+                      // choice. anchor_label is resolved live by getDay, so a
+                      // renamed initiative reads under its current name.
+                      <span className="dw-grid-anchor">{row.anchor_label || '—'}</span>
+                    ) : (
                     <select aria-label={`Initiative for ${row.title}`}
                             value={row.anchor_kind && row.anchor_id
                               ? `${row.anchor_kind}:${row.anchor_id}` : ''}
@@ -1355,13 +1396,17 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
                         </optgroup>
                       ))}
                     </select>
+                    )}
                   </td>
 
                   <td>
                     <select aria-label={`Stage for ${row.title}`} value={stage}
                             onChange={e => setDraft(row.item_id, { dayStage: e.target.value })}>
-                      {STAGES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                      {stages.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
                     </select>
+                    {linked && (
+                      <div className="dw-meta">Finish it on the task</div>
+                    )}
                   </td>
 
                   {/* Icon, not a text link: the label sat under the title and
@@ -1503,8 +1548,15 @@ function ItemCard({ row, draft, error, isOpen, onToggle, onChange, onEvidence, c
               <label htmlFor={`dw-stage-${row.item_id}`}>Stage</label>
               <select id={`dw-stage-${row.item_id}`} value={stage}
                       onChange={e => onChange({ dayStage: e.target.value })}>
-                {STAGES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+                {(row.play_instance_id ? LINKED_STAGES : STAGES)
+                  .map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
               </select>
+              {/* Same rule as the grid. The card is the phone view of the same
+                  row, and offering a stage here that the desktop hides would
+                  make the refusal depend on which device someone opened. */}
+              {row.play_instance_id && (
+                <div className="dw-item-status">Finish it on the task.</div>
+              )}
               {row.kind === 'recurring' && closed && (
                 <div className="dw-item-status">Done for today. It returns tomorrow.</div>
               )}

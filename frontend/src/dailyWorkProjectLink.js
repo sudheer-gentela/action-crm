@@ -13,6 +13,7 @@
 
 import React, { useState } from 'react';
 import { apiService } from './apiService';
+import TaskWorkComposer from './TaskWorkComposer';
 
 /**
  * The return crumb.
@@ -67,14 +68,30 @@ export function writeReturnCrumb(person, period, anchorDate, filters) {
  *             several people's work into one list. Omitted on a single
  *             person's timeline, where repeating their name on every row is
  *             noise.
+ * @param canLog  offer the composer on this row. TRUE only on My day, where
+ *             the person reading is the person who did the work. A manager on
+ *             the People screen is looking at somebody else's timeline, and
+ *             saveDay refuses an entry written for another owner
+ *             (NOT_YOUR_ITEM) — so a composer there would be a control that
+ *             cannot succeed. Defaults to false, which is the safe direction:
+ *             a screen that forgets to pass it loses a convenience rather
+ *             than offering an impossible write.
+ * @param onPosted  bubbled up so the surrounding screen can refresh; a new
+ *             update creates a daily work item that My day's log has to pick up.
  */
-export function ProjectItemRow({ item, person, period, anchorDate, filters, onRefuse, who = null }) {
+export function ProjectItemRow({ item, person, period, anchorDate, filters, onRefuse,
+                                who = null, canLog = false, onPosted = null }) {
   const [busy, setBusy] = useState(false);
+  const [logging, setLogging] = useState(false);
   // Both required. handoverId says which project; playInstanceId says which
   // row inside it. Without the second the link still works but lands on a
   // checklist of thirty tasks with nothing open, which is the hunt this was
   // built to remove — so it is a condition of offering the link, not a bonus.
   const linkable = item.kind === 'task' && !!item.handoverId && !!item.playInstanceId;
+  // Commitments carry no playInstanceId and have no link column behind them,
+  // so there is nothing for an update to attach to. Left as a plain row, the
+  // same way they are left unlinked above.
+  const loggable = canLog && item.kind === 'task' && !!item.playInstanceId;
 
   const open = async () => {
     if (busy) return;
@@ -113,22 +130,44 @@ export function ProjectItemRow({ item, person, period, anchorDate, filters, onRe
         {who ? `${who} · ` : ''}{item.project}{item.isStanding ? ' · standing' : ''}
         {typeof item.daysOver === 'number' &&
           ` · ${item.daysOver} ${item.daysOver === 1 ? 'day' : 'days'} over`}
-        {linkable && <> · {busy ? 'opening…' : 'open this task'}</>}
       </div>
     </>
   );
 
-  if (!linkable) return <div className="dw-detail-item">{body}</div>;
+  // ── The plain row: neither link nor composer ──────────────────────────
+  if (!linkable && !loggable) return <div className="dw-detail-item">{body}</div>;
 
-  // A button, not an anchor: there is no URL to put in href — the destination
-  // is decided by the server's scope answer, which arrives after the click.
-  // A bare <a> with no href is unreachable by keyboard and announces nothing.
+  // ── Otherwise a container with its own controls ───────────────────────
+  //
+  // This used to BE a button, with the whole row as the click target. It
+  // cannot stay one: a composer nested inside a button is invalid markup and
+  // browsers do unpredictable things with the inner controls. So the row is a
+  // div again and each affordance is its own button — which also separates
+  // "open this task" from "log against it", two actions that were never the
+  // same click.
   return (
-    <button type="button" className="dw-detail-item" onClick={open} disabled={busy}
-            style={{ display: 'block', width: '100%', textAlign: 'left',
-                     background: 'none', font: 'inherit', cursor: busy ? 'wait' : 'pointer' }}>
+    <div className="dw-detail-item">
       {body}
-    </button>
+      <div className="dw-meta" style={{ display: 'flex', gap: 10, marginTop: 2 }}>
+        {linkable && (
+          <button type="button" className="dw-btn-link" onClick={open} disabled={busy}>
+            {busy ? 'opening…' : 'open this task'}
+          </button>
+        )}
+        {loggable && (
+          <button type="button" className="dw-btn-link"
+                  aria-expanded={logging}
+                  onClick={() => setLogging(v => !v)}>
+            {logging ? 'hide daily work' : 'log work on this'}
+          </button>
+        )}
+      </div>
+      {loggable && logging && (
+        <TaskWorkComposer playInstanceId={item.playInstanceId}
+                          startOpen
+                          onPosted={onPosted} />
+      )}
+    </div>
   );
 }
 

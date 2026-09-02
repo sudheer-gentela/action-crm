@@ -900,6 +900,10 @@ async function getTaskWork(orgId, userId, playInstanceId, { asOf = new Date() } 
       // Whether the WORK can still be logged. The route ANDs this with the
       // viewer's permission before the composer is offered.
       canPost: !closed,
+      // So the composer can find its own row in the feed to prefill from, and
+      // label the rest by name. Derived here rather than left to the client to
+      // infer from `item`, which is null until the first post.
+      viewerUserId: userId,
       item: mine[0] || null,
       feed,
       today,
@@ -937,6 +941,12 @@ async function getDay(orgId, userId, { date = null, asOf = new Date() } = {}) {
       `SELECT i.id                AS item_id,
               i.kind, i.title, i.status, i.activity_type_key,
               i.anchor_kind, i.anchor_id, i.account_id,
+              -- 2026_136. The client needs to know which rows are owned by a
+              -- project task: those lose inline rename, the initiative picker
+              -- and the closing stages, because the task owns all three. A row
+              -- that offered controls the server then refuses would be a worse
+              -- surprise than one that never offered them.
+              i.play_instance_id,
               i.target_date::text  AS target_date,
               i.assigned_by, i.created_at,
               a.name              AS account_name,

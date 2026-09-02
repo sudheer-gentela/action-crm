@@ -1045,6 +1045,22 @@ twilio: {
     replaceEvidence: (id, { note, reason }) =>
       api.post(`/daily-work/evidence/${id}/replace`, { note, reason }),
 
+    // ── task-linked work (2026_136) ──────────────────────────────────
+    //
+    // One task's composer state in a single call: the task, this person's
+    // item if they have one, every update posted against it, and the date
+    // window. Answers for a CLOSED task too — reviewing finished work is the
+    // case that matters most — so read `canPost` rather than assuming.
+    taskWork: (playInstanceId) => api.get(`/daily-work/tasks/${playInstanceId}`),
+
+    // The ONE write path, called from both the project checklist and the My
+    // project work card. Omit `date` and it means today; the server resolves
+    // what today is in the owner's timezone either way.
+    postTaskUpdate: (playInstanceId, { description, nextSteps, dayStage, date }) =>
+      api.post(`/daily-work/tasks/${playInstanceId}/update`,
+        date ? { description, nextSteps, dayStage, date }
+             : { description, nextSteps, dayStage }),
+
     listDepartments: () => api.get('/daily-work/departments'),
 
     // The rows behind the overdue chip. Carries userId, not a name — the

@@ -353,6 +353,15 @@
   .dw-grid-next-add { display: inline-block; margin-top: 4px; font-size: 12px; }
   .dw-grid-item .dw-badge { vertical-align: middle; }
 
+  /* 2026_136. A task-linked row shows its initiative as a fact rather than a
+   * picker — the anchor belongs to the project task and updateItem refuses to
+   * move it. Sized to sit level with the selects in the rows either side, so
+   * the column does not visibly jump between editable and fixed rows. */
+  .dw-grid-anchor {
+    display: inline-block; font-size: 13px; color: var(--dw-ink-2);
+    padding: 8px 0; overflow-wrap: anywhere;
+  }
+
   /* The date column: quiet, because every row repeats it. Not wrapped —
    * "1 Sep" has nowhere useful to break. */
   .dw-grid-date {

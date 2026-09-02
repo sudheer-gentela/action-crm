@@ -38,6 +38,9 @@ import { PlayReviewModal } from './PlayReviewModal';   // 2026_130
 import ProjectBoQ from './ProjectBoQ';
 import ProjectEmailThreads from './ProjectEmailThreads';
 import ProjectAttachments from './ProjectAttachments';
+// 2026_136. The same composer the My project work card uses — see its header
+// for why there is one of these and not two.
+import TaskWorkComposer from './TaskWorkComposer';
 
 // ── Deep-link parsing ─────────────────────────────────────────────────────────
 // #/handovers                         → My Handovers list
@@ -1659,6 +1662,12 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
   // a request per task on a 200-task project. The count badge does the
   // discovery job, so nothing is hidden — only deferred.
   const [showNotes, setShowNotes] = useState(false);
+  // 2026_136. Its own disclosure rather than riding the notes one: notes carry
+  // blockers and decisions and are immutable, daily work is somebody's account
+  // of their day and is correctable inside the backfill window. They are
+  // different records, and folding them into one toggle would suggest they are
+  // the same thing.
+  const [showWork, setShowWork] = useState(false);
   // Local echo of the count so the button updates the moment a note is added,
   // without refetching the whole project.
   const [localNoteCount, setLocalNoteCount] = useState(null);
@@ -1826,6 +1835,21 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
               {showNotes ? 'Hide notes' : `Notes${noteCount ? ` (${noteCount})` : ''}`}
             </button>
           )}
+          {/* 2026_136. Offered on a closed task as well, for the same reason
+              Notes is: reading what the days actually went on is the reviewing
+              case. The composer inside decides whether it can still be
+              written to — a closed task reads and does not write. */}
+          {handoverId != null && play.playInstanceId != null && (
+            <button onClick={() => setShowWork(v => !v)}
+              title="Daily work logged against this task"
+              style={{
+                fontSize: 11, padding: '3px 8px', borderRadius: 4,
+                background: '#fff', color: '#374151',
+                border: '1px solid #d1d5db',
+                cursor: 'pointer', fontWeight: 600, whiteSpace: 'nowrap' }}>
+              {showWork ? 'Hide daily work' : 'Daily work'}
+            </button>
+          )}
           {/* 2026_130: no longer gated on !isDone. StatusAction decides for
               itself what a closed or in-review task should offer — a manager
               needs "Send back" on a task that is already done, which is
@@ -1924,6 +1948,17 @@ function PlaySection({ play, canEdit, onComplete, onRemove, onEdit, onSetStatus,
           a list that is empty on most tasks would be one control too many. */}
       {showNotes && handoverId != null && (
         <PlayTransitionHistory handoverId={handoverId} play={play} />
+      )}
+
+      {/* 2026_136. The composer, not a copy of it — the same component the My
+          project work card renders, so the two entry points cannot come to
+          disagree about the stages, the date window or the refusal text.
+
+          It sits OUTSIDE the notes disclosure deliberately: someone here to
+          log ten minutes of work should not have to open a thread of blockers
+          and decisions to find the box. */}
+      {showWork && handoverId != null && play.playInstanceId != null && (
+        <TaskWorkComposer playInstanceId={play.playInstanceId} />
       )}
 
       {/* Manual completion capture: note + how it was closed */}
