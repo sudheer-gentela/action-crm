@@ -43,6 +43,27 @@ function fmtDate(d) {
   return dt.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: '2-digit' });
 }
 
+// 2026_136. Matches UNTOUCHED_DAYS in planVariance.service.js, which computes
+// the summary count from the same rule. Two numbers that disagree would put a
+// task in the "untouched" headline while its own row read as fresh.
+const UNTOUCHED_DAYS = 7;
+
+/**
+ * Has this task gone quiet?
+ *
+ * lastLoggedDate is an entry_date — the owner's local calendar date, already a
+ * plain YYYY-MM-DD string. Parsed as UTC on purpose: `new Date('2026-06-15')`
+ * is midnight UTC but `new Date('2026-06-15T00:00:00')` is midnight local, and
+ * mixing the two is how a task logged this morning reads as logged yesterday
+ * for everyone east of Greenwich.
+ */
+function isStale(lastLoggedDate) {
+  if (!lastLoggedDate) return true;
+  const at = Date.parse(`${lastLoggedDate}T00:00:00Z`);
+  if (Number.isNaN(at)) return false;
+  return at < Date.now() - UNTOUCHED_DAYS * 86400000;
+}
+
 // Variance is rendered as a signed day count. Zero is "on time", not "no data"
 // — the distinction is why null and 0 are handled separately everywhere here.
 function Variance({ days, open }) {
@@ -161,6 +182,14 @@ export default function ProjectPlanVsActual({ handoverId }) {
                 tone={summary.avgSlipDays > 0 ? C.late : undefined} />
         <Metric label="Open and overdue" value={summary.openOverdue}
                 tone={summary.openOverdue > 0 ? C.late : undefined} />
+        {/* 2026_136. The subset of those that nobody has logged work against
+            in the last week. Shown only when it is non-zero: on a project
+            where everything overdue is actively being worked, a permanent
+            zero here is a tile that never says anything. */}
+        {summary.openOverdueUntouched > 0 && (
+          <Metric label={`Overdue, untouched ${UNTOUCHED_DAYS}d`}
+                  value={summary.openOverdueUntouched} tone={C.late} />
+        )}
         <Metric label="Date revisions" value={summary.totalRevisions} />
         <Metric label="Re-baselined" value={summary.rebaselined}
                 tone={summary.rebaselined > 0 ? C.warn : undefined} />
@@ -205,6 +234,11 @@ export default function ProjectPlanVsActual({ handoverId }) {
               <th style={{ padding: '0 8px 8px', fontWeight: 600 }}>vs base</th>
               <th style={{ padding: '0 8px 8px', fontWeight: 600 }}>vs due</th>
               <th style={{ padding: '0 8px 8px', fontWeight: 600 }}>Rev</th>
+              {/* 2026_136. Two facts, not two more variances. The columns to
+                  the left say whether the dates were met; these say whether
+                  anyone has been working on it, which the dates cannot. */}
+              <th style={{ padding: '0 8px 8px', fontWeight: 600 }}>Logged</th>
+              <th style={{ padding: '0 8px 8px', fontWeight: 600 }}>Last update</th>
               <th style={{ padding: '0 8px 8px', fontWeight: 600 }}>Proof</th>
               <th style={{ padding: '0 8px 8px', fontWeight: 600 }}>Notes</th>
             </tr>
@@ -250,6 +284,33 @@ export default function ProjectPlanVsActual({ handoverId }) {
                     <td style={{ padding: '9px 8px', color: p.revisionCount ? '#111827' : C.neutral }}>
                       {p.revisionCount || '—'}
                     </td>
+                    {/* Distinct DAYS with an entry, across everyone who logged
+                        against this task — not hours. There is no hours field
+                        in the schema and none is being added: days fall
+                        straight out of the entries and cannot be fabricated. */}
+                    <td style={{ padding: '9px 8px', color: p.daysLogged ? '#111827' : C.neutral }}>
+                      {p.daysLogged || '—'}
+                    </td>
+                    {/* Read with the slip column: eight days late and untouched
+                        for six is the row a review stops on. Stale is flagged
+                        only on work that is still OPEN — a finished task whose
+                        last entry is a month old is just a task that finished a
+                        month ago. */}
+                    <td style={{ padding: '9px 8px' }}>
+                      {p.lastLoggedDate ? (
+                        <>
+                          <span style={{ color: !p.completed && isStale(p.lastLoggedDate)
+                            ? C.warn : '#111827' }}>
+                            {fmtDate(p.lastLoggedDate)}
+                          </span>
+                          {p.lastLoggedBy && (
+                            <div style={{ fontSize: 11, color: C.neutral, marginTop: 2 }}>
+                              {p.lastLoggedBy}
+                            </div>
+                          )}
+                        </>
+                      ) : <span style={{ color: C.neutral }}>—</span>}
+                    </td>
                     <td style={{ padding: '9px 8px', color: p.evidenceCount ? C.early : C.neutral }}>
                       {p.evidenceCount ? `${p.evidenceCount} ✓` : '—'}
                     </td>
@@ -264,7 +325,10 @@ export default function ProjectPlanVsActual({ handoverId }) {
 
                   {isOpen && (
                     <tr style={{ background: '#f9fafb' }}>
-                      <td colSpan={9} style={{ padding: '0 8px 14px 26px' }}>
+                      {/* 11 columns since 2026_136 added Logged and Last
+                          update. A colSpan short of the header count leaves a
+                          phantom cell at the end of every expanded row. */}
+                      <td colSpan={11} style={{ padding: '0 8px 14px 26px' }}>
                         {d?.loading && <div style={{ fontSize: 12, color: C.neutral }}>Loading history…</div>}
                         {d?.error   && <div style={{ fontSize: 12, color: C.late }}>{d.error}</div>}
 

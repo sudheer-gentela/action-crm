@@ -32,6 +32,25 @@ const { pool } = require('../config/database');
 // Terminal states that are not "late" — the work stopped on purpose.
 const EXCLUDED_STATUSES = ['cancelled', 'skipped'];
 
+// How recently daily work must have been logged for a task to count as being
+// worked on. See openOverdueUntouched in summarise() for why this is seven and
+// not the three getStalledAssigned uses.
+const UNTOUCHED_DAYS = 7;
+
+/**
+ * Was this task logged against inside the window?
+ *
+ * Compared as UTC dates. lastLoggedDate is an entry_date — the owner's local
+ * calendar date, already a string — so parsing it in local time would shift it
+ * by a day for anyone east of Greenwich and make a task logged this morning
+ * read as logged yesterday.
+ */
+function isRecentlyLogged(lastLoggedDate) {
+  if (!lastLoggedDate) return false;
+  const cutoff = Date.now() - UNTOUCHED_DAYS * 86400000;
+  return Date.parse(`${lastLoggedDate}T00:00:00Z`) >= cutoff;
+}
+
 /**
  * Per-play variance for one project.
  *
@@ -100,7 +119,35 @@ async function getProjectVariance(handoverId, orgId, hideInternalNotes = false) 
        (SELECT count(*) FROM play_notes n
          WHERE n.project_play_instance_id = p.id
            AND n.deleted_at IS NULL
-           AND ($4::boolean IS NOT TRUE OR n.is_internal = FALSE))::int AS note_count
+           AND ($4::boolean IS NOT TRUE OR n.is_internal = FALSE))::int AS note_count,
+
+       -- ── 2026_136. Reported facts, NOT variance terms ────────────────
+       --
+       -- Variance above is unchanged and stays the yardstick: baseline due vs
+       -- current due vs completed_at. These two say something the dates
+       -- cannot, and only make sense read alongside them — "eight days late
+       -- and nobody has touched it in six" is a different conversation from
+       -- "eight days late and someone logged work on it yesterday", and
+       -- neither number gives that on its own.
+       --
+       -- LOGGED MEANS DISTINCT DAYS WITH AN ENTRY, not hours. There is no
+       -- hours field anywhere in the schema and none is being added: days fall
+       -- straight out of the entries and cannot be fabricated.
+       --
+       -- Across EVERY person, not just the owner. Two people on one task each
+       -- keep their own item (uq_dwi_owner_play), and a count scoped to the
+       -- owner would report a task worked by three people as worked by one.
+       --
+       -- org_id is predicated explicitly on both tables. This service reads
+       -- through the raw pool rather than withOrgTransaction, and none of the
+       -- daily work tables carries RLS, so nothing else would scope this.
+       (SELECT count(DISTINCT e.entry_date)
+          FROM daily_work_entries e
+          JOIN daily_work_items i ON i.id = e.item_id AND i.org_id = e.org_id
+         WHERE i.org_id = p.org_id AND i.play_instance_id = p.id)::int AS days_logged,
+
+       lw.entry_date AS last_logged_date,
+       lw.logged_by  AS last_logged_by
 
      FROM project_play_instances p
      -- The sales_handovers join was only ever here to reach h.playbook_id for
@@ -110,6 +157,19 @@ async function getProjectVariance(handoverId, orgId, hideInternalNotes = false) 
                                  AND pst.key = p.stage_key
                                  AND pst.is_active = TRUE
      LEFT JOIN users ou           ON ou.id = p.owner_user_id
+     -- Most recent update on this task, whoever wrote it. Ordered by the day
+     -- the work happened and then by when the row was last touched, so a
+     -- correction to an older day does not present itself as the latest news.
+     LEFT JOIN LATERAL (
+            SELECT e.entry_date::text AS entry_date,
+                   u.first_name || ' ' || u.last_name AS logged_by
+              FROM daily_work_entries e
+              JOIN daily_work_items i ON i.id = e.item_id AND i.org_id = e.org_id
+              LEFT JOIN users u ON u.id = e.user_id
+             WHERE i.org_id = p.org_id AND i.play_instance_id = p.id
+             ORDER BY e.entry_date DESC, e.updated_at DESC
+             LIMIT 1
+          ) lw ON TRUE
     WHERE p.handover_id = $1
       AND p.org_id = $3
       AND NOT (p.status = ANY($2::text[]))
@@ -137,6 +197,10 @@ async function getProjectVariance(handoverId, orgId, hideInternalNotes = false) 
     rebaselineCount:   r.rebaseline_count,
     evidenceCount:     r.evidence_count,
     noteCount:         r.note_count,
+    // 2026_136. Facts reported beside the variance, never folded into it.
+    daysLogged:        r.days_logged,
+    lastLoggedDate:    r.last_logged_date,
+    lastLoggedBy:      r.last_logged_by,
     // "still open and already past its date" — the number a PM acts on today,
     // as distinct from a completed play that happened to run late.
     overdue:           r.completed_at == null && r.baseline_variance_days > 0,
@@ -155,7 +219,6 @@ async function getProjectVariance(handoverId, orgId, hideInternalNotes = false) 
 function summarise(plays) {
   const measurable = plays.filter(p => p.baselineVariance !== null);
   const completed  = measurable.filter(p => p.completed);
-
   const onTime = completed.filter(p => p.baselineVariance <= 0).length;
 
   const slips = completed.map(p => p.baselineVariance).filter(v => v > 0);
@@ -183,6 +246,18 @@ function summarise(plays) {
     avgSlipDays:     avgSlip,
     lateCount:       slips.length,
     openOverdue:     plays.filter(p => p.overdue).length,
+    // 2026_136. Of the plays that are open and already past baseline, how many
+    // have had no daily work logged against them in the last week — never
+    // logged included. This is the list a project review has to start on: a
+    // task that is late and being worked is a schedule problem, and one that
+    // is late and untouched is a different problem entirely.
+    //
+    // SEVEN DAYS, not the three that getStalledAssigned uses. That figure sits
+    // on a manager's daily screen and should twitch early; this one sits on a
+    // project report someone opens weekly, where three days would flag most of
+    // a normal working week's ordinary gaps.
+    openOverdueUntouched: plays.filter(p =>
+      p.overdue && !isRecentlyLogged(p.lastLoggedDate)).length,
     totalRevisions:  plays.reduce((a, p) => a + p.revisionCount, 0),
     rebaselined:     plays.filter(p => p.rebaselineCount > 0).length,
     withEvidence:    plays.filter(p => p.evidenceCount > 0).length,
