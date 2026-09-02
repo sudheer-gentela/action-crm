@@ -59,7 +59,7 @@ const dwDate = require('./dailyWorkDate');
 const ITEM_COLUMNS = `
   id, org_id, owner_user_id, kind, title, activity_type_key,
   anchor_kind, anchor_id, account_id, status, department_team_id,
-  created_by, assigned_by,
+  created_by, assigned_by, play_instance_id,
   target_date::text AS target_date,
   opened_on::text   AS opened_on,
   closed_at, created_at, updated_at`;
@@ -263,13 +263,53 @@ async function updateItem(orgId, userId, itemId, patch) {
 
   return withOrgTransaction(orgId, async (client) => {
     const { rows: found } = await client.query(
-      `SELECT id, kind, owner_user_id FROM daily_work_items WHERE id = $1 AND org_id = $2`,
+      `SELECT id, kind, owner_user_id, play_instance_id
+         FROM daily_work_items WHERE id = $1 AND org_id = $2`,
       [itemId, orgId]);
 
     const item = found[0];
     if (!item) throw new DailyWorkError('No such work item', 'NO_SUCH_ITEM', { itemId });
     if (item.owner_user_id !== userId) {
       throw new DailyWorkError('That item belongs to someone else', 'NOT_YOUR_ITEM', { itemId });
+    }
+
+    // ── A TASK-LINKED ITEM IS NOT EDITABLE HERE (2026_136) ────────────
+    //
+    // Everything this function changes — the title, the anchor, the target
+    // date, the status — is owned by the TASK on a linked item. Letting any
+    // of them be edited from Daily Work gives the project record and the
+    // person's log a second way to disagree, which is the whole thing one
+    // shared row exists to prevent.
+    //
+    // Each is refused separately rather than with one blanket message,
+    // because the right next action differs and this text is what the screen
+    // shows. The controls are hidden in the UI too; this is the server
+    // saying the same thing, because a hidden control is a hint and this
+    // endpoint is reachable directly.
+    if (item.play_instance_id) {
+      if (title !== undefined) {
+        throw new DailyWorkError(
+          'This item takes its name from the project task. Rename the task instead.',
+          'LINKED_ITEM_TITLE', { itemId });
+      }
+      if (anchorKind !== undefined || anchorId !== undefined) {
+        throw new DailyWorkError(
+          'This item is tied to a project task and cannot be moved to another initiative.',
+          'LINKED_ITEM_ANCHOR', { itemId });
+      }
+      if (targetDate !== undefined) {
+        throw new DailyWorkError(
+          "The task's due date is the date for this work. Change it on the project.",
+          'LINKED_ITEM_TARGET', { itemId });
+      }
+      if (status !== undefined) {
+        // Including 'retired', which is what "Stop tracking this" would send.
+        // Retiring the item directly would leave a live task whose next
+        // update silently opened a second item for the same work.
+        throw new DailyWorkError(
+          'This item closes when its project task does. Complete, skip or cancel the task instead.',
+          'LINKED_ITEM_STATUS', { itemId });
+      }
     }
     if (targetDate && item.kind !== 'assigned') {
       throw new DailyWorkError(
@@ -391,7 +431,23 @@ function validateEntry(entry, index) {
  */
 const BACKFILL_DAYS = 5;
 
-async function saveDay(orgId, userId, entries, { asOf = new Date(), date = null } = {}) {
+/**
+ * saveDay's body, on a caller-supplied client.
+ *
+ * SPLIT OUT FOR ONE REASON (2026_136): posting an update from a project task
+ * has to find-or-create the item and write the entry in the SAME transaction.
+ * Two transactions would leave an empty item behind whenever the entry was
+ * then refused — a row on someone's My day for work they were told was not
+ * saved.
+ *
+ * So there is one body and two entry points into it, and neither is the
+ * "real" one. Everything that makes an entry trustworthy — the backfill
+ * window, the blank check, written_on, the ownership check, the snapshot —
+ * lives here and therefore cannot differ between the two screens. A second
+ * copy of this upsert is exactly how the project's record and the person's
+ * log would come apart.
+ */
+async function _saveDayIn(client, orgId, userId, entries, { asOf = new Date(), date = null } = {}) {
   if (!Array.isArray(entries) || entries.length === 0) {
     throw new DailyWorkError('Nothing to save', 'EMPTY_SAVE');
   }
@@ -407,7 +463,7 @@ async function saveDay(orgId, userId, entries, { asOf = new Date(), date = null 
     seen.add(e.itemId);
   }
 
-  return withOrgTransaction(orgId, async (client) => {
+  {
     await assertActiveMember(client, orgId, userId);
 
     const tz = await dwDate.resolveTimezone(
@@ -445,7 +501,8 @@ async function saveDay(orgId, userId, entries, { asOf = new Date(), date = null 
     for (const entry of entries) {
       const { rows: itemRows } = await client.query(
         `SELECT id, kind, status, owner_user_id, activity_type_key,
-                anchor_kind, anchor_id, account_id, opened_on::text AS opened_on
+                anchor_kind, anchor_id, account_id, play_instance_id,
+                opened_on::text AS opened_on
            FROM daily_work_items
           WHERE id = $1 AND org_id = $2`,
         [entry.itemId, orgId]);
@@ -460,6 +517,30 @@ async function saveDay(orgId, userId, entries, { asOf = new Date(), date = null 
         // work recorded assigns an item; the owner writes the entry.
         throw new DailyWorkError('That item belongs to someone else',
           'NOT_YOUR_ITEM', { itemId: entry.itemId });
+      }
+
+      // ── STATUS IS ALWAYS AN EXPLICIT ACT (2026_136) ─────────────────
+      //
+      // On a task-linked item the day's stage may say the work is under way
+      // or gone for review, but never that it is finished. Rule 4 below
+      // writes an assigned item's status straight from this stage, and
+      // CLOSING_STAGES would close the item while the task it tracks is
+      // still open — leaving a live task whose next update has nowhere to
+      // go, because uq_dwi_owner_play forbids a second item.
+      //
+      // Refusing here rather than quietly downgrading the stage: a progress
+      // note must not be able to smuggle a task to done, and someone who
+      // meant to finish the task should be sent to the control that actually
+      // does it, with whatever gating, review and evidence that project
+      // requires still in front of them.
+      if (item.play_instance_id && CLOSING_STAGES.includes(entry.dayStage)) {
+        throw new DailyWorkError(
+          'This tracks a project task, so finishing it happens on the project — '
+          + 'use Mark done or Send for review there. Log progress here as far as '
+          + '"Sent for review".',
+          'LINKED_STAGE_NOT_CLOSABLE',
+          { itemId: entry.itemId, dayStage: entry.dayStage,
+            playInstanceId: item.play_instance_id });
       }
 
       // An entry cannot predate its item. Without this, backfilling five days
@@ -527,6 +608,305 @@ async function saveDay(orgId, userId, entries, { asOf = new Date(), date = null 
     }
 
     return { entryDate, timezone: tz, entries: saved };
+  }
+}
+
+/**
+ * Save a whole day in one call — the My day entry point.
+ *
+ * Opens the transaction and hands straight to _saveDayIn. Nothing else lives
+ * here on purpose: any rule added to this function rather than to the body
+ * would apply to one of the two screens and not the other.
+ */
+async function saveDay(orgId, userId, entries, opts = {}) {
+  return withOrgTransaction(orgId, (client) =>
+    _saveDayIn(client, orgId, userId, entries, opts));
+}
+
+/* ───────────────────────── task-linked work (2026_136) ─────────────── */
+
+/**
+ * The stages a task-linked item may be logged at.
+ *
+ * DAY_STAGES minus CLOSING_STAGES. Exported so the composer offers exactly
+ * what _saveDayIn will accept, rather than offering five and refusing two.
+ */
+const LINKED_DAY_STAGES = DAY_STAGES.filter(s => !CLOSING_STAGES.includes(s));
+
+/**
+ * Resolve a project task to the facts needed to log against it.
+ *
+ * SELECT ONLY, and deliberately not an authorisation check — the route asks
+ * handover.service.getNoteVisibility for that, so "who may write against this
+ * task" has one answer shared with notes rather than a second rule here that
+ * drifts from it.
+ *
+ * The three refusals below are about the WORK, not the person:
+ *
+ *   - a closed task has nothing left to log against, and its items are
+ *     already closed by trg_close_daily_work_items_for_play
+ *   - a completed, cancelled or retired project is excluded from
+ *     getPersonProjectItems and from the anchor picker, so accepting an
+ *     update here would create an item nothing else will ever show
+ *
+ * Retirement is a timestamp rather than a status (2026_133), so it needs its
+ * own predicate — `status NOT IN (...)` cannot see it.
+ */
+async function getTaskForUpdate(orgId, playInstanceId, client = null) {
+  const run = client
+    ? (sql, params) => client.query(sql, params)
+    : (sql, params) => withOrgTransaction(orgId, c => c.query(sql, params));
+
+  const { rows } = await run(
+    `SELECT p.id, p.title, p.status, p.due_date::text AS due_date,
+            p.owner_user_id, p.handover_id,
+            h.name AS project_name, h.status AS project_status,
+            h.retired_at, COALESCE(h.tracking_mode, 'timeboxed') AS tracking_mode
+       FROM project_play_instances p
+       JOIN sales_handovers h ON h.id = p.handover_id AND h.org_id = p.org_id
+      WHERE p.id = $1 AND p.org_id = $2`,
+    [playInstanceId, orgId]);
+
+  const task = rows[0];
+  if (!task) {
+    throw new DailyWorkError('No such task', 'NO_SUCH_TASK', { playInstanceId });
+  }
+  if (['completed', 'skipped', 'cancelled'].includes(task.status)) {
+    throw new DailyWorkError(
+      'That task is closed. Reopen it on the project if there is more to do.',
+      'TASK_CLOSED', { playInstanceId, status: task.status });
+  }
+  if (['completed', 'cancelled'].includes(task.project_status) || task.retired_at) {
+    throw new DailyWorkError(
+      'That project is closed, so there is nowhere for this work to be counted.',
+      'PROJECT_CLOSED', { playInstanceId, handoverId: task.handover_id });
+  }
+  return task;
+}
+
+/**
+ * Post one person's update against one project task.
+ *
+ * ── FIND-OR-CREATE, THEN THE ORDINARY SAVE ───────────────────────────
+ *
+ * One item per (person, task), created by the first post and never by
+ * anything else — uq_dwi_owner_play makes a second impossible, so this is a
+ * real invariant rather than a convention.
+ *
+ * Both halves are in ONE transaction. Split across two, a refused entry would
+ * leave an item behind with nothing logged against it: a row on the person's
+ * My day for work they were just told was not saved.
+ *
+ * ── WHY opened_on IS THE ENTRY DATE, NOT TODAY ───────────────────────
+ *
+ * _saveDayIn refuses an entry that predates its item (ITEM_NOT_OPEN_YET), and
+ * that rule is right for ordinary items: backfilling onto a day before the
+ * item existed would read later as a record that was always there.
+ *
+ * A linked item is different. It is an artefact of the first POST, not of
+ * when the work began — the task itself existed all along. Left at the
+ * CURRENT_DATE default, the very first update on a task could never be
+ * backfilled: writing up Monday's work on Wednesday would create the item on
+ * Wednesday and then refuse Monday, which is exactly the Monday-morning
+ * writeup the five-day window exists for.
+ *
+ * So the item opens on the day being logged, and an existing item's
+ * opened_on is lowered when someone backfills further than they have before.
+ * It never moves forward — an item that has held Monday keeps holding it.
+ */
+async function postTaskUpdate(orgId, userId, input = {}) {
+  const {
+    playInstanceId,
+    description,
+    nextSteps = null,
+    dayStage,
+    date = null,
+    asOf = new Date(),
+  } = input;
+
+  if (!playInstanceId) {
+    throw new DailyWorkError('Which task?', 'MISSING_TASK');
+  }
+  // Checked before the transaction as well as inside _saveDayIn, so the
+  // composer gets the specific sentence rather than a generic bad-stage one.
+  if (!LINKED_DAY_STAGES.includes(dayStage)) {
+    throw new DailyWorkError(
+      `A project task can be logged as ${LINKED_DAY_STAGES.join(', ')} — `
+      + 'finishing it happens on the project.',
+      'BAD_LINKED_STAGE', { dayStage });
+  }
+
+  return withOrgTransaction(orgId, async (client) => {
+    await assertActiveMember(client, orgId, userId);
+
+    const task = await getTaskForUpdate(orgId, playInstanceId, client);
+
+    // The same resolution _saveDayIn will do. Done here too because the item's
+    // opened_on has to be settled before the entry is written, and the window
+    // check has to refuse a bad date before anything is created.
+    const tz = await dwDate.resolveTimezone(
+      (sql, params) => client.query(sql, params), orgId, userId);
+    const today = dwDate.localDate(tz, asOf);
+    let entryDate = today;
+    if (date != null) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        throw new DailyWorkError('Date must be YYYY-MM-DD', 'BAD_DATE', { date });
+      }
+      if (date > today) {
+        throw new DailyWorkError('You cannot log work for a future day',
+          'FUTURE_DATE', { date });
+      }
+      const earliest = dwDate.addDays(today, -BACKFILL_DAYS);
+      if (date < earliest) {
+        throw new DailyWorkError(
+          `You can only log work for the last ${BACKFILL_DAYS} days. ${date} is further back than that.`,
+          'OUTSIDE_BACKFILL_WINDOW', { date, earliest });
+      }
+      entryDate = date;
+    }
+
+    const { rows: existing } = await client.query(
+      `SELECT ${ITEM_COLUMNS} FROM daily_work_items
+        WHERE org_id = $1 AND owner_user_id = $2 AND play_instance_id = $3`,
+      [orgId, userId, playInstanceId]);
+
+    let item = existing[0];
+    let created = false;
+
+    if (!item) {
+      // anchor = the PROJECT, not the task. anchor_kind stays 'handover' and
+      // its CHECK is untouched, so "daily work is not anchored to a task"
+      // holds literally and the anchor picker is unchanged. The task link is
+      // the separate column.
+      const accountId = await resolveAccountId(client, orgId, 'handover', task.handover_id);
+      const teamId = await resolvePrimaryTeamId(client, orgId, userId);
+
+      const { rows } = await client.query(
+        `INSERT INTO daily_work_items
+           (org_id, owner_user_id, kind, title, anchor_kind, anchor_id, account_id,
+            status, department_team_id, created_by, play_instance_id, opened_on)
+         VALUES ($1,$2,'assigned',$3,'handover',$4,$5,
+                 'yet_to_start',$6,$2,$7,$8)
+         RETURNING ${ITEM_COLUMNS}`,
+        [orgId, userId, task.title, task.handover_id, accountId,
+         teamId, playInstanceId, entryDate]);
+      item = rows[0];
+      created = true;
+    } else if (item.opened_on && entryDate < item.opened_on) {
+      const { rows } = await client.query(
+        `UPDATE daily_work_items SET opened_on = $3, updated_at = now()
+          WHERE id = $1 AND org_id = $2
+          RETURNING ${ITEM_COLUMNS}`,
+        [item.id, orgId, entryDate]);
+      item = rows[0];
+    }
+
+    const saved = await _saveDayIn(client, orgId, userId,
+      [{ itemId: item.id, description, nextSteps, dayStage }],
+      { asOf, date: entryDate });
+
+    return {
+      entryDate: saved.entryDate,
+      timezone: saved.timezone,
+      itemCreated: created,
+      item,
+      entry: saved.entries[0],
+    };
+  });
+}
+
+/**
+ * Everything the composer needs for one task, on either screen.
+ *
+ * ── WHO SEES WHAT ────────────────────────────────────────────────────
+ *
+ * `feed` carries EVERY person's updates on this ONE task, not just the
+ * viewer's. That is a deliberate widening of daily work's normal rule, where
+ * a description is visible to the owner and their manager chain
+ * (canSeeEntry), and it is scoped as narrowly as the purpose allows: one
+ * task, to people who can already read and write notes on that same task.
+ *
+ * The reason is the goal of the whole feature. Two people working a task each
+ * write what they did, and the project is supposed to show that the task
+ * moved. A feed that showed each person only their own half would leave the
+ * task looking untouched to everyone except the last person to type — and
+ * plan vs actual already reports days logged across every person, so the fact
+ * that colleagues are logging is not private either way.
+ *
+ * If that trade is wrong for an org it is one predicate, here, and nothing
+ * else in the module depends on it.
+ */
+async function getTaskWork(orgId, userId, playInstanceId, { asOf = new Date() } = {}) {
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows } = await client.query(
+      `SELECT p.id, p.title, p.status, p.due_date::text AS due_date,
+              p.owner_user_id, p.handover_id,
+              h.name AS project_name, h.status AS project_status,
+              h.retired_at, COALESCE(h.tracking_mode, 'timeboxed') AS tracking_mode
+         FROM project_play_instances p
+         JOIN sales_handovers h ON h.id = p.handover_id AND h.org_id = p.org_id
+        WHERE p.id = $1 AND p.org_id = $2`,
+      [playInstanceId, orgId]);
+
+    const task = rows[0];
+    if (!task) {
+      throw new DailyWorkError('No such task', 'NO_SUCH_TASK', { playInstanceId });
+    }
+
+    // Read, unlike postTaskUpdate, does NOT refuse a closed task or project.
+    // Someone reviewing what happened on a finished piece of work is the case
+    // this most needs to answer; `canPost` below is what the composer keys on.
+    const closed = ['completed', 'skipped', 'cancelled'].includes(task.status)
+      || ['completed', 'cancelled'].includes(task.project_status)
+      || task.retired_at != null;
+
+    const { rows: feed } = await client.query(
+      `SELECT e.id AS entry_id, e.item_id, e.user_id,
+              e.entry_date::text AS entry_date,
+              e.description, e.next_steps, e.day_stage,
+              e.written_on::text AS written_on,
+              e.created_at, e.updated_at,
+              (e.updated_at > e.created_at) AS edited,
+              u.first_name, u.last_name
+         FROM daily_work_entries e
+         JOIN daily_work_items i ON i.id = e.item_id AND i.org_id = e.org_id
+         LEFT JOIN users u ON u.id = e.user_id
+        WHERE i.org_id = $1 AND i.play_instance_id = $2
+        ORDER BY e.entry_date DESC, e.updated_at DESC`,
+      [orgId, playInstanceId]);
+
+    const { rows: mine } = await client.query(
+      `SELECT ${ITEM_COLUMNS} FROM daily_work_items
+        WHERE org_id = $1 AND owner_user_id = $2 AND play_instance_id = $3`,
+      [orgId, userId, playInstanceId]);
+
+    const tz = await dwDate.resolveTimezone(
+      (sql, params) => client.query(sql, params), orgId, userId);
+    const today = dwDate.localDate(tz, asOf);
+
+    return {
+      task: {
+        playInstanceId: task.id,
+        handoverId:     task.handover_id,
+        title:          task.title,
+        status:         task.status,
+        dueDate:        task.due_date,
+        ownerUserId:    task.owner_user_id,
+        project:        task.project_name,
+        projectStatus:  task.project_status,
+        isStanding:     task.tracking_mode === 'standing',
+        isRetired:      task.retired_at != null,
+      },
+      // Whether the WORK can still be logged. The route ANDs this with the
+      // viewer's permission before the composer is offered.
+      canPost: !closed,
+      item: mine[0] || null,
+      feed,
+      today,
+      timezone: tz,
+      earliest: dwDate.addDays(today, -BACKFILL_DAYS),
+      stages: LINKED_DAY_STAGES,
+    };
   });
 }
 
@@ -1470,9 +1850,14 @@ module.exports = {
   assignItem,
   saveDay,
   getDay,
+  // 2026_136 — task-linked daily work.
+  getTaskForUpdate,
+  postTaskUpdate,
+  getTaskWork,
   resolveAccountId,
   resolvePrimaryTeamId,
   DailyWorkError,
   DAY_STAGES,
+  LINKED_DAY_STAGES,
   MAX_DESCRIPTION,
 };

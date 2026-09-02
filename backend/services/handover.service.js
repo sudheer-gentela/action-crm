@@ -3941,6 +3941,34 @@ async function removePlay(handoverId, orgId, playInstanceId) {
     throw Object.assign(new Error('Only items added on this handover can be removed here.'), { status: 400 });
   }
 
+  // 2026_136. Somebody has logged daily work against this task.
+  //
+  // daily_work_items.play_instance_id is ON DELETE NO ACTION, so the delete
+  // below would be refused by the database anyway — but as a raw foreign key
+  // violation surfacing in the Projects UI, naming a constraint on a table the
+  // person has never heard of. This is the same refusal in a sentence, with
+  // the action that actually does what they want.
+  //
+  // Cancelling rather than deleting is the right advice and not a fob-off:
+  // trg_close_daily_work_items_for_play closes every linked item when the task
+  // reaches a terminal status, so cancelling clears it off everyone's My day
+  // while keeping what they wrote about the days they spent on it. Deleting
+  // would destroy that, which is why the constraint exists.
+  const { rows: [logged] } = await pool.query(
+    `SELECT count(*)::int AS items,
+            count(DISTINCT owner_user_id)::int AS people
+       FROM daily_work_items
+      WHERE play_instance_id = $1 AND org_id = $2`,
+    [playInstanceId, orgId]
+  );
+  if (logged.items > 0) {
+    const who = logged.people === 1 ? 'Someone has' : `${logged.people} people have`;
+    throw Object.assign(
+      new Error(`${who} logged daily work against this task, so it cannot be deleted. `
+              + 'Cancel it instead — that closes their daily work and keeps what they wrote.'),
+      { status: 409, code: 'TASK_HAS_LOGGED_WORK', people: logged.people });
+  }
+
   // Single delete. This previously removed the sales_handover_plays link AND
   // the deal_play_instances row. Deleting from deal_play_instances now would
   // destroy the stale pre-migration copy that 2026_109 deliberately retained

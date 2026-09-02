@@ -6,6 +6,8 @@
 // ── Member surface ───────────────────────────────────────────────────────────
 // GET    /daily-work/day                     today (or ?date=) — open items + entries
 // POST   /daily-work/day                     save the whole day, one call
+// GET    /daily-work/tasks/:id                one project task: item, feed, window
+// POST   /daily-work/tasks/:id/update         log against a project task
 // GET    /daily-work/anchors                 what work can be anchored to
 // POST   /daily-work/items                   create a work item
 // GET    /daily-work/activity-types          the shared list, for every picker
@@ -187,6 +189,104 @@ router.post('/day', async (req, res) => {
     })), { date });
     res.json(saved);
   } catch (err) { handle(res, err, 'POST /day'); }
+});
+
+/* ─────────────── task-linked daily work (2026_136) ─────────────────── */
+
+/**
+ * Who may log work against a project task.
+ *
+ * DELEGATED to handover.service.getNoteVisibility — the same resolver that
+ * decides who may post a note on that task: people on the project, or their
+ * manager. Two rules for "may I write against this task" would drift, and the
+ * one that drifted would be this one, because it is the newer of the two and
+ * lives in another module.
+ *
+ * Fails CLOSED, and fails closed on a MISSING projects module too: if
+ * handover.service throws — the module is off, the table is gone — nobody
+ * gets a composer. That is the opposite posture from _projectSideOrEmpty
+ * below, which degrades a READ to an empty list. A read that quietly returns
+ * nothing is a smaller wrong than a write that quietly proceeds.
+ */
+async function _canLogAgainstTask(orgId, userId, handoverId) {
+  try {
+    const { canNote } = await handoverService.getNoteVisibility(handoverId, orgId, userId);
+    return canNote === true;
+  } catch (err) {
+    console.warn('[dailywork] task permission check unavailable:', err.message);
+    return false;
+  }
+}
+
+// ── GET /tasks/:playInstanceId — the composer's state ───────────────────────
+//
+// Returns the task, this person's item if they have one, every update posted
+// against the task, and the date window. One call, because the composer needs
+// all of it before it can render a single field.
+//
+// Deliberately answers for a CLOSED task and a closed project as well. Reading
+// what happened on finished work is the reviewing case, and it is the one that
+// matters most; `canPost` is what the composer keys on, and it carries both
+// halves — the work is still open AND you are allowed to write.
+router.get('/tasks/:playInstanceId', async (req, res) => {
+  try {
+    const playInstanceId = asId(req.params.playInstanceId);
+    if (!playInstanceId) {
+      return res.status(400).json({ error: 'playInstanceId must be a positive integer' });
+    }
+
+    const state = await dailyWork.getTaskWork(req.orgId, req.userId, playInstanceId);
+    const permitted = await _canLogAgainstTask(req.orgId, req.userId, state.task.handoverId);
+
+    if (!permitted) {
+      // Not a 403. The person can see this task on the project already — what
+      // they cannot do is write against it, and the composer needs to know
+      // that without losing the feed it was going to render underneath.
+      return res.json({ ...state, canPost: false, canRead: true });
+    }
+    res.json({ ...state, canRead: true });
+  } catch (err) { handle(res, err, 'GET /tasks/:playInstanceId'); }
+});
+
+// ── POST /tasks/:playInstanceId/update — the one write path ────────────────
+//
+// Called from BOTH entry points: the composer on the project task, and the
+// composer on the My project work card in My day. Neither is the real one —
+// two endpoints would mean two chances for the rules to differ.
+//
+// asOf is not taken from the body, for the same reason as POST /day: the
+// client may propose which DAY the work belongs to, but "today" is resolved
+// server-side in the owner's timezone.
+router.post('/tasks/:playInstanceId/update', async (req, res) => {
+  try {
+    const playInstanceId = asId(req.params.playInstanceId);
+    if (!playInstanceId) {
+      return res.status(400).json({ error: 'playInstanceId must be a positive integer' });
+    }
+    const date = asDate(req.body?.date);
+    if (date === undefined) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+
+    // Resolved before the write so the permission check has a handover id to
+    // ask about, and so a closed task or project is refused with its own
+    // sentence rather than a permission one.
+    const task = await dailyWork.getTaskForUpdate(req.orgId, playInstanceId);
+
+    if (!(await _canLogAgainstTask(req.orgId, req.userId, task.handover_id))) {
+      return res.status(403).json({
+        error: 'Only people on this project, or their manager, can log work against its tasks',
+        code: 'NOT_ON_PROJECT',
+      });
+    }
+
+    const saved = await dailyWork.postTaskUpdate(req.orgId, req.userId, {
+      playInstanceId,
+      description: req.body?.description,
+      nextSteps:   req.body?.nextSteps,
+      dayStage:    req.body?.dayStage,
+      date,
+    });
+    res.json(saved);
+  } catch (err) { handle(res, err, 'POST /tasks/:playInstanceId/update'); }
 });
 
 router.get('/anchors', async (req, res) => {
