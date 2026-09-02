@@ -24,7 +24,7 @@
 //     must be terminal. The rollup drives the gate and the summary line.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import DesktopOnlyNotice from './DesktopOnlyNotice';
 import { apiService } from './apiService';
 import VendorsView from './VendorsView';
@@ -44,6 +44,23 @@ import TaskWorkComposer from './TaskWorkComposer';
 // 2026_136. Bulk plan import — its own file because the paste/map/preview
 // flow is self-contained and this one is already 7,600 lines.
 import ProjectPlanImport from './ProjectPlanImport';
+// The stage strip. Its own file for the same reason, and because it is purely
+// presentational — every number it renders is computed here by
+// buildChecklistGroups() from the plays the checklist already has.
+import ProjectStageStrip from './ProjectStageStrip';
+// The checklist's view model — stage grouping, sorting, the owner filter and
+// the per-stage rollup — plus the date and terminal-status helpers it depends
+// on. Moved out of this file so a standalone node harness can execute it: it
+// is pure logic whose mistakes are silent, and 7,800 lines of JSX cannot be
+// loaded outside a browser build. See checklistView.js for the full reasoning.
+import {
+  PLAY_DONE_STATUSES, isPlayDone,
+  parseLocalDate, toInputDate,
+  CHECKLIST_SORTS, SORT_KEY_DRAFT, SORT_KEY_LIVE, OWNER_FILTER_KEY,
+  readStoredSort, readStoredOwnerFilter,
+  ownerFilterOptions, validOwnerFilter,
+  buildChecklistGroups, currentStageKey,
+} from './checklistView';
 
 // ── Deep-link parsing ─────────────────────────────────────────────────────────
 // #/handovers                         → My Handovers list
@@ -130,42 +147,6 @@ function CommitmentStatusPill({ status }) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-/**
- * Turn a date value from the API into a Date positioned on the right CALENDAR
- * DAY in the viewer's timezone.
- *
- * The trap, both halves of it:
- *
- *   • A DATE column read as an object and serialised reports the previous day
- *     east of UTC — node-postgres parses DATE at local midnight, so 2026-12-01
- *     from IST goes over the wire as 2026-11-30T18:30:00Z.
- *   • `new Date('2026-12-01')` is UTC MIDNIGHT, so it renders as 30 Nov west
- *     of UTC. Fixing the server to send a bare date and leaving this alone
- *     just moves the bug to the other hemisphere.
- *
- * So a bare 'YYYY-MM-DD' is built in LOCAL time, component by component, and
- * anything carrying a time is parsed normally. Both forms are accepted on
- * purpose: goLiveDate is fixed at the source now, but other DATE columns in
- * this module still arrive as timestamps, and this keeps working for them
- * either way.
- */
-function parseLocalDate(d) {
-  if (!d) return null;
-  if (d instanceof Date) return d;
-  const s = String(d);
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s.trim());
-  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  return new Date(s);
-}
-
-/** 'YYYY-MM-DD' for a date input, from whichever form the API sent. */
-function toInputDate(d) {
-  const dt = parseLocalDate(d);
-  if (!dt || Number.isNaN(dt.getTime())) return '';
-  const pad = n => String(n).padStart(2, '0');
-  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
-}
 
 function fmtDate(d) {
   if (!d) return '—';
@@ -978,24 +959,46 @@ function InlineCell({ value, display, type = 'text', options, canEdit, onSave, p
 // Stage banner + progress bar, shared by all three checklist views so a change
 // to stage presentation does not have to be made in three places.
 function StageHeader({ group }) {
-  const pct = group.items.length ? Math.round((group.done / group.items.length) * 100) : 0;
+  // Project-level, always — total counts every task in the stage and done
+  // counts the terminal ones, regardless of any owner filter. The strip
+  // directly above prints the same pair, and two different numbers for one
+  // stage within forty pixels of each other is the confusion this avoids.
+  // `total` is absent on any caller that still passes a raw group, so it falls
+  // back to the item count the way this always read.
+  const total = group.total != null ? group.total : group.items.length;
+  const pct = total ? Math.round((group.done / total) * 100) : 0;
   // Every task in a locked stage carries the same stageBlockedBy, so the first
-  // one is representative.
-  const lockedBy = group.items[0]?.stageBlockedBy || [];
+  // one is representative. Read from the UNFILTERED items: filtering to an
+  // owner with nothing in a locked stage must not make the lock disappear.
+  const source = group.allItems || group.items;
+  const lockedBy = source[0]?.stageBlockedBy || [];
+  const hidden = group.filtered ? total - group.items.length : 0;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
       <span style={{ fontSize: 9, fontWeight: 700, color: '#94a3b8', background: '#f1f5f9',
                      padding: '1px 5px', borderRadius: 4, letterSpacing: 0.3 }}>STAGE</span>
-      <span style={{ fontSize: 11, fontWeight: 700, color: '#374151', textTransform: 'uppercase',
-                     letterSpacing: 0.4, whiteSpace: 'nowrap',
+      {/* 16px / weight 500, sentence case. At 11px uppercase this carried the
+          same visual weight as the 13px task rows beneath it, which is why 45
+          rows read as a wall rather than as seven groups. Task rows are
+          already 13px in all three layouts, so this heading is the only thing
+          that had to move. */}
+      <span title={group.label}
+            style={{ fontSize: 16, fontWeight: 500, color: '#111827',
+                     whiteSpace: 'nowrap',
                      // nowrap came from the Detailed header, which sits in a
                      // full-width row. The Compact card is a ~340px grid cell
                      // and previously allowed wrapping, so a long stage name
                      // would overflow it without these two.
                      overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{group.label}</span>
       <span style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>
-        {group.done}/{group.items.length} done
+        {group.done}/{total} done
       </span>
+      {group.filtered && (
+        <span style={{ fontSize: 11, color: '#0369a1', whiteSpace: 'nowrap' }}>
+          showing {group.items.length} of {total}
+          {hidden > 0 ? ` · ${hidden} hidden` : ''}
+        </span>
+      )}
       {lockedBy.length > 0 && (
         <span title={`Locked until ${lockedBy.join(', ')} clears its gates`}
           style={{ fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 4,
@@ -1064,11 +1067,6 @@ const PLAY_STATUS = {
   blocked:     { label: 'Blocked',     color: '#991b1b', bg: '#fef2f2', bd: '#fecaca' },
   not_started: { label: 'Not started', color: '#6b7280', bg: '#f8fafc', bd: '#e5e7eb' },
 };
-
-// Terminal statuses. Kept as one list so a status added later does not have to
-// be found in six separate inline arrays.
-const PLAY_DONE_STATUSES = ['completed', 'skipped', 'cancelled'];
-const isPlayDone = st => PLAY_DONE_STATUSES.includes(st);
 
 // How a submission's requested end state reads inside a sentence.
 // PLAY_STATUS labels are noun-ish pills ('Done'); these are the verb form.
@@ -2086,57 +2084,6 @@ function PlaySection({ play, canEdit, canDelete = canEdit, onComplete, onRemove,
   );
 }
 
-// ── Stage grouping for the handover checklist ─────────────────────────────────
-const STAGE_LABELS = {
-  mobilize: 'Mobilization', groundwork: 'Groundwork', installation: 'Installation',
-  finishing: 'Finishing', signoff: 'Sign-off', custom: 'Added here, outside the plan',
-};
-function stageLabel(key) {
-  if (!key) return 'Other';
-  return STAGE_LABELS[key] || key.replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-}
-// Group plays by stage, in the order the server resolved; ad-hoc ('custom')
-// always last.
-//
-// 2026_115: ordering now comes from play.stageSortOrder, which the backend
-// derives from COALESCE(playbook_stages, project_stages). It used to be
-// minSort — the smallest sortOrder among a group's plays — which looked
-// reasonable but never worked: addPlay numbers sort_order per stage starting
-// at 10, so the first play in EVERY stage was 10, all groups tied, and the
-// stable sort just handed back SQL order (alphabetical by stage_key). Stages
-// silently ran in the wrong sequence.
-//
-// minSort is kept as the tiebreak for pre-migration rows that have no
-// stageSortOrder yet.
-function groupPlaysByStage(plays) {
-  const map = new Map();
-  for (const p of plays) {
-    const key = p.stageKey || 'other';
-    if (!map.has(key)) map.set(key, []);
-    map.get(key).push(p);
-  }
-  const groups = [...map.entries()].map(([key, items]) => ({
-    key,
-    // Server-supplied name first: it is the only one that knows this project's
-    // own vocabulary. stageLabel() remains the fallback for older payloads.
-    label: items.find(i => i.stageName)?.stageName || stageLabel(key),
-    items,
-    stageSort: items.find(i => i.stageSortOrder != null)?.stageSortOrder ?? null,
-    minSort: Math.min(...items.map(i => i.sortOrder ?? 9999)),
-    done: items.filter(i => isPlayDone(i.status)).length,
-  }));
-  groups.sort((a, b) => {
-    if (a.key === 'custom') return 1;
-    if (b.key === 'custom') return -1;
-    const as = a.stageSort, bs = b.stageSort;
-    if (as != null && bs != null && as !== bs) return as - bs;
-    if (as != null && bs == null) return -1;   // defined stages before undefined
-    if (as == null && bs != null) return 1;
-    return a.minSort - b.minSort;
-  });
-  return groups;
-}
-
 // ── AddPlayForm: add an ad-hoc checklist item directly on a handover ───────────
 function AddPlayForm({ users, onAdd, stages }) {
   const [open,   setOpen]   = useState(false);
@@ -3073,6 +3020,21 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
       return CHECKLIST_LAYOUTS.some(([k]) => k === v) ? v : 'table';
     } catch { return 'table'; }
   });
+
+  // ── Sort and owner filter ────────────────────────────────────────────────
+  //
+  // The sort preference is held as BOTH defaults at once and the applicable
+  // one is derived at render, rather than being resolved into a single piece
+  // of state. `detail` is useState(null) and fills in after load(), so a
+  // single value seeded from the project's status would either have to be
+  // corrected by an effect — a visible flash from plan order to due date on
+  // every open — or read a status that is not there yet.
+  const [sortPref, setSortPref] = useState(() => ({
+    draft: readStoredSort(SORT_KEY_DRAFT, 'plan'),
+    live:  readStoredSort(SORT_KEY_LIVE,  'due'),
+  }));
+  const [ownerFilter, setOwnerFilter] = useState(readStoredOwnerFilter);
+
   const [expandedPlays, setExpandedPlays] = useState({});
 
   // Rename, from the header.
@@ -3163,6 +3125,17 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   const [evidencePolicy, setEvidencePolicy] = useState(null);
   const [startReview, setStartReview] = useState(null);   // { preview, loading, target }
   const setLayout = (v) => { setChecklistLayout(v); try { localStorage.setItem('gw_project_checklist_layout', v); } catch { /* ignore */ } };
+  // Written to whichever of the two slots applies, so a deliberate choice on a
+  // draft is remembered for drafts without changing what live projects do.
+  const setSort = (v, isDraftPlan) => {
+    setSortPref(p => (isDraftPlan ? { ...p, draft: v } : { ...p, live: v }));
+    try { localStorage.setItem(isDraftPlan ? SORT_KEY_DRAFT : SORT_KEY_LIVE, v); }
+    catch { /* ignore */ }
+  };
+  const setOwner = (v) => {
+    setOwnerFilter(v);
+    try { localStorage.setItem(OWNER_FILTER_KEY, v); } catch { /* ignore */ }
+  };
   const togglePlay = (id) => setExpandedPlays(x => ({ ...x, [id]: !x[id] }));
   const [closureText, setClosureText] = useState('');
   const [detailTab, setDetailTab] = useState(initialTab || 'summary'); // 'summary' | 'details' | 'communications'
@@ -3515,6 +3488,50 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     await load();
   };
 
+  // ── Checklist view model ─────────────────────────────────────────────────
+  //
+  // ALL of this sits above the two early returns below, because hooks cannot
+  // live behind a conditional return — the same constraint that already keeps
+  // canReviewPlays and the status flags below the guard and their useState
+  // above it. Everything here reads `detail` optionally and is harmless while
+  // it is still null.
+  //
+  // Memoised on the plays array and the two control values, so typing in an
+  // inline cell does not re-sort three stage groups on every keystroke. Even
+  // unmemoised this is one pass and three sorts over ~50 objects; the memo is
+  // for tidiness, not because the work is heavy. Nothing here is fetched.
+
+  // The note-count overlay, hoisted from where `plays` used to be derived so
+  // the memos below have one array to depend on rather than rebuilding it.
+  const plays = useMemo(() => (
+    (detail?.plays || []).map(p => (
+      noteCounts[p.playInstanceId] != null
+        ? { ...p, noteCount: noteCounts[p.playInstanceId] }
+        : p))
+  ), [detail, noteCounts]);
+
+  // Whose view this is. Same expression the task-permission check below uses;
+  // hoisted for the same reason as `plays`.
+  const viewerUserId = detail?.viewerUserId ?? readCurrentUserId();
+
+  // Plan order on a draft, due date once it is live — and because the drag
+  // guard keys off this, a draft keeps its drag handle by default, which is
+  // the state in which reordering is most of the work.
+  const planIsDraft = detail?.status === 'draft';
+  const checklistSort = planIsDraft ? sortPref.draft : sortPref.live;
+
+  const ownerOptions = useMemo(
+    () => ownerFilterOptions(plays, viewerUserId), [plays, viewerUserId]);
+  // A remembered filter that matches nothing on THIS project resolves to All
+  // rather than presenting an entirely grey checklist with no visible cause.
+  const ownerKey = validOwnerFilter(ownerFilter, ownerOptions);
+  const ownerFiltered = ownerKey !== 'all';
+
+  const checklistGroups = useMemo(
+    () => buildChecklistGroups(plays, { ownerKey, sortKey: checklistSort, viewerUserId }),
+    [plays, ownerKey, checklistSort, viewerUserId]);
+  const currentStage = useMemo(() => currentStageKey(checklistGroups), [checklistGroups]);
+
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 24, color: '#6b7280', fontSize: 13 }}>
       <div style={{ width: 16, height: 16, border: '2px solid #e5e7eb', borderTopColor: '#0369a1', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
@@ -3548,7 +3565,9 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   // cannot sit behind a conditional return; these three are plain derivations
   // and belong here with ownerLabel and the status flags.
   const canReviewPlays = detail.canReviewPlays === true;
-  const viewerUserId   = detail.viewerUserId ?? readCurrentUserId();
+  // viewerUserId is derived above the guard now — the owner filter's "Just
+  // mine" entry needs it inside a memo, and a memo cannot sit below a
+  // conditional return. It reads detail optionally, so it is safe up there.
   const canActOnPlay   = (play) =>
     canReviewPlays
     || (play?.ownerUserId != null && Number(play.ownerUserId) === Number(viewerUserId));
@@ -3615,6 +3634,30 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   // work with it.
   const canDeletePlays = salesCanEdit;
 
+  // ── The drag guard ───────────────────────────────────────────────────────
+  //
+  // handleDropPlay() rebuilds the stage's id list from the RENDERED order and
+  // POSTs it to reorderPlays, which renumbers sort_order from that array. In a
+  // list sorted by due date or by owner, the rendered order is not sort_order,
+  // so a drag would write positions that match nothing the person saw — a
+  // silent corruption of the plan order, discovered later by whoever switched
+  // back to it.
+  //
+  // The owner filter is the second half of the same problem, and it is the
+  // half that would otherwise have shipped. group.items is what handleDropPlay
+  // is handed, so a drag inside a filtered stage would send only the visible
+  // subset. reorderPlays REFUSES a partial list — it counts the stage first —
+  // so nothing would be corrupted, but the person would get "the whole stage
+  // is required" from a handle that looked perfectly live. Not offering it is
+  // the honest form of the same rule.
+  //
+  // So the handle is not rendered at all unless the list IS the whole stage in
+  // plan order, and the control says why. On a draft this is true by default:
+  // sortPref.draft starts at 'plan' precisely so that reordering, which is
+  // most of what drafting a plan consists of, keeps working without anyone
+  // changing a setting first.
+  const canReorder = canEditPlan && checklistSort === 'plan' && !ownerFiltered;
+
   // Is the plan COMMITTED? Before the freeze a date edit is a correction to a
   // provisional plan; after it the same keystroke is slip against a baseline.
   // The screen now has to say which, because it no longer hides the control.
@@ -3624,10 +3667,8 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   // member; the two tabs represent the two legitimate actors.)
   const canManageCommitments = !isTerminal;
 
-  const plays        = (detail.plays || []).map(p => (
-    noteCounts[p.playInstanceId] != null
-      ? { ...p, noteCount: noteCounts[p.playInstanceId] }
-      : p));
+  // `plays` is the memo above the guard. Kept out of here so the checklist
+  // groups, the owner options and this list are all the same array.
   const commitments  = detail.commitments  || [];
 
   const gatePlays  = plays.filter(p => p.isGate);
@@ -4175,13 +4216,113 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
             <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 12 }}>No checklist items yet.</div>
           )}
 
+          {/* ── The stage strip ──────────────────────────────────────────
+              Above the checklist, in all three layouts, computed from the
+              same `plays` the rows below come from. See ProjectStageStrip's
+              header for why it is not fed by /sales/:id/variance/stages. */}
+          {plays.length > 0 && (
+            <ProjectStageStrip
+              groups={checklistGroups}
+              currentKey={currentStage}
+              filtered={ownerFiltered}
+            />
+          )}
+
+          {/* ── Sort and owner filter ────────────────────────────────────
+              A dropdown rather than filter chips: chips push the checklist
+              down the page on every visit for everyone, to save one click for
+              the few who filter, and at eight people they run to two rows. */}
+          {plays.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10,
+                          flexWrap: 'wrap', marginBottom: 10 }}>
+              <label style={{ fontSize: 11, color: '#6b7280', display: 'inline-flex',
+                              alignItems: 'center', gap: 5 }}>
+                Sort
+                <select value={checklistSort}
+                        onChange={e => setSort(e.target.value, planIsDraft)}
+                        style={{ fontSize: 12, padding: '4px 6px', borderRadius: 4,
+                                 border: '1px solid #d1d5db', background: '#fff',
+                                 color: '#374151' }}>
+                  {CHECKLIST_SORTS.map(([k, label]) => (
+                    <option key={k} value={k}>{label}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label style={{ fontSize: 11, color: '#6b7280', display: 'inline-flex',
+                              alignItems: 'center', gap: 5 }}>
+                Owner
+                <select value={ownerKey} onChange={e => setOwner(e.target.value)}
+                        style={{ fontSize: 12, padding: '4px 6px', borderRadius: 4,
+                                 border: `1px solid ${ownerFiltered ? '#7dd3fc' : '#d1d5db'}`,
+                                 background: ownerFiltered ? '#f0f9ff' : '#fff',
+                                 color: '#374151', maxWidth: 240 }}>
+                  <option value="all">All owners · {ownerOptions.total}</option>
+                  {/* My project work on Daily Work is the permanent version of
+                      this view and is better placed for it, so "just mine"
+                      lives in here rather than as a standing toggle. */}
+                  {ownerOptions.mine > 0 && (
+                    <option value="mine">Just mine · {ownerOptions.mine}</option>
+                  )}
+                  {ownerOptions.owners.length > 0 && (
+                    <optgroup label="────────">
+                      {ownerOptions.owners.map(o => (
+                        <option key={o.id} value={`u:${o.id}`}>{o.name} · {o.count}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {/* A real entry, not an absence. Imported plans produce
+                      unassigned rows whenever a name matched two people, and
+                      nothing else in the product surfaces them. */}
+                  {ownerOptions.unassigned > 0 && (
+                    <optgroup label="────────">
+                      <option value="unassigned">Unassigned · {ownerOptions.unassigned}</option>
+                    </optgroup>
+                  )}
+                </select>
+              </label>
+
+              {ownerFiltered && (
+                <button type="button" onClick={() => setOwner('all')}
+                        style={{ fontSize: 11, padding: '3px 9px', borderRadius: 5,
+                                 border: '1px solid #7dd3fc', background: '#f0f9ff',
+                                 color: '#0369a1', cursor: 'pointer', fontWeight: 600 }}>
+                  Showing one owner · clear filter
+                </button>
+              )}
+
+              {/* Said out loud rather than left as a handle that has silently
+                  stopped being there. */}
+              {canEditPlan && !canReorder && (
+                <span style={{ fontSize: 11, color: '#92400e' }}>
+                  {checklistSort !== 'plan'
+                    ? `Reordering is off while sorted by ${checklistSort === 'due' ? 'due date' : 'owner'}. `
+                      + 'Switch to plan order to drag.'
+                    : 'Reordering is off while filtered to one owner — a drag has to '
+                      + 'reposition the whole stage. Clear the filter to drag.'}
+                </span>
+              )}
+            </div>
+          )}
+
           {checklistLayout === 'compact' ? (
             /* ── Compact: one card per stage, title-only rows that expand ── */
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 14, alignItems: 'start' }}>
-              {groupPlaysByStage(plays).map(group => {
+              {checklistGroups.map(group => {
                 return (
-                  <div key={group.key} style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 14, background: '#fff' }}>
+                  <div key={group.key} style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 14,
+                                                background: group.items.length === 0 ? '#fafafa' : '#fff',
+                                                opacity: group.items.length === 0 ? 0.7 : 1 }}>
                     <StageHeader group={group} />
+                    {/* A stage with nothing for the filtered owner stays where
+                        it is, greyed, rather than vanishing — so the shape of
+                        the plan is still legible while you look at one
+                        person's slice of it. */}
+                    {group.items.length === 0 && (
+                      <div style={{ fontSize: 12, color: '#9ca3af', padding: '6px 2px' }}>
+                        Nothing for this owner
+                      </div>
+                    )}
                     {group.items.map(play => {
                       const done = isPlayDone(play.status);
                       const icon = play.status === 'skipped' ? '⊘' : done ? '✅' : play.isGate ? '🔒' : play.status === 'in_progress' ? '🔄' : '⬜';
@@ -4220,10 +4361,19 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
             /* ── Table: task · owner · due · status, one table per stage ──
                Rows stay expandable so "Mark done" is one click away without
                having to switch views. */
-            groupPlaysByStage(plays).map(group => (
-              <div key={group.key} style={{ marginBottom: 18 }}>
+            checklistGroups.map(group => (
+              <div key={group.key} style={{ marginBottom: 18,
+                                            opacity: group.items.length === 0 ? 0.7 : 1 }}>
                 <StageHeader group={group} />
-                <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
+                {/* Greyed, not gone. Same reasoning as the Compact card. */}
+                {group.items.length === 0 && (
+                  <div style={{ fontSize: 12, color: '#9ca3af', border: '1px dashed #e5e7eb',
+                                borderRadius: 10, padding: '10px 12px', background: '#fafafa' }}>
+                    Nothing for this owner
+                  </div>
+                )}
+                <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden',
+                              display: group.items.length === 0 ? 'none' : 'block' }}>
                   <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
                     {/* Widths sized for the widest real content, not the header
                         text: DUE holds "⚠ 33d overdue  17 Jul 2026" and STATUS
@@ -4397,10 +4547,18 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
             ))
           ) : (
             /* ── Detailed: full grouped list ── */
-            groupPlaysByStage(plays).map(group => {
+            checklistGroups.map(group => {
               return (
-                <div key={group.key} style={{ marginBottom: 18 }}>
+                <div key={group.key} style={{ marginBottom: 18,
+                                              opacity: group.items.length === 0 ? 0.7 : 1 }}>
                   <StageHeader group={group} />
+                  {/* Greyed, not gone. Same reasoning as the Compact card. */}
+                  {group.items.length === 0 && (
+                    <div style={{ fontSize: 12, color: '#9ca3af', border: '1px dashed #e5e7eb',
+                                  borderRadius: 8, padding: '10px 12px', background: '#fafafa' }}>
+                      Nothing for this owner
+                    </div>
+                  )}
                   {group.items.map(play => (
                     // Wrapper carries the drag affordance so PlaySection itself
                     // stays unchanged — its internal inputs must remain
@@ -4418,7 +4576,11 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                         opacity: dragPlay && dragPlay.id === play.id ? 0.45 : 1,
                       }}
                     >
-                      {canEditPlan && (
+                      {/* canReorder, not canEditPlan. handleDropPlay writes
+                          sort_order from the RENDERED order, so offering this
+                          in a date- or owner-sorted list would silently write
+                          positions matching nothing on screen. */}
+                      {canReorder && (
                         <span
                           draggable
                           onDragStart={() => setDragPlay({ id: play.id, stageKey: group.key })}
