@@ -558,6 +558,7 @@ export default function DailyWorkView() {
       {mode === 'log'
         ? <DayLog day={day} rows={rows} written={written} drafts={drafts} saved={saved}
                   history={history.filter(h => h.entry_date !== day.entryDate)}
+                  me={me}
                   onEdit={itemId => { setOpenItem(itemId); setMode('edit'); }} />
         : (
           <>
@@ -866,7 +867,7 @@ function MyProjectWork({ me }) {
  * row is built from the drafts so unsaved work shows immediately; earlier days
  * come from the server already grouped and concatenated.
  */
-function DayLog({ day, rows, written, drafts, saved, history, onEdit }) {
+function DayLog({ day, rows, written, drafts, saved, history, onEdit, me }) {
   const past = history || [];
 
   if (!written.length && !past.length) {
@@ -970,7 +971,7 @@ function DayLog({ day, rows, written, drafts, saved, history, onEdit }) {
               </tr>
             )}
 
-            {past.map(d => <PastDayRow key={d.entry_date} day={d} />)}
+            {past.map(d => <PastDayRow key={d.entry_date} day={d} me={me} />)}
           </tbody>
         </table>
       </div>
@@ -979,41 +980,110 @@ function DayLog({ day, rows, written, drafts, saved, history, onEdit }) {
 }
 
 /**
- * An earlier day, read-only, as one row.
+ * An earlier day, read-only, as one row — expandable into its items.
  *
- * Deliberately not editable from here. Correcting three days ago is a real
- * need, but it is also how a compliance log stops meaning anything, so it
- * should be a considered feature rather than a side effect of the log being
- * on screen.
+ * The row shows the day's descriptions already joined by the rollup, which is
+ * the right summary but the wrong place to stop: a day that reads "This is a
+ * test This is a test" gives no way to tell which item was which, and backfill
+ * makes looking back at earlier days a normal thing to do rather than an
+ * archival curiosity.
+ *
+ * FETCHED ON DEMAND, not with the log. There is one of these per day in the
+ * window; requesting every day's items up front would be a request per day for
+ * detail almost none of which gets read. Cached once fetched, so collapsing and
+ * reopening does not re-request.
+ *
+ * Uses the SAME endpoint the manager surface uses, scoped to the viewer.
+ * getVisibleUserIds always includes the viewer themselves, so this is the
+ * person's own data by the same rule that lets a manager see a report's — not
+ * a second, member-only path that could drift from it.
+ *
+ * Still read-only. Editing an earlier day is what the date navigation above is
+ * for: step back to it and the full Edit rows grid applies, within the window
+ * the server allows. Editing from a summary row would be a second way to write
+ * the same entry, bypassing that window check.
  */
-function PastDayRow({ day }) {
+function PastDayRow({ day, me }) {
   const [open, setOpen] = useState(false);
+  const [items, setItems] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
   const long = day.work_done && day.work_done.length > 160;
+
+  const toggle = async () => {
+    if (open) { setOpen(false); return; }
+    setOpen(true);
+    if (items || !me) return;
+    setBusy(true);
+    setFailed(false);
+    try {
+      // The existing client method, unchanged. Adding a second one for the
+      // member case would be two callers of one endpoint that could drift.
+      const { data } = await apiService.dailyWork.teamDayDetail({ user: me, date: day.entry_date });
+      setItems(data || []);
+    } catch {
+      // The summary is already on screen and still true, so a failed detail
+      // fetch degrades to "could not load" rather than taking the row with it.
+      setFailed(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
-    <tr>
-      <td className="dw-logdate">{formatDateShort(day.entry_date)}</td>
-      <td className="dw-logitem muted">
-        {day.item_count} {day.item_count === 1 ? 'item' : 'items'}
-        {day.evidence_count > 0 && (
-          <span className="dw-badge">{day.evidence_count} evidence</span>
-        )}
-      </td>
-      {/* The clamp goes on an inner div, never the cell. .dw-clamp sets
-          display:-webkit-box, and a <td> whose display is overridden drops out
-          of the table layout — the column widths stop applying and the row
-          collapses. */}
-      <td>
-        <div className={open ? '' : 'dw-clamp'}>{day.work_done}</div>
-      </td>
-      <td className="dw-col-stage" />
-      <td className="dw-logactions">
-        {long && (
-          <button className="dw-btn-link" onClick={() => setOpen(!open)}>
-            {open ? 'Less' : 'All'}
+    <React.Fragment>
+      <tr>
+        <td className="dw-logdate">{formatDateShort(day.entry_date)}</td>
+        <td className="dw-logitem muted">
+          {day.item_count} {day.item_count === 1 ? 'item' : 'items'}
+          {day.evidence_count > 0 && (
+            <span className="dw-badge">{day.evidence_count} evidence</span>
+          )}
+        </td>
+        {/* The clamp goes on an inner div, never the cell. .dw-clamp sets
+            display:-webkit-box, and a cell whose display is overridden drops
+            out of the table layout — the column widths stop applying and the
+            row collapses. */}
+        <td>
+          <div className={open || !long ? '' : 'dw-clamp'}>{day.work_done}</div>
+        </td>
+        <td className="dw-col-stage" />
+        <td className="dw-logactions">
+          <button className="dw-btn-link" onClick={toggle} aria-expanded={open}>
+            {open ? 'Hide' : 'Details'}
           </button>
-        )}
-      </td>
-    </tr>
+        </td>
+      </tr>
+
+      {open && (
+        <tr className="dw-day-items">
+          <td />
+          <td colSpan={4}>
+            {busy && <span className="dw-item-status">Loading…</span>}
+            {failed && <span className="dw-item-status">Could not load that day&apos;s items.</span>}
+            {!busy && !failed && items && items.length === 0 && (
+              <span className="dw-item-status">No items recorded for that day.</span>
+            )}
+            {!busy && !failed && (items || []).map(item => (
+              <div className="dw-day-item" key={item.entry_id}>
+                <div className="t">
+                  <b>{item.title}</b>
+                  <span className="dw-badge">{item.day_stage.replace(/_/g, ' ')}</span>
+                  {item.account_name && <span className="dw-badge">{item.account_name}</span>}
+                  {item.evidence_count > 0 && (
+                    <span className="dw-badge">{item.evidence_count} evidence</span>
+                  )}
+                </div>
+                <div className="d">{item.description}</div>
+                {item.next_steps && (
+                  <div className="dw-meta"><b>Next:</b> {item.next_steps}</div>
+                )}
+              </div>
+            ))}
+          </td>
+        </tr>
+      )}
+    </React.Fragment>
   );
 }
 

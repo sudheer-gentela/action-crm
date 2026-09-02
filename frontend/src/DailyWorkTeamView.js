@@ -618,20 +618,52 @@ export default function DailyWorkTeamView() {
               <p>Nobody in the current list has overdue project work.</p>
             </div></div>
           )}
-          {visiblePeople.map(person => (
-            <PersonRow
-              key={person.user_id}
-              person={person}
-              period={period}
-              hasProjects={hasProjects}
-              log={log.filter(l => l.user_id === person.user_id)}
-              expanded={expanded}
-              details={details}
-              onToggle={toggle}
-              onOpenDay={openDay}
-              onOpenPerson={() => setOpenPerson(person)}
-            />
-          ))}
+          {/* ONE TABLE, one row per person. This was a stack of cards, each
+              with a two-line head and a nested block body, so comparing eight
+              people meant reading eight paragraphs — and the numbers that
+              actually get compared (days logged, entries, overdue) sat in
+              badges at different horizontal positions on every card.
+              A table puts them in columns.
+
+              The DAY period keeps its own shape below: with one day in range
+              there is nothing to roll up, so those rows open the full view
+              instead of expanding. */}
+          <div className="dw-logtable-wrap">
+            <table className="dw-logtable dw-peopletable">
+              <colgroup>
+                <col style={{ width: '30%' }} />
+                <col style={{ width: '20%' }} />
+                <col style={{ width: '13%' }} />
+                <col style={{ width: '25%' }} />
+                <col style={{ width: '12%' }} />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>Person</th>
+                  <th className="dw-col-days">{period === 'day' ? 'Logged' : 'Days logged'}</th>
+                  <th>Entries</th>
+                  <th className="dw-col-work">{period === 'day' ? 'What they logged' : 'Projects'}</th>
+                  <th><span className="dw-sr-only">Actions</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {visiblePeople.map(person => (
+                  <PersonRow
+                    key={person.user_id}
+                    person={person}
+                    period={period}
+                    hasProjects={hasProjects}
+                    log={log.filter(l => l.user_id === person.user_id)}
+                    expanded={expanded}
+                    details={details}
+                    onToggle={toggle}
+                    onOpenDay={openDay}
+                    onOpenPerson={() => setOpenPerson(person)}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -973,123 +1005,169 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
                      onToggle, onOpenDay, onOpenPerson }) {
   const key = `p:${person.user_id}`;
   const isOpen = !!expanded[key];
-  // The name is rendered by PersonIdentity now, in both branches.
 
   // A day period is already one row per person; there is nothing to roll up, so
   // the row opens the full view rather than expanding.
-  //
-  // THE WHOLE ROW IS THE CONTROL. A per-row "Open full view" button cost a line
-  // each and turned a list of eight people into a scroll. The row carries who,
-  // how they are doing, and what they logged, on two lines.
   if (period === 'day') {
     const today = log[0];
     return (
-      <div className="dw-item">
-        <button className="dw-item-head" onClick={onOpenPerson}
-                style={{ cursor: 'pointer', width: '100%', textAlign: 'left' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%' }}>
-            <PersonIdentity person={person} />
-            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-              {hasProjects && person.openTasks > 0 && (
-                <span className="dw-badge">{person.openTasks} {person.openTasks === 1 ? 'task' : 'tasks'}</span>
-              )}
-              {hasProjects && person.overdueTasks > 0 && (
-                <span className="dw-badge carried">{person.overdueTasks} overdue</span>
-              )}
-              {/* The status pill, so who-logged-today is answerable by scanning
-                  one column instead of reading every row's prose. */}
-              <span className={`dw-badge ${today ? '' : 'carried'}`}>
-                {today ? `${today.item_count} logged` : 'not yet'}
-              </span>
-            </div>
-          </div>
-          {today && <div className="dw-work dw-clamp" style={{ marginTop: 8 }}>{today.work_done}</div>}
-        </button>
-      </div>
+      <tr className="dw-person-row" onClick={onOpenPerson} style={{ cursor: 'pointer' }}>
+        <td><PersonIdentity person={person} /></td>
+        <td className="dw-col-days">
+          <span className={`dw-badge ${today ? '' : 'carried'}`}>
+            {today ? `${today.item_count} logged` : 'not yet'}
+          </span>
+        </td>
+        <td>{today ? today.item_count : 0}</td>
+        <td className="dw-col-work">
+          {/* The clamp goes on an inner div: .dw-clamp sets display:-webkit-box
+              and a <td> whose display is overridden drops out of the table
+              layout entirely. */}
+          {today ? <div className="dw-clamp">{today.work_done}</div>
+                 : <span className="dw-none">Not logged yet.</span>}
+        </td>
+        <td className="dw-logactions">
+          {hasProjects && person.overdueTasks > 0 && (
+            <span className="dw-badge carried">{person.overdueTasks} overdue</span>
+          )}
+        </td>
+      </tr>
     );
   }
 
   return (
-    <div className={`dw-item ${isOpen ? 'dw-open' : ''}`}>
-      <button className="dw-item-head" onClick={() => onToggle(key)} aria-expanded={isOpen}>
-        <PersonIdentity person={person} />
-        <div className="dw-item-badges" style={{ alignItems: 'center' }}>
+    <>
+      <tr className={`dw-person-row ${isOpen ? 'dw-open' : ''}`}>
+        <td>
+          {/* The name expands the person; "Open full view" in the detail panel
+              is the way through to their own page. Two different destinations,
+              so two different controls — the whole row being clickable would
+              make which one you got depend on where you happened to click. */}
+          <button type="button" className="dw-person-toggle" aria-expanded={isOpen}
+                  onClick={() => onToggle(key)}>
+            <PersonIdentity person={person} />
+          </button>
+        </td>
+        <td className="dw-col-days">
           <DayStrip days={person.days} />
-          {/* This window, not the trailing one the identity line shows. Two
-              different questions, so two different numbers, each labelled. */}
-          <span className="dw-badge">
+          <div className="dw-meta">
             {person.days_logged} of {person.working_days} this {period}
-          </span>
-          {!person.has_schedule && (
-            <span className="dw-badge carried">no schedule set</span>
+          </div>
+          {!person.has_schedule && <span className="dw-badge carried">no schedule set</span>}
+        </td>
+        <td>
+          {person.entry_count}
+          {person.account_ids.length > 0 && (
+            <div className="dw-meta">{person.account_ids.length} accounts</div>
           )}
-          {/* The project half of the row. Hidden entirely when the org has no
-              Projects module — a zero would read as "nothing assigned", which
-              is a different and wrong claim from "we cannot see". */}
-          {hasProjects && person.openTasks > 0 && (
-            <span className="dw-badge">{person.openTasks} project {person.openTasks === 1 ? 'task' : 'tasks'}</span>
-          )}
-          {hasProjects && person.overdueTasks > 0 && (
-            <span className="dw-badge carried">{person.overdueTasks} overdue</span>
-          )}
-        </div>
-        <div className="dw-item-status">
-          {person.entry_count} {person.entry_count === 1 ? 'entry' : 'entries'}
-          {person.account_ids.length > 0 && ` · ${person.account_ids.length} accounts`}
-        </div>
-      </button>
+        </td>
+        <td className="dw-col-work">
+          {/* Hidden entirely when the org has no Projects module — a zero would
+              read as "nothing assigned", a different and wrong claim from "we
+              cannot see". */}
+          {hasProjects ? (
+            <>
+              {person.openTasks > 0 && (
+                <span className="dw-badge">{person.openTasks} {person.openTasks === 1 ? 'task' : 'tasks'}</span>
+              )}
+              {person.overdueTasks > 0 && (
+                <span className="dw-badge carried">{person.overdueTasks} overdue</span>
+              )}
+              {!person.openTasks && !person.overdueTasks && <span className="dw-meta">—</span>}
+            </>
+          ) : <span className="dw-meta">—</span>}
+        </td>
+        <td className="dw-logactions">
+          <button type="button" className="dw-btn-link" onClick={() => onToggle(key)}>
+            {isOpen ? 'Hide' : 'Days'}
+          </button>
+        </td>
+      </tr>
 
       {isOpen && (
-        <div className="dw-item-body">
-          <div style={{ display: 'flex', justifyContent: 'flex-end', paddingBottom: 8 }}>
-            <button className="dw-btn dw-btn-sm" onClick={onOpenPerson}>
-              Open full view →
-            </button>
-          </div>
-          {log.length === 0 ? (
-            <div className="dw-item-status" style={{ paddingTop: 12 }}>
-              Nothing logged in this period.
+        <tr className="dw-person-detail">
+          <td colSpan={5}>
+            <div className="dw-detail-head">
+              <button className="dw-btn dw-btn-sm" onClick={onOpenPerson}>
+                Open full view →
+              </button>
             </div>
-          ) : log.map(d => {
-            const dayKey = `${person.user_id}:${d.entry_date}`;
-            const dayOpen = !!expanded[dayKey];
-            return (
-              <div className="dw-detail-item" key={d.entry_date}>
-                <div className="t">
-                  <b>{formatDate(d.entry_date)}</b>
-                  <span className="dw-badge">{d.item_count} {d.item_count === 1 ? 'item' : 'items'}</span>
-                  <button className="dw-btn-link" style={{ marginLeft: 'auto' }}
-                          onClick={() => onOpenDay(person.user_id, d.entry_date)}>
-                    {dayOpen ? 'Hide' : 'Details'}
-                  </button>
-                </div>
-                <div className={`d ${dayOpen ? '' : 'dw-clamp'}`}>{d.work_done}</div>
 
-                {dayOpen && (details[dayKey] || []).map(item => (
-                  <div className="dw-detail-item" key={item.entry_id} style={{ paddingLeft: 12 }}>
-                    <div className="t">
-                      <b>{item.title}</b>
-                      <span className="dw-badge">{item.day_stage.replace(/_/g, ' ')}</span>
-                      {item.account_name && <span className="dw-badge">{item.account_name}</span>}
-                      {item.evidence_count > 0
-                        ? <span className="dw-badge">{item.evidence_count} evidence</span>
-                        : ['completed', 'dropped'].includes(item.day_stage)
-                          && <span className="dw-badge carried">unverified</span>}
-                    </div>
-                    <div className="d">{item.description}</div>
-                    {item.next_steps && (
-                      <div className="dw-meta"><b>Next:</b> {item.next_steps}</div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            );
-          })}
+            {log.length === 0 ? (
+              <div className="dw-item-status">Nothing logged in this period.</div>
+            ) : (
+              /* ONE ROW PER LOGGED DAY, which is what the person row expands
+                 into. The day's descriptions arrive already joined by the
+                 rollup, so the row shows that concatenation; the per-item
+                 breakdown is a further expansion, fetched only when asked
+                 for — openDay is a request, not something to fire for every
+                 day of every person on screen. */
+              <table className="dw-logtable dw-daytable">
+                <colgroup>
+                  <col style={{ width: '18%' }} />
+                  <col style={{ width: '10%' }} />
+                  <col style={{ width: '60%' }} />
+                  <col style={{ width: '12%' }} />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Items</th>
+                    <th>What was done</th>
+                    <th><span className="dw-sr-only">Actions</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {log.map(d => {
+                    const dayKey = `${person.user_id}:${d.entry_date}`;
+                    const dayOpen = !!expanded[dayKey];
+                    return (
+                      <React.Fragment key={d.entry_date}>
+                        <tr>
+                          <td className="dw-logdate">{formatDate(d.entry_date)}</td>
+                          <td>{d.item_count}</td>
+                          <td>
+                            <div className={dayOpen ? '' : 'dw-clamp'}>{d.work_done}</div>
+                          </td>
+                          <td className="dw-logactions">
+                            <button className="dw-btn-link"
+                                    onClick={() => onOpenDay(person.user_id, d.entry_date)}>
+                              {dayOpen ? 'Hide' : 'Details'}
+                            </button>
+                          </td>
+                        </tr>
+                        {dayOpen && (details[dayKey] || []).map(item => (
+                          <tr className="dw-item-detail" key={item.entry_id}>
+                            <td />
+                            <td className="dw-logitem">{item.title}</td>
+                            <td>
+                              {item.description}
+                              {item.next_steps && (
+                                <div className="dw-meta"><b>Next:</b> {item.next_steps}</div>
+                              )}
+                            </td>
+                            <td className="dw-logactions">
+                              <span className="dw-badge">{item.day_stage.replace(/_/g, ' ')}</span>
+                              {item.account_name && <span className="dw-badge">{item.account_name}</span>}
+                              {item.evidence_count > 0
+                                ? <span className="dw-badge">{item.evidence_count} evidence</span>
+                                : ['completed', 'dropped'].includes(item.day_stage)
+                                  && <span className="dw-badge carried">unverified</span>}
+                            </td>
+                          </tr>
+                        ))}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
 
-          <PersonProjectPanel userId={person.user_id} />
-        </div>
+            <PersonProjectPanel userId={person.user_id} />
+          </td>
+        </tr>
       )}
-    </div>
+    </>
   );
 }
 
