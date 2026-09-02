@@ -826,7 +826,6 @@ function MyProjectWork({ me }) {
  * come from the server already grouped and concatenated.
  */
 function DayLog({ day, rows, written, drafts, saved, history, onEdit }) {
-  const joined = written.map(r => (drafts[r.item_id]?.description || '').trim()).join(' ');
   const past = history || [];
 
   if (!written.length && !past.length) {
@@ -857,75 +856,123 @@ function DayLog({ day, rows, written, drafts, saved, history, onEdit }) {
         </span>
       </div>
 
-      <div className="dw-daylog">
-        <div className="dw-dayrow today">
-          <div className="dw-date">{formatDate(day.entryDate)} · today</div>
-          {written.length ? (
-            <>
-              <div className="dw-work">{joined}</div>
-              <div className="dw-meta">{written.length} {written.length === 1 ? 'item' : 'items'}</div>
-              <div className="dw-detail">
-                {written.map(r => (
-                  <div className="dw-detail-item" key={r.item_id}>
-                    <div className="t">
-                      <b>{r.title}</b>
-                      <span className="dw-badge">{stageLabel(drafts[r.item_id]?.dayStage)}</span>
-                      {r.evidence_count > 0 && (
-                        <span className="dw-badge">{r.evidence_count} evidence</span>
-                      )}
-                      <button className="dw-btn-link" style={{ marginLeft: 'auto' }}
-                              onClick={() => onEdit(r.item_id)}>Edit</button>
-                    </div>
-                    <div className="d">{drafts[r.item_id]?.description}</div>
-                    {drafts[r.item_id]?.nextSteps && (
-                      <div className="dw-meta"><b>Next:</b> {drafts[r.item_id].nextSteps}</div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="dw-none">Not logged yet.</div>
-              <button className="dw-btn dw-btn-sm dw-btn-primary" style={{ marginTop: 10 }}
-                      onClick={() => onEdit(rows[0]?.item_id)}>
-                Log today's work
-              </button>
-            </>
-          )}
-        </div>
+      {/* ROWS, matching Edit rows.
+       *
+       * This was a stack of blocks — today as a card with a run-together
+       * summary and a nested detail list, then one block per past day — so the
+       * same log read one way while writing it and another way while reading
+       * it back, and neither lined up with the other.
+       *
+       * TWO ROW SHAPES IN ONE TABLE, deliberately. Today is known per ITEM,
+       * because the drafts are in hand; earlier days come from the history
+       * rollup, which is per DAY with the descriptions already joined
+       * server-side. Rather than pretend they are the same, each shape fills
+       * the columns it can: a past row names its item count where today names
+       * the item.
+       */}
+      <div className="dw-logtable-wrap">
+        <table className="dw-logtable">
+          <colgroup>
+            <col style={{ width: '13%' }} />
+            <col style={{ width: '22%' }} />
+            <col style={{ width: '45%' }} />
+            <col style={{ width: '12%' }} />
+            <col style={{ width: '8%' }} />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Item</th>
+              <th>What was done</th>
+              <th className="dw-col-stage">Stage</th>
+              <th><span className="dw-sr-only">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {written.length ? written.map((r, i) => (
+              <tr key={r.item_id} className="today">
+                {/* The date is printed once per day, not once per row: five
+                    identical dates down a column is noise, and the blank cells
+                    group the day visually without needing a rule. */}
+                <td className="dw-logdate">
+                  {i === 0 ? <>{formatDateShort(day.entryDate)} <span className="dw-today-tag">today</span></> : ''}
+                </td>
+                <td className="dw-logitem">{r.title}</td>
+                <td>
+                  {drafts[r.item_id]?.description}
+                  {drafts[r.item_id]?.nextSteps && (
+                    <div className="dw-meta"><b>Next:</b> {drafts[r.item_id].nextSteps}</div>
+                  )}
+                </td>
+                <td className="dw-col-stage">
+                  <span className="dw-badge">{stageLabel(drafts[r.item_id]?.dayStage)}</span>
+                  {r.evidence_count > 0 && (
+                    <span className="dw-badge">{r.evidence_count} evidence</span>
+                  )}
+                </td>
+                <td className="dw-logactions">
+                  <button className="dw-btn-link" onClick={() => onEdit(r.item_id)}>Edit</button>
+                </td>
+              </tr>
+            )) : (
+              <tr className="today">
+                <td className="dw-logdate">
+                  {formatDateShort(day.entryDate)} <span className="dw-today-tag">today</span>
+                </td>
+                <td colSpan={4}>
+                  <span className="dw-none">Not logged yet.</span>
+                  <button className="dw-btn dw-btn-sm dw-btn-primary" style={{ marginLeft: 10 }}
+                          onClick={() => onEdit(rows[0]?.item_id)}>
+                    Log today's work
+                  </button>
+                </td>
+              </tr>
+            )}
 
-        {past.map(d => <PastDay key={d.entry_date} day={d} />)}
+            {past.map(d => <PastDayRow key={d.entry_date} day={d} />)}
+          </tbody>
+        </table>
       </div>
     </div>
   );
 }
 
 /**
- * An earlier day, read-only.
+ * An earlier day, read-only, as one row.
  *
  * Deliberately not editable from here. Correcting three days ago is a real
  * need, but it is also how a compliance log stops meaning anything, so it
  * should be a considered feature rather than a side effect of the log being
  * on screen.
  */
-function PastDay({ day }) {
+function PastDayRow({ day }) {
   const [open, setOpen] = useState(false);
+  const long = day.work_done && day.work_done.length > 160;
   return (
-    <div className="dw-dayrow">
-      <div className="dw-date">{formatDate(day.entry_date)}</div>
-      <div className={`dw-work ${open ? '' : 'dw-clamp'}`}>{day.work_done}</div>
-      <div className="dw-meta">
+    <tr>
+      <td className="dw-logdate">{formatDateShort(day.entry_date)}</td>
+      <td className="dw-logitem muted">
         {day.item_count} {day.item_count === 1 ? 'item' : 'items'}
-        {day.evidence_count > 0 && ` · ${day.evidence_count} evidence`}
-        {day.work_done && day.work_done.length > 160 && (
-          <button className="dw-btn-link" style={{ marginLeft: 10 }}
-                  onClick={() => setOpen(!open)}>
-            {open ? 'Show less' : 'Show all'}
+        {day.evidence_count > 0 && (
+          <span className="dw-badge">{day.evidence_count} evidence</span>
+        )}
+      </td>
+      {/* The clamp goes on an inner div, never the cell. .dw-clamp sets
+          display:-webkit-box, and a <td> whose display is overridden drops out
+          of the table layout — the column widths stop applying and the row
+          collapses. */}
+      <td>
+        <div className={open ? '' : 'dw-clamp'}>{day.work_done}</div>
+      </td>
+      <td className="dw-col-stage" />
+      <td className="dw-logactions">
+        {long && (
+          <button className="dw-btn-link" onClick={() => setOpen(!open)}>
+            {open ? 'Less' : 'All'}
           </button>
         )}
-      </div>
-    </div>
+      </td>
+    </tr>
   );
 }
 

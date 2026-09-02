@@ -425,3 +425,45 @@
 /* Full width forces the note onto its own line under the controls, whatever
  * the bar wrapped to. */
 .dw-addbar-note { flex: 1 0 100%; margin-top: 2px; }
+
+/* ── the daily log, as rows ─────────────────────────────────────────────
+ *
+ * Deliberately NOT inside the desktop media query that .dw-grid lives in. The
+ * edit surface falls back to cards on a phone because five columns of INPUTS
+ * cannot be typed into at 380px; this table is read-only text, which narrows
+ * far better. The Stage column hides below the breakpoint and the wrapper
+ * scrolls if the rest still will not fit.
+ */
+.dw-logtable-wrap {
+  border: 1.5px solid var(--dw-line); border-radius: 10px;
+  background: var(--dw-paper); overflow-x: auto;
+}
+.dw-logtable { width: 100%; border-collapse: collapse; table-layout: fixed; min-width: 520px; }
+
+.dw-logtable th {
+  text-align: left; font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--dw-ink-3); font-weight: 700;
+  padding: 10px 12px; border-bottom: 1.5px solid var(--dw-line); background: #fbfcfe;
+}
+.dw-logtable td {
+  padding: 10px 12px; vertical-align: top; font-size: 13.5px; line-height: 1.5;
+  border-bottom: 1px solid var(--dw-line-2); overflow-wrap: anywhere;
+}
+.dw-logtable tbody tr:last-child td { border-bottom: none; }
+/* Today reads as the live row without a heavy fill — this table is mostly
+ * history, and a strong highlight would make every past day look disabled. */
+.dw-logtable tr.today td { background: #fcfdff; }
+
+.dw-logdate { font-size: 12.5px; color: var(--dw-ink-3); white-space: nowrap; }
+.dw-today-tag { color: var(--dw-accent); font-weight: 700; }
+.dw-logitem { font-weight: 600; }
+.dw-logitem.muted { font-weight: 400; color: var(--dw-ink-3); }
+.dw-logactions { text-align: right; white-space: nowrap; }
+
+@media (max-width: 768px) {
+  /* Stage is the most droppable column: the badge repeats a state the
+   * description usually makes obvious, and dropping it buys the description
+   * the width it needs to stay readable. */
+  .dw-logtable .dw-col-stage { display: none; }
+  .dw-logtable { min-width: 420px; }
+}
