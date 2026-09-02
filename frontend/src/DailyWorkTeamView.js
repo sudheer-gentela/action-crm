@@ -989,8 +989,11 @@ function PersonIdentity({ person }) {
         <div className="dw-item-title" style={{ margin: 0 }}>
           {`${person.first_name || ''} ${person.last_name || ''}`.trim() || 'Unknown'}
         </div>
+        {/* Department dropped from the line. It repeats for everyone in a team,
+            so it added a column's worth of width to every row while telling you
+            nothing that distinguishes one person from the next — and the
+            department FILTER above is still there for when it does matter. */}
         <div className="dw-meta" style={{ margin: 0 }}>
-          {person.department && <>{person.department} · </>}
           {person.trailing_working_days
             ? `${person.trailing_days_logged} of ${person.trailing_working_days} days`
             : 'no working days in range'}
@@ -1010,28 +1013,88 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
   // the row opens the full view rather than expanding.
   if (period === 'day') {
     const today = log[0];
+    // With one day in range there is no per-day list to open — the expansion
+    // goes straight to that day's ITEMS, which is the only detail left. Same
+    // fetch-on-demand as the week and month periods; a person who logged
+    // nothing has nothing to expand into, so they get no control rather than
+    // one that opens an empty panel.
+    const dayKey = today ? `${person.user_id}:${today.entry_date}` : null;
+    const dayOpen = !!(dayKey && expanded[dayKey]);
     return (
-      <tr className="dw-person-row" onClick={onOpenPerson} style={{ cursor: 'pointer' }}>
-        <td><PersonIdentity person={person} /></td>
-        <td className="dw-col-days">
-          <span className={`dw-badge ${today ? '' : 'carried'}`}>
-            {today ? `${today.item_count} logged` : 'not yet'}
-          </span>
-        </td>
-        <td>{today ? today.item_count : 0}</td>
-        <td className="dw-col-work">
-          {/* The clamp goes on an inner div: .dw-clamp sets display:-webkit-box
-              and a <td> whose display is overridden drops out of the table
-              layout entirely. */}
-          {today ? <div className="dw-clamp">{today.work_done}</div>
-                 : <span className="dw-none">Not logged yet.</span>}
-        </td>
-        <td className="dw-logactions">
-          {hasProjects && person.overdueTasks > 0 && (
-            <span className="dw-badge carried">{person.overdueTasks} overdue</span>
-          )}
-        </td>
-      </tr>
+      <>
+        <tr className={`dw-person-row ${dayOpen ? 'dw-open' : ''}`}>
+          <td>
+            {today ? (
+              <button type="button" className="dw-person-toggle" aria-expanded={dayOpen}
+                      onClick={() => onOpenDay(person.user_id, today.entry_date)}>
+                <PersonIdentity person={person} />
+              </button>
+            ) : <PersonIdentity person={person} />}
+          </td>
+          <td className="dw-col-days">
+            <span className={`dw-badge ${today ? '' : 'carried'}`}>
+              {today ? `${today.item_count} logged` : 'not yet'}
+            </span>
+          </td>
+          <td>{today ? today.item_count : 0}</td>
+          <td className="dw-col-work">
+            {/* The clamp goes on an inner div: .dw-clamp sets display:-webkit-box
+                and a cell whose display is overridden drops out of the table
+                layout entirely. */}
+            {today ? <div className={dayOpen ? '' : 'dw-clamp'}>{today.work_done}</div>
+                   : <span className="dw-none">Not logged yet.</span>}
+          </td>
+          <td className="dw-logactions">
+            {hasProjects && person.overdueTasks > 0 && (
+              <span className="dw-badge carried">{person.overdueTasks} overdue</span>
+            )}
+            {today && (
+              <button type="button" className="dw-btn-link"
+                      onClick={() => onOpenDay(person.user_id, today.entry_date)}>
+                {dayOpen ? 'Hide' : 'Details'}
+              </button>
+            )}
+          </td>
+        </tr>
+
+        {dayOpen && (
+          <tr className="dw-person-detail">
+            <td colSpan={5}>
+              <div className="dw-detail-head">
+                <button className="dw-btn dw-btn-sm" onClick={onOpenPerson}>
+                  Open full view →
+                </button>
+              </div>
+              {/* undefined and [] mean different things. openDay caches under
+                  the key only once the fetch resolves, so undefined is "still
+                  loading" and an empty array is "loaded, and there was
+                  nothing". Collapsing them with `|| []` would assert nothing
+                  was logged during every fetch. */}
+              {details[dayKey] === undefined ? (
+                <div className="dw-item-status">Loading…</div>
+              ) : details[dayKey].length === 0 ? (
+                <div className="dw-item-status">No items recorded for that day.</div>
+              ) : details[dayKey].map(item => (
+                <div className="dw-day-item" key={item.entry_id}>
+                  <div className="t">
+                    <b>{item.title}</b>
+                    <span className="dw-badge">{item.day_stage.replace(/_/g, ' ')}</span>
+                    {item.account_name && <span className="dw-badge">{item.account_name}</span>}
+                    {item.evidence_count > 0
+                      ? <span className="dw-badge">{item.evidence_count} evidence</span>
+                      : ['completed', 'dropped'].includes(item.day_stage)
+                        && <span className="dw-badge carried">unverified</span>}
+                  </div>
+                  <div className="d">{item.description}</div>
+                  {item.next_steps && (
+                    <div className="dw-meta"><b>Next:</b> {item.next_steps}</div>
+                  )}
+                </div>
+              ))}
+            </td>
+          </tr>
+        )}
+      </>
     );
   }
 
