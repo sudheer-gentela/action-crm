@@ -37,6 +37,10 @@ const { getDiagnosticRulesConfig }  = require('../routes/orgAdmin.routes');
 const PlayCompletionService        = require('./PlayCompletionService');  // Phase 6
 const projectSettings              = require('./projectSettings.service');   // 2026-08 scope config
 const hierarchyService             = require('./hierarchyService');
+// 2026_136: the stage-key normaliser lives in its own module so planImport
+// can share the exact same function without loading this one (which reaches
+// routes/orgAdmin.routes, and therefore express). One definition, one home.
+const { stageKeyFrom: _stageKeyFrom } = require('./stageKey');
 
 // ── Status machine ────────────────────────────────────────────────────────────
 
@@ -2530,21 +2534,6 @@ async function addPlay(handoverId, orgId, userId, data = {}) {
 // PROJECT STAGES (2026_115)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * Normalise a user-supplied stage name into a stable key.
- *
- * Lowercased, non-alphanumerics collapsed to underscores. This is what stops
- * "UAT", "uat" and "U.A.T." becoming three separate groups on the same
- * project — the single most likely way a free-text stage field degrades once
- * a few hundred projects are using it.
- */
-function _stageKeyFrom(input) {
-  return String(input || '')
-    .trim().toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 60);
-}
 
 /**
  * Copy the org's stage catalogue for a playbook's pipeline into a project.
@@ -5934,6 +5923,12 @@ module.exports = {
   getStartPreview,         // review-dates step
   listStages,              // project stages — read (2026_115)
   addStage,                // project stages — create
+  // 2026_136. Exported for planImport.service, which files imported tasks
+  // under the same stage keys the checklist does. A second copy of this
+  // normaliser would let "UAT" typed in the importer and "uat" typed on the
+  // checklist land in two different groups on one project — the exact drift
+  // this function exists to prevent.
+  _stageKeyFrom,
   updateStages,            // project stages — rename / reorder
   removeStage,             // project stages — soft delete, refuses if in use
   addPlayEvidence,         // evidence — attach a WhatsApp message (2026_111)

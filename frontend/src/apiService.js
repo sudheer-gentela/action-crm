@@ -865,6 +865,15 @@ twilio: {
     removeStage:  (id, stageKey) => api.delete(`/handovers/sales/${id}/stages/${encodeURIComponent(stageKey)}`),
     updatePlay: (id, instanceId, data) => api.patch(`/handovers/sales/${id}/plays/${instanceId}`, data),
 
+    // ── Bulk plan import (2026_136) ──
+    // Two calls because the dates are editable between them. previewPlanImport
+    // writes nothing and can be re-run freely; importPlan commits whatever the
+    // person confirmed, which is not necessarily what the preview produced.
+    previewPlanImport: (id, { rows, startDate }) =>
+      api.post(`/handovers/sales/${id}/plan-import/preview`, { rows, startDate }),
+    importPlan: (id, rows) =>
+      api.post(`/handovers/sales/${id}/plan-import`, { rows }),
+
     // ── Review loop (2026_130) ──
     // One endpoint for submit / approve / send back. `to` decides which:
     //   { to: 'in_review',   targetStatus, evidence }

@@ -41,6 +41,9 @@ import ProjectAttachments from './ProjectAttachments';
 // 2026_136. The same composer the My project work card uses — see its header
 // for why there is one of these and not two.
 import TaskWorkComposer from './TaskWorkComposer';
+// 2026_136. Bulk plan import — its own file because the paste/map/preview
+// flow is self-contained and this one is already 7,600 lines.
+import ProjectPlanImport from './ProjectPlanImport';
 
 // ── Deep-link parsing ─────────────────────────────────────────────────────────
 // #/handovers                         → My Handovers list
@@ -3350,6 +3353,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     setNoteCounts(m => (m[instanceId] === count ? m : { ...m, [instanceId]: count }));
   }, []);
   const [dateModal, setDateModal] = useState(null);   // play object
+  const [showImport, setShowImport] = useState(false);   // 2026_136 plan import
   const [evidModal, setEvidModal] = useState(null);   // play object
 
   /**
@@ -4104,8 +4108,17 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 12px' }}>
             <h4 style={{ margin: 0, fontSize: 14, color: '#374151' }}>📋 {noun} checklist <span style={{ fontSize: 11, fontWeight: 400, color: '#9ca3af' }}>· steps grouped by stage</span></h4>
             {canEditPlan && (
-              <button onClick={() => setShowStageMgr(v => !v)}
+              <button onClick={() => setShowImport(v => !v)}
+                title="Paste a plan from a spreadsheet"
                 style={{ marginLeft: 'auto', fontSize: 11, padding: '4px 10px', borderRadius: 6, fontWeight: 600,
+                         border: '1px solid #d1d5db', background: showImport ? '#eff6ff' : '#fff',
+                         color: '#0369a1', cursor: 'pointer' }}>
+                ⇪ Import plan
+              </button>
+            )}
+            {canEditPlan && (
+              <button onClick={() => setShowStageMgr(v => !v)}
+                style={{ fontSize: 11, padding: '4px 10px', borderRadius: 6, fontWeight: 600,
                          border: '1px solid #d1d5db', background: showStageMgr ? '#eff6ff' : '#fff',
                          color: '#0369a1', cursor: 'pointer' }}>
                 ⚙ Manage stages
@@ -4131,6 +4144,20 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
               This plan is committed. Titles and owners can be corrected freely;
               moving a date is recorded as slip against the baseline, and a task
               added now is baselined to the date you give it.
+            </div>
+          )}
+
+          {canEditPlan && showImport && (
+            <div style={{ marginBottom: 12 }}>
+              <ProjectPlanImport
+                handoverId={h.id}
+                users={users}
+                onClose={() => setShowImport(false)}
+                /* Reload rather than close. The person may want to check what
+                   landed against what they pasted, and closing the panel out
+                   from under them takes that away. */
+                onImported={async () => { await load(); onRefresh(); }}
+              />
             </div>
           )}
 

@@ -41,6 +41,9 @@ const router          = express.Router();
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext }    = require('../middleware/orgContext.middleware');
 const handoverService   = require('../services/handover.service');
+// 2026_136. Bulk plan import — kept out of handover.service, which is already
+// 5,900 lines, and self-contained enough to be read on its own.
+const planImport        = require('../services/planImport.service');
 
 // Multipart for file evidence and note attachments (2026_124).
 // memoryStorage because the buffer is handed straight to the Drive/OneDrive
@@ -737,6 +740,45 @@ router.get('/sales/:id/evidence-policy', async (req, res) => {
 // Declared BEFORE /plays/* only for readability — these do not collide.
 // Stage ordering used to be implicit and alphabetical for any stage the
 // project's playbook did not define; these endpoints make it explicit.
+
+// ── Plan import (2026_136) ───────────────────────────────────────────────────
+//
+// POST /sales/:id/plan-import/preview   durations -> dates, writes nothing
+// POST /sales/:id/plan-import           create the stages and tasks
+//
+// Two calls because the DATES ARE EDITABLE between them. Preview is pure, so
+// the client can re-run it whenever the start date changes; commit takes
+// whatever the person confirmed, which is not necessarily what preview
+// produced.
+router.post('/sales/:id/plan-import/preview', async (req, res) => {
+  try {
+    res.json(await planImport.preview(
+      parseInt(req.params.id, 10), req.orgId,
+      { rows: req.body?.rows, startDate: req.body?.startDate || null }));
+  } catch (err) {
+    if (err.name === 'PlanImportError') {
+      return res.status(400).json({ error: { message: err.message, code: err.code },
+                                    code: err.code, details: err.details });
+    }
+    console.error('Plan import preview error:', err);
+    res.status(500).json({ error: { message: 'Could not read that plan' } });
+  }
+});
+
+router.post('/sales/:id/plan-import', async (req, res) => {
+  try {
+    res.json(await planImport.commit(
+      parseInt(req.params.id, 10), req.orgId, req.user.userId,
+      { rows: req.body?.rows }));
+  } catch (err) {
+    if (err.name === 'PlanImportError') {
+      return res.status(400).json({ error: { message: err.message, code: err.code },
+                                    code: err.code, details: err.details });
+    }
+    console.error('Plan import commit error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
 
 // GET /sales/:id/stages — playbook + project stages merged, in run order
 router.get('/sales/:id/stages', async (req, res) => {
