@@ -875,14 +875,27 @@ router.patch('/orgs/:orgId/modules', async (req, res) => {
       merged[moduleName] = { allowed, enabled: newEnabled };
     }
 
-    // Write back using jsonb_set on the modules sub-key
-    await pool.query(
+    // Write back using jsonb_set on the modules sub-key, and READ BACK what
+    // actually landed.
+    //
+    // The response used to be built from `merged`, which is computed in memory
+    // before the UPDATE runs. So a write that affected zero rows — or that was
+    // rolled back, or hit a different row than intended — still returned
+    // "allowed: true", and the drawer showed a provisioning state that was
+    // never stored. RETURNING makes the response evidence rather than an
+    // assertion: if no row comes back, nothing was written and we say so.
+    const written = await pool.query(
       `UPDATE organizations
           SET settings   = jsonb_set(COALESCE(settings, '{}'::jsonb), '{modules}', $2::jsonb, true),
               updated_at = NOW()
-        WHERE id = $1`,
+        WHERE id = $1
+      RETURNING settings->'modules' AS modules`,
       [orgId, JSON.stringify(merged)]
     );
+    if (!written.rows.length) {
+      return res.status(404).json({ error: { message: 'Organisation not found' } });
+    }
+    const stored = written.rows[0].modules || {};
 
     // Invalidate the requireModule cache for every changed module
     const requireModule = require('../middleware/requireModule.middleware');
@@ -899,10 +912,10 @@ router.patch('/orgs/:orgId/modules', async (req, res) => {
       changes: Object.entries(incoming).map(([k, v]) => `${k}=${v}`).join(', '),
     });
 
-    // Return the full resolved module state
+    // Return the full resolved module state, read back from the row.
     const finalModules = {};
     for (const key of MODULE_KEYS) {
-      const v = merged[key];
+      const v = stored[key];
       if (!v || typeof v !== 'object') {
         const b = v === true || v === 'true';
         finalModules[key] = { allowed: b, enabled: b };
