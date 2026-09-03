@@ -1133,12 +1133,18 @@ const MODULE_DEFS_SA = [
     label: 'Agency Client Management',
     desc:  'Manage client accounts — portals, team scoping, outreach tracking.',
   },
+  {
+    key:   'dailywork',
+    icon:  '📋',
+    label: 'Daily Work',
+    desc:  'Daily activity logging against work items, with manager rollups by day, person, project or account.',
+  },
 ];
 
 /**
  * SAOrgModules — module provisioning panel inside the org detail drawer.
  *
- * Shows all five modules. For each:
+ * Shows every module in MODULE_DEFS_SA. For each:
  *   - Allowed toggle: controlled by super admin (platform provisioning)
  *   - Enabled indicator: read-only view of what the org admin has turned on
  *
