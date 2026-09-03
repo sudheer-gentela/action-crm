@@ -1049,8 +1049,12 @@ function PersonIdentity({ person }) {
             nothing that distinguishes one person from the next — and the
             department FILTER above is still there for when it does matter. */}
         <div className="dw-meta" style={{ margin: 0 }}>
+          {/* The trailing window is the LAST 28 DAYS (routes: addDays(win.to,
+              -27)), not the period on screen. Unlabelled, it printed "0 of 19
+              days" directly above the strip's "0 of 21 this month" — two
+              different denominators for what looked like the same measure. */}
           {person.trailing_working_days
-            ? `${person.trailing_days_logged} of ${person.trailing_working_days} days`
+            ? `${person.trailing_days_logged} of ${person.trailing_working_days} · last 4 weeks`
             : 'no working days in range'}
           {t !== null && t !== undefined && ` · ${Math.round(t * 100)}%`}
         </div>
@@ -1338,21 +1342,66 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
  * at all, so an empty square always means a day someone was expected to log and
  * did not — never a weekend or a holiday being counted against them.
  */
+/**
+ * The strip of working days for one person over the period.
+ *
+ * ── A DAY THAT HAS NOT HAPPENED IS NOT A MISSED DAY ──────────────────
+ *
+ * Every cell used to be either green or red, which meant that opening the
+ * MONTH view on the 3rd painted eighteen red squares per person for days that
+ * are still in the future. Eight people, and the screen read as a team in
+ * total collapse when in fact almost nothing was yet due. The one question
+ * this screen exists to answer — who is drifting — was drowned by it.
+ *
+ * Three states, not two: logged, missed (a working day in the past with
+ * nothing on it), and not yet (today onwards). Today counts as still open —
+ * somebody logging at 6pm has not missed anything at 10am.
+ *
+ * ── AND IT HAS TO WRAP ───────────────────────────────────────────────
+ *
+ * .dw-logtable is table-layout: fixed and the days column is a 20% <col>, so
+ * a strip wider than that column does not widen it — it OVERFLOWS, which is
+ * why a 21-day month ran underneath the Entries heading and left the entry
+ * count sitting under the squares. Fixed layout gives no slack, so the strip
+ * must fit: smaller cells, and wrapping when even those do not.
+ */
 function DayStrip({ days }) {
   if (!days || !days.length) return null;
+
+  // Local today, not the server's. Every other date in Daily Work is
+  // owner-local, and for a team at UTC+5:30 a UTC "today" is the previous day
+  // for the first five and a half hours of every morning — which would paint
+  // today's cell as missed before anyone had started.
+  const now = new Date();
+  const p2 = n => String(n).padStart(2, '0');
+  const today = `${now.getFullYear()}-${p2(now.getMonth() + 1)}-${p2(now.getDate())}`;
+
   return (
-    <span style={{ display: 'inline-flex', gap: 3 }}>
-      {days.map(d => (
-        <span
-          key={d.date}
-          title={`${d.date} — ${d.logged ? 'logged' : 'not logged'}`}
-          style={{
-            width: 14, height: 14, borderRadius: 3, display: 'inline-block',
-            background: d.logged ? '#dcfce7' : '#fee2e2',
-            border: `1px solid ${d.logged ? '#86efac' : '#fca5a5'}`,
-          }}
-        />
-      ))}
+    <span style={{ display: 'flex', flexWrap: 'wrap', gap: 2, maxWidth: '100%' }}>
+      {days.map(d => {
+        // The date may arrive as a bare date or a timestamp depending on how
+        // the driver serialises a DATE column. Compare the calendar day only.
+        const date   = String(d.date).slice(0, 10);
+        const future = date > today;
+        const state  = d.logged ? 'logged' : future ? 'future' : 'missed';
+        const skin = {
+          logged: { background: '#dcfce7', border: '#86efac' },
+          missed: { background: '#fee2e2', border: '#fca5a5' },
+          future: { background: '#fff',    border: '#e5e7eb' },
+        }[state];
+        return (
+          <span
+            key={d.date}
+            title={`${date} — ${d.logged ? 'logged' : future ? 'not yet' : 'not logged'}`}
+            style={{
+              width: 12, height: 12, borderRadius: 3, display: 'inline-block',
+              flexShrink: 0,
+              background: skin.background,
+              border: `1px solid ${skin.border}`,
+            }}
+          />
+        );
+      })}
     </span>
   );
 }
@@ -1416,22 +1465,33 @@ function AssignForm({ people, anchors, activityTypes, onCancel, onDone, onError 
   };
 
   return (
-    <div className="dw-card" style={{ marginBottom: 14 }}>
+    /* ── Compacted ─────────────────────────────────────────────────────
+       Seven full-width stacked blocks became three rows. Nothing was
+       removed — the kind explainer moved beside its toggle instead of
+       under it, and the four short controls that were on three separate
+       rows now share one auto-fitting row. The form is mostly typing,
+       and a form you have to scroll to reach the Assign button on is a
+       form people abandon. */
+    <div className="dw-card dw-assignform" style={{ marginBottom: 14 }}>
       <div className="dw-card-head"><h2>Assign work</h2></div>
-      <div className="dw-item-body" style={{ paddingTop: 14 }}>
+      <div className="dw-item-body" style={{ paddingTop: 10 }}>
 
         <div className="dw-field" style={{ marginTop: 0 }}>
-          <label>Kind of work</label>
-          <div className="dw-toggle">
-            <button type="button" aria-pressed={form.kind === 'assigned'}
-                    onClick={() => set({ kind: 'assigned' })}>One-off deliverable</button>
-            <button type="button" aria-pressed={form.kind === 'recurring'}
-                    onClick={() => set({ kind: 'recurring', targetDate: '' })}>Standing work</button>
-          </div>
-          <div className="dw-item-status">
-            {form.kind === 'assigned'
-              ? 'Completes once. Its stage lives on the item, and it shows up as stalled if nothing is logged against it.'
-              : 'Never completes — only ever done for today. It joins their rows every morning and counts towards days logged.'}
+          <div className="dw-kindrow">
+            <div className="dw-toggle">
+              <button type="button" aria-pressed={form.kind === 'assigned'}
+                      onClick={() => set({ kind: 'assigned' })}>One-off deliverable</button>
+              <button type="button" aria-pressed={form.kind === 'recurring'}
+                      onClick={() => set({ kind: 'recurring', targetDate: '' })}>Standing work</button>
+            </div>
+            {/* Beside the toggle, not beneath it. The two kinds are measured
+                differently and cannot be swapped later, so the explanation
+                stays — it just stops costing a row of its own. */}
+            <div className="dw-item-status">
+              {form.kind === 'assigned'
+                ? 'Completes once. Its stage lives on the item, and it shows up as stalled if nothing is logged against it.'
+                : 'Never completes — only ever done for today. It joins their rows every morning and counts towards days logged.'}
+            </div>
           </div>
         </div>
 
@@ -1442,7 +1502,7 @@ function AssignForm({ people, anchors, activityTypes, onCancel, onDone, onError 
                  onChange={e => set({ title: e.target.value })} />
         </div>
 
-        <div className="dw-addgrid" style={{ marginTop: 14 }}>
+        <div className="dw-assigngrid">
           <div className="dw-field" style={{ marginTop: 0 }}>
             <label htmlFor="dw-a-who">Assign to</label>
             <select id="dw-a-who" value={form.ownerUserId}
@@ -1482,17 +1542,27 @@ function AssignForm({ people, anchors, activityTypes, onCancel, onDone, onError 
               ))}
             </select>
           </div>
+
+          {/* Inside the same row rather than on its own. The row auto-fits, so
+              it becomes three columns for standing work and four for a
+              deliverable without leaving a hole. */}
+          {form.kind === 'assigned' && (
+            <div className="dw-field" style={{ marginTop: 0 }}>
+              <label htmlFor="dw-a-target">Target date</label>
+              <input id="dw-a-target" type="date" value={form.targetDate}
+                     title="Advisory. It is shown and it sorts the stalled list — it never makes anything overdue and it sends no reminders."
+                     onChange={e => set({ targetDate: e.target.value })} />
+            </div>
+          )}
         </div>
 
         {form.kind === 'assigned' && (
-          <div className="dw-field">
-            <label htmlFor="dw-a-target">Target date (optional)</label>
-            <input id="dw-a-target" type="date" value={form.targetDate}
-                   onChange={e => set({ targetDate: e.target.value })} />
-            <div className="dw-item-status">
-              Advisory. It is shown and it sorts the stalled list — it never makes
-              anything overdue and it sends no reminders.
-            </div>
+          /* The advisory wording still has to be SAID — a date field on an
+             assignment reads as a deadline unless told otherwise. One line
+             under the row instead of a block under the field. */
+          <div className="dw-item-status" style={{ marginTop: 8 }}>
+            The target date is advisory — it sorts the stalled list, never makes
+            anything overdue, and sends no reminders.
           </div>
         )}
 

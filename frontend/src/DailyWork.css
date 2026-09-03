@@ -283,6 +283,40 @@
   .dw-addgrid { display: grid; grid-template-columns: 1fr 220px 220px; gap: 14px; }
 }
 
+/* ── the people table's day strip ──────────────────────────────────────
+ * .dw-logtable is table-layout: fixed and the days column is a 20% <col>, so
+ * anything wider than that column overflows into the next one rather than
+ * widening it. That is how a 21-day month ended up running underneath the
+ * Entries heading. The strip wraps (see DayStrip); this stops anything else
+ * in that cell doing the same.
+ */
+.dw-peopletable .dw-col-days { overflow: hidden; }
+
+/* ── Assign work, compact ──────────────────────────────────────────────
+ * The form was seven full-width stacked blocks and ran well past a laptop
+ * fold. Same fields, same words, three rows.
+ */
+.dw-assignform .dw-field { margin-top: 10px; }
+.dw-assignform .dw-card-head { padding: 10px 16px; }
+.dw-assignform .dw-item-body { padding-bottom: 12px; }
+/* The kind toggle and its explanation, side by side. Wraps back to stacked
+ * on a phone, where there is no width to share. */
+.dw-assignform .dw-kindrow {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+}
+.dw-assignform .dw-kindrow .dw-item-status { margin: 0; flex: 1 1 280px; }
+.dw-assignform .dw-addform-actions { margin-top: 12px; }
+
+/* One row for the short controls. auto-fit rather than a fixed column count
+ * so it is three across for standing work and four for a deliverable, with
+ * no empty cell in the three-column case. */
+.dw-assigngrid { display: grid; grid-template-columns: 1fr; gap: 10px; }
+.dw-assigngrid .dw-field { margin-top: 0; }
+@media (min-width: 900px) {
+  .dw-assigngrid { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+  .dw-assignform .dw-item-body { padding-bottom: 14px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dw * { transition: none !important; animation: none !important; }
 }
