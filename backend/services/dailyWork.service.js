@@ -1829,12 +1829,243 @@ async function setUserTimezone(orgId, userId, timezone) {
   });
 }
 
+/* ═══════════════════════ provisioning and readiness ═══════════════════════
+ *
+ * Everything below replaces scripts/seed_daily_work.js as the route into a new
+ * org. That script worked, but it required a person with the database URL and
+ * a hand-edited CONFIG block for every org, which does not scale past the
+ * first one and cannot be handed to a customer.
+ *
+ * The split is deliberate and mirrors how the module is gated:
+ *
+ *   super admin   provisions (allowed) and seeds the BARE MINIMUM — enough
+ *                 that the org admin lands on a working screen instead of
+ *                 four empty ones
+ *   org admin     enables, then supplies the values only they know: their
+ *                 own activity vocabulary, their holidays, who works which
+ *                 days, and in which timezone
+ *
+ * Nothing here blocks anyone. getSetupReadiness reports; it does not gate.
+ * A hard gate would take a running org offline the moment somebody retired
+ * their last activity type, which is a worse failure than an incomplete setup.
+ */
+
+// One placeholder, not a starter vocabulary. The activity list is the only
+// thing comparable across people, and a seeded generic list is worse than an
+// empty one: people pick the nearest wrong option from a list somebody else
+// wrote, and the org never defines its own. One row exists so the module is
+// usable on day one and so the shape of the thing is obvious.
+const STARTER_ACTIVITY = { key: 'general', label: 'General work' };
+const STARTER_CALENDAR = 'Default';
+
+/**
+ * Seed the minimum an org needs before its admin can do anything useful.
+ *
+ * Idempotent, and additive only — it creates what is missing and touches
+ * nothing that exists. Safe to re-run on an org that has already been set up
+ * by hand, which matters because org 112 was.
+ *
+ * Deliberately does NOT create schedules, timezones or holidays. Those are
+ * facts about the org's people that only the org knows, and inventing them
+ * would produce a denominator with no basis — the exact failure the seed
+ * script's header warns about.
+ */
+async function seedStarterData(orgId, actorUserId = null) {
+  return withOrgTransaction(orgId, async (client) => {
+    const created = [];
+
+    const { rows: [act] } = await client.query(
+      `INSERT INTO daily_activity_types (org_id, key, label, is_system, status, created_by)
+       VALUES ($1, $2, $3, TRUE, 'active', $4)
+       ON CONFLICT (org_id, key) DO NOTHING
+       RETURNING key`,
+      [orgId, STARTER_ACTIVITY.key, STARTER_ACTIVITY.label, actorUserId]);
+    if (act) created.push(`activity type "${STARTER_ACTIVITY.label}"`);
+
+    // Only when the org has NO calendar at all. An org that already named its
+    // own must not acquire a second one called "Default" beside it.
+    const { rows: [existing] } = await client.query(
+      `SELECT id FROM holiday_calendars WHERE org_id = $1 LIMIT 1`, [orgId]);
+    if (!existing) {
+      await client.query(
+        `INSERT INTO holiday_calendars (org_id, name, is_default, created_by)
+         VALUES ($1, $2, TRUE, $3)`,
+        [orgId, STARTER_CALENDAR, actorUserId]);
+      created.push(`holiday calendar "${STARTER_CALENDAR}" (no dates yet)`);
+    }
+
+    return { created, seeded: created.length > 0 };
+  });
+}
+
+/**
+ * What is still missing before this org's numbers mean anything.
+ *
+ * Reported, never enforced. Each check names the thing it would break, because
+ * "3 people have no working week" is actionable and "setup incomplete" is not.
+ */
+async function getSetupReadiness(orgId) {
+  return withOrgTransaction(orgId, async (client) => {
+    const [types, cals, sched, org] = await Promise.all([
+      client.query(
+        `SELECT count(*)::int AS n FROM daily_activity_types
+          WHERE org_id = $1 AND status = 'active'`, [orgId]),
+      client.query(
+        `SELECT count(*)::int AS n,
+                count(*) FILTER (WHERE is_default)::int AS defaults,
+                COALESCE(sum(d.dates), 0)::int AS dates
+           FROM holiday_calendars c
+           LEFT JOIN LATERAL (
+                  SELECT count(*)::int AS dates FROM holiday_calendar_dates x
+                   WHERE x.calendar_id = c.id AND x.org_id = c.org_id
+                ) d ON TRUE
+          WHERE c.org_id = $1`, [orgId]),
+      // The same LATERAL listSchedules uses, so the counts here and the rows
+      // on screen can never disagree.
+      client.query(
+        `SELECT count(*)::int AS members,
+                count(*) FILTER (WHERE s.id IS NULL)::int AS no_schedule,
+                count(*) FILTER (WHERE u.timezone IS NULL OR u.timezone = '')::int AS no_tz
+           FROM user_module_access g
+           JOIN users u ON u.id = g.user_id
+           LEFT JOIN LATERAL (
+                  SELECT id FROM daily_work_schedules d
+                   WHERE d.org_id = g.org_id AND d.user_id = g.user_id
+                   ORDER BY effective_from DESC LIMIT 1
+                ) s ON TRUE
+          WHERE g.org_id = $1 AND g.module_key = 'dailywork'`, [orgId]),
+      client.query(
+        `SELECT settings->'dailywork'->>'reminder_hour' AS hour
+           FROM organizations WHERE id = $1`, [orgId]),
+    ]);
+
+    const t = types.rows[0], c = cals.rows[0], s = sched.rows[0];
+    const rawHour = org.rows[0]?.hour;
+
+    const checks = [
+      {
+        key: 'members', ok: s.members > 0,
+        label: 'Somebody has been given the module',
+        detail: s.members > 0
+          ? `${s.members} ${s.members === 1 ? 'person has' : 'people have'} access`
+          : 'Grant it to people under Settings → Members. Enabling the module '
+            + 'gives it to admins only.',
+        count: s.members,
+      },
+      {
+        key: 'activity_types', ok: t.n > 0,
+        label: 'An activity list',
+        detail: t.n > 0
+          ? `${t.n} active ${t.n === 1 ? 'type' : 'types'}`
+          : 'Without one there is no shared vocabulary, and nothing is '
+            + 'comparable between people.',
+        count: t.n,
+      },
+      {
+        key: 'calendar', ok: c.n > 0 && c.defaults > 0,
+        label: 'A default holiday calendar',
+        detail: c.n === 0 ? 'No calendar exists.'
+              : c.defaults === 0 ? `${c.n} calendars, none marked default.`
+              : `${c.dates} ${c.dates === 1 ? 'holiday' : 'holidays'} recorded. `
+                + 'An empty calendar is valid — every scheduled weekday then counts.',
+        count: c.n,
+      },
+      {
+        key: 'timezones', ok: s.members > 0 && s.no_tz === 0,
+        label: 'Everyone has a timezone',
+        detail: s.no_tz > 0
+          ? `${s.no_tz} without one. It decides which DAY their work counts for.`
+          : 'Set for everyone.',
+        count: s.no_tz,
+      },
+      {
+        key: 'schedules', ok: s.members > 0 && s.no_schedule === 0,
+        label: 'Everyone has a working week',
+        detail: s.no_schedule > 0
+          ? `${s.no_schedule} without one, so they have no denominator and no rate.`
+          : 'Set for everyone.',
+        count: s.no_schedule,
+      },
+      {
+        // Advisory: hourOr() in dailyWorkNotify falls back to 17:00 local, so
+        // an org that never touches this is correct rather than broken.
+        key: 'reminder_hour', ok: true, advisory: true,
+        label: 'Reminder hour',
+        detail: rawHour ? `${rawHour}:00 local` : '17:00 local (the default)',
+      },
+    ];
+
+    return {
+      ready: checks.every(x => x.advisory || x.ok),
+      checks,
+      members: s.members,
+    };
+  });
+}
+
+/**
+ * Give a working week to everyone who has none.
+ *
+ * ONLY to those who have none. An admin with ten people should not click
+ * through ten identical forms, but neither should one button quietly restate
+ * the four-day week somebody deliberately set last month — so this never
+ * touches a person who already has a schedule row of any kind.
+ */
+async function bulkSetSchedules(orgId, actorUserId, { weekdayMask, holidayCalendarId, effectiveFrom }) {
+  if (!Number.isInteger(weekdayMask) || weekdayMask < 1 || weekdayMask > 127) {
+    throw new DailyWorkError('A working week must include at least one day', 'BAD_MASK', { weekdayMask });
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom || '')) {
+    throw new DailyWorkError('effectiveFrom must be YYYY-MM-DD', 'BAD_DATE');
+  }
+
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows } = await client.query(
+      `INSERT INTO daily_work_schedules
+         (org_id, user_id, weekday_mask, holiday_calendar_id, effective_from, created_by)
+       SELECT $1, g.user_id, $2, $3, $4, $5
+         FROM user_module_access g
+         JOIN org_users ou ON ou.user_id = g.user_id AND ou.org_id = g.org_id
+        WHERE g.org_id = $1 AND g.module_key = 'dailywork'
+          AND ou.is_active = TRUE
+          AND NOT EXISTS (SELECT 1 FROM daily_work_schedules d
+                           WHERE d.org_id = g.org_id AND d.user_id = g.user_id)
+       ON CONFLICT (org_id, user_id, effective_from) DO NOTHING
+       RETURNING user_id`,
+      [orgId, weekdayMask, holidayCalendarId || null, effectiveFrom, actorUserId]);
+    return { updated: rows.length };
+  });
+}
+
+/** Give a timezone to everyone who has none. Same rule: never overwrites. */
+async function bulkSetTimezone(orgId, timezone) {
+  const tz = (timezone || '').trim();
+  if (!tz || !dwDate.isValidZone(tz)) {
+    throw new DailyWorkError(`"${tz}" is not a timezone`, 'BAD_TIMEZONE', { timezone: tz });
+  }
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows } = await client.query(
+      `UPDATE users u SET timezone = $2, updated_at = now()
+         FROM user_module_access g
+        WHERE g.org_id = $1 AND g.module_key = 'dailywork'
+          AND u.id = g.user_id AND u.org_id = $1
+          AND (u.timezone IS NULL OR u.timezone = '')
+       RETURNING u.id`,
+      [orgId, tz]);
+    return { updated: rows.length, timezone: tz };
+  });
+}
+
 module.exports = {
   // Exported so the route and any future settings screen read the same number
   // the validation uses, rather than repeating 5 in three places.
   BACKFILL_DAYS,
   getAnchorOptions,
   setUserTimezone,
+  seedStarterData,
+  getSetupReadiness,
+  bulkSetSchedules,
+  bulkSetTimezone,
   listCalendars,
   createCalendar,
   setDefaultCalendar,

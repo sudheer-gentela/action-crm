@@ -110,6 +110,12 @@ export default function DailyWorkView() {
     return (t === 'setup' && !isOrgAdmin()) ? 'day' : t;
   });
   const [mode, setMode] = useState('log');
+  // Setup readiness, shown to ADMINS ONLY and only while something is missing.
+  // The endpoint is admin-gated, so a member's call would 403 — and that is the
+  // right shape anyway: a member cannot fix a missing holiday calendar, and
+  // telling them their own numbers may be wrong without giving them a way to
+  // act is worry with no remedy. Their admin sees it here and on Setup.
+  const [setupGaps, setSetupGaps] = useState(null);
   // Which row has its details panel open in the table. One at a time: the panel
   // spans the full width, so two open at once pushes the rest off screen.
   const [expandedRow, setExpandedRow] = useState(null);
@@ -176,6 +182,15 @@ export default function DailyWorkView() {
       setLoading(false);
     }
   }, [viewDate]);
+
+  useEffect(() => {
+    if (!isOrgAdmin()) return;
+    let alive = true;
+    apiService.dailyWork.setupReadiness()
+      .then(r => { if (alive && r?.data && !r.data.ready) setSetupGaps(r.data); })
+      .catch(() => {});   // never let a reporting call disturb the screen
+    return () => { alive = false; };
+  }, []);
 
   useEffect(() => { load(); }, [load]);
 
@@ -551,6 +566,24 @@ export default function DailyWorkView() {
       </div>
 
       {notice && <div className={`dw-banner ${notice.kind}`}>{notice.text}</div>}
+
+      {/* Reported, never enforced — nothing below is blocked. It is worth
+          saying because the failure is silent: an unscheduled person is
+          measured against Mon-Fri with no holidays, and a wrong rate looks
+          exactly like a right one. */}
+      {setupGaps && (
+        <div className="dw-banner warn">
+          <b>Daily work is not fully set up yet.</b>{' '}
+          {setupGaps.checks.filter(c => !c.advisory && !c.ok).map(c => c.label).join(' · ')}.
+          {' '}Rates on this screen may be measured against the wrong days until
+          that is fixed.{' '}
+          {isOrgAdmin() && (
+            <button type="button" className="dw-btn-link" onClick={() => setTab('setup')}>
+              Open setup
+            </button>
+          )}
+        </div>
+      )}
 
       <WaitingPanel
         me={me}

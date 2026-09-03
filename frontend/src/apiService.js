@@ -308,6 +308,9 @@ twilio: {
     // modules: { prospecting: true, contracts: false, ... }
     getOrgModules:    (orgId)          => api.get(`/super/orgs/${orgId}/modules`),
     updateOrgModules: (orgId, modules) => api.patch(`/super/orgs/${orgId}/modules`, { modules }),
+    // Seeds one placeholder activity type and one default holiday calendar.
+    // Idempotent and additive — safe on an org already set up by hand.
+    seedOrgDailyWork: (orgId) => api.post(`/super/orgs/${orgId}/dailywork/seed`),
 
     // ── LinkedIn seats (user_linkedin_seats) ────────────────────────────────
     // Seats are created lazily by the extension; superadmin can only view,
@@ -1092,6 +1095,18 @@ twilio: {
     // Many at once: nobody wants to click through fourteen dates.
     addHolidays:        (id, dates) => api.post(`/daily-work/calendars/${id}/dates`, { dates }),
     removeHoliday:      (id) => api.delete(`/daily-work/holidays/${id}`),
+
+    // Setup readiness — reported, never enforced. See getSetupReadiness.
+    setupReadiness: () => api.get('/daily-work/setup/readiness'),
+    // Bulk provisioning. Both only touch people who have NO value set, so
+    // neither can restate a schedule or timezone somebody chose deliberately.
+    bulkSetSchedules: ({ weekdayMask, holidayCalendarId, effectiveFrom }) =>
+      api.post('/daily-work/schedules/bulk', { weekdayMask, holidayCalendarId, effectiveFrom }),
+    bulkSetTimezone: (timezone) =>
+      api.post('/daily-work/schedules/timezone/bulk', { timezone }),
+    // The generic org-admin toggle. Its absence from OAModules' handler map is
+    // what made the Daily Work switch throw rather than enable anything.
+    toggleModule: (enabled) => api.patch('/org/admin/module/dailywork', { enabled }),
 
     listSchedules: () => api.get('/daily-work/schedules'),
     // Effective-dated: this adds a row, it does not rewrite the old one, so

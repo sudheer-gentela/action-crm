@@ -805,6 +805,7 @@ const MODULE_LABELS  = {
   handovers:   'Sales → Implementation Handover',
   service:     'Customer Support & Service',
   agency:      'Agency Client Management',
+  dailywork:   'Daily Work',
 };
 
 // Generic module toggle — replaces the individual per-module routes

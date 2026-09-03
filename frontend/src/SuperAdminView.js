@@ -1155,6 +1155,7 @@ function SAOrgModules({ orgId }) {
   const [modules, setModules]   = useState(null);
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(null); // key of module being saved
+  const [seeding, setSeeding]   = useState(false);
   const [error, setError]       = useState('');
   const [success, setSuccess]   = useState('');
 
@@ -1186,6 +1187,31 @@ function SAOrgModules({ orgId }) {
       setError(e.response?.data?.error?.message || 'Failed to update module');
     } finally {
       setSaving(null);
+    }
+  };
+
+  /**
+   * Seed the bare minimum Daily Work needs.
+   *
+   * A separate action rather than something Allowed does for you: provisioning
+   * an org ahead of a sale should not silently write rows into it. Idempotent
+   * and additive, so pressing it twice is safe and pressing it on an org that
+   * was set up by hand changes nothing.
+   */
+  const handleSeedDailyWork = async () => {
+    setSeeding(true);
+    setError('');
+    try {
+      const r = await apiService.superAdmin.seedOrgDailyWork(orgId);
+      const created = r.data?.created || [];
+      setSuccess(created.length
+        ? `Seeded ${created.join(' and ')} ✓`
+        : 'Already seeded — nothing was missing.');
+      setTimeout(() => setSuccess(''), 5000);
+    } catch (e) {
+      setError(e.response?.data?.error?.message || 'Failed to seed Daily Work');
+    } finally {
+      setSeeding(false);
     }
   };
 
@@ -1241,6 +1267,35 @@ function SAOrgModules({ orgId }) {
                     {isEnabled ? 'Active — org has turned this on' : 'Inactive — org has not enabled this'}
                   </span>
                 </div>
+
+                {/* Daily Work starts completely empty — no activity list, no
+                    holiday calendar — so an org admin who enables it lands on
+                    four blank screens. This gives them one of each to work
+                    from. Only offered once the module is provisioned: seeding
+                    an org that may never get the module is writing rows for
+                    nothing. */}
+                {def.key === 'dailywork' && isAllowed && (
+                  <div style={{ marginTop: 8 }}>
+                    <button
+                      disabled={seeding}
+                      onClick={handleSeedDailyWork}
+                      title="Creates one placeholder activity type and one default holiday calendar. Safe to run more than once."
+                      style={{
+                        fontSize: 11, fontWeight: 600, padding: '4px 10px',
+                        borderRadius: 6, border: '1px solid #bae6fd',
+                        background: '#f0f9ff', color: '#0369a1',
+                        cursor: seeding ? 'default' : 'pointer',
+                        opacity: seeding ? 0.6 : 1,
+                      }}>
+                      {seeding ? 'Seeding…' : 'Seed starter data'}
+                    </button>
+                    <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 4, lineHeight: 1.4 }}>
+                      One placeholder activity type and a default holiday calendar.
+                      The org admin then sets their own activity list, holidays,
+                      working weeks and timezones.
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Allowed toggle */}

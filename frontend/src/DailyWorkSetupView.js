@@ -45,6 +45,7 @@ const MON_FRI = 31;
 export default function DailyWorkSetupView() {
   const [calendars, setCalendars] = useState([]);
   const [schedules, setSchedules] = useState([]);
+  const [readiness, setReadiness] = useState(null);
   const [loading, setLoading] = useState(true);
   const [denied, setDenied] = useState(false);
   const [notice, setNotice] = useState(null);
@@ -52,12 +53,16 @@ export default function DailyWorkSetupView() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [c, s] = await Promise.all([
+      const [c, s, r] = await Promise.all([
         apiService.dailyWork.listCalendars(),
         apiService.dailyWork.listSchedules(),
+        // Reported, not enforced. A failure here must not take the screen
+        // down — the sections below still work without it.
+        apiService.dailyWork.setupReadiness().catch(() => null),
       ]);
       setCalendars(c.data || []);
       setSchedules(s.data || []);
+      setReadiness(r?.data || null);
     } catch (err) {
       // requireRole fails closed, so a 403 here is a real answer rather than a
       // glitch: this person is not an owner or admin.
@@ -93,8 +98,6 @@ export default function DailyWorkSetupView() {
     );
   }
 
-  const unscheduled = schedules.filter(s => !s.schedule_id);
-  const noTimezone = schedules.filter(s => !s.timezone);
 
   return (
     <div className="dw">
@@ -112,20 +115,7 @@ export default function DailyWorkSetupView() {
       {/* Missing configuration does not break anything — the metric falls back
           to Mon-Fri with no holidays. It is worth saying out loud precisely
           because it is silent: a wrong rate looks exactly like a right one. */}
-      {unscheduled.length > 0 && (
-        <div className="dw-banner warn">
-          <b>{unscheduled.length} {unscheduled.length === 1 ? 'person has' : 'people have'} no working week set.</b>{' '}
-          They are being measured against Monday to Friday with no holidays, which
-          may not be what they work.
-        </div>
-      )}
-      {noTimezone.length > 0 && (
-        <div className="dw-banner warn">
-          <b>{noTimezone.length} {noTimezone.length === 1 ? 'person has' : 'people have'} no timezone.</b>{' '}
-          Their day boundary falls back to the organisation's, so late-evening work
-          may be filed against the wrong day.
-        </div>
-      )}
+      <ReadinessPanel readiness={readiness} calendars={calendars} onRun={run} />
 
       <ActivityTypeSection onRun={run} />
       <CalendarSection calendars={calendars} onRun={run} />
@@ -134,6 +124,171 @@ export default function DailyWorkSetupView() {
   );
 }
 
+
+/* ── readiness ──────────────────────────────────────────────────────── */
+
+/**
+ * What is still missing before this org's numbers mean anything.
+ *
+ * REPORTS, DOES NOT GATE. A hard gate would take a running org offline the
+ * moment somebody retired their last activity type, which is a worse failure
+ * than an incomplete setup — and the module degrades honestly anyway: an
+ * unscheduled person is measured against Mon-Fri with no holidays, which is a
+ * guess rather than a crash. The point of saying it out loud is that the
+ * failure is SILENT. A wrong rate looks exactly like a right one.
+ *
+ * Each line names the consequence rather than the setting. "3 people have no
+ * working week, so they have no denominator and no rate" is actionable;
+ * "setup incomplete" is not.
+ */
+function ReadinessPanel({ readiness, calendars, onRun }) {
+  const [bulk, setBulk] = useState(null);   // 'schedules' | 'timezone' | null
+  const [mask, setMask] = useState(MON_FRI);
+  const [calId, setCalId] = useState('');
+  const [from, setFrom] = useState(todayString());
+  const [tz, setTz] = useState('');
+
+  if (!readiness) return null;
+
+  const checks  = readiness.checks || [];
+  const pending = checks.filter(c => !c.advisory && !c.ok);
+  const missingSchedules = checks.find(c => c.key === 'schedules');
+  const missingTz        = checks.find(c => c.key === 'timezones');
+
+  const close = () => { setBulk(null); setTz(''); };
+
+  return (
+    <div className="dw-card" style={{ marginBottom: 14 }}>
+      <div className="dw-card-head">
+        <h2>Before this is trustworthy</h2>
+        <span className="m">
+          {readiness.ready
+            ? 'Everything required is set'
+            : `${pending.length} still to do`}
+        </span>
+      </div>
+      <div className="dw-item-body" style={{ paddingTop: 12 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {checks.map(c => (
+            <div key={c.key} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+              <span aria-hidden="true" style={{ fontSize: 13, lineHeight: '18px', flexShrink: 0 }}>
+                {c.advisory ? 'ℹ️' : c.ok ? '✅' : '⚠️'}
+              </span>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13, color: '#111827' }}>{c.label}</div>
+                <div className="dw-meta" style={{ margin: 0 }}>{c.detail}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* ── The two bulk actions ────────────────────────────────────────
+            An admin with ten people should not fill in ten identical forms;
+            that is why the seed script existed. BOTH ONLY TOUCH PEOPLE WITH
+            NO VALUE SET, so neither can quietly restate the four-day week or
+            the different timezone somebody chose deliberately. */}
+        {(missingSchedules?.count > 0 || missingTz?.count > 0) && (
+          <div style={{ marginTop: 14, borderTop: '1px solid var(--dw-line-2)', paddingTop: 12 }}>
+            {!bulk && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {missingSchedules?.count > 0 && (
+                  <button className="dw-btn" onClick={() => setBulk('schedules')}>
+                    Set a working week for the {missingSchedules.count} without one
+                  </button>
+                )}
+                {missingTz?.count > 0 && (
+                  <button className="dw-btn" onClick={() => setBulk('timezone')}>
+                    Set a timezone for the {missingTz.count} without one
+                  </button>
+                )}
+              </div>
+            )}
+
+            {bulk === 'schedules' && (
+              <div>
+                <div className="dw-field" style={{ marginTop: 0 }}>
+                  <label>Working days</label>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {DAYS.map(d => (
+                      <button key={d.bit} type="button" title={d.label}
+                              aria-pressed={!!(mask & (1 << d.bit))}
+                              onClick={() => setMask(m => m ^ (1 << d.bit))}
+                              className={`dw-btn ${(mask & (1 << d.bit)) ? 'dw-btn-primary' : ''}`}
+                              style={{ minWidth: 34, padding: '4px 8px' }}>{d.short}</button>
+                    ))}
+                  </div>
+                </div>
+                <div className="dw-assigngrid" style={{ marginTop: 10 }}>
+                  <div className="dw-field">
+                    <label htmlFor="dw-bulk-cal">Holiday calendar</label>
+                    <select id="dw-bulk-cal" value={calId} onChange={e => setCalId(e.target.value)}>
+                      <option value="">No calendar</option>
+                      {calendars.map(c => (
+                        <option key={c.id} value={c.id}>{c.name}{c.is_default ? ' (default)' : ''}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="dw-field">
+                    <label htmlFor="dw-bulk-from">In force from</label>
+                    <input id="dw-bulk-from" type="date" value={from}
+                           onChange={e => setFrom(e.target.value)} />
+                  </div>
+                </div>
+                {/* The single most common way to get this wrong. */}
+                <div className="dw-item-status" style={{ marginTop: 6 }}>
+                  Set this to the day the pilot starts, not today. Days before it
+                  have no schedule and so no denominator — they will not count.
+                </div>
+                <div className="dw-addform-actions">
+                  <button className="dw-btn dw-btn-primary"
+                          disabled={!mask}
+                          onClick={() => { onRun(
+                            () => apiService.dailyWork.bulkSetSchedules({
+                              weekdayMask: mask,
+                              holidayCalendarId: calId || null,
+                              effectiveFrom: from,
+                            }),
+                            'Working weeks set for everyone who had none.'); close(); }}>
+                    Apply to {missingSchedules.count}
+                  </button>
+                  <button className="dw-btn" onClick={close}>Cancel</button>
+                </div>
+              </div>
+            )}
+
+            {bulk === 'timezone' && (
+              <div>
+                <div className="dw-field" style={{ marginTop: 0 }}>
+                  <label htmlFor="dw-bulk-tz">Timezone</label>
+                  <input id="dw-bulk-tz" type="text" value={tz}
+                         placeholder="e.g. Asia/Kolkata"
+                         onChange={e => setTz(e.target.value)} />
+                  {/* Checked against the IANA set server-side, so a typo is
+                      refused rather than silently falling back to UTC and
+                      shifting somebody's dates by hours. */}
+                  <div className="dw-item-status">
+                    An IANA name. It decides which day a person&apos;s evening work
+                    counts for, which is why it is set here rather than read from
+                    whichever device they happened to log in on.
+                  </div>
+                </div>
+                <div className="dw-addform-actions">
+                  <button className="dw-btn dw-btn-primary" disabled={!tz.trim()}
+                          onClick={() => { onRun(
+                            () => apiService.dailyWork.bulkSetTimezone(tz.trim()),
+                            'Timezone set for everyone who had none.'); close(); }}>
+                    Apply to {missingTz.count}
+                  </button>
+                  <button className="dw-btn" onClick={close}>Cancel</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 /* ── activity types ─────────────────────────────────────────────────── */
 

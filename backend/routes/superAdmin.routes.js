@@ -15,6 +15,7 @@ const jwt     = require('jsonwebtoken');
 const { pool } = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
 const { requireSuperAdmin, auditLog } = require('../middleware/superAdmin.middleware');
+const dailyWork = require('../services/dailyWork.service');
 const { seedOrg } = require('../services/orgSeed.service');
 
 // Apply auth + super admin guard to ALL routes in this file
@@ -730,6 +731,34 @@ const MODULE_KEYS = ['prospecting', 'contracts', 'handovers', 'service', 'agency
 // ═════════════════════════════════════════════════════════════════════════════
 // MODULE PROVISIONING — super admin controls which modules an org may use
 // ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * POST /super/orgs/:orgId/dailywork/seed
+ *
+ * Seeds the bare minimum Daily Work needs so the org admin lands on a working
+ * screen rather than four empty ones: one placeholder activity type and one
+ * default holiday calendar.
+ *
+ * A BUTTON, NOT A SIDE EFFECT OF ALLOWING. `allowed` is provisioning — an org
+ * provisioned in advance of a sale should not quietly acquire rows it never
+ * asked for. Same reasoning as /seed-pipeline-stages.
+ *
+ * Idempotent and additive: it creates only what is missing and touches nothing
+ * that exists, so it is safe on an org already set up by hand.
+ */
+router.post('/orgs/:orgId/dailywork/seed', async (req, res) => {
+  try {
+    const orgId = parseInt(req.params.orgId, 10);
+    if (!Number.isInteger(orgId)) {
+      return res.status(400).json({ error: { message: 'bad org id' } });
+    }
+    const out = await dailyWork.seedStarterData(orgId, req.user?.id || null);
+    res.json(out);
+  } catch (err) {
+    console.error(`POST /super/orgs/${req.params.orgId}/dailywork/seed error:`, err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
 
 /**
  * GET /super/orgs/:orgId/modules

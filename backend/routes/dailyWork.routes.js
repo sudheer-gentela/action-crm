@@ -890,6 +890,35 @@ router.get('/schedules', adminOnly, async (req, res) => {
   } catch (err) { handle(res, err, 'GET /schedules'); }
 });
 
+// ── setup: readiness and bulk provisioning ──────────────────────────────
+//
+// Declared BEFORE the /schedules/:userId handlers. Express matches in order,
+// and although these are POSTs against PUTs today, a future PUT /schedules/bulk
+// would otherwise be swallowed by :userId and try to parse "bulk" as an id.
+
+router.get('/setup/readiness', adminOnly, async (req, res) => {
+  try {
+    res.json(await dailyWork.getSetupReadiness(req.orgId));
+  } catch (err) { handle(res, err, 'GET /setup/readiness'); }
+});
+
+router.post('/schedules/bulk', adminOnly, async (req, res) => {
+  try {
+    const b = req.body || {};
+    res.json(await dailyWork.bulkSetSchedules(req.orgId, req.userId, {
+      weekdayMask: Number(b.weekdayMask),
+      holidayCalendarId: asId(b.holidayCalendarId) || null,
+      effectiveFrom: b.effectiveFrom,
+    }));
+  } catch (err) { handle(res, err, 'POST /schedules/bulk'); }
+});
+
+router.post('/schedules/timezone/bulk', adminOnly, async (req, res) => {
+  try {
+    res.json(await dailyWork.bulkSetTimezone(req.orgId, (req.body || {}).timezone));
+  } catch (err) { handle(res, err, 'POST /schedules/timezone/bulk'); }
+});
+
 router.put('/schedules/:userId/timezone', adminOnly, async (req, res) => {
   try {
     const userId = asId(req.params.userId);

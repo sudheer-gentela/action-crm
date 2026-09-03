@@ -70,6 +70,12 @@ export default function OAModules() {
     handovers:   (enabled) => apiService.handovers.toggleModule(enabled),
     service:     (enabled) => apiService.support.toggleModule(enabled),
     agency:      (enabled) => apiService.agency.toggleModule(enabled),
+    // Its absence here is why the Daily Work switch threw instead of enabling
+    // anything: handleToggle called MODULE_TOGGLE_API[key] unconditionally, so
+    // a module listed in MODULE_DEFS but missing from this map is a dead
+    // control that reports "Failed to update module". The backend route
+    // (PATCH /org/admin/module/:moduleName) has accepted 'dailywork' all along.
+    dailywork:   (enabled) => apiService.dailyWork.toggleModule(enabled),
   };
 
   // Maps module key → the playbook seed key used by the backend
