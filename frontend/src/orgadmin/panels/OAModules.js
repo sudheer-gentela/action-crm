@@ -4,15 +4,28 @@
 import React, { useState, useEffect } from 'react';
 import { apiService } from '../../apiService';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The module keys this panel tracks state for.
+//
+// ONE LIST, and it must stay in step with MODULE_DEFS below. Three separate
+// hand-written enumerations of the same five modules is what hid Daily Work:
+// the backend returned it correctly, and this component rebuilt the state
+// object naming only five keys, so `modules.dailywork` came back undefined,
+// fell through to `|| { allowed: false }`, and rendered as "Not included in
+// your current plan — contact support to upgrade". A confident, wrong,
+// support-generating sentence produced by a missing line in an object literal.
+//
+// Deriving the state from this array means the next module added to
+// MODULE_DEFS cannot be silently dropped in the same way.
+// ─────────────────────────────────────────────────────────────────────────────
+const MODULE_STATE_KEYS = ['contracts', 'prospecting', 'handovers', 'service', 'agency', 'dailywork'];
+
+const blankModuleState = () => Object.fromEntries(
+  MODULE_STATE_KEYS.map(k => [k, { allowed: false, enabled: false }]));
+
 export default function OAModules() {
   // modules state holds { allowed: bool, enabled: bool } per key
-  const [modules, setModules] = useState({
-    contracts:   { allowed: false, enabled: false },
-    prospecting: { allowed: false, enabled: false },
-    handovers:   { allowed: false, enabled: false },
-    service:     { allowed: false, enabled: false },
-    agency:      { allowed: false, enabled: false },
-  });
+  const [modules, setModules] = useState(blankModuleState);
   // seedStatus holds { prospecting, sales, clm, service, handovers } booleans
   const [seedStatus, setSeedStatus] = useState({});
   const [loading, setLoading]       = useState(true);
@@ -40,23 +53,12 @@ export default function OAModules() {
       .then(([profileRes, seedRes]) => {
         const normalised = profileRes.data.modules;
         if (normalised) {
-          setModules({
-            contracts:   normalised.contracts   || { allowed: false, enabled: false },
-            prospecting: normalised.prospecting || { allowed: false, enabled: false },
-            handovers:   normalised.handovers   || { allowed: false, enabled: false },
-            service:     normalised.service     || { allowed: false, enabled: false },
-            agency:      normalised.agency      || { allowed: false, enabled: false },
-          });
+          setModules(Object.fromEntries(MODULE_STATE_KEYS.map(k =>
+            [k, normalised[k] || { allowed: false, enabled: false }])));
         } else {
           const mods = profileRes.data.org?.settings?.modules || {};
           const toLegacy = (v) => { const b = v === true || v === 'true'; return { allowed: b, enabled: b }; };
-          setModules({
-            contracts:   toLegacy(mods.contracts),
-            prospecting: toLegacy(mods.prospecting),
-            handovers:   toLegacy(mods.handovers),
-            service:     toLegacy(mods.service),
-            agency:      toLegacy(mods.agency),
-          });
+          setModules(Object.fromEntries(MODULE_STATE_KEYS.map(k => [k, toLegacy(mods[k])])));
         }
         setSeedStatus(seedRes.status || {});
       })
