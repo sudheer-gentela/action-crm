@@ -1859,6 +1859,52 @@ const STARTER_ACTIVITY = { key: 'general', label: 'General work' };
 const STARTER_CALENDAR = 'Default';
 
 /**
+ * What seeding WOULD do, without doing any of it.
+ *
+ * Read-only, and it exists because a button whose only feedback is a banner
+ * somewhere above the fold is indistinguishable from a button that did
+ * nothing. Same two constants the seeder uses, so the preview cannot describe
+ * something different from what gets written.
+ */
+async function previewStarterData(orgId) {
+  return withOrgTransaction(orgId, async (client) => {
+    const [types, cals] = await Promise.all([
+      client.query(
+        `SELECT count(*)::int AS total,
+                count(*) FILTER (WHERE status = 'active')::int AS active,
+                count(*) FILTER (WHERE key = $2)::int AS starter
+           FROM daily_activity_types WHERE org_id = $1`,
+        [orgId, STARTER_ACTIVITY.key]),
+      client.query(
+        `SELECT count(*)::int AS total,
+                count(*) FILTER (WHERE is_default)::int AS defaults
+           FROM holiday_calendars WHERE org_id = $1`, [orgId]),
+    ]);
+    const t = types.rows[0], c = cals.rows[0];
+
+    const wouldCreate = [];
+    const alreadyThere = [];
+
+    if (t.starter > 0) alreadyThere.push(`activity type "${STARTER_ACTIVITY.label}"`);
+    else wouldCreate.push(`activity type "${STARTER_ACTIVITY.label}"`);
+
+    if (c.total > 0) alreadyThere.push(
+      `${c.total} holiday ${c.total === 1 ? 'calendar' : 'calendars'}`
+      + (c.defaults ? '' : ' (none marked default)'));
+    else wouldCreate.push(`holiday calendar "${STARTER_CALENDAR}", no dates`);
+
+    return {
+      wouldCreate,
+      alreadyThere,
+      current: {
+        activityTypes: t.total, activeActivityTypes: t.active,
+        calendars: c.total, defaultCalendars: c.defaults,
+      },
+    };
+  });
+}
+
+/**
  * Seed the minimum an org needs before its admin can do anything useful.
  *
  * Idempotent, and additive only — it creates what is missing and touches
@@ -2063,6 +2109,7 @@ module.exports = {
   getAnchorOptions,
   setUserTimezone,
   seedStarterData,
+  previewStarterData,
   getSetupReadiness,
   bulkSetSchedules,
   bulkSetTimezone,

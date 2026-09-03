@@ -1156,6 +1156,8 @@ function SAOrgModules({ orgId }) {
   const [loading, setLoading]   = useState(true);
   const [saving, setSaving]     = useState(null); // key of module being saved
   const [seeding, setSeeding]   = useState(false);
+  const [seedPlan, setSeedPlan] = useState(null);   // preview, before committing
+  const [seedDone, setSeedDone] = useState(null);   // result, shown AT the button
   const [error, setError]       = useState('');
   const [success, setSuccess]   = useState('');
 
@@ -1198,16 +1200,33 @@ function SAOrgModules({ orgId }) {
    * and additive, so pressing it twice is safe and pressing it on an org that
    * was set up by hand changes nothing.
    */
+  const handlePreviewDailyWork = async () => {
+    setSeeding(true);
+    setError('');
+    setSeedDone(null);
+    try {
+      const r = await apiService.superAdmin.previewOrgDailyWork(orgId);
+      setSeedPlan(r.data);
+    } catch (e) {
+      setError(e.response?.data?.error?.message || 'Could not read the org\'s Daily Work setup');
+    } finally {
+      setSeeding(false);
+    }
+  };
+
   const handleSeedDailyWork = async () => {
     setSeeding(true);
     setError('');
     try {
       const r = await apiService.superAdmin.seedOrgDailyWork(orgId);
       const created = r.data?.created || [];
-      setSuccess(created.length
-        ? `Seeded ${created.join(' and ')} ✓`
-        : 'Already seeded — nothing was missing.');
-      setTimeout(() => setSuccess(''), 5000);
+      // Reported AT THE BUTTON. The success alert renders above the module
+      // list, and Daily Work is the last of six rows — so on any normal window
+      // the confirmation appeared off-screen and the button looked inert.
+      setSeedDone(created.length
+        ? `Created ${created.join(' and ')}.`
+        : 'Nothing was missing — no changes made.');
+      setSeedPlan(null);
     } catch (e) {
       setError(e.response?.data?.error?.message || 'Failed to seed Daily Work');
     } finally {
@@ -1276,19 +1295,89 @@ function SAOrgModules({ orgId }) {
                     nothing. */}
                 {def.key === 'dailywork' && isAllowed && (
                   <div style={{ marginTop: 8 }}>
-                    <button
-                      disabled={seeding}
-                      onClick={handleSeedDailyWork}
-                      title="Creates one placeholder activity type and one default holiday calendar. Safe to run more than once."
-                      style={{
-                        fontSize: 11, fontWeight: 600, padding: '4px 10px',
-                        borderRadius: 6, border: '1px solid #bae6fd',
-                        background: '#f0f9ff', color: '#0369a1',
-                        cursor: seeding ? 'default' : 'pointer',
-                        opacity: seeding ? 0.6 : 1,
+                    {/* Two steps, because "did that do anything?" is not a
+                        question a provisioning button should leave you with.
+                        Check first, then commit. */}
+                    {!seedPlan && (
+                      <button
+                        disabled={seeding}
+                        onClick={handlePreviewDailyWork}
+                        title="Read-only. Shows what exists and what seeding would add."
+                        style={{
+                          fontSize: 11, fontWeight: 600, padding: '4px 10px',
+                          borderRadius: 6, border: '1px solid #bae6fd',
+                          background: '#f0f9ff', color: '#0369a1',
+                          cursor: seeding ? 'default' : 'pointer',
+                          opacity: seeding ? 0.6 : 1,
+                        }}>
+                        {seeding ? 'Checking…' : 'Check starter data'}
+                      </button>
+                    )}
+
+                    {seedPlan && (
+                      <div style={{
+                        border: '1px solid #bae6fd', background: '#f8fbff',
+                        borderRadius: 8, padding: '8px 10px', fontSize: 11,
+                        color: '#374151', lineHeight: 1.5,
                       }}>
-                      {seeding ? 'Seeding…' : 'Seed starter data'}
-                    </button>
+                        <div style={{ color: '#6b7280' }}>
+                          This org has {seedPlan.current.activityTypes} activity{' '}
+                          {seedPlan.current.activityTypes === 1 ? 'type' : 'types'}
+                          {' '}({seedPlan.current.activeActivityTypes} active) and{' '}
+                          {seedPlan.current.calendars} holiday{' '}
+                          {seedPlan.current.calendars === 1 ? 'calendar' : 'calendars'}.
+                        </div>
+
+                        {seedPlan.wouldCreate.length > 0 ? (
+                          <div style={{ marginTop: 6 }}>
+                            <b>Would create:</b>
+                            <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
+                              {seedPlan.wouldCreate.map(x => <li key={x}>{x}</li>)}
+                            </ul>
+                          </div>
+                        ) : (
+                          <div style={{ marginTop: 6, color: '#059669' }}>
+                            Nothing to create — the starter data is already there.
+                          </div>
+                        )}
+
+                        {seedPlan.alreadyThere.length > 0 && (
+                          <div style={{ marginTop: 6, color: '#9ca3af' }}>
+                            Leaving alone: {seedPlan.alreadyThere.join(', ')}.
+                          </div>
+                        )}
+
+                        <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                          <button
+                            disabled={seeding || seedPlan.wouldCreate.length === 0}
+                            onClick={handleSeedDailyWork}
+                            style={{
+                              fontSize: 11, fontWeight: 600, padding: '4px 10px',
+                              borderRadius: 6, border: 'none',
+                              background: seedPlan.wouldCreate.length ? '#0369a1' : '#d1d5db',
+                              color: '#fff',
+                              cursor: seedPlan.wouldCreate.length && !seeding ? 'pointer' : 'default',
+                            }}>
+                            {seeding ? 'Seeding…' : 'Seed it'}
+                          </button>
+                          <button onClick={() => setSeedPlan(null)}
+                            style={{
+                              fontSize: 11, padding: '4px 10px', borderRadius: 6,
+                              border: '1px solid #e5e7eb', background: '#fff',
+                              color: '#374151', cursor: 'pointer',
+                            }}>
+                            Close
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {seedDone && (
+                      <div style={{ fontSize: 11, color: '#059669', marginTop: 6 }}>
+                        ✅ {seedDone}
+                      </div>
+                    )}
+
                     <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 4, lineHeight: 1.4 }}>
                       One placeholder activity type and a default holiday calendar.
                       The org admin then sets their own activity list, holidays,

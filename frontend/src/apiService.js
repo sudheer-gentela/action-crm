@@ -39,6 +39,94 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Token refresh
+//
+// This client had a REQUEST interceptor and no response one, so nothing in the
+// main app ever called /auth/refresh — only prospectingShared's apiFetch did,
+// and that is a separate raw-fetch client. The consequence was silent and
+// dependable: JWT_EXPIRES_IN defaults to 7d, so a week after logging in every
+// call started returning 403 and the server logged
+//
+//   [auth-fail] TokenExpiredError: jwt expired
+//
+// on each one, forever, until the person happened to log out and back in.
+// Nothing told them why; screens just stopped loading.
+//
+// This mirrors apiFetch's behaviour exactly rather than inventing a second
+// policy — same code check, same single-flight, same impersonation fallback —
+// because two clients disagreeing about when a session is over is worse than
+// either rule on its own.
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _refreshPromise = null;
+
+function _refreshToken() {
+  // Single-flight. A screen that fires six requests at once would otherwise
+  // send six refreshes, five of which race to overwrite the token.
+  if (_refreshPromise) return _refreshPromise;
+  _refreshPromise = axios
+    .post(`${API_URL}/auth/refresh`, null, {
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem('token') || localStorage.getItem('authToken')}`,
+      },
+    })
+    .then(r => {
+      const token = r.data?.token;
+      if (!token) throw new Error('refresh_failed');
+      localStorage.setItem('token', token);
+      return token;
+    })
+    .finally(() => { _refreshPromise = null; });
+  return _refreshPromise;
+}
+
+api.interceptors.response.use(
+  (r) => r,
+  async (error) => {
+    const { response, config } = error;
+    // _retry guards the loop: a refreshed token that is still refused must
+    // fail, not refresh again.
+    if (!response || !config || config._retry) return Promise.reject(error);
+
+    const code = response.data?.error?.code;
+    const msg  = response.data?.error?.message;
+    // Prefer the machine-readable code auth.middleware sends; the message match
+    // is the fallback for a backend that predates the code field.
+    const isAuthFail = code === 'TOKEN_INVALID' || msg === 'Invalid or expired token';
+    if (response.status !== 403 || !isAuthFail) return Promise.reject(error);
+
+    // Never try to refresh the refresh call.
+    if ((config.url || '').includes('/auth/refresh')) return Promise.reject(error);
+
+    config._retry = true;
+    try {
+      await _refreshToken();
+      return api(config);
+    } catch {
+      // An impersonation token cannot be refreshed by design — the backend
+      // returns IMPERSONATION_NO_REFRESH so the support window cannot be
+      // laundered into a full session. Drop back to the stashed super-admin
+      // session rather than bouncing to /login.
+      const saToken = localStorage.getItem('sa_token');
+      const saUser  = localStorage.getItem('sa_user');
+      if (saToken && saUser) {
+        localStorage.setItem('token', saToken);
+        localStorage.setItem('user', saUser);
+        localStorage.removeItem('sa_token');
+        localStorage.removeItem('sa_user');
+        window.location.reload();
+        return new Promise(() => {});
+      }
+      localStorage.removeItem('token');
+      localStorage.removeItem('authToken');
+      localStorage.removeItem('user');
+      window.location.href = '/login';
+      return new Promise(() => {});
+    }
+  }
+);
+
 export const apiService = {
   accounts: {
     // getAll accepts either the legacy single-string scope, or an options
@@ -310,6 +398,9 @@ twilio: {
     updateOrgModules: (orgId, modules) => api.patch(`/super/orgs/${orgId}/modules`, { modules }),
     // Seeds one placeholder activity type and one default holiday calendar.
     // Idempotent and additive — safe on an org already set up by hand.
+    // Read-only. Says what exists and what seeding would add, so the button
+    // is a decision rather than a leap.
+    previewOrgDailyWork: (orgId) => api.get(`/super/orgs/${orgId}/dailywork/seed-preview`),
     seedOrgDailyWork: (orgId) => api.post(`/super/orgs/${orgId}/dailywork/seed`),
 
     // ── LinkedIn seats (user_linkedin_seats) ────────────────────────────────

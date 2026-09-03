@@ -746,6 +746,19 @@ const MODULE_KEYS = ['prospecting', 'contracts', 'handovers', 'service', 'agency
  * Idempotent and additive: it creates only what is missing and touches nothing
  * that exists, so it is safe on an org already set up by hand.
  */
+router.get('/orgs/:orgId/dailywork/seed-preview', async (req, res) => {
+  try {
+    const orgId = parseInt(req.params.orgId, 10);
+    if (!Number.isInteger(orgId)) {
+      return res.status(400).json({ error: { message: 'bad org id' } });
+    }
+    res.json(await dailyWork.previewStarterData(orgId));
+  } catch (err) {
+    console.error(`GET /super/orgs/${req.params.orgId}/dailywork/seed-preview error:`, err);
+    res.status(500).json({ error: { message: err.message } });
+  }
+});
+
 router.post('/orgs/:orgId/dailywork/seed', async (req, res) => {
   try {
     const orgId = parseInt(req.params.orgId, 10);
