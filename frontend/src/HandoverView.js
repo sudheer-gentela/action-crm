@@ -1646,7 +1646,8 @@ function NoteCountBadge({ count }) {
 
 function PlaySection({ play, canEdit, canDelete = canEdit, onComplete, onRemove, onEdit, onSetStatus, onSetDeps, siblings, users, stages, evidencePolicy,
                        handoverId, canAddNotes, canMarkNotesInternal, onNoteCountChange,
-                       onReview, isManager = false, canAct = false }) {
+                       onReview, isManager = false, canAct = false,
+                       onDuplicate, onDelete }) {
   // Done-state mirrors the backend gate, which treats a play as satisfied when
   // its status is 'completed' OR 'skipped' — not merely when completedAt is set.
   // (A skipped play has no completedAt but still clears the gate.)
@@ -1685,6 +1686,40 @@ function PlaySection({ play, canEdit, canDelete = canEdit, onComplete, onRemove,
   const [eStage, setEStage] = useState('');
   const [eDeps,  setEDeps]  = useState([]);
   const [eSaving, setESaving] = useState(false);
+
+  // ── Description, edited in place ─────────────────────────────────────────
+  //
+  // The full Edit form is three clicks away (expand, Edit, save) for the one
+  // field people revise most. This is the same write, narrowed to one field.
+  //
+  // SAFE BECAUSE THE PATCH IS ONE FIELD. updatePlay tests every column with
+  // has(), so a body carrying only `description` writes only description. That
+  // matters more than it looks: a patch that also carried dueDate would run
+  // the provisional-baseline branch and could rewrite baseline_due_date on a
+  // draft, or demand a rebaseline reason on a frozen plan — from someone who
+  // only fixed a typo.
+  const [descEditing, setDescEditing] = useState(false);
+  const [descDraft,   setDescDraft]   = useState('');
+  const [descSaving,  setDescSaving]  = useState(false);
+
+  const openDesc = () => {
+    if (!canEdit || !onEdit) return;
+    setDescDraft(play.description || '');
+    setDescEditing(true);
+  };
+  const saveDesc = async () => {
+    if (descSaving) return;
+    const next = descDraft.trim();
+    // Unchanged closes without a write. Blur fires on every click-away,
+    // including the one that opens the full Edit form, and a no-op PATCH there
+    // would reload the project underneath it.
+    if (next === (play.description || '')) { setDescEditing(false); return; }
+    setDescSaving(true);
+    try {
+      await onEdit(play.playInstanceId, { description: next || null });
+      setDescEditing(false);
+    } finally { setDescSaving(false); }
+  };
 
   const openEdit = () => {
     setETitle(play.title || '');
@@ -1767,9 +1802,20 @@ function PlaySection({ play, canEdit, canDelete = canEdit, onComplete, onRemove,
       borderRadius: 8, padding: '12px 14px', marginBottom: 10,
       background: isDone ? '#f0fdf4' : '#fff',
     }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+      {/* ── Why this row wraps ────────────────────────────────────────────
+          The action column below used to carry flexShrink: 0 and no wrap. In
+          the Detailed layout it has ~900px and looks fine. In a COMPACT card
+          it has 340px, and a column that cannot shrink and cannot wrap simply
+          wins: the left column, holding title and description, collapsed to
+          near-zero and rendered one word per line while the buttons overflowed
+          past the card edge.
+
+          flexWrap here plus a flex-basis floor on the left column plus wrap on
+          the actions fixes the cause rather than the symptom, and fixes the
+          same collapse on a narrow phone in every layout at the same time. */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 16, lineHeight: '20px' }}>{icon}</span>
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ flex: '1 1 220px', minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 13, fontWeight: 600, color: isDone ? '#065f46' : '#111827' }}>
               {play.title}
@@ -1781,9 +1827,40 @@ function PlaySection({ play, canEdit, canDelete = canEdit, onComplete, onRemove,
               <span style={{ fontSize: 10, color: '#7c3aed', fontWeight: 700, background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 4, padding: '0 5px' }}>added here</span>
             )}
           </div>
-          {play.description && (
-            <div style={{ fontSize: 12, color: '#6b7280', marginTop: 3, lineHeight: 1.4 }}>{play.description}</div>
-          )}
+          {descEditing ? (
+            <textarea
+              autoFocus
+              value={descDraft}
+              disabled={descSaving}
+              onChange={e => setDescDraft(e.target.value)}
+              onBlur={saveDesc}
+              onKeyDown={e => {
+                if (e.key === 'Escape') { e.stopPropagation(); setDescEditing(false); }
+                // Enter alone inserts a newline — a description is prose and
+                // people press Enter in it. Ctrl/Cmd+Enter is the commit.
+                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.currentTarget.blur(); }
+              }}
+              rows={2}
+              placeholder="Description"
+              style={{ width: '100%', fontSize: 12, padding: '5px 7px', marginTop: 3,
+                       borderRadius: 4, border: '1px solid #93c5fd', boxSizing: 'border-box',
+                       resize: 'vertical', lineHeight: 1.4, opacity: descSaving ? 0.6 : 1 }} />
+          ) : play.description ? (
+            <div onClick={openDesc}
+                 title={canEdit && onEdit ? 'Click to edit · Esc cancels' : undefined}
+                 style={{ fontSize: 12, color: '#6b7280', marginTop: 3, lineHeight: 1.4,
+                          whiteSpace: 'pre-wrap',
+                          cursor: canEdit && onEdit ? 'text' : 'default' }}>
+              {play.description}
+            </div>
+          ) : canEdit && onEdit ? (
+            /* Only offered to someone who can actually write it, so a
+               read-only viewer is not invited to click a dead placeholder. */
+            <div onClick={openDesc} title="Add a description"
+                 style={{ fontSize: 11, color: '#9ca3af', marginTop: 3, cursor: 'text' }}>
+              + add description
+            </div>
+          ) : null}
           {isDone && play.completedAt && (
             <div style={{ fontSize: 11, color: '#059669', marginTop: 4 }}>
               ✓ {isSkipped ? 'Skipped' : 'Completed'} {fmtDate(play.completedAt)}{play.completedByName ? ` · ${play.completedByName}` : ''}
@@ -1808,7 +1885,11 @@ function PlaySection({ play, canEdit, canDelete = canEdit, onComplete, onRemove,
             )}
           </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+        {/* No flexShrink: 0 — see the note above. marginLeft: auto keeps the
+            actions right-aligned while there is room, and they wrap onto their
+            own line once there is not. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+                      marginLeft: 'auto', justifyContent: 'flex-end' }}>
           {!isDone && <DueChip dueDate={play.dueDate} isOverdue={play.isOverdue} daysOverdue={play.daysOverdue} />}
           {isDone && play.completedAt && (
             <span style={{ fontSize: 11, color: '#6b7280', whiteSpace: 'nowrap' }}>{fmtDate(play.completedAt)}</span>
@@ -1909,10 +1990,37 @@ function PlaySection({ play, canEdit, canDelete = canEdit, onComplete, onRemove,
               Edit
             </button>
           )}
-          {/* Draft only — see canDeletePlays. canDelete defaults to canEdit
-              so any caller that has not been updated keeps its old
-              behaviour rather than silently losing the control. */}
-          {play.isCustom && canDelete && onRemove && (
+          {/* Duplicate — the same handler the Table row uses, so a copy made
+              from any layout copies the same fields and drops the same ones
+              (status, completion and dependencies). */}
+          {canEdit && onDuplicate && !editing && !capturing && (
+            <button title="Duplicate this task"
+              onClick={() => onDuplicate(play)}
+              style={{
+                fontSize: 11, padding: '3px 8px', borderRadius: 4,
+                background: '#fff', color: '#6b7280',
+                border: '1px solid #e5e7eb', cursor: 'pointer', fontWeight: 600,
+              }}>⧉</button>
+          )}
+          {/* Delete, draft only, matching the Table row — which could already
+              delete ANY task while this could only remove an ad-hoc one, so
+              the same row offered two different powers depending on which
+              layout you happened to be in.
+
+              onDelete takes the play (it confirms using the title); the older
+              onRemove took an id. Both are kept: a caller still passing only
+              onRemove keeps exactly its previous ad-hoc-only behaviour rather
+              than silently losing the control. */}
+          {canDelete && onDelete && !editing && !capturing && (
+            <button title="Delete this task"
+              onClick={() => onDelete(play)}
+              style={{
+                fontSize: 11, padding: '3px 8px', borderRadius: 4,
+                background: '#fff', color: '#991b1b',
+                border: '1px solid #fecaca', cursor: 'pointer', fontWeight: 600,
+              }}>🗑</button>
+          )}
+          {!onDelete && play.isCustom && canDelete && onRemove && (
             <button onClick={() => onRemove(play.playInstanceId)} title="Remove this item" style={{
               fontSize: 15, lineHeight: 1, padding: '2px 6px', borderRadius: 4,
               background: 'none', color: '#9ca3af', border: 'none', cursor: 'pointer' }}>×</button>
@@ -2094,9 +2202,21 @@ function AddPlayForm({ users, onAdd, stages }) {
   const [gate,   setGate]   = useState(false);
   const [stage,  setStage]  = useState('');
   const [saving, setSaving] = useState(false);
+  const [added,  setAdded]  = useState(0);
+  const titleRef = React.useRef(null);
 
+  // ── Adding several items in a row ────────────────────────────────────────
+  //
+  // This used to clear EVERY field and close itself after each add. Entering a
+  // 49-task plan by hand therefore meant reopening the form and re-picking the
+  // stage and the owner 49 times, and the stage reset to the ad-hoc bucket
+  // rather than to the phase every previous item had gone into.
+  //
+  // So: the form stays open, and owner / due / stage / gate PERSIST while
+  // title and description clear. Those four are the context you are working
+  // in; the other two are the item. Done closes it and clears the context.
   const submit = async () => {
-    if (!title.trim()) return;
+    if (!title.trim() || saving) return;
     setSaving(true);
     try {
       await onAdd({
@@ -2114,8 +2234,19 @@ function AddPlayForm({ users, onAdd, stages }) {
         stageName: (stage.trim() && !(stages || []).some(st => st.key === stage.trim()))
           ? stage.trim() : undefined,
       });
-      setTitle(''); setDesc(''); setDue(''); setOwner(''); setGate(false); setStage(''); setOpen(false);
+      setTitle(''); setDesc('');
+      setAdded(n => n + 1);
+      // onAdd reloads the project, so the focus call has to outlive that
+      // render. The ref is on a live node either way — the form does not
+      // unmount, which is the point of keeping it open.
+      titleRef.current?.focus();
     } finally { setSaving(false); }
+  };
+
+  const close = () => {
+    setOpen(false);
+    setTitle(''); setDesc(''); setDue(''); setOwner(''); setGate(false); setStage('');
+    setAdded(0);
   };
 
   if (!open) {
@@ -2126,37 +2257,49 @@ function AddPlayForm({ users, onAdd, stages }) {
       </button>
     );
   }
+
+  const fld = { fontSize: 12, padding: '6px 8px', borderRadius: 4, border: '1px solid #d1d5db',
+                boxSizing: 'border-box', minWidth: 0 };
+
   return (
-    <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 12, background: '#f8fafc' }}>
-      <input value={title} onChange={e => setTitle(e.target.value)} placeholder="What needs to happen?"
-        style={{ width: '100%', fontSize: 13, padding: '7px 9px', borderRadius: 4, border: '1px solid #d1d5db', boxSizing: 'border-box', marginBottom: 8 }} />
-      <textarea value={desc} onChange={e => setDesc(e.target.value)} rows={2} placeholder="Description (optional)"
-        style={{ width: '100%', fontSize: 12, padding: '7px 9px', borderRadius: 4, border: '1px solid #d1d5db', boxSizing: 'border-box', resize: 'vertical', marginBottom: 8 }} />
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
-        <label style={{ fontSize: 11, color: '#6b7280' }}>Owner
-          <select value={owner} onChange={e => setOwner(e.target.value)}
-            style={{ marginLeft: 6, fontSize: 12, padding: '4px 6px', borderRadius: 4, border: '1px solid #d1d5db' }}>
-            <option value="">Unassigned</option>
-            {(users || []).map(u => <option key={u.id} value={String(u.id)}>{u.name}</option>)}
-          </select>
-        </label>
-        <label style={{ fontSize: 11, color: '#6b7280' }}>Due
-          <input type="date" value={due} onChange={e => setDue(e.target.value)}
-            style={{ marginLeft: 6, fontSize: 12, padding: '4px 6px', borderRadius: 4, border: '1px solid #d1d5db' }} />
-        </label>
+    <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 10, background: '#f8fafc' }}>
+      {/* One row on a wide screen, wrapping on a narrow one. flex-basis
+          floors rather than fixed widths, so the two text fields take the
+          slack and the controls keep their labels legible. */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input ref={titleRef} value={title} onChange={e => setTitle(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); submit(); }
+                            if (e.key === 'Escape') close(); }}
+          placeholder="What needs to happen?"
+          style={{ ...fld, flex: '2 1 200px', fontSize: 13 }} />
+        <input value={desc} onChange={e => setDesc(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); submit(); }
+                            if (e.key === 'Escape') close(); }}
+          placeholder="Description (optional)"
+          style={{ ...fld, flex: '3 1 220px' }} />
+        <select value={owner} onChange={e => setOwner(e.target.value)} style={{ ...fld, flex: '0 1 150px' }}>
+          <option value="">Unassigned</option>
+          {(users || []).map(u => <option key={u.id} value={String(u.id)}>{u.name}</option>)}
+        </select>
+        <input type="date" value={due} onChange={e => setDue(e.target.value)}
+          style={{ ...fld, flex: '0 1 140px' }} />
         <StagePicker value={stage} onChange={setStage} stages={stages} />
-        <label style={{ fontSize: 11, color: '#6b7280', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-          <input type="checkbox" checked={gate} onChange={e => setGate(e.target.checked)} /> Gate (blocks go-live)
+        <label style={{ fontSize: 11, color: '#6b7280', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
+          <input type="checkbox" checked={gate} onChange={e => setGate(e.target.checked)} /> Gate
         </label>
-      </div>
-      <div style={{ display: 'flex', gap: 8 }}>
         <button onClick={submit} disabled={saving || !title.trim()} style={{ fontSize: 12, padding: '6px 14px', borderRadius: 4,
           background: (saving || !title.trim()) ? '#9ca3af' : '#0369a1', color: '#fff', border: 'none', fontWeight: 600,
-          cursor: (saving || !title.trim()) ? 'default' : 'pointer' }}>
-          {saving ? 'Adding…' : 'Add item'}
+          whiteSpace: 'nowrap', cursor: (saving || !title.trim()) ? 'default' : 'pointer' }}>
+          {saving ? 'Adding…' : 'Add'}
         </button>
-        <button onClick={() => setOpen(false)} style={{ fontSize: 12, padding: '6px 10px', borderRadius: 4,
-          background: '#f1f5f9', color: '#374151', border: 'none', cursor: 'pointer' }}>Cancel</button>
+        <button onClick={close} style={{ fontSize: 12, padding: '6px 10px', borderRadius: 4,
+          background: '#f1f5f9', color: '#374151', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+          {added > 0 ? 'Done' : 'Cancel'}
+        </button>
+      </div>
+      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 6 }}>
+        Enter adds and keeps the owner, date, stage and gate for the next one.
+        {added > 0 ? ` · ${added} added` : ''}
       </div>
     </div>
   );
@@ -4305,12 +4448,29 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
             </div>
           )}
 
+          {/* Above the checklist, not below it. At 49 tasks the old placement
+              meant scrolling past the whole plan to add one item and scrolling
+              back to see where it landed. Rendered ONCE: a second copy at the
+              bottom would be a second component instance with its own state,
+              so opening one would leave the other sitting closed. */}
+          {canEditPlan && (
+            <div style={{ marginBottom: 12 }}>
+              <AddPlayForm users={users} onAdd={handleAddPlay} stages={stages} />
+            </div>
+          )}
+
           {checklistLayout === 'compact' ? (
             /* ── Compact: one card per stage, title-only rows that expand ── */
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 14, alignItems: 'start' }}>
               {checklistGroups.map(group => {
                 return (
+                  /* minWidth: 0 — a grid item defaults to min-width: auto, so
+                     any child that overflows widens the whole track and shoves
+                     the columns out of alignment. With the PlaySection wrap fix
+                     nothing should overflow, but the floor costs nothing and
+                     stops one long unbroken title doing it again. */
                   <div key={group.key} style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 14,
+                                                minWidth: 0, overflowWrap: 'anywhere',
                                                 background: group.items.length === 0 ? '#fafafa' : '#fff',
                                                 opacity: group.items.length === 0 ? 0.7 : 1 }}>
                     <StageHeader group={group} />
@@ -4336,6 +4496,23 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                             {play.isGate && !done && <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: '#eff6ff', color: '#1d4ed8' }}>GATE</span>}
                             <NoteCountBadge count={play.noteCount} />
                             {done && play.completedAt && <span style={{ fontSize: 10, color: '#9ca3af' }}>{fmtDate(play.completedAt)}</span>}
+                            {/* stopPropagation — the whole row is the expand
+                                target, so without it duplicating also toggles
+                                the row open. */}
+                            {canEditPlan && (
+                              <button title="Duplicate this task"
+                                onClick={e => { e.stopPropagation(); handleDuplicatePlay(play); }}
+                                style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, flexShrink: 0,
+                                         border: '1px solid #e5e7eb', background: '#fff',
+                                         color: '#6b7280', cursor: 'pointer', lineHeight: 1.4 }}>⧉</button>
+                            )}
+                            {canDeletePlays && (
+                              <button title="Delete this task"
+                                onClick={e => { e.stopPropagation(); handleDeletePlay(play); }}
+                                style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, flexShrink: 0,
+                                         border: '1px solid #fecaca', background: '#fff',
+                                         color: '#991b1b', cursor: 'pointer', lineHeight: 1.4 }}>🗑</button>
+                            )}
                             <span style={{ fontSize: 10, color: '#9ca3af' }}>{isOpen ? '▾' : '▸'}</span>
                           </div>
                           {isOpen && (
@@ -4596,6 +4773,8 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                         canDelete={canDeletePlays}
                         onComplete={handleCompletePlay}
                         onRemove={handleRemovePlay}
+                        onDuplicate={handleDuplicatePlay}
+                        onDelete={handleDeletePlay}
                         onEdit={handleUpdatePlay}
                         onSetStatus={handleSetPlayStatus}
                         onSetDeps={handleSetPlayDeps}
@@ -4632,11 +4811,6 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                 </div>
               );
             })
-          )}
-          {canEditPlan && (
-            <div style={{ marginTop: 4 }}>
-              <AddPlayForm users={users} onAdd={handleAddPlay} stages={stages} />
-            </div>
           )}
         </section>
 

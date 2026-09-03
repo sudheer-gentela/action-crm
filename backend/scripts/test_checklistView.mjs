@@ -3,10 +3,17 @@
 // Standalone harness for checklistView.js — the sorting, the owner filter, the
 // per-stage rollup and the current-stage rule.
 //
-//   node frontend/src/test_checklistView.mjs
+//   node test_checklistView.mjs
+//   node test_checklistView.mjs path\\to\\checklistView.js      (if it cannot find it)
 //
 // No database, no build step, no node_modules. checklistView.js is pure ES
-// module with no imports, so node loads it directly.
+// module with no imports of its own, so node loads it directly.
+//
+// RUN IT FROM ANYWHERE. The module is LOCATED rather than assumed: this file
+// gets copied into scratch folders, dropped beside the source, and run from
+// the repo root, and a hard-coded '../src/checklistView.js' fails in two of
+// those three. The search below covers the layouts that actually happen, and
+// says plainly where it looked when none of them hit.
 //
 // WHY A HARNESS AT ALL for a view-level change: every failure mode here is
 // silent. A comparator with the operands the wrong way round produces a
@@ -14,14 +21,52 @@
 // produces a confident number. Neither throws, and neither is visible without
 // counting rows by hand on a 49-task project.
 
-import {
+import { existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const cwd  = process.cwd();
+
+// In order: an explicit path given on the command line, then the module
+// sitting beside this file, then the repo layouts — scripts/ next to src/,
+// this file at the repo root, this file inside frontend/. Resolved against
+// BOTH this file's directory and the working directory, because "node
+// scripts/test.mjs" from the root and "node test.mjs" from inside scripts/
+// are both things people do.
+const candidates = [];
+if (process.argv[2]) candidates.push(resolve(cwd, process.argv[2]));
+for (const base of [here, cwd]) {
+  candidates.push(
+    resolve(base, 'checklistView.js'),
+    resolve(base, '../src/checklistView.js'),
+    resolve(base, 'src/checklistView.js'),
+    resolve(base, 'frontend/src/checklistView.js'),
+    resolve(base, '../frontend/src/checklistView.js'),
+    resolve(base, '../../frontend/src/checklistView.js'),
+  );
+}
+
+const found = candidates.find(p => existsSync(p));
+if (!found) {
+  console.error('Could not find checklistView.js. Looked in:\n  '
+    + [...new Set(candidates)].join('\n  ')
+    + '\n\nPut this file next to checklistView.js, or pass the path:\n'
+    + '  node test_checklistView.mjs path/to/checklistView.js');
+  process.exit(1);
+}
+console.log(`checklistView.js: ${found}`);
+
+// pathToFileURL, not a bare path — a Windows path imported as a specifier is
+// read as a URL and 'C:' becomes a protocol.
+const {
   isPlayDone, toInputDate,
   groupPlaysByStage, sortPlaysWithin,
   ownerFilterOptions, validOwnerFilter,
   buildChecklistGroups, currentStageKey,
   playMatchesOwner, readStoredSort, readStoredOwnerFilter,
   CHECKLIST_SORTS,
-} from '../src/checklistView.js';
+} = await import(pathToFileURL(found).href);
 
 let pass = 0, fail = 0;
 const check = (name, ok, detail = '') => {
