@@ -154,6 +154,17 @@ const reset = () => { created.length = 0; sqlSeen.length = 0; handlers = []; };
     // resolved as 'member' and stop receiving submissions on their own project.
     check('ORDER BY keeps the most permissive basis', /ORDER BY c\.user_id, c\.rank/.test(sql));
     check('members are approved-only', /pm\.status\s*=\s*'approved'/.test(sql));
+    // 2026_140. Without the IS NULL predicate on the project arm, every
+    // follower of any single task silently becomes a follower of the whole
+    // project on the first event after deploy.
+    check('the project watcher arm is scoped to play_instance_id IS NULL',
+      /'watcher', 4[\s\S]{0,220}w\.play_instance_id IS NULL/.test(sql));
+    check('there is a separate play-scoped watcher arm',
+      /'play_watcher', 4/.test(sql) && /w\.play_instance_id = \$5::int/.test(sql));
+    // Rank 4 for both: a person following the project AND one of its tasks is
+    // deduped to whichever DISTINCT ON reaches first, and both bases receive
+    // the same events for this task, so either answer is correct.
+    check('play_watcher outranks member', /'play_watcher', 4/.test(sql) && /'member', 5/.test(sql));
     check('members are non-exited', /pm\.exited_at IS NULL/.test(sql));
     check('actor is excluded', /c\.user_id <> COALESCE\(\$4::int, -1\)/.test(sql));
     check('inactive org users excluded', /ou\.is_active = TRUE/.test(sql));
@@ -263,8 +274,45 @@ const reset = () => { created.length = 0; sqlSeen.length = 0; handlers = []; };
   rec = await unblock.resolveUnblockRecipients(
     { id: 3, title: 'T', ownerUserId: 99, handoverId: 10 }, 1, 99);
   check('the actor is never told they unblocked themselves',
-    rec.length === 0, JSON.stringify(rec));
-  check('and no query is issued for that case', sqlSeen.length === 0);
+    !rec.some(r => r.userId === 99), JSON.stringify(rec));
+
+  // 2026_140 CHANGED THIS. It used to early-return the moment the actor owned
+  // the dependent, which was fine when the owner was the only recipient. Now
+  // followers of that task must still be told — the actor being its owner says
+  // nothing about whether somebody else was waiting on it. The old assertion
+  // here ("no query is issued") asserted the early return itself and is gone;
+  // asserting an implementation shortcut is how a harness blocks a correct
+  // change.
+  reset();
+  handlers = [
+    [/play_instance_id = \$1/, () => ({ rows: [{ id: 88, name: 'Fay Follower' }] })],
+  ];
+  rec = await unblock.resolveUnblockRecipients(
+    { id: 3, title: 'T', ownerUserId: 99, handoverId: 10 }, 1, 99);
+  check('a follower is told even when the actor owns the dependent',
+    rec.length === 1 && rec[0].userId === 88 && rec[0].basis === 'play_watcher',
+    JSON.stringify(rec));
+
+  reset();
+  handlers = [
+    [/WHERE u\.id = \$1/, () => ({ rows: [{ id: 55, name: 'Ollie Owner' }] })],
+    [/play_instance_id = \$1/, () => ({ rows: [{ id: 55, name: 'Ollie Owner' }] })],
+  ];
+  rec = await unblock.resolveUnblockRecipients(
+    { id: 3, title: 'T', ownerUserId: 55, handoverId: 10 }, 1, 99);
+  check('someone who owns AND follows a task is notified once',
+    rec.length === 1, JSON.stringify(rec));
+
+  reset();
+  handlers = [
+    [/WHERE u\.id = \$1/, () => ({ rows: [{ id: 55, name: 'Ollie Owner' }] })],
+    [/play_instance_id = \$1/, () => ({ rows: [] })],
+  ];
+  rec = await unblock.resolveUnblockRecipients(
+    { id: 3, title: 'T', ownerUserId: 55, handoverId: 10 }, 1, 99);
+  const pwq = sqlSeen.find(s => /play_instance_id = \$1/.test(s.sql));
+  check('the follower lookup is scoped to THIS task, not the project',
+    !!pwq && /w\.play_instance_id = \$1/.test(pwq.sql));
 
   reset();
   handlers = [
@@ -350,6 +398,15 @@ const reset = () => { created.length = 0; sqlSeen.length = 0; handlers = []; };
   check('setWatchers issued a DELETE', !!del);
   check('the DELETE spares self-subscribed rows',
     !!del && /self_subscribed = FALSE/.test(del.sql), del?.sql);
+  // 2026_140, same hazard one layer along: this DELETE replaces the PROJECT
+  // list, so without the scope a manager saving the panel would silently remove
+  // every per-play follower on the project.
+  check('the DELETE spares per-play rows',
+    !!del && /play_instance_id IS NULL/.test(del.sql), del?.sql);
+
+  const lw = sqlSeen.find(s => /FROM project_play_watchers w/.test(s.sql));
+  check('listWatchers returns project-level rows only',
+    !!lw && /w\.play_instance_id IS NULL/.test(lw.sql), lw?.sql);
 
   const ins = sqlSeen.find(s => /INSERT INTO project_play_watchers/.test(s.sql));
   check('manager-added rows are written as NOT self-subscribed',

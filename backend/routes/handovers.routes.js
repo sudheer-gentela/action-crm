@@ -710,6 +710,46 @@ router.put('/sales/:id/review-watchers/me', async (req, res) => {
   }
 });
 
+// ── Per-play watchers (2026_140) ─────────────────────────────────────────────
+//
+// Following ONE task rather than the whole project. Same eligibility rule as
+// the project-level route above — the service enforces it — but no management
+// gate: there is no manager-curated per-play list, only each person's own.
+
+// Every task on this project the caller follows, as bare ids. One call for the
+// whole checklist rather than one per row.
+router.get('/sales/:id/play-watchers/me', async (req, res) => {
+  try {
+    res.json(await playReview.myPlayWatches(
+      parseInt(req.params.id), req.orgId, req.user.userId));
+  } catch (err) {
+    console.error('My play watches error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+router.get('/sales/:id/plays/:instanceId/watchers', async (req, res) => {
+  try {
+    res.json(await playReview.listPlayWatchers(
+      parseInt(req.params.id), req.orgId, parseInt(req.params.instanceId)));
+  } catch (err) {
+    console.error('List play watchers error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+router.put('/sales/:id/plays/:instanceId/watchers/me', async (req, res) => {
+  try {
+    const on = req.body?.subscribed === true;
+    res.json(await playReview.setPlayWatch(
+      parseInt(req.params.id), req.orgId, req.user.userId,
+      parseInt(req.params.instanceId), on));
+  } catch (err) {
+    console.error('Play watch error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message, code: err.code } });
+  }
+});
+
 // ── POST /sales/:id/plays  — add an ad-hoc checklist item ─────────────────────
 
 // ── PUT /sales/:id/playbook — attach a playbook and activate its first stage ──

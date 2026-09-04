@@ -132,30 +132,61 @@ async function newlyUnblocked(completedInstanceId, orgId) {
  * task should not mail you about it.
  */
 async function resolveUnblockRecipients(dependent, orgId, actorId) {
-  const wanted = dependent.ownerUserId
-    ? { userId: dependent.ownerUserId, basis: 'assignee' }
-    : null;
+  const out = [];
 
-  if (wanted) {
-    if (wanted.userId === actorId) return [];
+  if (dependent.ownerUserId) {
+    if (dependent.ownerUserId !== actorId) {
+      const { rows } = await pool.query(
+        `SELECT u.id, u.first_name || ' ' || u.last_name AS name
+           FROM users u
+           JOIN org_users ou ON ou.user_id = u.id AND ou.org_id = $2 AND ou.is_active = TRUE
+          WHERE u.id = $1`,
+        [dependent.ownerUserId, orgId]);
+      out.push(...rows.map(r => ({ userId: r.id, name: r.name, basis: 'assignee' })));
+    }
+  } else {
     const { rows } = await pool.query(
       `SELECT u.id, u.first_name || ' ' || u.last_name AS name
-         FROM users u
+         FROM sales_handovers h
+         JOIN users u ON u.id = h.assigned_service_owner_id
          JOIN org_users ou ON ou.user_id = u.id AND ou.org_id = $2 AND ou.is_active = TRUE
-        WHERE u.id = $1`,
-      [wanted.userId, orgId]);
-    return rows.map(r => ({ userId: r.id, name: r.name, basis: 'assignee' }));
+        WHERE h.id = $1 AND h.org_id = $2
+          AND u.id <> COALESCE($3::int, -1)`,
+      [dependent.handoverId, orgId, actorId ?? null]);
+    out.push(...rows.map(r => ({ userId: r.id, name: r.name, basis: 'owner_fallback' })));
   }
 
-  const { rows } = await pool.query(
+  // 2026_140. Anyone following THIS task.
+  //
+  // A person who followed one task on a 49-task plan almost certainly did so
+  // because they are waiting on it, and "it is ready to start" is the highest-
+  // signal thing that can happen to a task. Withholding it here would mean the
+  // follow button delivers review chatter and misses the one event a follower
+  // actually wants.
+  //
+  // PROJECT-level watchers are NOT included. They did not single this task out,
+  // and on a dense graph they would receive an unblock notice for most of the
+  // plan — which is how a channel stops being read.
+  const { rows: pw } = await pool.query(
     `SELECT u.id, u.first_name || ' ' || u.last_name AS name
-       FROM sales_handovers h
-       JOIN users u ON u.id = h.assigned_service_owner_id
+       FROM project_play_watchers w
+       JOIN users u ON u.id = w.user_id
        JOIN org_users ou ON ou.user_id = u.id AND ou.org_id = $2 AND ou.is_active = TRUE
-      WHERE h.id = $1 AND h.org_id = $2
-        AND u.id <> COALESCE($3::int, -1)`,
-    [dependent.handoverId, orgId, actorId ?? null]);
-  return rows.map(r => ({ userId: r.id, name: r.name, basis: 'owner_fallback' }));
+      WHERE w.handover_id = $3 AND w.org_id = $2
+        AND w.play_instance_id = $1
+        AND u.id <> COALESCE($4::int, -1)`,
+    [dependent.id, orgId, dependent.handoverId, actorId ?? null]);
+
+  // Deduped against the owner: someone can follow a task they own, and two
+  // rows here would be two identical emails.
+  const seen = new Set(out.map(r => r.userId));
+  for (const r of pw) {
+    if (seen.has(r.id)) continue;
+    seen.add(r.id);
+    out.push({ userId: r.id, name: r.name, basis: 'play_watcher' });
+  }
+
+  return out;
 }
 
 /**
@@ -217,14 +248,28 @@ async function notifyUnblocked(completedInstanceId, orgId, actorId) {
         // task, is being told that something is ready and nobody has it. A
         // shared body would have to be vague enough to suit both, and would
         // then prompt neither to do anything.
+        // Three bodies, because three different people are being told three
+        // different things. The owner is told to start; the PM, on an unowned
+        // task, that something is ready and nobody has it; a follower, that the
+        // task they asked about has moved — and a follower must NOT be told to
+        // begin, because it is not their task.
+        //
+        // Before 2026_140 this was a two-way ternary, so a play watcher would
+        // have received the owner's copy and been told to start someone else's
+        // work.
         const title = r.basis === 'owner_fallback'
           ? `Ready to start, unassigned: ${dep.title}`
-          : `You can start: ${dep.title}`;
+          : r.basis === 'play_watcher'
+            ? `Unblocked: ${dep.title}`
+            : `You can start: ${dep.title}`;
         const body = r.basis === 'owner_fallback'
           ? `"${completedTitle}" is finished on ${projectName}, so "${dep.title}" is no longer `
             + 'blocked. Nobody is assigned to it.'
-          : `"${completedTitle}" is finished on ${projectName}, so "${dep.title}" is no longer `
-            + 'blocked and you can begin.';
+          : r.basis === 'play_watcher'
+            ? `"${completedTitle}" is finished on ${projectName}, so "${dep.title}" — which you `
+              + 'follow — is no longer blocked.'
+            : `"${completedTitle}" is finished on ${projectName}, so "${dep.title}" is no longer `
+              + 'blocked and you can begin.';
 
         try {
           await notificationService.createNotification(

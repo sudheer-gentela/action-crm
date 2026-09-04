@@ -878,6 +878,12 @@ async function listWatchers(handoverId, orgId) {
        FROM project_play_watchers w
        JOIN users u ON u.id = w.user_id
       WHERE w.handover_id = $1 AND w.org_id = $2
+        -- 2026_140. Project-level rows ONLY. This list drives the panel a
+        -- manager edits, and setWatchers replaces exactly what it shows; if
+        -- per-play rows appeared here they would be offered a Remove button
+        -- that removes them from a list they were never on, and the next save
+        -- would delete them.
+        AND w.play_instance_id IS NULL
       ORDER BY u.first_name, u.last_name`,
     [handoverId, orgId]);
   return rows.map(r => ({
@@ -928,13 +934,18 @@ async function setWatchers(handoverId, orgId, actorId, userIds = []) {
   try {
     await client.query('BEGIN');
     await client.query(
+      // 2026_140: play_instance_id IS NULL. Same hazard the self_subscribed
+      // predicate guards, one layer along — this DELETE replaces the
+      // PROJECT-level list, and without the scope it would silently remove
+      // every per-play follower on the project every time a manager saved.
       `DELETE FROM project_play_watchers
-        WHERE handover_id = $1 AND org_id = $2 AND self_subscribed = FALSE`,
+        WHERE handover_id = $1 AND org_id = $2 AND self_subscribed = FALSE
+          AND play_instance_id IS NULL`,
       [handoverId, orgId]);
     for (const uid of ids) {
       await client.query(
         `INSERT INTO project_play_watchers (org_id, handover_id, user_id, created_by, self_subscribed)
-         VALUES ($1, $2, $3, $4, FALSE) ON CONFLICT (handover_id, user_id) DO NOTHING`,
+         VALUES ($1, $2, $3, $4, FALSE) ON CONFLICT (handover_id, user_id) WHERE play_instance_id IS NULL DO NOTHING`,
         [orgId, handoverId, uid, actorId]);
     }
     await client.query('COMMIT');
@@ -984,7 +995,11 @@ async function setSelfWatch(handoverId, orgId, userId, on) {
     // deliberately put them on is a different feature, and not this one.
     const { rowCount } = await pool.query(
       `DELETE FROM project_play_watchers
-        WHERE handover_id = $1 AND org_id = $2 AND user_id = $3 AND self_subscribed = TRUE`,
+        WHERE handover_id = $1 AND org_id = $2 AND user_id = $3 AND self_subscribed = TRUE
+          -- Unfollowing the PROJECT leaves any tasks they follow alone. The two
+          -- are separate decisions and the button that calls this says
+          -- "project".
+          AND play_instance_id IS NULL`,
       [handoverId, orgId, userId]);
     return { subscribed: false, changed: rowCount > 0 };
   }
@@ -1018,7 +1033,7 @@ async function setSelfWatch(handoverId, orgId, userId, on) {
   const { rowCount } = await pool.query(
     `INSERT INTO project_play_watchers (org_id, handover_id, user_id, created_by, self_subscribed)
      VALUES ($1, $2, $3, $3, TRUE)
-     ON CONFLICT (handover_id, user_id) DO NOTHING`,
+     ON CONFLICT (handover_id, user_id) WHERE play_instance_id IS NULL DO NOTHING`,
     [orgId, handoverId, userId]);
 
   return { subscribed: true, changed: rowCount > 0 };
@@ -1037,12 +1052,154 @@ async function selfWatchState(handoverId, orgId, userId) {
   if (!userId) return { subscribed: false, selfSubscribed: false };
   const { rows: [r] } = await pool.query(
     `SELECT self_subscribed FROM project_play_watchers
-      WHERE handover_id = $1 AND org_id = $2 AND user_id = $3`,
+      WHERE handover_id = $1 AND org_id = $2 AND user_id = $3
+        AND play_instance_id IS NULL`,
     [handoverId, orgId, userId]);
   return {
     subscribed: !!r,
     selfSubscribed: r?.self_subscribed === true,
   };
+}
+
+// ── Per-play watchers (2026_140) ────────────────────────────────────────────
+//
+// Following ONE task. Separate functions from the project-level ones above
+// rather than a flag on them, because almost every rule differs: eligibility is
+// the same, but the uniqueness index, the scope of a delete, what the list
+// means and who may set it are all different, and a shared function with an
+// `if (playInstanceId)` running through it would be four rules wearing one name.
+
+/**
+ * The task must be on the project the caller named.
+ *
+ * Checked rather than assumed, because the play id arrives from the client. A
+ * missing check would let someone follow a task on a project they cannot see by
+ * pairing its instance id with a project they can — and then receive that
+ * task's title and status in every notification.
+ */
+async function _playOnProject(handoverId, orgId, playInstanceId) {
+  const { rows: [r] } = await pool.query(
+    `SELECT 1 AS ok FROM project_play_instances
+      WHERE id = $1 AND handover_id = $2 AND org_id = $3`,
+    [playInstanceId, handoverId, orgId]);
+  return !!r;
+}
+
+/**
+ * Follow or unfollow ONE task.
+ *
+ * Eligibility is deliberately the SAME rule as setSelfWatch — approved member,
+ * service owner, creator, or org admin — and not something narrower like "the
+ * assignee". Following a task you do not own is the normal case: it is what
+ * someone waiting on a dependency does, and it is the whole reason per-play
+ * watching is worth having over project watching.
+ *
+ * A play-level row and a project-level row can both exist for one person. They
+ * mean different things and the two partial unique indexes in 2026_140 keep
+ * them apart. resolveRecipients dedupes to one notification per person, with
+ * 'watcher' outranking 'play_watcher' — so somebody following both the project
+ * and one of its tasks is treated as following the project, which is the more
+ * permissive of the two and therefore the right answer.
+ *
+ * @param {boolean} on
+ */
+async function setPlayWatch(handoverId, orgId, userId, playInstanceId, on) {
+  if (!userId) throw Object.assign(new Error('Not signed in'), { status: 401 });
+  const pid = parseInt(playInstanceId, 10);
+  if (!Number.isInteger(pid)) {
+    throw Object.assign(new Error('A task id is required'), { status: 400 });
+  }
+
+  if (!on) {
+    // No eligibility check, matching setSelfWatch: someone who has lost access
+    // must still be able to take themselves off, and a gate here would trap
+    // them on the list.
+    //
+    // self_subscribed is NOT tested. Unlike the project list, there is no
+    // manager-managed per-play list — nothing but this function writes a
+    // play-level row, so every one of them is the person's own.
+    const { rowCount } = await pool.query(
+      `DELETE FROM project_play_watchers
+        WHERE handover_id = $1 AND org_id = $2 AND user_id = $3
+          AND play_instance_id = $4`,
+      [handoverId, orgId, userId, pid]);
+    return { subscribed: false, changed: rowCount > 0, playInstanceId: pid };
+  }
+
+  if (!(await _playOnProject(handoverId, orgId, pid))) {
+    throw Object.assign(
+      new Error('That task is not on this project.'),
+      { status: 404, code: 'PLAY_NOT_ON_PROJECT' });
+  }
+
+  const { rows: [ok] } = await pool.query(
+    `SELECT 1 AS ok
+       FROM sales_handovers h
+       JOIN org_users ou ON ou.org_id = h.org_id AND ou.user_id = $3 AND ou.is_active = TRUE
+      WHERE h.id = $1 AND h.org_id = $2
+        AND ( ou.role IN ('admin', 'owner')
+           OR h.assigned_service_owner_id = $3
+           OR h.created_by = $3
+           OR EXISTS (SELECT 1 FROM project_members pm
+                       WHERE pm.context_type = 'handover'
+                         AND pm.context_id   = h.id
+                         AND pm.org_id       = h.org_id
+                         AND pm.user_id      = $3
+                         AND pm.status       = 'approved'
+                         AND pm.exited_at IS NULL) )`,
+    [handoverId, orgId, userId]);
+
+  if (!ok) {
+    throw Object.assign(
+      new Error('You need to be on this project to follow its tasks.'),
+      { status: 403, code: 'NOT_ON_PROJECT' });
+  }
+
+  // Infers idx_ppw_play_unique via its predicate, exactly as the project-level
+  // inserts infer idx_ppw_project_unique via theirs.
+  const { rowCount } = await pool.query(
+    `INSERT INTO project_play_watchers
+       (org_id, handover_id, user_id, created_by, self_subscribed, play_instance_id)
+     VALUES ($1, $2, $3, $3, TRUE, $4)
+     ON CONFLICT (handover_id, user_id, play_instance_id)
+       WHERE play_instance_id IS NOT NULL DO NOTHING`,
+    [orgId, handoverId, userId, pid]);
+
+  return { subscribed: true, changed: rowCount > 0, playInstanceId: pid };
+}
+
+/**
+ * Which tasks on this project is the caller following?
+ *
+ * Returns bare ids. The checklist already has every task on screen with its
+ * title, so sending names would be sending back what the caller just rendered,
+ * and one array of integers lets it mark rows without a lookup per row.
+ */
+async function myPlayWatches(handoverId, orgId, userId) {
+  if (!userId) return { playInstanceIds: [] };
+  const { rows } = await pool.query(
+    `SELECT play_instance_id FROM project_play_watchers
+      WHERE handover_id = $1 AND org_id = $2 AND user_id = $3
+        AND play_instance_id IS NOT NULL`,
+    [handoverId, orgId, userId]);
+  return { playInstanceIds: rows.map(r => r.play_instance_id) };
+}
+
+/**
+ * Everyone following ONE task, for the task's own panel.
+ *
+ * Readable by anyone who can see the project, like listWatchers. Knowing who
+ * else is watching a task is how somebody decides whether they need to be.
+ */
+async function listPlayWatchers(handoverId, orgId, playInstanceId) {
+  const { rows } = await pool.query(
+    `SELECT w.user_id, u.first_name || ' ' || u.last_name AS name, u.email
+       FROM project_play_watchers w
+       JOIN users u ON u.id = w.user_id
+      WHERE w.handover_id = $1 AND w.org_id = $2 AND w.play_instance_id = $3
+      ORDER BY u.first_name, u.last_name`,
+    [handoverId, orgId, playInstanceId]);
+  return { watchers: rows.map(r => ({ userId: r.user_id, name: r.name, email: r.email })) };
 }
 
 /**
@@ -1070,7 +1227,7 @@ async function seedWatchersFromOrgDefault(handoverId, orgId, actorId) {
       // to derive self-subscription: a manager who is in the org default gets
       // a row where the two are equal without having subscribed to anything.
       `INSERT INTO project_play_watchers (org_id, handover_id, user_id, created_by, self_subscribed)
-       VALUES ($1, $2, $3, $4, FALSE) ON CONFLICT (handover_id, user_id) DO NOTHING`,
+       VALUES ($1, $2, $3, $4, FALSE) ON CONFLICT (handover_id, user_id) WHERE play_instance_id IS NULL DO NOTHING`,
       [orgId, handoverId, uid, actorId ?? null]).catch(() => {});
   }
   return listWatchers(handoverId, orgId);
@@ -1089,6 +1246,9 @@ module.exports = {
   setWatchers,
   setSelfWatch,
   selfWatchState,
+  setPlayWatch,
+  myPlayWatches,
+  listPlayWatchers,
   seedWatchersFromOrgDefault,
   OPEN_STATUSES,
   TERMINAL_STATUSES,

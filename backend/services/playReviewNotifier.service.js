@@ -14,10 +14,23 @@
  *   owner        the Project Manager                      every event
  *   creator      whoever created the project              every event
  *   assignee     the task's owner_user_id                 every event
- *   watcher      project_play_watchers, incl. self-added  every event
+ *   watcher      project_play_watchers, play_instance_id  every event ON THIS
+ *                IS NULL — the project-level ones          PROJECT
+ *   play_watcher project_play_watchers scoped to THIS      every event ON THIS
+ *                task (2026_140)                           TASK ONLY
  *   member       approved project_members (2026_138)      COMPLETIONS ONLY
  *
  *   never        the person who performed the action
+ *
+ * A PLAY WATCHER DOES NOT GET PROJECT TRAFFIC. Following one task on a 49-task
+ * plan is a statement about that task; delivering the other 48 tasks' review
+ * events to someone who asked about one of them is the noise problem this
+ * whole basis system exists to avoid, and it would arrive at precisely the
+ * people who were most specific about what they wanted.
+ *
+ * The two kinds live in one table and are told apart by play_instance_id being
+ * NULL — see 2026_140 for why that rather than a sibling table, and for the
+ * unique-index trap that shape carries.
  *
  * WHY MEMBERS ARE NOT SIMPLY ADDED TO THE FLAT LIST. A project team is the
  * whole point of project_members — on a 49-task plan with eight people, giving
@@ -101,7 +114,7 @@ const COMPLETION_ONLY_BASES = ['member'];
  * receiving submissions on their own project — the exact failure this function
  * exists to prevent, arriving silently through a rule meant to reduce noise.
  */
-async function resolveRecipients(handoverId, orgId, { actorId, assigneeId } = {}) {
+async function resolveRecipients(handoverId, orgId, { actorId, assigneeId, playInstanceId } = {}) {
   const { rows } = await pool.query(
     `WITH candidates AS (
        SELECT h.assigned_service_owner_id AS user_id, 'owner'::text AS basis, 1 AS rank
@@ -112,9 +125,28 @@ async function resolveRecipients(handoverId, orgId, { actorId, assigneeId } = {}
        UNION ALL
        SELECT $3::int, 'assignee', 3
        UNION ALL
+       -- Project-level watchers: play_instance_id IS NULL. This predicate is
+       -- new in 2026_140 and is the whole safety of that migration on this
+       -- path — without it, adding per-play rows would have turned every
+       -- follower of any single task into a follower of the entire project,
+       -- silently, on the first event after deploy.
        SELECT w.user_id, 'watcher', 4
          FROM project_play_watchers w
         WHERE w.handover_id = $1 AND w.org_id = $2
+          AND w.play_instance_id IS NULL
+       UNION ALL
+       -- Watchers of THIS task only (2026_140).
+       --
+       -- $5 is NULL for any event not tied to a specific task, and comparing
+       -- anything to NULL with = is never true, so this arm contributes nothing
+       -- in that case rather than matching every play watcher on the project.
+       -- That is the correct failure direction: a missing playInstanceId
+       -- under-notifies a few people instead of mailing everyone who follows
+       -- anything.
+       SELECT w.user_id, 'play_watcher', 4
+         FROM project_play_watchers w
+        WHERE w.handover_id = $1 AND w.org_id = $2
+          AND w.play_instance_id = $5::int
        UNION ALL
        -- 2026_138. Approved, non-exited members of THIS project.
        --
@@ -143,7 +175,7 @@ async function resolveRecipients(handoverId, orgId, { actorId, assigneeId } = {}
         AND EXISTS (SELECT 1 FROM org_users ou
                      WHERE ou.org_id = $2 AND ou.user_id = c.user_id AND ou.is_active = TRUE)
       ORDER BY c.user_id, c.rank`,
-    [handoverId, orgId, assigneeId ?? null, actorId ?? null]
+    [handoverId, orgId, assigneeId ?? null, actorId ?? null, playInstanceId ?? null]
   );
   return rows.map(r => ({ userId: r.user_id, name: r.name, email: r.email, basis: r.basis }));
 }
@@ -252,6 +284,9 @@ async function notify(event, { orgId, handoverId, instance, actorId, targetStatu
     const all = await resolveRecipients(handoverId, orgId, {
       actorId,
       assigneeId: instance?.owner_user_id ?? null,
+      // 2026_140. Without this the play-watcher arm matches nothing and
+      // following a task would be a control that silently does nothing.
+      playInstanceId: instance?.id ?? null,
     });
 
     // Filtered AFTER resolution rather than inside the query, so `suppressed`
