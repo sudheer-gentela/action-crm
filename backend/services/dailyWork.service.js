@@ -195,6 +195,9 @@ async function createItem(orgId, actorUserId, input) {
     anchorId = null,
     targetDate = null,
     assignedBy = null,
+    // 2026_140. The day being logged, when this item is created during a
+    // backfill. Clamped to today below — see the note at the INSERT.
+    openedOn = null,
   } = input;
 
   if (!['recurring', 'assigned'].includes(kind)) {
@@ -216,16 +219,45 @@ async function createItem(orgId, actorUserId, input) {
     const teamId = await resolvePrimaryTeamId(client, orgId, ownerUserId);
     const status = kind === 'assigned' ? 'yet_to_start' : 'active';
 
+    // ── opened_on (2026_140) ─────────────────────────────────────────────
+    //
+    // TWO BUGS FIXED HERE, and the second was blocking real work.
+    //
+    // 1. IT WAS THE DATABASE'S CURRENT_DATE, which is UTC. opened_on is a
+    //    LOCAL date everywhere it is read — saveDay compares it against
+    //    entryDate, which comes from the owner's own calendar — so a UTC
+    //    default was comparing two different things. At UTC+5:30 the drift
+    //    runs the harmless way, because UTC's date is behind and the check
+    //    only gets more permissive. West of UTC it runs the other way, and
+    //    somebody logging their own CURRENT day is refused for an item they
+    //    created an hour ago. Resolved from the owner's timezone now.
+    //
+    // 2. AN ITEM CREATED DURING A BACKFILL OPENED TODAY, and then failed
+    //    saveDay's "that item did not exist yet" check for the very day it
+    //    was created to describe. Someone who forgot to log Tuesday, and on
+    //    Thursday adds an item to record what they did, was refused — with a
+    //    message that is accurate and describes a situation the product
+    //    created. openedOn lets the caller say which day is being logged.
+    //
+    // LEAST, not a bare openedOn: an item may open in the PAST, never in the
+    // future. Without the clamp, a future date would create an item that does
+    // not exist yet — the inverse of the hole the saveDay check guards, opened
+    // by the fix for it.
+    const tz = await dwDate.resolveTimezone(
+      (sql, params) => client.query(sql, params), orgId, ownerUserId);
+    const localToday = dwDate.localDate(tz);
+    const openedOnDate = openedOn && openedOn < localToday ? openedOn : localToday;
+
     const { rows } = await client.query(
       `INSERT INTO daily_work_items
          (org_id, owner_user_id, kind, title, activity_type_key,
           anchor_kind, anchor_id, account_id, status, department_team_id,
-          created_by, assigned_by, target_date)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+          created_by, assigned_by, target_date, opened_on)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
        RETURNING ${ITEM_COLUMNS}`,
       [orgId, ownerUserId, kind, title.trim(), activityTypeKey,
        anchorKind, anchorId, accountId, status, teamId,
-       actorUserId, assignedBy, targetDate]);
+       actorUserId, assignedBy, targetDate, openedOnDate]);
 
     return rows[0];
   });

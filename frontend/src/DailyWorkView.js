@@ -448,6 +448,21 @@ export default function DailyWorkView() {
         activityTypeKey: newItem.activityTypeKey || null,
         anchorKind: anchorKind || null,
         anchorId: anchorId ? Number(anchorId) : null,
+        // 2026_140. The day this composer is open on, not today.
+        //
+        // Without it the item opened today and then failed saveDay's "that
+        // item did not exist yet on the day you are logging" check for the
+        // very entry it was added to carry — so adding an item while
+        // backfilling Tuesday was impossible on Thursday. The date was on
+        // screen the whole time; it just was not being sent.
+        //
+        // The server clamps forward dates to today, so a composer open on a
+        // future day cannot create an item that does not exist yet.
+        // day.entryDate, not viewDate: the server returns the day it actually
+        // resolved in the owner's timezone, and that is the date saveDay will
+        // compare opened_on against. A client-side guess could differ by one
+        // across midnight and reintroduce the bug in a rarer form.
+        openedOn: day?.entryDate || null,
       });
       setNewItem({ title: '', activityTypeKey: '', anchor: '' });
       setAdding(false);

@@ -303,6 +303,16 @@ router.post('/items', async (req, res) => {
     const targetDate = asDate(b.targetDate);
     if (targetDate === undefined) return res.status(400).json({ error: 'targetDate must be YYYY-MM-DD' });
 
+    // 2026_140. The day the composer is open on, so an item added while
+    // backfilling opens on THAT day rather than today — and then passes
+    // saveDay's "did not exist yet" check for the entry it was created for.
+    // asDate returns undefined on a malformed value and null on absence, so
+    // the explicit undefined test rejects junk instead of silently ignoring it.
+    const openedOn = asDate(b.openedOn);
+    if (openedOn === undefined) {
+      return res.status(400).json({ error: 'openedOn must be YYYY-MM-DD' });
+    }
+
     const item = await dailyWork.createItem(req.orgId, req.userId, {
       kind: b.kind,
       title: b.title,
@@ -310,6 +320,7 @@ router.post('/items', async (req, res) => {
       anchorKind: b.anchorKind || null,
       anchorId,
       targetDate,
+      openedOn,
     });
     res.status(201).json(item);
   } catch (err) { handle(res, err, 'POST /items'); }

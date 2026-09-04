@@ -1133,9 +1133,13 @@ twilio: {
 
     getAnchors: () => api.get('/daily-work/anchors'),
 
-    createItem: ({ kind, title, activityTypeKey, anchorKind, anchorId, targetDate }) =>
+    // openedOn (2026_140): the day the composer is open on. Sent so an item
+    // added while backfilling opens on that day rather than today — without
+    // it, saveDay refuses the entry the item was created to carry.
+    createItem: ({ kind, title, activityTypeKey, anchorKind, anchorId, targetDate, openedOn }) =>
       api.post('/daily-work/items', {
         kind, title, activityTypeKey, anchorKind, anchorId, targetDate,
+        ...(openedOn ? { openedOn } : {}),
       }),
 
     // The shared list, used by every picker: the per-row dropdown, the

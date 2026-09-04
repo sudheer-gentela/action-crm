@@ -864,6 +864,40 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
   // projectItems itself would refetch forever.
   const [updates, setUpdates] = useState({});
   const [openTask, setOpenTask] = useState(null);
+
+  // ── Per-item detail for one logged day (2026_140) ─────────────────────────
+  //
+  // The day row is an AGGREGATE: getLog groups by (user, entry_date) and does
+  // string_agg on the descriptions, so activity, initiative and stage exist
+  // only as per-day SETS. A day with three items across two initiatives can
+  // honestly say "2 initiatives" and nothing more — which is the aggregation
+  // talking, not the data.
+  //
+  // getDayDetail already returns those three per ITEM, resolved to labels. So
+  // the columns go on an expansion rather than on the summary row, where they
+  // would be true.
+  //
+  // Fetched on open, once. Most rows are never expanded, and pulling every
+  // item for every day to serve the few that are is what makes a screen fine
+  // at one week and unusable at thirty days.
+  const [openDayKey, setOpenDayKey] = useState(null);
+  const [dayDetail, setDayDetail] = useState({});
+
+  const toggleDay = async (dateStr) => {
+    const isOpen = openDayKey === dateStr;
+    setOpenDayKey(isOpen ? null : dateStr);
+    if (isOpen || dayDetail[dateStr]) return;
+    if (typeof apiService.dailyWork?.teamDayDetail !== 'function') return;
+    try {
+      const { data } = await apiService.dailyWork.teamDayDetail({
+        user: person.user_id, date: dateStr, ...filters });
+      setDayDetail(d => ({ ...d, [dateStr]: data || [] }));
+    } catch {
+      // The summary row stays. Failing to load the breakdown must not remove
+      // the thing it breaks down.
+      setDayDetail(d => ({ ...d, [dateStr]: [] }));
+    }
+  };
   const taskIds = projectItems
     .filter(i => i.kind === 'task' && i.playInstanceId)
     .map(i => i.playInstanceId);
@@ -1013,29 +1047,100 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
             ) : (
               <table className="dw-logtable">
                 <colgroup>
-                  <col style={{ width: '18%' }} />
-                  <col style={{ width: '15%' }} />
-                  <col style={{ width: '67%' }} />
+                  <col style={{ width: '16%' }} />
+                  <col style={{ width: '13%' }} />
+                  <col style={{ width: '61%' }} />
+                  <col style={{ width: '10%' }} />
                 </colgroup>
                 <thead>
-                  <tr><th>Date</th><th>Item</th><th>What was done</th></tr>
+                  <tr>
+                    <th>Date</th><th>Item</th><th>What was done</th>
+                    <th><span className="dw-sr-only">Actions</span></th>
+                  </tr>
                 </thead>
                 <tbody>
                   {days.map(d => {
                     const e = d.entries[0];
                     const count = d.entries.reduce((n, x) => n + (x.item_count || 0), 0);
+                    const isOpen = openDayKey === d.date;
+                    const rows = dayDetail[d.date];
                     return (
-                      <tr key={d.date}>
-                        <td className="dw-logdate">{formatDate(d.date)}</td>
-                        <td className="dw-logitem muted">
-                          {e ? `${count} ${count === 1 ? 'item' : 'items'}` : 'Not logged'}
-                        </td>
-                        <td className="dw-logwork">
-                          {e
-                            ? d.entries.map(x => x.work_done).filter(Boolean).join(' ')
-                            : <span className="dw-none">—</span>}
-                        </td>
-                      </tr>
+                      <React.Fragment key={d.date}>
+                        <tr>
+                          <td className="dw-logdate">{formatDate(d.date)}</td>
+                          <td className="dw-logitem muted">
+                            {e ? `${count} ${count === 1 ? 'item' : 'items'}` : 'Not logged'}
+                          </td>
+                          <td className="dw-logwork">
+                            {e
+                              ? d.entries.map(x => x.work_done).filter(Boolean).join(' ')
+                              : <span className="dw-none">—</span>}
+                          </td>
+                          <td className="dw-logactions">
+                            {/* Only on days that HAVE something. A day nobody
+                                logged has no items to break down, and a control
+                                that opens an empty panel is worse than none. */}
+                            {e && (
+                              <button type="button" className="dw-btn-link"
+                                      aria-expanded={isOpen}
+                                      onClick={() => toggleDay(d.date)}>
+                                {isOpen ? 'Hide' : 'Details'}
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                        {isOpen && (
+                          <tr className="dw-person-detail">
+                            <td colSpan={4}>
+                              {rows === undefined ? (
+                                <div className="dw-meta">Loading…</div>
+                              ) : rows.length === 0 ? (
+                                <div className="dw-meta">No items to show for this day.</div>
+                              ) : (
+                                <table className="dw-logtable dw-daytable">
+                                  <colgroup>
+                                    <col style={{ width: '26%' }} />
+                                    <col style={{ width: '32%' }} />
+                                    <col style={{ width: '14%' }} />
+                                    <col style={{ width: '16%' }} />
+                                    <col style={{ width: '12%' }} />
+                                  </colgroup>
+                                  <thead>
+                                    <tr>
+                                      <th>Item</th><th>What was done</th>
+                                      <th>Activity</th><th>Initiative</th><th>Stage</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {rows.map(r => (
+                                      <tr key={r.entry_id}>
+                                        <td className="dw-logwork"><b>{r.title}</b></td>
+                                        <td className="dw-logwork">{r.description}</td>
+                                        {/* The LABELS, not the keys. getDayDetail
+                                            resolves activity_type_key and
+                                            anchor_kind/id to words server-side —
+                                            the row also carries the raw keys, and
+                                            rendering those would print
+                                            'linkedin_outreach' at a manager. */}
+                                        <td className="dw-logitem muted">
+                                          {r.activity_label || <span className="dw-none">—</span>}
+                                        </td>
+                                        <td className="dw-logitem muted">
+                                          {r.anchor_label || <span className="dw-none">—</span>}
+                                        </td>
+                                        <td className="dw-logitem muted">
+                                          {String(r.day_stage || '').replace(/_/g, ' ')
+                                            || <span className="dw-none">—</span>}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              )}
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
                     );
                   })}
                 </tbody>
