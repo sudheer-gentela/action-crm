@@ -686,9 +686,14 @@ async function getAssignedItems(orgId, userId, { from, to, includeClosed = false
           AND i.kind = 'assigned'
           AND ($5::boolean IS TRUE
                OR i.status IN ('yet_to_start', 'in_progress', 'in_review'))
+          -- Forward horizon, not a band — same correction as the project side.
+          -- Undated and OVERDUE assigned work always comes back; the window
+          -- only decides how far ahead to look. Filtering overdue items out of
+          -- a "next 7 days" view hides the ones somebody is already late on.
           AND (i.target_date IS NULL
                OR $3::date IS NULL
-               OR i.target_date BETWEEN $3::date AND $4::date)
+               OR i.target_date BETWEEN $3::date AND $4::date
+               OR i.target_date < CURRENT_DATE)
         ORDER BY (i.target_date IS NULL), i.target_date, i.id`,
       [orgId, userId, from || null, to || null, includeClosed]);
 
@@ -729,7 +734,9 @@ async function countAssignedOutside(orgId, userId, { from, to } = {}) {
           AND i.kind = 'assigned'
           AND i.status IN ('yet_to_start', 'in_progress', 'in_review')
           AND i.target_date IS NOT NULL
-          AND (i.target_date < $3::date OR i.target_date > $4::date)`,
+          -- After the window only. Overdue items are shown now, so counting
+          -- them as hidden would contradict the table above the line.
+          AND i.target_date > $4::date`,
       [orgId, userId, from, to]);
     return r?.n || 0;
   });

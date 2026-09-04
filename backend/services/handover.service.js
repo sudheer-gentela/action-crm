@@ -5979,13 +5979,28 @@ async function getPersonProjectItems(userId, orgId, opts = {}) {
        LEFT JOIN deals d ON d.id = h.deal_id
       WHERE ppi.org_id = $2 AND ppi.owner_user_id = $1
         AND ${playPredicates}
-        -- Undated tasks are ALWAYS returned, whatever the window. They are open
-        -- work with no deadline, and a date filter that silently drops them is
-        -- the failure this whole section exists to avoid.
+        -- THE WINDOW IS A FORWARD HORIZON, NOT A BAND (2026_140, revised).
+        --
+        -- Three things always come back, whatever the window:
+        --   • undated work — open work with no deadline
+        --   • OVERDUE work — anything already past its date
+        --   • work due inside the window
+        --
+        -- The overdue clause is the correction. The first version filtered on a
+        -- plain BETWEEN, so switching to "Next 7 days" hid every overdue task —
+        -- the exact work a manager opens this page to find. A forward window
+        -- meaning "and nothing late" is not what anyone reads it as: "what is on
+        -- his plate next week" includes the three things that were due in
+        -- August.
+        --
+        -- $5 is the caller's today. Passed rather than CURRENT_DATE so overdue
+        -- means the same here as it does in the isOverdue flag computed below,
+        -- which is derived from the same value.
         AND (ppi.due_date IS NULL OR $3::date IS NULL
-             OR ppi.due_date BETWEEN $3::date AND $4::date)
+             OR ppi.due_date BETWEEN $3::date AND $4::date
+             OR ppi.due_date < $5::date)
       ORDER BY ppi.due_date NULLS LAST, ppi.id`,
-    [userId, orgId, from, to]);
+    [userId, orgId, from, to, today]);
 
   const commitments = await _personCommitments(userId, orgId, { openOnly: !includeClosed });
 
@@ -6029,7 +6044,10 @@ async function countPersonProjectItemsOutside(userId, orgId, { from, to } = {}) 
       WHERE ppi.org_id = $2 AND ppi.owner_user_id = $1
         AND ${OPEN_PLAY_PREDICATES}
         AND ppi.due_date IS NOT NULL
-        AND (ppi.due_date < $3::date OR ppi.due_date > $4::date)`,
+        -- Only work due AFTER the window. Overdue work is no longer hidden by
+        -- the filter, so counting it here would report as "hidden" something
+        -- the reader can see in the table directly above the line.
+        AND ppi.due_date > $4::date`,
     [userId, orgId, from, to]);
   return r?.n || 0;
 }

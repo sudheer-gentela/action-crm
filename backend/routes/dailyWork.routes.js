@@ -713,6 +713,20 @@ router.get('/people/:userId', async (req, res) => {
     const windowWork    = req.query.windowWork !== 'false';
     const workRange     = windowWork ? { from: win.from, to: win.to } : {};
 
+    // 2026_140. The logging rate FOR THIS PAGE'S WINDOW.
+    //
+    // The header rendered person.days_logged / person.working_days, which come
+    // from the People LIST's rollup — computed for whatever period that screen
+    // was on. So a page showing "Past 7 days" printed "0 of 1 days logged"
+    // because the list happened to be on Day view. Two windows, one number,
+    // and the number belonged to the wrong one.
+    //
+    // slim: the counts are all that is read here — no strip, no arrays.
+    const [rateRow] = await dailyQuery.getRollup(req.orgId, {
+      userIds: [target], from: win.from, to: win.to,
+      filters: readFilters(req.query), slim: true,
+    });
+
     const [log, assigned, assignedOutside, projectSide] = await Promise.all([
       dailyQuery.getLog(req.orgId, {
         userIds: [target], from: win.from, to: win.to, filters: readFilters(req.query) }),
@@ -731,7 +745,16 @@ router.get('/people/:userId', async (req, res) => {
       }), { projectItems: [], projectItemsOutside: 0, projects: [] }),
     ]);
 
-    res.json({ ...win, log, assigned, assignedOutside, includeClosed, windowWork, ...projectSide });
+    res.json({ ...win, log, assigned, assignedOutside, includeClosed, windowWork,
+      // Named `rate` rather than merged into the top level: the client already
+      // has a `person` object carrying the list's figures, and spreading these
+      // over it would leave two sources for one number with no way to tell
+      // which won.
+      rate: rateRow
+        ? { daysLogged: rateRow.days_logged, workingDays: rateRow.working_days,
+            rate: rateRow.rate, hasSchedule: rateRow.has_schedule }
+        : null,
+      ...projectSide });
   } catch (err) { handle(res, err, 'GET /people/:userId'); }
 });
 

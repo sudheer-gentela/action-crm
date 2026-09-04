@@ -800,8 +800,10 @@ function CopyLinkButton() {
 const PERSON_RANGES = [
   { key: 'past7',   label: 'Past 7 days',  back: 6,  fwd: 0 },
   { key: 'past30',  label: 'Past 30 days', back: 29, fwd: 0 },
-  { key: 'next7',   label: 'Next 7 days',  back: 0,  fwd: 6 },
-  { key: 'next30',  label: 'Next 30 days', back: 0,  fwd: 29 },
+  // forward: nothing can have been LOGGED in a future window, so the logging
+  // rate is hidden on these rather than printed as a confident 0%.
+  { key: 'next7',   label: 'Next 7 days',  back: 0,  fwd: 6,  forward: true },
+  { key: 'next30',  label: 'Next 30 days', back: 0,  fwd: 29, forward: true },
 ];
 
 function personRange(key) {
@@ -815,7 +817,7 @@ function personRange(key) {
 function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
   const [state, setState] = useState({
     loading: true, log: [], projectItems: [], projects: [],
-    assigned: [], assignedOutside: 0, projectItemsOutside: 0,
+    assigned: [], assignedOutside: 0, projectItemsOutside: 0, rate: null,
   });
   // Defaults to the past week: the question someone arrives with is almost
   // always "has this person been logging", and that is backward-looking.
@@ -842,16 +844,20 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
         assigned: data.assigned || [],
         assignedOutside: data.assignedOutside || 0,
         projectItemsOutside: data.projectItemsOutside || 0,
+        rate: data.rate || null,
       }); })
       .catch(() => { if (alive) setState({ loading: false, log: [], projectItems: [],
-        projects: [], assigned: [], assignedOutside: 0, projectItemsOutside: 0 }); });
+        projects: [], assigned: [], assignedOutside: 0, projectItemsOutside: 0,
+        rate: null }); });
     return () => { alive = false; };
     // pRange is derived from rangeKey, so keying on the key rather than the
     // object avoids a new object identity refetching on every render.
   }, [person.user_id, rangeKey, showAll]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const name = `${person.first_name || ''} ${person.last_name || ''}`.trim() || 'Unknown';
-  const { log, projectItems, projects, assigned, assignedOutside, projectItemsOutside } = state;
+  const { log, projectItems, projects, assigned, assignedOutside,
+          projectItemsOutside, rate } = state;
+  const isForward = !!(PERSON_RANGES.find(r => r.key === rangeKey) || {}).forward;
 
   // ── Updates logged against each task (2026_140) ───────────────────────────
   //
@@ -961,11 +967,24 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
       <div className="dw-head">
         <div>
           <h1>{name}</h1>
-          <div className="dw-sub">
-            {person.days_logged} of {person.working_days} days logged
-            {person.rate !== null && ` · ${Math.round(person.rate * 100)}%`}
-            {!person.has_schedule && ' · no schedule set'}
-          </div>
+          {/* The rate for THIS PAGE'S window, not the list's.
+              It used to read person.days_logged / person.working_days, which
+              are the People list's rollup for whatever period THAT screen was
+              on — so a page showing seven days announced "0 of 1 days logged".
+
+              Hidden entirely on a forward window: nothing can have been logged
+              next week, and "0 of 5 · 0%" would be a confident statement about
+              days that have not happened. */}
+          {!isForward && rate && (
+            <div className="dw-sub">
+              {rate.daysLogged} of {rate.workingDays} days logged
+              {rate.rate !== null && ` · ${Math.round(rate.rate * 100)}%`}
+              {!rate.hasSchedule && ' · no schedule set'}
+            </div>
+          )}
+          {isForward && (
+            <div className="dw-sub">Showing what is coming up — nothing is logged ahead.</div>
+          )}
         </div>
         <div className="dw-head-actions">
           <CopyLinkButton />
@@ -1040,7 +1059,10 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
           <div className="dw-card">
             <div className="dw-card-head">
               <h2>Their daily log</h2>
-              <span className="m">Every working day in this period</span>
+              <span className="m">
+                {isForward ? 'Nothing is logged ahead of today'
+                           : 'Every working day in this period'}
+              </span>
             </div>
             {days.length === 0 ? (
               <div className="dw-empty"><p>Nothing in this period.</p></div>
@@ -1209,7 +1231,7 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
             )}
             {assignedOutside > 0 && (
               <div className="dw-meta" style={{ padding: '8px 14px 10px' }}>
-                {assignedOutside} more open outside this period.
+                {assignedOutside} more due after this period.
               </div>
             )}
           </div>
@@ -1314,7 +1336,7 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
             )}
             {projectItemsOutside > 0 && (
               <div className="dw-meta" style={{ padding: '8px 14px 10px' }}>
-                {projectItemsOutside} more open outside this period.
+                {projectItemsOutside} more due after this period.
               </div>
             )}
           </div>
