@@ -843,7 +843,31 @@ async function setPlaybook(handoverId, orgId, userId, playbookId, stageKey = nul
  *   sweep each run their own query and are unaffected by this parameter; the
  *   sweep is handled separately below and the other two are still open.
  */
-async function list(orgId, userId, { scope = 'mine', status, kind = null, subordinateIds = [], userRole = null, trackingMode = 'timeboxed' } = {}) {
+/**
+ * @param {string} [opts.q]       free-text filter over project, deal and account name
+ * @param {number} [opts.limit]   page size; omitted or null means no LIMIT (today's behaviour)
+ * @param {number} [opts.offset]  page start; ignored without a limit
+ *
+ * ── 2026_139: THE PAGING SHAPE EXISTS BUT IS NOT USED YET ───────────────────
+ *
+ * The frontend sends none of q, limit or offset, so this function behaves
+ * EXACTLY as it did — one query, every matching row, filtered in the browser.
+ * That is deliberate. Client-side search is instant and the org is nowhere near
+ * the size where the payload hurts, so switching now would trade a fast screen
+ * for a debounced round trip and buy nothing.
+ *
+ * What it buys is that the switch is later a FRONTEND-ONLY change. The query
+ * cost is what bites first — six joins and a COUNT(DISTINCT) over
+ * project_play_instances per row, so ~25,000 play rows aggregated on every list
+ * load at 500 projects of 49 tasks — and when that day comes, nobody wants to
+ * be designing an API under time pressure. Watch for a single org past roughly
+ * 300 projects, or a list load over a second.
+ *
+ * Search is server-side ONLY when q is passed. It has to be: a LIMIT applied
+ * before an unsent filter would silently search one page, which is the worst of
+ * the available failure modes because it looks like "no results".
+ */
+async function _listRows(orgId, userId, { scope = 'mine', status, kind = null, subordinateIds = [], userRole = null, trackingMode = 'timeboxed', q = null, limit = null, offset = 0 } = {}) {
   const params = [orgId];
   const conditions = ['h.org_id = $1'];
 
@@ -941,6 +965,26 @@ async function list(orgId, userId, { scope = 'mine', status, kind = null, subord
     conditions.push(`COALESCE(h.tracking_mode, 'timeboxed') = $${params.length}`);
   }
 
+  // 2026_139. Free text over the three names the list actually displays.
+  //
+  // Matches the browser-side filter this replaces when it is used: that tested
+  // (projectName || dealName) and accountName, and projectName is itself
+  // (h.name || d.name) — so h.name, d.name and a.name is the same three fields.
+  // ILIKE rather than lower(...) LIKE for the same case-insensitivity the
+  // client's toLowerCase() gave, without needing a functional index to match.
+  //
+  // The wildcards are added HERE, not by the caller. A caller building its own
+  // '%...%' would decide the match semantics from the outside, and the first
+  // person to pass a bare string would get exact-match behaviour and no error.
+  // Escaped so a project genuinely named "50% discount" searches for itself
+  // rather than for everything.
+  const qText = String(q ?? '').trim();
+  if (qText) {
+    params.push(`%${qText.replace(/([%_\\])/g, '\\$1')}%`);
+    const p = `$${params.length}`;
+    conditions.push(`(h.name ILIKE ${p} OR d.name ILIKE ${p} OR a.name ILIKE ${p})`);
+  }
+
   const { rows } = await pool.query(
     `SELECT
        h.*,
@@ -991,7 +1035,16 @@ async function list(orgId, userId, { scope = 'mine', status, kind = null, subord
        -- constrains a non-NULL exited_at to status IN ('declined','left'), so
        -- 'approved' already implies it is NULL.
        m.member_count::int                       AS member_count,
-       m.member_names                            AS member_names
+       m.member_names                            AS member_names,
+       -- 2026_139. The full match count, independent of the page.
+       --
+       -- A window function, not a second COUNT query. Window functions are
+       -- evaluated AFTER GROUP BY and before ORDER BY / LIMIT, so this counts
+       -- the groups this WHERE clause produced — the number the caller needs —
+       -- while still returning only the page. A separate count query would mean
+       -- running these six joins twice, and the two could see different data
+       -- between the round trips.
+       COUNT(*) OVER()::int                      AS total_count
      FROM sales_handovers h
      LEFT JOIN deals    d ON d.id  = h.deal_id
      LEFT JOIN accounts a ON a.id  = h.account_id
@@ -1015,11 +1068,72 @@ async function list(orgId, userId, { scope = 'mine', status, kind = null, subord
               r.plays_overdue, r.gates_open, r.commitments_total, r.commitments_closed,
               r.commitments_overdue, r.days_to_go_live, r.is_closeable,
               m.member_count, m.member_names
-     ORDER BY h.created_at DESC`,
+     ORDER BY h.created_at DESC${_pageClause(params, limit, offset)}`,
     params
   );
 
-  return rows.map(r => ({
+  // No rows means no page and therefore no window value to read. Zero is the
+  // honest total in that case — and it must be zero rather than undefined,
+  // because the caller renders "N projects" from it.
+  const total = rows.length ? rows[0].total_count : 0;
+
+  return { rows, total };
+}
+
+/**
+ * Build the LIMIT/OFFSET tail, pushing its parameters.
+ *
+ * Separate so the ORDER BY line stays readable and so the "no limit means no
+ * clause" rule is stated once. Passing limit = null must produce NO tail at
+ * all, not `LIMIT NULL` — which Postgres does accept and treat as unlimited,
+ * but which would leave an unused placeholder in the params array and make the
+ * $1..$N check in the harness fail for a query that actually works.
+ */
+function _pageClause(params, limit, offset) {
+  const lim = Number.isInteger(limit) && limit > 0 ? limit : null;
+  if (!lim) return '';
+  params.push(lim);
+  let tail = `\n     LIMIT $${params.length}`;
+  const off = Number.isInteger(offset) && offset > 0 ? offset : 0;
+  if (off) {
+    params.push(off);
+    tail += ` OFFSET $${params.length}`;
+  }
+  return tail;
+}
+
+/**
+ * The list as an ARRAY, which is what every existing caller expects.
+ *
+ * Kept as its own function rather than changing the return type, because
+ * scripts/test_projectTracking_service.js calls this directly and treats the
+ * result as an array — .some, .every, .map. Changing the shape would have
+ * broken it silently at `dflt.some is not a function`, in a script nobody runs
+ * on the way to production.
+ */
+async function list(orgId, userId, opts = {}) {
+  const { rows } = await _listRows(orgId, userId, opts);
+  return rows.map(r => _fmtListRow(r));
+}
+
+/**
+ * The list WITH its total, for a caller that pages. Used by GET /sales.
+ */
+async function listPage(orgId, userId, opts = {}) {
+  const { rows, total } = await _listRows(orgId, userId, opts);
+  return {
+    handovers: rows.map(r => _fmtListRow(r)),
+    total,
+    // Echoed back so the client is never guessing which page it is looking at
+    // — particularly after a filter change, where a stale offset would leave
+    // it showing page three of a one-page result.
+    limit:  Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : null,
+    offset: Number.isInteger(opts.offset) && opts.offset > 0 ? opts.offset : 0,
+  };
+}
+
+function _fmtListRow(r) {
+  return {
     ...fmt(r),
     // Explicit rather than letting the UI infer from a null name: an
     // unassigned project is an operational state to act on, not missing data.
@@ -1046,7 +1160,7 @@ async function list(orgId, userId, { scope = 'mine', status, kind = null, subord
     commitmentsOverdue: r.r_commitments_overdue  ?? 0,
     daysToGoLive:       r.r_days_to_go_live      ?? null,
     isCloseable:        r.r_is_closeable         ?? null,
-  }));
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -5589,9 +5703,61 @@ async function getOverdueProjectItemsByUsers(orgId, userIds) {
 }
 
 /**
+ * The predicates that decide whether a person's project work is still OPEN.
+ *
+ * ── WHY THESE ARE CONSTANTS AND NOT INLINE SQL ──────────────────────────────
+ *
+ * getPersonProjectItems (what the People screen draws) and getPersonProjectLink
+ * (what validates a click on one of those rows) must agree exactly. Before
+ * 2026_139 they agreed by being the SAME FUNCTION: checkProjectLink called
+ * getPersonProjectItems and searched its output. That was airtight and it is
+ * why the two could not drift — but it also meant the display path could never
+ * be paged without breaking validation, because a paged list stops containing
+ * the project someone is clicking on.
+ *
+ * Splitting them buys the ability to page and costs the guarantee. These
+ * constants buy the guarantee back: there is one text for each rule and both
+ * queries interpolate it, so a change to what "open" means lands in both.
+ *
+ * ── THE ASYMMETRY IS REAL AND IS PRESERVED DELIBERATELY ─────────────────────
+ *
+ * Note that the play predicates test the PROJECT's status and the commitment
+ * predicates do not. That is not an oversight here — it is what the code has
+ * always done, because _personCommitments never filtered on h.status or
+ * h.retired_at, and getPersonProjectItems simply concatenated its output.
+ *
+ * So a person with an open commitment on a COMPLETED project has always seen
+ * that commitment on their timeline, and checkProjectLink has always accepted
+ * the link. The route's own comment claims otherwise — it says
+ * getPersonProjectItems "excludes ... completed/cancelled projects and retired
+ * initiatives, so every one of the ways the basis can lapse is covered" — and
+ * for the commitments half that sentence is not true.
+ *
+ * IT IS LEFT AS IT IS. The invariant that matters is "the link works if and
+ * only if the row is on the screen", and tightening the commitment rule here
+ * would change what the People screen shows as a side effect of a refactor
+ * nobody asked to change behaviour. Whether an open commitment should outlive
+ * its project is a real product question — it is arguably a feature, since you
+ * still owe the thing — and it should be decided on its own, not silently.
+ * Flagged rather than fixed.
+ */
+const OPEN_PLAY_PREDICATES = `
+        ppi.status NOT IN ('completed', 'skipped', 'cancelled')
+    AND h.status NOT IN ('completed', 'cancelled')
+    AND h.retired_at IS NULL`;
+
+// No project-status test, matching _personCommitments. See the note above.
+const OPEN_COMMITMENT_PREDICATES = `
+        c.status IN ('open', 'in_progress')`;
+
+/**
  * One person's project work as individual rows, for the timeline on the People
  * screen. Checklist steps and commitments, both carrying their due date so the
  * caller can place them on a day.
+ *
+ * THE DISPLAY PATH. Safe to page, order, or truncate — nothing validates
+ * against it any more. getPersonProjectLink below answers the "is this link
+ * still honest" question directly.
  */
 async function getPersonProjectItems(userId, orgId) {
   const today = toDateStr(new Date());
@@ -5604,9 +5770,7 @@ async function getPersonProjectItems(userId, orgId) {
        JOIN sales_handovers h ON h.id = ppi.handover_id AND h.org_id = ppi.org_id
        LEFT JOIN deals d ON d.id = h.deal_id
       WHERE ppi.org_id = $2 AND ppi.owner_user_id = $1
-        AND ppi.status NOT IN ('completed', 'skipped', 'cancelled')
-        AND h.status NOT IN ('completed', 'cancelled')
-        AND h.retired_at IS NULL
+        AND ${OPEN_PLAY_PREDICATES}
       ORDER BY ppi.due_date NULLS LAST, ppi.id`,
     [userId, orgId]);
 
@@ -5633,6 +5797,73 @@ async function getPersonProjectItems(userId, orgId) {
     ...plays.map(r => shape(r, 'task')),
     ...commitments.map(r => shape(r, 'commitment')),
   ];
+}
+
+/**
+ * Does this person still have open work on this ONE project?
+ *
+ * THE VALIDATION PATH, split out of getPersonProjectItems in 2026_139.
+ *
+ * checkProjectLink used to answer this by fetching every item the person has
+ * across every project and searching the array. That works, and it is what made
+ * getPersonProjectItems unpageable: page the display and the validator stops
+ * finding projects that are genuinely there, so every click past the first page
+ * is refused with "this task is no longer open and assigned to them" — a lie
+ * that looks exactly like the truthful refusal.
+ *
+ * Same two halves, same predicates, scoped to one project and stopping at the
+ * first hit. Returns null when there is no open work, or the facts the caller
+ * needs to build the link when there is.
+ *
+ * WHY BOTH HALVES ARE STILL HERE. The basis for offering the link is "this
+ * person has open work on this project", and a commitment is open work. Asking
+ * only about plays would refuse a link the People screen is at that moment
+ * displaying — the failure this split exists to avoid, arriving from the other
+ * direction.
+ *
+ * @returns {Promise<{handoverId, project, title, isStanding}|null>}
+ */
+async function getPersonProjectLink(userId, orgId, handoverId) {
+  const { rows } = await pool.query(
+    `SELECT ppi.title AS title,
+            COALESCE(h.name, d.name) AS project,
+            COALESCE(h.tracking_mode, 'timeboxed') AS tracking_mode,
+            h.id AS handover_id,
+            0 AS kind_rank
+       FROM project_play_instances ppi
+       JOIN sales_handovers h ON h.id = ppi.handover_id AND h.org_id = ppi.org_id
+       LEFT JOIN deals d ON d.id = h.deal_id
+      WHERE ppi.org_id = $2 AND ppi.owner_user_id = $1 AND h.id = $3
+        AND ${OPEN_PLAY_PREDICATES}
+
+      UNION ALL
+
+     SELECT c.description,
+            COALESCE(h.name, d.name),
+            COALESCE(h.tracking_mode, 'timeboxed'),
+            h.id,
+            1
+       FROM sales_handover_commitments c
+       JOIN sales_handovers h ON h.id = c.handover_id
+       LEFT JOIN deals d ON d.id = h.deal_id
+      WHERE c.org_id = $2 AND c.owner_user_id = $1 AND h.id = $3
+        AND ${OPEN_COMMITMENT_PREDICATES}
+
+      -- A task before a commitment when the person has both, so the title the
+      -- link carries is the one the click most likely came from. The People
+      -- screen lists tasks first for the same reason.
+      ORDER BY kind_rank
+      LIMIT 1`,
+    [userId, orgId, handoverId]);
+
+  if (!rows.length) return null;
+  const r = rows[0];
+  return {
+    handoverId: r.handover_id,
+    project:    r.project || `Project #${r.handover_id}`,
+    title:      r.title,
+    isStanding: r.tracking_mode === 'standing',
+  };
 }
 
 async function getPersonProjectSummary(userId, orgId) {
@@ -5949,10 +6180,12 @@ module.exports = {
   createProject,           // standalone / internal projects (2026_87)
   setPlaybook,             // attach + activate a playbook (2026_89)
   list,
+  listPage,                 // 2026_139 — same query, plus the full match count
   getTeamMemberProjects,  // person drill-down
   getPersonProjectSummary, // daily work person view — cross-module (2026_133)
   getProjectWorkloadByUser, // People screen — open/overdue per person
   getPersonProjectItems,    // People screen — one person's project rows
+  getPersonProjectLink,     // 2026_139 — validates ONE "open this project" click
   getOverdueProjectItemsByUsers, // People screen — the overdue chip's queue
   getPersonDashboard,     // person side-panel (individual dashboard)
   getContactCommunications, // customer-contact comms drill-down

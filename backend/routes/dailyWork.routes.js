@@ -566,11 +566,23 @@ router.get('/people/overdue', async (req, res) => {
 //   1. getVisibleUserIds — the same check GET /people/:userId already runs.
 //      If you are not allowed to see that this person has the task, you are
 //      not being handed a link because of it.
-//   2. the project is in THIS PERSON's items. getPersonProjectItems already
-//      excludes completed/skipped/cancelled tasks, completed/cancelled
-//      projects and retired initiatives, so every one of the ways the basis
-//      can lapse is covered by asking it again rather than by a second list
-//      of conditions here that would drift from it.
+//   2. the project is in THIS PERSON's items. getPersonProjectLink asks that
+//      question directly, about this one project, using the same predicates
+//      the People screen's rows are drawn with — so every one of the ways the
+//      basis can lapse is covered by one shared rule rather than by a second
+//      list of conditions here that would drift from it.
+//
+//      It used to fetch the person's ENTIRE item list and search it. That was
+//      airtight and unpageable: the moment the display list is paged, a project
+//      on page two is genuinely there and the validator cannot see it, so the
+//      click is refused with a message that reads exactly like the truthful
+//      refusal. Split in 2026_139; the shared predicates in handover.service
+//      are what keeps the two honest.
+//
+//      NOTE the commitment half does not test project status — that is
+//      pre-existing behaviour, documented at OPEN_COMMITMENT_PREDICATES, and
+//      the sentence above is not true for a commitment on a completed project.
+//      Preserved deliberately so the link keeps matching what is on screen.
 //
 // Returns the scope segment too, because the caller has to know which board
 // tab to land on and only the tracking mode decides that.
@@ -592,8 +604,7 @@ router.get('/people/:userId/project/:handoverId', async (req, res) => {
       });
     }
 
-    const items = await handoverService.getPersonProjectItems(target, req.orgId);
-    const match = items.find(i => i.handoverId === handoverId);
+    const match = await handoverService.getPersonProjectLink(target, req.orgId, handoverId);
     if (!match) {
       return res.status(403).json({
         ok: false,

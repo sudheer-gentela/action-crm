@@ -99,16 +99,39 @@ router.get('/sales', async (req, res) => {
       return res.status(400).json({ error: { message: 'trackingMode must be timeboxed|standing|all' } });
     }
 
-    const handovers = await handoverService.list(req.orgId, req.user.userId, {
+    // 2026_139. Paging and server-side search are ACCEPTED but not yet sent by
+    // the frontend, which still filters in the browser. Parsed strictly rather
+    // than passed through: a limit of "abc" must read as "no limit" and not
+    // reach the query builder as a string.
+    //
+    // A limit is capped. Without one, `?limit=1000000` is a way to ask for the
+    // whole table with the paging machinery on, which is the thing paging
+    // exists to prevent.
+    const asPositiveInt = (v, max) => {
+      const n = parseInt(v, 10);
+      if (!Number.isInteger(n) || n <= 0) return null;
+      return max ? Math.min(n, max) : n;
+    };
+    const limit  = asPositiveInt(req.query.limit, 200);
+    const offset = asPositiveInt(req.query.offset) || 0;
+    const q      = typeof req.query.q === 'string' ? req.query.q : null;
+
+    const page = await handoverService.listPage(req.orgId, req.user.userId, {
       scope: requested,
       status,
       kind,
       trackingMode: trackingMode === 'all' ? null : (trackingMode || 'timeboxed'),
+      q,
+      limit,
+      offset,
       // Populated by orgContext on every request; covers solid and dotted lines.
       subordinateIds: req.subordinateIds || [],
       userRole:       await projectSettings.resolveRole(req.orgId, req.user.userId),
     });
-    res.json({ handovers });
+    // `handovers` stays the first-class key so every existing consumer —
+    // HandoverView, DealEmailHistory — reads exactly what it read before.
+    // total/limit/offset are additive.
+    res.json(page);
   } catch (err) {
     console.error('List handovers error:', err);
     res.status(err.status || 500).json({ error: { message: err.message } });

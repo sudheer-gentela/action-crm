@@ -7696,21 +7696,78 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
     return () => { alive = false; };
   }, []);
 
+  // A deep link that could not be opened. Its own state rather than a shared
+  // 'error': everything else in this component reports failure by leaving the
+  // list empty, and this is the one case where the user asked for a specific
+  // thing and needs telling that it is not there.
+  //
+  // Declared HERE, above the deep-link effects, rather than beside returnCrumb
+  // further down — openProjectById below closes over the setter and every one
+  // of those effects calls it.
+  const [deepLinkError, setDeepLinkError] = useState(null);
+
+  // ── Open one project by id, whether or not it is on the current board ──────
+  //
+  // 2026_139. Every deep-link path here used to be `handovers.find(id)` and
+  // give up silently if it was not there. That is correct only while the board
+  // holds EVERY project the viewer can see — which is true today and stops
+  // being true the moment GET /sales is paged. A project on page two is
+  // genuinely there, the find returns undefined, and the link does nothing at
+  // all: no navigation, no message, nothing to report as a bug.
+  //
+  // The Daily Work path below already solved this by falling back to
+  // getById, and its reasoning applies unchanged to the other three: GET
+  // /sales/:id is org-scoped with no membership check, so this fetches exactly
+  // what the viewer could already have fetched. The board's scope filtering is
+  // untouched — the project does not join their list, it is just open in front
+  // of them, and it disappears again when they leave.
+  //
+  // Doing this NOW rather than with the paging switch is the point. It is the
+  // one part of that change with a failure mode nobody would attribute to
+  // paging, so it is worth landing while the two can still be told apart.
+  const openProjectById = useCallback(async (id, { onDone, sub = 'summary' } = {}) => {
+    if (!id) return;
+    const known = handovers.find(h => h.id === id);
+    if (known) {
+      setSelected(known);
+      setDetailSubTab(sub);
+      onDone?.();
+      return;
+    }
+    try {
+      const { data } = await apiService.handovers.getById(id);
+      const project = data?.handover || data;
+      if (project?.id) {
+        setSelected(project);
+        setDetailSubTab(sub);
+      } else {
+        setDeepLinkError('That project could not be opened. It may have been deleted.');
+      }
+    } catch {
+      setDeepLinkError('That project could not be opened. It may have been deleted.');
+    } finally {
+      // Runs on the failure path too, deliberately. onDone is what clears the
+      // pending id; leaving it set after a failed fetch would re-run this
+      // effect on the next list change and retry forever against a project
+      // that is not coming back.
+      onDone?.();
+    }
+  }, [handovers]);
+
   // Deep-link: open specific handover if passed in
   useEffect(() => {
-    if (openHandoverId && handovers.length > 0) {
-      const found = handovers.find(h => h.id === openHandoverId);
-      if (found) { setSelected(found); setDetailSubTab('summary'); onHandoverOpened?.(); }
-    }
-  }, [openHandoverId, handovers, onHandoverOpened]);
+    // The `handovers.length > 0` guard is gone. It was a proxy for "the list
+    // has loaded", and with the getById fallback it would now be the thing
+    // preventing the fallback from ever running on an empty board.
+    if (!openHandoverId) return;
+    openProjectById(openHandoverId, { onDone: onHandoverOpened });
+  }, [openHandoverId, openProjectById, onHandoverOpened]);
 
   // Dashboard drill-down: open the clicked project once the list is loaded.
   useEffect(() => {
-    if (pendingOpenId && handovers.length > 0) {
-      const found = handovers.find(h => h.id === pendingOpenId);
-      if (found) { setSelected(found); setDetailSubTab('summary'); setPendingOpenId(null); }
-    }
-  }, [pendingOpenId, handovers]);
+    if (!pendingOpenId) return;
+    openProjectById(pendingOpenId, { onDone: () => setPendingOpenId(null) });
+  }, [pendingOpenId, openProjectById]);
 
   // ── Daily Work deep link ────────────────────────────────────────────────
   //
@@ -7731,40 +7788,31 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
   // dispatching, so a failure here is a genuine fault rather than a lapsed
   // basis, and says so.
   useEffect(() => {
-    const onDeepLink = async (e) => {
+    const onDeepLink = (e) => {
       const { handoverId, playInstanceId, scope, sub } = e.detail || {};
       if (!handoverId) return;
       // Parked before the project is opened, so it is already waiting whether
       // the detail mounts fresh or is re-used for a project already on screen.
       setPendingPlayFocus(handoverId, playInstanceId);
       if (scope) setTab(scope);
-      setDetailSubTab(sub || 'details');
       setDeepLinkError(null);
-      const known = handovers.find(h => h.id === handoverId);
-      if (known) { setSelected(known); return; }
-      try {
-        const { data } = await apiService.handovers.getById(handoverId);
-        const project = data?.handover || data;
-        if (project?.id) setSelected(project);
-        else setDeepLinkError('That project could not be opened. It may have been deleted.');
-      } catch {
-        setDeepLinkError('That project could not be opened. It may have been deleted.');
-      }
+      // This path invented the find-then-getById fallback; openProjectById is
+      // that same logic lifted out so the other three deep links share it.
+      // Folded in rather than left as a fourth copy — four copies of a fallback
+      // is how three of them quietly stop matching the fourth.
+      //
+      // 'details', not 'summary': this link points at a specific task, and the
+      // checklist is where that task is.
+      openProjectById(handoverId, { sub: sub || 'details' });
     };
     window.addEventListener('handover-deeplink', onDeepLink);
     return () => window.removeEventListener('handover-deeplink', onDeepLink);
-  }, [handovers]);
+  }, [openProjectById]);
 
   // The way back. Read once on mount and held in state — NOT read from
   // sessionStorage on every render, or dismissing it would have nothing to
   // dismiss. Cleared from storage on use so it does not resurface days later
   // on an unrelated visit to a project.
-  // A deep link that could not be opened. Its own state rather than a shared
-  // 'error': everything else in this component reports failure by leaving the
-  // list empty, and this is the one case where the user asked for a specific
-  // thing and needs telling that it is not there.
-  const [deepLinkError, setDeepLinkError] = useState(null);
-
   const [returnCrumb, setReturnCrumb] = useState(() => {
     try {
       const raw = sessionStorage.getItem('gwc_dailywork_return');
@@ -7784,14 +7832,28 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
     window.dispatchEvent(new CustomEvent('return-to-dailywork', { detail: c }));
   }, [returnCrumb, dismissCrumb]);
 
-  // Refresh-survival: once the (scope-matched) list is loaded, open the handover
-  // named in the URL hash. The sub-tab was restored into detailSubTab already.
+  // Refresh-survival: open the handover named in the URL hash.
+  //
+  // The `handovers.length === 0` guard is gone for the same reason as the two
+  // above — with a getById fallback, waiting for a non-empty list would mean a
+  // refresh on a project the viewer does not have on their board never resolves
+  // and the hash silently drops.
+  //
+  // detailSubTab is passed through rather than reset to 'summary': the sub-tab
+  // came out of the URL on mount and is the whole reason a refresh lands where
+  // it left off. openProjectById's default would overwrite it.
   useEffect(() => {
-    if (!pendingHashId || handovers.length === 0) return;
-    const target = handovers.find(h => h.id === pendingHashId);
-    if (target) setSelected(target);
-    setPendingHashId(null);
-  }, [pendingHashId, handovers]);
+    if (!pendingHashId) return;
+    openProjectById(pendingHashId, {
+      sub: detailSubTab || 'summary',
+      onDone: () => setPendingHashId(null),
+    });
+    // detailSubTab is deliberately NOT a dependency. It is read once here to
+    // seed the open, and including it would re-run this effect every time the
+    // user changed tab inside the project they just opened — reopening it and
+    // fighting their navigation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingHashId, openProjectById]);
 
   // Mirror the current screen into the hash so a refresh lands back here.
   // Only while Handovers is the active tab; held until any hash-restore resolves.
