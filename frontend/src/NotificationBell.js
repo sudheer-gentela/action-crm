@@ -12,7 +12,18 @@ import { writeHash } from './hashNav';
 import './NotificationBell.css';
 import SwitchSenderModal from './SwitchSenderModal';
 
-const DEFAULT_POLL_MS = 600_000; // 10 min default; org can override via backend (organizations.settings.notifications.bell_poll_seconds)
+// 30 minutes (2026_141), raised from 10.
+//
+// This is a FALLBACK now, not the effective value. GET /team-notifications/config
+// did not exist until 2026_141 — it 404'd on every mount and the component's
+// .catch swallowed it — so this constant WAS the interval for every org, and
+// nothing could override it. The route now serves a clamped org setting and
+// this only applies before that resolves, or if it fails.
+//
+// It matches the server's BELL_POLL_DEFAULT deliberately. If the two differed,
+// the bell would poll at one rate for the first few hundred milliseconds and
+// another afterwards, for orgs that had configured nothing.
+const DEFAULT_POLL_MS = 1_800_000;
 
 // ── Relative time formatter ───────────────────────────────────────────────────
 function timeAgo(dateStr) {

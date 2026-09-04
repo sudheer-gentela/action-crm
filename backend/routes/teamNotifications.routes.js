@@ -33,6 +33,100 @@ router.use(orgContext);
 
 const adminOnly = requireRole('owner', 'admin');
 
+// ── Org config ────────────────────────────────────────────────────────────────
+//
+// GET /api/team-notifications/config
+// PATCH /api/team-notifications/config   (admin)
+//
+// 2026_141. NotificationBell has called GET /config on every mount since it
+// shipped, and this route did not exist — a 404 on every login, swallowed by
+// the component's `.catch(() => {})`. So the poll interval was never
+// configurable and every org has been on the client default.
+//
+// The key is settings->'notifications'->>'bell_poll_seconds', which is the key
+// NotificationBell's own comment already names. Chosen from the client rather
+// than invented here, so the two cannot disagree.
+//
+// READ is open to any authenticated user: the bell needs it before it can
+// poll, and there is nothing sensitive in an interval that governs everyone
+// equally. WRITE is admin, like the trigger routes below.
+
+// Seconds. The floor exists because below it a bell is hammering the API for
+// every logged-in user at once; the ceiling because past three hours it stops
+// being a notification and becomes a page refresh.
+const BELL_POLL_MIN     = 30;         // 30 seconds
+const BELL_POLL_MAX     = 10800;      // 3 hours
+const BELL_POLL_DEFAULT = 1800;       // 30 minutes
+
+/**
+ * Read the stored value, or the default.
+ *
+ * NEVER THROWS. Falls back on absent, malformed or out-of-range. A settings
+ * blob is edited by people and by future code, and a bad value there should
+ * narrow to the default rather than break the notification bell for everyone
+ * in the org. Postgres returns NULL rather than erroring when the
+ * 'notifications' key is missing entirely, so an org that has never set one
+ * takes the same path as an org that set nonsense.
+ */
+async function resolveBellPoll(orgId) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT settings->'notifications'->>'bell_poll_seconds' AS v
+         FROM organizations WHERE id = $1`, [orgId]);
+    const n = parseInt(rows[0]?.v, 10);
+    if (!Number.isInteger(n) || n < BELL_POLL_MIN || n > BELL_POLL_MAX) {
+      return { pollSeconds: BELL_POLL_DEFAULT, isDefault: true };
+    }
+    return { pollSeconds: n, isDefault: false };
+  } catch {
+    return { pollSeconds: BELL_POLL_DEFAULT, isDefault: true };
+  }
+}
+
+router.get('/config', async (req, res) => {
+  const cfg = await resolveBellPoll(req.orgId);
+  res.json({
+    ...cfg,
+    // Sent so the settings panel does not carry its own copy of the bounds.
+    // Two definitions of "valid" is how a UI comes to accept a value the
+    // server then rejects.
+    min: BELL_POLL_MIN,
+    max: BELL_POLL_MAX,
+    default: BELL_POLL_DEFAULT,
+  });
+});
+
+router.patch('/config', adminOnly, async (req, res) => {
+  try {
+    const n = parseInt(req.body?.pollSeconds, 10);
+    if (!Number.isInteger(n) || n < BELL_POLL_MIN || n > BELL_POLL_MAX) {
+      return res.status(400).json({
+        error: `pollSeconds must be a whole number between ${BELL_POLL_MIN} and ${BELL_POLL_MAX}`,
+      });
+    }
+    // jsonb_set with create_missing, NOT a whole-column write.
+    // organizations.settings carries every module's configuration — dailywork's
+    // reminder_hour and backfill_days among them — and replacing the column
+    // from here would drop all of it. The merge happens in the database, so two
+    // admins saving different modules at once cannot clobber each other.
+    await pool.query(
+      `UPDATE organizations
+          SET settings = jsonb_set(
+                COALESCE(settings, '{}'::jsonb),
+                '{notifications,bell_poll_seconds}',
+                to_jsonb($2::int),
+                TRUE)
+        WHERE id = $1`,
+      [req.orgId, n]);
+
+    const cfg = await resolveBellPoll(req.orgId);
+    res.json({ ...cfg, min: BELL_POLL_MIN, max: BELL_POLL_MAX, default: BELL_POLL_DEFAULT });
+  } catch (err) {
+    console.error('PATCH /team-notifications/config error:', err);
+    res.status(500).json({ error: 'Could not save that setting' });
+  }
+});
+
 // ── Inbox ─────────────────────────────────────────────────────────────────────
 
 /**

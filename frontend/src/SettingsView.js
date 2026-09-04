@@ -7,6 +7,7 @@ import GoogleConnect from './GoogleConnect';
 import './SettingsView.css';
 import DealHealthSettings from './DealHealthSettings';
 import NotificationSettings from './NotificationSettings';
+import OrgNotificationSettings from './OrgNotificationSettings';
 import UserTranscriptSettings from './UserTranscriptSettings';
 import ActionAISettings from './ActionAISettings';
 import UserAIProviderSettings from './UserAIProviderSettings';
@@ -59,6 +60,10 @@ const NAV_GROUPS = [
       { id: 'deal-health',       label: 'Deal Health',       icon: '🏥', adminOnly: true },
       { id: 'actions',           label: 'Actions',           icon: '⚡', adminOnly: true },
       { id: 'sending-schedule',  label: 'Sending Schedule',  icon: '📅', adminOnly: true },
+      // 2026_141. The first org-level notification page. "Alerts" above is
+      // per-user — channels, categories, digest mode — and is deliberately
+      // left alone; this is policy that governs everyone.
+      { id: 'org-notifications', label: 'Notifications',     icon: '🔔', adminOnly: true },
     ],
   },
 ];
@@ -248,6 +253,7 @@ export default function SettingsView({ initialTab }) {
         <div className="sv2-pane">
           {/* Personal */}
           {activeId === 'alerts'           && <NotificationSettings />}
+          {activeId === 'org-notifications' && <OrgNotificationSettings isAdmin={isAdmin} />}
           {activeId === 'connections-my'   && <MyConnectionsSettings />}
           {activeId === 'connections-transcript'  && <UserTranscriptSettings />}
           {activeId === 'connections-org'  && <OrgConnectionsSettings />}
