@@ -3300,6 +3300,9 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   const [success,   setSuccess]   = useState('');
   const [closureFor, setClosureFor] = useState(null); // 'completed' | 'cancelled' | null
   const [menuOpen, setMenuOpen] = useState(false);    // header "⋯" overflow menu
+  // 2026_141. null when closed; 'duplicate' or 'template' when open. One piece
+  // of state rather than two booleans, so the two dialogs cannot both be open.
+  const [copyMode, setCopyMode] = useState(null);
   const [showConvert, setShowConvert] = useState(false);  // tracking mode (2026_133)
   // Checklist layout. Three views now:
   //   compact  — title only, densest (this was 'grid')
@@ -4122,6 +4125,22 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                       onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}>
                       {detail.isStanding ? '→ Make it a project' : '→ Make it standing'}
                     </button>
+                    {/* 2026_141. Both non-destructive, so they sit above the
+                        cancel item and away from it. Duplicate first: it is
+                        the one people reach for, and "save as template" reads
+                        as the more considered choice when it follows. */}
+                    <button onClick={() => { setMenuOpen(false); setCopyMode('duplicate'); }}
+                      style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 14px', fontSize: 13, border: 'none', background: '#fff', color: '#1f2937', cursor: 'pointer' }}
+                      onMouseEnter={e => { e.currentTarget.style.background = '#f9fafb'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}>
+                      ⧉ Duplicate {detail.isStanding ? 'initiative' : 'project'}
+                    </button>
+                    <button onClick={() => { setMenuOpen(false); setCopyMode('template'); }}
+                      style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 14px', fontSize: 13, border: 'none', background: '#fff', color: '#1f2937', cursor: 'pointer' }}
+                      onMouseEnter={e => { e.currentTarget.style.background = '#f9fafb'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}>
+                      ⌸ Save as project template
+                    </button>
                     <button onClick={() => { setMenuOpen(false); setClosureFor('cancelled'); setClosureText(''); }}
                       style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 14px', fontSize: 13, border: 'none', background: '#fff', color: '#b91c1c', cursor: 'pointer' }}
                       onMouseEnter={e => { e.currentTarget.style.background = '#fef2f2'; }}
@@ -4135,6 +4154,25 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
           </div>
         </div>
 
+        {/* 2026_141. Mounted here, beside convert and cancel, because this is
+            the component that owns copyMode. The first attempt put it next to
+            PersonPanel, several hundred lines away in a DIFFERENT component —
+            it compiled, and every reference to the state was undefined. The
+            linter caught it; nothing else would have. */}
+        {copyMode && (
+          <CopyProjectDialog
+            detail={detail}
+            mode={copyMode}
+            onClose={() => setCopyMode(null)}
+            onDone={(newId) => {
+              setCopyMode(null);
+              // Refresh before opening: the board has to contain the new
+              // project before it can be selected from the list.
+              load?.();
+              onRefresh?.();
+              onOpenProject?.(newId);
+            }} />
+        )}
         {showConvert && (
           <ConvertTrackingModeModal
             detail={detail}
@@ -5284,6 +5322,200 @@ function CommercialTab({ detail, users, onRefresh }) {
           </div>
         </DesktopOnlyNotice>
       )}
+    </div>
+  );
+}
+
+/**
+ * Copy a project, or extract its plan as a reusable template (2026_141).
+ *
+ * ONE COMPONENT, TWO MODES. They share a name field, a busy state, error
+ * handling and a result panel; splitting them would duplicate all of that so
+ * that each could show a different subtitle. The mode changes which options
+ * render and which endpoint is called, and nothing else.
+ *
+ * ── THE OPTIONS ARE SHOWN, NOT ASSUMED ──────────────────────────────────────
+ *
+ * Owners default OFF, members and dates ON — the same defaults the service
+ * applies, stated here so the screen and the server cannot disagree about what
+ * happens if the user changes nothing.
+ *
+ * The list of what is NOT copied is on screen rather than in documentation. A
+ * duplicate that silently omits commitments and contacts is the kind of thing
+ * somebody discovers three weeks later, and by then they have rebuilt the
+ * project by hand around the gap.
+ */
+function CopyProjectDialog({ detail, mode, onClose, onDone }) {
+  const isTemplate = mode === 'template';
+  const noun = detail.isStanding ? 'initiative' : 'project';
+
+  const [name, setName] = useState(
+    isTemplate ? `${detail.name || detail.projectName || noun} template`
+               : `${detail.name || detail.projectName || noun} (copy)`);
+  const [description, setDescription] = useState('');
+  const [goLiveDate, setGoLive]       = useState('');
+  const [carryOwners, setOwners]      = useState(false);
+  const [carryMembers, setMembers]    = useState(true);
+  const [carryDates, setDates]        = useState(true);
+  const [busy, setBusy]   = useState(false);
+  const [err, setErr]     = useState('');
+  const [done, setDone]   = useState(null);
+
+  const submit = async () => {
+    setBusy(true); setErr('');
+    try {
+      const { data } = isTemplate
+        ? await apiService.handovers.saveAsTemplate(detail.id, { name, description })
+        : await apiService.handovers.duplicateProject(detail.id, {
+            name, goLiveDate: goLiveDate || null, carryOwners, carryMembers, carryDates });
+      setDone(data);
+    } catch (e) {
+      setErr(e?.response?.data?.error?.message || 'That could not be saved.');
+    } finally { setBusy(false); }
+  };
+
+  const label = { display: 'block', fontSize: 12, color: '#374151', marginBottom: 4 };
+  const input = { width: '100%', padding: '7px 9px', borderRadius: 6,
+                  border: '1px solid #d1d5db', fontSize: 13, fontFamily: 'inherit' };
+  const check = { display: 'flex', gap: 7, alignItems: 'flex-start', fontSize: 13,
+                  marginTop: 9, cursor: 'pointer' };
+
+  return (
+    <div onClick={onClose}
+         style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.35)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}>
+      <div onClick={e => e.stopPropagation()}
+           style={{ background: '#fff', borderRadius: 12, width: 'min(520px, 92vw)',
+                    maxHeight: '86vh', overflowY: 'auto', padding: 20,
+                    boxShadow: '0 18px 50px rgba(0,0,0,0.22)' }}>
+        <h3 style={{ margin: '0 0 4px', fontSize: 17, fontWeight: 600 }}>
+          {isTemplate ? 'Save as project template' : `Duplicate this ${noun}`}
+        </h3>
+        <p style={{ margin: '0 0 14px', fontSize: 12.5, color: '#6b7280', lineHeight: 1.55 }}>
+          {isTemplate
+            ? 'The plan becomes reusable: stages, tasks and the order they depend on '
+              + 'each other. Dates become offsets, so it does not carry this '
+              + `${noun}'s calendar. Owners are not part of a template.`
+            : `A new ${noun} with the same stages and tasks, all reset to not started.`}
+        </p>
+
+        {done ? (
+          <>
+            <div style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 8,
+                          padding: '10px 12px', fontSize: 13, color: '#065f46' }}>
+              {isTemplate
+                ? <>Template created with {done.plays} {done.plays === 1 ? 'task' : 'tasks'}
+                    {done.stages ? ` and ${done.stages} stages` : ''}.
+                    {done.remappedDeps > 0 && ` ${done.remappedDeps} dependencies carried over.`}</>
+                : <>Created with {done.tasks} {done.tasks === 1 ? 'task' : 'tasks'}
+                    {done.members ? `, ${done.members} team members` : ''}.
+                    {done.remappedDeps > 0 && ` ${done.remappedDeps} dependencies rewired.`}
+                    {done.shiftDays !== 0 && ` Dates moved by ${done.shiftDays} days.`}</>}
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+              <button onClick={onClose} style={{ fontSize: 13, padding: '7px 14px', borderRadius: 6,
+                border: '1px solid #d1d5db', background: '#fff', cursor: 'pointer' }}>Close</button>
+              {/* Only for a duplicate. A template is not a place you can go —
+                  it is used by creating a project FROM it, which is a different
+                  screen and a different decision. */}
+              {!isTemplate && done.handoverId && (
+                <button onClick={() => onDone(done.handoverId)}
+                  style={{ fontSize: 13, padding: '7px 14px', borderRadius: 6, border: 'none',
+                           background: '#0f2f4a', color: '#fff', cursor: 'pointer' }}>
+                  Open it
+                </button>
+              )}
+            </div>
+          </>
+        ) : (
+          <>
+            <label style={label}>Name</label>
+            <input style={input} value={name} onChange={e => setName(e.target.value)} autoFocus />
+
+            {isTemplate ? (
+              <div style={{ marginTop: 12 }}>
+                <label style={label}>Description (optional)</label>
+                <textarea style={{ ...input, minHeight: 60, resize: 'vertical' }}
+                          value={description} onChange={e => setDescription(e.target.value)} />
+              </div>
+            ) : (
+              <>
+                {!detail.isStanding && (
+                  <div style={{ marginTop: 12 }}>
+                    <label style={label}>Go-live date (optional)</label>
+                    <input type="date" style={input} value={goLiveDate}
+                           onChange={e => setGoLive(e.target.value)} />
+                    <div style={{ fontSize: 11.5, color: '#9ca3af', marginTop: 4 }}>
+                      {/* Says what the field DOES, not what it is. Without this
+                          nobody would guess that setting it moves every task. */}
+                      Every task's due date moves by the same gap. Leave it empty to keep
+                      the original dates as they are.
+                    </div>
+                  </div>
+                )}
+
+                <label style={check}>
+                  <input type="checkbox" checked={carryDates}
+                         onChange={e => setDates(e.target.checked)} />
+                  <span>Keep the due dates
+                    <span style={{ display: 'block', fontSize: 11.5, color: '#9ca3af' }}>
+                      Uncheck to start with no dates and add them yourself.
+                    </span>
+                  </span>
+                </label>
+
+                <label style={check}>
+                  <input type="checkbox" checked={carryMembers}
+                         onChange={e => setMembers(e.target.checked)} />
+                  <span>Keep the team
+                    <span style={{ display: 'block', fontSize: 11.5, color: '#9ca3af' }}>
+                      Approved members only, with the same roles.
+                    </span>
+                  </span>
+                </label>
+
+                <label style={check}>
+                  <input type="checkbox" checked={carryOwners}
+                         onChange={e => setOwners(e.target.checked)} />
+                  <span>Keep who each task is assigned to
+                    <span style={{ display: 'block', fontSize: 11.5, color: '#9ca3af' }}>
+                      Off by default — a copy is usually staffed fresh.
+                    </span>
+                  </span>
+                </label>
+              </>
+            )}
+
+            {/* On screen, not in a help page. A copy that silently omits these
+                is discovered weeks later, after somebody has rebuilt the
+                project by hand around the gap. */}
+            <div style={{ marginTop: 14, fontSize: 11.5, color: '#9ca3af', lineHeight: 1.6 }}>
+              Not copied: customer contacts, commitments, alert subscriptions, bill of
+              quantities, notes, evidence and history.
+              {isTemplate && ' Cancelled tasks are left out of a template.'}
+            </div>
+
+            {err && (
+              <div style={{ marginTop: 12, fontSize: 12.5, color: '#991b1b',
+                            background: '#fee2e2', padding: '7px 10px', borderRadius: 6 }}>{err}</div>
+            )}
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+              <button onClick={onClose} disabled={busy}
+                style={{ fontSize: 13, padding: '7px 14px', borderRadius: 6,
+                         border: '1px solid #d1d5db', background: '#fff', cursor: 'pointer' }}>
+                Cancel
+              </button>
+              <button onClick={submit} disabled={busy || !name.trim()}
+                style={{ fontSize: 13, padding: '7px 14px', borderRadius: 6, border: 'none',
+                         background: busy || !name.trim() ? '#9ca3af' : '#0f2f4a',
+                         color: '#fff', cursor: busy || !name.trim() ? 'default' : 'pointer' }}>
+                {busy ? 'Working…' : (isTemplate ? 'Save template' : 'Duplicate')}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

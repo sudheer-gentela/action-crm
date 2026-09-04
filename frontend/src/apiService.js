@@ -1118,6 +1118,14 @@ twilio: {
     orgDomains:     ()            => api.get('/project-members/domains'),
     addOrgDomain:   (domain)      => api.post('/project-members/domains', { domain }),
     removeOrgDomain:(did)         => api.delete(`/project-members/domains/${did}`),
+    // 2026_141. Both behind project authority on the server.
+    //
+    // duplicate: a one-off copy. saveAsTemplate: the reusable version, stored
+    // in playbooks — "project template" is the user-facing word, "playbook"
+    // stays a table name.
+    duplicateProject: (id, opts) => api.post(`/handovers/sales/${id}/duplicate`, opts),
+    saveAsTemplate:   (id, opts) => api.post(`/handovers/sales/${id}/save-as-template`, opts),
+
     toggleModule: (enabled) => api.patch('/handovers/admin/module', { enabled }),
   },
 
@@ -1144,12 +1152,6 @@ twilio: {
 
     // The shared list, used by every picker: the per-row dropdown, the
     // add-item form, and the manager's merge target.
-    // 2026_140. Module policy for the org. Read is open to anyone with the
-    // module (My day needs the bound to say how far back it can log); write is
-    // admin, enforced on the route.
-    getSettings: ()       => api.get('/daily-work/settings'),
-    setSettings: (patch)  => api.patch('/daily-work/settings', patch),
-
     listActivityTypes: () => api.get('/daily-work/activity-types'),
 
     // The management screen's view: retired types included, so it can show
