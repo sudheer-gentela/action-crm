@@ -848,7 +848,7 @@ async function setPlaybook(handoverId, orgId, userId, playbookId, stageKey = nul
  * @param {number} [opts.limit]   page size; omitted or null means no LIMIT (today's behaviour)
  * @param {number} [opts.offset]  page start; ignored without a limit
  *
- * ── 2026_139: THE PAGING SHAPE EXISTS BUT IS NOT USED YET ───────────────────
+ * ── 2026_138: THE PAGING SHAPE EXISTS BUT IS NOT USED YET ───────────────────
  *
  * The frontend sends none of q, limit or offset, so this function behaves
  * EXACTLY as it did — one query, every matching row, filtered in the browser.
@@ -965,7 +965,7 @@ async function _listRows(orgId, userId, { scope = 'mine', status, kind = null, s
     conditions.push(`COALESCE(h.tracking_mode, 'timeboxed') = $${params.length}`);
   }
 
-  // 2026_139. Free text over the three names the list actually displays.
+  // 2026_138. Free text over the three names the list actually displays.
   //
   // Matches the browser-side filter this replaces when it is used: that tested
   // (projectName || dealName) and accountName, and projectName is itself
@@ -1036,7 +1036,7 @@ async function _listRows(orgId, userId, { scope = 'mine', status, kind = null, s
        -- 'approved' already implies it is NULL.
        m.member_count::int                       AS member_count,
        m.member_names                            AS member_names,
-       -- 2026_139. The full match count, independent of the page.
+       -- 2026_138. The full match count, independent of the page.
        --
        -- A window function, not a second COUNT query. Window functions are
        -- evaluated AFTER GROUP BY and before ORDER BY / LIMIT, so this counts
@@ -5390,6 +5390,201 @@ async function getCommunications(handoverId, orgId) {
 }
 
 /** Every project a team member is on, with their role — the person drill-down. */
+/**
+ * May this viewer see what that person has open, and how much of it?
+ *
+ * ── THE PROBLEM ─────────────────────────────────────────────────────────────
+ *
+ * Two hierarchies exist in this product and they did not meet. Project events
+ * follow the project; Daily Work compliance follows org_hierarchy. So a
+ * reporting manager could see everything a person owed and a PROJECT manager —
+ * the person actually running the delivery — could see nothing, which is
+ * backwards for the one question a delivery lead asks daily.
+ *
+ * Meanwhile GET /team-members/:userId/dashboard had NO scoping whatsoever: any
+ * authenticated user in the org could read any other user's projects,
+ * commitments and last fifteen communications by putting their id in the URL.
+ * The route beside it (project-summary) noticed and scoped only itself, leaving
+ * the note "Those return anyone's projects to anyone in the org, which is
+ * pre-existing and not widened here". This closes it, because adding a task
+ * list to an unscoped endpoint would widen a hole rather than fill a gap.
+ *
+ * ── THE THREE ARMS, AND WHY THEY DIFFER IN BREADTH ──────────────────────────
+ *
+ *   'all'      org admin/owner, or the target is in the viewer's org_hierarchy
+ *              subtree. Sees everything the person owns, anywhere in the org.
+ *              This is exactly today's Daily Work rule, unchanged.
+ *
+ *   'projects' the viewer holds project authority on one or more projects the
+ *              target is also on. Sees the target's work ON THOSE PROJECTS AND
+ *              NOWHERE ELSE.
+ *
+ *   null       no route. Reads as "no open work", never as a 403 — a 403
+ *              confirms the person exists, which is the same reason the
+ *              neighbouring routes return empty.
+ *
+ * The narrowing on the second arm is the whole design. A delivery lead needs to
+ * know their engineer is buried on the project they share. Showing them that
+ * engineer's tasks on four unrelated projects is a visibility widening nobody
+ * asked for, and it is the kind that cannot be walked back once people have
+ * seen it. A reporting manager keeps the wide view because that is their job.
+ *
+ * ── AUTHORITY IS THE SHARED DEFINITION, NOT MEMBERSHIP ──────────────────────
+ *
+ * The project arm uses projectMembers.manageableProjectSql — service owner,
+ * creator, or an approved member with can_manage (2026_137). Merely being on a
+ * project together confers nothing: two engineers on one delivery are peers,
+ * and peers reading each other's workload is a different feature with a
+ * different conversation attached to it.
+ *
+ * Initiatives are included, deliberately. A standing initiative has no owner by
+ * design, so the service-owner arm rarely fires on one — but its creator and
+ * anyone granted can_manage do, and a lead who runs an initiative someone logs
+ * against has the same reason to see their open work as on a time-boxed
+ * project. No tracking_mode predicate: both axes qualify.
+ *
+ * @returns {Promise<{scope:'all'|'projects'|null, handoverIds:number[]}>}
+ *   handoverIds is meaningful only for 'projects'. Empty for 'all', where there
+ *   is nothing to restrict to.
+ */
+async function canSeePersonWork(orgId, viewerId, targetId) {
+  const EMPTY = { scope: null, handoverIds: [] };
+  if (!orgId || !viewerId || !targetId) return EMPTY;
+
+  // Seeing your own work needs no hierarchy. Without this a person with no
+  // manager and no project authority could not open their own panel.
+  if (viewerId === targetId) return { scope: 'all', handoverIds: [] };
+
+  const { rows: [me] } = await pool.query(
+    `SELECT role FROM org_users
+      WHERE org_id = $1 AND user_id = $2 AND is_active = TRUE`,
+    [orgId, viewerId]);
+  if (!me) return EMPTY;
+  if (['admin', 'owner'].includes(me.role)) return { scope: 'all', handoverIds: [] };
+
+  // Reporting line. getSubordinates walks reports_to and covers dotted lines,
+  // and is the same call getVisibleUserIds makes — so this arm agrees with the
+  // Daily Work People screen by construction rather than by a second rule.
+  const subordinates = await hierarchyService.getSubordinates(orgId, viewerId);
+  if (subordinates.includes(targetId)) return { scope: 'all', handoverIds: [] };
+
+  // Project authority. One query returning the shared projects rather than a
+  // boolean, because the caller has to filter the work by them — a boolean
+  // would force a second query to answer "which ones".
+  const { rows } = await pool.query(
+    `SELECT h.id
+       FROM sales_handovers h
+      WHERE h.org_id = $1
+        -- The TARGET must be on it. Approved membership, the assigned owner, or
+        -- the deal team — the same three routes getTeamMemberProjects unions,
+        -- so a person visible on one screen is visible on the other.
+        AND ( h.assigned_service_owner_id = $3
+           OR EXISTS (SELECT 1 FROM project_members pm
+                       WHERE pm.context_type = 'handover' AND pm.context_id = h.id
+                         AND pm.org_id = h.org_id AND pm.user_id = $3
+                         AND pm.status = 'approved' AND pm.exited_at IS NULL)
+           OR EXISTS (SELECT 1 FROM deal_team_members dtm
+                       WHERE dtm.deal_id = h.deal_id AND dtm.org_id = h.org_id
+                         AND dtm.user_id = $3) )
+        -- ...and the VIEWER must manage it.
+        AND ${projectMembers.manageableProjectSql('h', '$2', '$1')}`,
+    [orgId, viewerId, targetId]);
+
+  if (!rows.length) return EMPTY;
+  return { scope: 'projects', handoverIds: rows.map(r => r.id) };
+}
+
+/**
+ * One person's OPEN work — checklist tasks and commitments — narrowed to what
+ * the viewer is entitled to see.
+ *
+ * The list the project side never had. getPersonDashboard has always returned
+ * commitments and has never returned a single checklist task, so the panel
+ * could say somebody owed three deliverables while staying silent about the
+ * fourteen tasks assigned to them. getPersonProjectItems computed exactly this
+ * for the Daily Work People screen and nothing on the project side called it.
+ *
+ * SHARES ITS PREDICATES with getPersonProjectItems, through the same constants
+ * the 2026_138 read-path split introduced. Two screens that disagree about what
+ * "open" means is how a manager comes to distrust both — and the commitment
+ * half's known asymmetry (no project-status test) is inherited too, so the
+ * counts here match the People screen exactly rather than approximately.
+ *
+ * @param {{scope:'all'|'projects'|null, handoverIds:number[]}} visibility
+ *   Straight from canSeePersonWork. Passed in rather than resolved here so the
+ *   caller cannot forget to check it — a function that scopes itself is one
+ *   refactor away from a function that does not.
+ */
+async function getPersonOpenWork(targetId, orgId, visibility) {
+  if (!visibility || !visibility.scope) return { tasks: [], commitments: [], scope: null };
+
+  // 'projects' with no ids cannot happen (canSeePersonWork returns null
+  // instead), but an empty ANY($4) would silently match nothing and read as
+  // "they have no open work" rather than as a bug. Refused explicitly.
+  const restricted = visibility.scope === 'projects';
+  if (restricted && !visibility.handoverIds.length) {
+    return { tasks: [], commitments: [], scope: visibility.scope };
+  }
+
+  const today = toDateStr(new Date());
+  const ids = restricted ? visibility.handoverIds : null;
+
+  const { rows: tasks } = await pool.query(
+    `SELECT ppi.id, ppi.title, ppi.due_date::text AS due_date, ppi.status,
+            ppi.stage_key,
+            COALESCE(h.name, d.name) AS project, h.id AS handover_id,
+            COALESCE(h.tracking_mode, 'timeboxed') AS tracking_mode
+       FROM project_play_instances ppi
+       JOIN sales_handovers h ON h.id = ppi.handover_id AND h.org_id = ppi.org_id
+       LEFT JOIN deals d ON d.id = h.deal_id
+      WHERE ppi.org_id = $2 AND ppi.owner_user_id = $1
+        AND ${OPEN_PLAY_PREDICATES}
+        AND ($3::boolean IS FALSE OR h.id = ANY($4::int[]))
+      ORDER BY ppi.due_date NULLS LAST, ppi.id`,
+    [targetId, orgId, restricted, ids]);
+
+  const { rows: commitments } = await pool.query(
+    `SELECT c.id, c.description, c.due_date::text AS due_date, c.status,
+            COALESCE(h.name, d.name) AS project, h.id AS handover_id,
+            COALESCE(h.tracking_mode, 'timeboxed') AS tracking_mode
+       FROM sales_handover_commitments c
+       JOIN sales_handovers h ON h.id = c.handover_id AND h.org_id = c.org_id
+       LEFT JOIN deals d ON d.id = h.deal_id
+      WHERE c.org_id = $2 AND c.owner_user_id = $1
+        AND ${OPEN_COMMITMENT_PREDICATES}
+        AND ($3::boolean IS FALSE OR h.id = ANY($4::int[]))
+      ORDER BY c.due_date NULLS LAST, c.id`,
+    [targetId, orgId, restricted, ids]);
+
+  // isOverdue is computed HERE, not in the browser. 'overdue' has to mean the
+  // same thing on this panel as on the People screen, and a client comparing a
+  // date string against its own clock is how the two drift apart. Standing
+  // initiatives are never overdue — they have no end, which is the definition.
+  const shape = (r, kind) => ({
+    id:         `${kind}-${r.id}`,
+    kind,
+    playInstanceId: kind === 'task' ? r.id : null,
+    title:      r.title || r.description,
+    project:    r.project || `Project #${r.handover_id}`,
+    handoverId: r.handover_id,
+    stageKey:   r.stage_key ?? null,
+    status:     r.status,
+    dueDate:    r.due_date,
+    isStanding: r.tracking_mode === 'standing',
+    isOverdue:  r.tracking_mode !== 'standing' && !!r.due_date && r.due_date < today,
+  });
+
+  return {
+    tasks:       tasks.map(r => shape(r, 'task')),
+    commitments: commitments.map(r => shape(r, 'commitment')),
+    // Echoed so the panel can say WHY the list is what it is. A project manager
+    // seeing four tasks needs to know they are seeing four tasks on the
+    // projects they run, not this person's entire workload — otherwise they
+    // conclude the person is idle.
+    scope: visibility.scope,
+  };
+}
+
 async function getTeamMemberProjects(userId, orgId) {
   // Rewritten 2026-08. The previous version started FROM deal_team_members and
   // inner-joined deals, which answered "which deals is this person on" — not
@@ -5709,7 +5904,7 @@ async function getOverdueProjectItemsByUsers(orgId, userIds) {
  *
  * getPersonProjectItems (what the People screen draws) and getPersonProjectLink
  * (what validates a click on one of those rows) must agree exactly. Before
- * 2026_139 they agreed by being the SAME FUNCTION: checkProjectLink called
+ * 2026_138 they agreed by being the SAME FUNCTION: checkProjectLink called
  * getPersonProjectItems and searched its output. That was airtight and it is
  * why the two could not drift — but it also meant the display path could never
  * be paged without breaking validation, because a paged list stops containing
@@ -5802,7 +5997,7 @@ async function getPersonProjectItems(userId, orgId) {
 /**
  * Does this person still have open work on this ONE project?
  *
- * THE VALIDATION PATH, split out of getPersonProjectItems in 2026_139.
+ * THE VALIDATION PATH, split out of getPersonProjectItems in 2026_138.
  *
  * checkProjectLink used to answer this by fetching every item the person has
  * across every project and searching the array. That works, and it is what made
@@ -6180,12 +6375,14 @@ module.exports = {
   createProject,           // standalone / internal projects (2026_87)
   setPlaybook,             // attach + activate a playbook (2026_89)
   list,
-  listPage,                 // 2026_139 — same query, plus the full match count
+  listPage,                 // 2026_138 — same query, plus the full match count
   getTeamMemberProjects,  // person drill-down
   getPersonProjectSummary, // daily work person view — cross-module (2026_133)
   getProjectWorkloadByUser, // People screen — open/overdue per person
   getPersonProjectItems,    // People screen — one person's project rows
-  getPersonProjectLink,     // 2026_139 — validates ONE "open this project" click
+  getPersonProjectLink,     // 2026_138 — validates ONE "open this project" click
+  canSeePersonWork,         // 2026_140 — reporting line OR project authority
+  getPersonOpenWork,        // 2026_140 — a person's open tasks, scoped
   getOverdueProjectItemsByUsers, // People screen — the overdue chip's queue
   getPersonDashboard,     // person side-panel (individual dashboard)
   getContactCommunications, // customer-contact comms drill-down

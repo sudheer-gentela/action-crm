@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict LMZERkI4TiRWkJW5jkjLBwOzhkZkHfksBoD5qWV9FMEFdTRItNxOOrBO0tWpIeg
+\restrict uDdNZtmsmL7KFKPUeYuiMIYlqySabGFJxap3boCjXxa33JvFD5a3oF7nw7zqFMR
 
 -- Dumped from database version 17.11 (Debian 17.11-1.pgdg13+2)
 -- Dumped by pg_dump version 18.1
@@ -8275,6 +8275,7 @@ CREATE TABLE public.project_members (
     exit_reason text,
     side text DEFAULT 'delivery'::text NOT NULL,
     can_rebaseline boolean DEFAULT false NOT NULL,
+    can_manage boolean DEFAULT false NOT NULL,
     CONSTRAINT project_members_exit_shape_chk CHECK ((((status = ANY (ARRAY['declined'::text, 'left'::text])) AND (exited_at IS NOT NULL)) OR ((status <> ALL (ARRAY['declined'::text, 'left'::text])) AND (exited_at IS NULL)))),
     CONSTRAINT project_members_side_chk CHECK ((side = ANY (ARRAY['delivery'::text, 'internal_customer'::text]))),
     CONSTRAINT project_members_status_chk CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'declined'::text, 'left'::text])))
@@ -8300,6 +8301,13 @@ COMMENT ON COLUMN public.project_members.exit_reason IS 'Optional note from the 
 --
 
 COMMENT ON COLUMN public.project_members.side IS 'delivery = doing the work. internal_customer = the person the work is FOR, who accepts it as done. A column rather than a role name because closure sign-off keys off it, and a role label can be renamed in the config screen.';
+
+
+--
+-- Name: COLUMN project_members.can_manage; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.project_members.can_manage IS 'Grants this member the same per-project authority as the service owner: approve task reviews, change member roles, set review watchers, manage project files. Scoped to this project only ΓÇö it confers nothing anywhere else in the org. Only meaningful while status = ''approved''.';
 
 
 --
@@ -8425,8 +8433,24 @@ CREATE TABLE public.project_play_watchers (
     handover_id integer NOT NULL,
     user_id integer NOT NULL,
     created_by integer,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    self_subscribed boolean DEFAULT false NOT NULL,
+    play_instance_id integer
 );
+
+
+--
+-- Name: COLUMN project_play_watchers.self_subscribed; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.project_play_watchers.self_subscribed IS 'TRUE when the person added themselves rather than being added by a manager. setWatchers() must not delete these rows ΓÇö the manager did not put them there and cannot see them in the picker. The person removes their own subscription, and removeMember/leaving the project clears it.';
+
+
+--
+-- Name: COLUMN project_play_watchers.play_instance_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.project_play_watchers.play_instance_id IS 'NULL = watching the whole project (every existing row). Set = watching only that one task, and receiving nothing about the rest of the project. Cascades when the task is deleted.';
 
 
 --
@@ -15070,14 +15094,6 @@ ALTER TABLE ONLY public.project_play_status_transitions
 
 
 --
--- Name: project_play_watchers project_play_watchers_handover_id_user_id_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.project_play_watchers
-    ADD CONSTRAINT project_play_watchers_handover_id_user_id_key UNIQUE (handover_id, user_id);
-
-
---
 -- Name: project_play_watchers project_play_watchers_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -18940,6 +18956,27 @@ CREATE INDEX idx_ppw_handover ON public.project_play_watchers USING btree (org_i
 
 
 --
+-- Name: idx_ppw_play_instance; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppw_play_instance ON public.project_play_watchers USING btree (play_instance_id) WHERE (play_instance_id IS NOT NULL);
+
+
+--
+-- Name: idx_ppw_play_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_ppw_play_unique ON public.project_play_watchers USING btree (handover_id, user_id, play_instance_id) WHERE (play_instance_id IS NOT NULL);
+
+
+--
+-- Name: idx_ppw_project_unique; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_ppw_project_unique ON public.project_play_watchers USING btree (handover_id, user_id) WHERE (play_instance_id IS NULL);
+
+
+--
 -- Name: idx_product_catalog_group; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -19014,6 +19051,13 @@ CREATE INDEX idx_project_folders_handover ON public.project_folders USING btree 
 --
 
 CREATE INDEX idx_project_members_approved ON public.project_members USING btree (context_type, context_id, user_id) WHERE (status = 'approved'::text);
+
+
+--
+-- Name: idx_project_members_can_manage; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_project_members_can_manage ON public.project_members USING btree (context_type, context_id, user_id) WHERE ((can_manage = true) AND (status = 'approved'::text));
 
 
 --
@@ -24724,6 +24768,14 @@ ALTER TABLE ONLY public.project_play_watchers
 
 
 --
+-- Name: project_play_watchers project_play_watchers_play_instance_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_watchers
+    ADD CONSTRAINT project_play_watchers_play_instance_fkey FOREIGN KEY (play_instance_id) REFERENCES public.project_play_instances(id) ON DELETE CASCADE;
+
+
+--
 -- Name: project_play_watchers project_play_watchers_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -26652,5 +26704,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict LMZERkI4TiRWkJW5jkjLBwOzhkZkHfksBoD5qWV9FMEFdTRItNxOOrBO0tWpIeg
+\unrestrict uDdNZtmsmL7KFKPUeYuiMIYlqySabGFJxap3boCjXxa33JvFD5a3oF7nw7zqFMR
 

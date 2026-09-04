@@ -1073,6 +1073,12 @@ twilio: {
       api.post(`/handovers/sales/${id}/evidence/${evidenceId}/revoke`, { reason }),
     teamMemberProjects: (userId) => api.get(`/handovers/team-members/${userId}/projects`),
     personDashboard: (userId) => api.get(`/handovers/team-members/${userId}/dashboard`),
+    // 2026_140. A person's open checklist tasks and commitments, scoped to what
+    // the caller may see — everything for a reporting manager, only the shared
+    // projects they run for a project manager. Separate from personDashboard
+    // because the two carry different scoping rules and merging them would put
+    // both in one payload.
+    personOpenWork: (userId) => api.get(`/handovers/team-members/${userId}/open-work`),
     contactCommunications: (contactId) => api.get(`/handovers/contacts/${contactId}/communications`),
     projectActions:        (id) => api.get(`/handovers/sales/${id}/actions`),
     tabViewers:            (id, tab = 'commercial') => api.get(`/handovers/sales/${id}/tab-viewers?tab=${tab}`),

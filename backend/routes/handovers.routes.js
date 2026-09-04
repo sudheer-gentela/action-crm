@@ -99,7 +99,7 @@ router.get('/sales', async (req, res) => {
       return res.status(400).json({ error: { message: 'trackingMode must be timeboxed|standing|all' } });
     }
 
-    // 2026_139. Paging and server-side search are ACCEPTED but not yet sent by
+    // 2026_138. Paging and server-side search are ACCEPTED but not yet sent by
     // the frontend, which still filters in the browser. Parsed strictly rather
     // than passed through: a limit of "abc" must read as "no limit" and not
     // reach the query builder as a string.
@@ -1383,13 +1383,59 @@ router.delete('/sales/:id/plays/:instanceId', async (req, res) => {
 });
 
 // ── GET /team-members/:userId/projects — person drill-down ────────────────────
-
+//
+// SCOPED as of 2026_140. It previously returned ANY user's project list to ANY
+// authenticated user in the org — put an id in the URL and read it back. The
+// project-summary route below noticed in passing ("Those return anyone's
+// projects to anyone in the org, which is pre-existing and not widened here")
+// and scoped only itself.
+//
+// Closed here because this window adds a task list to the person panel, and
+// hanging that off an unscoped endpoint would widen a hole rather than fill a
+// gap. Empty rather than 403, matching its neighbours: a 403 confirms the
+// person exists.
 router.get('/team-members/:userId/projects', async (req, res) => {
   try {
-    const projects = await handoverService.getTeamMemberProjects(parseInt(req.params.userId), req.orgId);
-    res.json({ projects });
+    const target = parseInt(req.params.userId, 10);
+    if (!Number.isInteger(target) || target <= 0) {
+      return res.status(400).json({ error: { message: 'userId must be a positive integer' } });
+    }
+    const vis = await handoverService.canSeePersonWork(req.orgId, req.user.userId, target);
+    if (!vis.scope) return res.json({ projects: [] });
+
+    const projects = await handoverService.getTeamMemberProjects(target, req.orgId);
+    // A project manager sees the shared projects they run, not the person's
+    // whole portfolio. Filtered here rather than inside getTeamMemberProjects
+    // because that function has other callers whose scoping is their own.
+    const filtered = vis.scope === 'projects'
+      ? projects.filter(p => vis.handoverIds.includes(p.handoverId))
+      : projects;
+    res.json({ projects: filtered, scope: vis.scope });
   } catch (err) {
     console.error('Team member projects error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── GET /team-members/:userId/open-work — what is pending for this person ─────
+//
+// 2026_140. The list the project side never had: getPersonDashboard returns
+// commitments and has never returned a single checklist task, so the panel
+// could report three deliverables while staying silent about fourteen tasks.
+//
+// Visible to a reporting manager (everything, as today) or to someone with
+// project authority over a project this person is also on (that project's work
+// only). The service decides; this route only carries the answer.
+router.get('/team-members/:userId/open-work', async (req, res) => {
+  try {
+    const target = parseInt(req.params.userId, 10);
+    if (!Number.isInteger(target) || target <= 0) {
+      return res.status(400).json({ error: { message: 'userId must be a positive integer' } });
+    }
+    const vis = await handoverService.canSeePersonWork(req.orgId, req.user.userId, target);
+    res.json(await handoverService.getPersonOpenWork(target, req.orgId, vis));
+  } catch (err) {
+    console.error('Person open work error:', err);
     res.status(err.status || 500).json({ error: { message: err.message } });
   }
 });
@@ -1424,10 +1470,48 @@ router.get('/team-members/:userId/project-summary', async (req, res) => {
 });
 
 // ── GET /team-members/:userId/dashboard — person side-panel ───────────────────
-
+//
+// SCOPED as of 2026_140, and this was the worst of the three. It returned any
+// person's projects, commitments AND their last fifteen emails and WhatsApp
+// messages to any authenticated user in the org, keyed only on a URL parameter.
+// Communications are the most sensitive thing on it and were the least
+// protected.
 router.get('/team-members/:userId/dashboard', async (req, res) => {
   try {
-    res.json(await handoverService.getPersonDashboard(parseInt(req.params.userId), req.orgId));
+    const target = parseInt(req.params.userId, 10);
+    if (!Number.isInteger(target) || target <= 0) {
+      return res.status(400).json({ error: { message: 'userId must be a positive integer' } });
+    }
+    const vis = await handoverService.canSeePersonWork(req.orgId, req.user.userId, target);
+    if (!vis.scope) {
+      // The person's own name is not a secret — it is already on the project
+      // team list this panel opens from — but nothing else is. Returning the
+      // shell keeps the panel from rendering "Unknown" over a real name while
+      // still disclosing none of the content.
+      return res.json({
+        person: null, projects: [], deliverables: [], communications: [], scope: null,
+      });
+    }
+
+    const data = await handoverService.getPersonDashboard(target, req.orgId);
+    if (vis.scope === 'projects') {
+      const ok = (id) => vis.handoverIds.includes(id);
+      return res.json({
+        ...data,
+        projects:     (data.projects || []).filter(p => ok(p.handoverId)),
+        deliverables: (data.deliverables || []).filter(d => ok(d.handoverId)),
+        // Communications are dropped ENTIRELY for a project-scoped viewer
+        // rather than filtered. getPersonDashboard builds them from the
+        // person's deal-team membership, not from a project, so there is no
+        // handover id on them to filter by — and a filter that cannot be
+        // written is not a filter that should be approximated. A project
+        // manager gets workload visibility, which is what was asked for; they
+        // do not get somebody's mailbox.
+        communications: [],
+        scope: vis.scope,
+      });
+    }
+    res.json({ ...data, scope: vis.scope });
   } catch (err) {
     console.error('Person dashboard error:', err);
     res.status(err.status || 500).json({ error: { message: err.message } });

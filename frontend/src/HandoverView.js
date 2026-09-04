@@ -5357,6 +5357,36 @@ function PersonPanel({ member, onClose, onOpenProject, handoverId, canManage }) 
   const projects = data?.projects || [];
   const comms    = data?.communications || [];
   const pending  = (data?.deliverables || []).filter(d => d.pending);
+
+  // 2026_140. Open CHECKLIST TASKS, which this panel never had.
+  //
+  // The 'Open tasks' tab has existed since the panel shipped and has always
+  // rendered `pending` — the person's open COMMITMENTS. Tasks were never in
+  // getPersonDashboard's payload at all, so the tab could report three
+  // deliverables while saying nothing about fourteen assigned tasks, under a
+  // label promising exactly the opposite.
+  //
+  // Its own endpoint rather than a wider dashboard payload: it carries its own
+  // visibility scope, and a project manager's answer is narrower than a
+  // reporting manager's. Merging it into the dashboard would mean one payload
+  // with two different scoping rules inside it.
+  const [openWork, setOpenWork] = useState(null);
+  useEffect(() => {
+    if (!member?.userId) return;
+    if (typeof apiService.handovers?.personOpenWork !== 'function') { setOpenWork(null); return; }
+    let alive = true;
+    apiService.handovers.personOpenWork(member.userId)
+      .then(r => { if (alive) setOpenWork(r.data || null); })
+      .catch(() => { if (alive) setOpenWork(null); });
+    return () => { alive = false; };
+  }, [member?.userId]);
+
+  const openTasks = openWork?.tasks || [];
+  // The commitments the new endpoint returns are the same rows `pending`
+  // already holds, scoped. Preferred when present so a project-scoped viewer
+  // does not see commitments from projects they cannot see — the dashboard's
+  // own list is filtered server-side too, but this one carries the scope label.
+  const openCommits = openWork ? (openWork.commitments || []) : pending;
   const CH = CHANNEL_META;   // shared, so Teams gets a real badge here too
   const first = (member.name || '').split(' ')[0];
 
@@ -5366,7 +5396,8 @@ function PersonPanel({ member, onClose, onOpenProject, handoverId, canManage }) 
 
   const TABS = [
     { key: 'projects', label: 'Projects',       count: data ? projects.length : null },
-    { key: 'tasks',    label: 'Open tasks',     count: data ? pending.length  : null },
+    { key: 'tasks',    label: 'Open tasks',
+      count: data ? (openTasks.length + openCommits.length) : null },
     { key: 'comms',    label: 'Communications', count: data ? comms.length    : null },
   ];
 
@@ -5445,23 +5476,80 @@ function PersonPanel({ member, onClose, onOpenProject, handoverId, canManage }) 
                   ))
               )}
 
-              {/* Open tasks */}
+              {/* Open tasks — checklist tasks first, then commitments (2026_140) */}
               {panelTab === 'tasks' && (
-                pending.length === 0
-                  ? <div style={{ fontSize: 12, color: '#9ca3af' }}>Nothing pending on {first}.</div>
-                  : pending.map((d, i) => (
+                <>
+                  {/* Says WHY the list is what it is.
+
+                      A project manager seeing four tasks needs to know they are
+                      seeing four tasks on the projects THEY run, not this
+                      person's whole workload — otherwise the honest conclusion
+                      from a short list is that the person is idle, and that is
+                      a conclusion someone might act on. A reporting manager
+                      sees everything and needs no caveat, so none is shown. */}
+                  {openWork?.scope === 'projects' && (
+                    <div style={{ fontSize: 11, color: '#6b7280', background: '#f8fafc',
+                                  border: '1px solid #e5e7eb', borderRadius: 6,
+                                  padding: '6px 8px', marginBottom: 8 }}>
+                      Only their work on projects and initiatives you manage. They may have
+                      more elsewhere.
+                    </div>
+                  )}
+
+                  {openTasks.length === 0 && openCommits.length === 0 && (
+                    <div style={{ fontSize: 12, color: '#9ca3af' }}>Nothing pending on {first}.</div>
+                  )}
+
+                  {openTasks.map((t, i) => (
+                    <div key={t.id}
+                      onClick={() => onOpenProject && onOpenProject(t.handoverId)}
+                      title={onOpenProject ? 'Open this project' : undefined}
+                      style={{ padding: '7px 0', borderTop: i === 0 ? 'none' : '1px solid #f3f4f6',
+                               fontSize: 13, cursor: onOpenProject ? 'pointer' : 'default' }}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                        <span style={{ flex: 1 }}>{t.title}</span>
+                        {t.isOverdue && (
+                          <span style={{ fontSize: 10, fontWeight: 700, color: '#dc2626' }}>overdue</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
+                        {t.project}
+                        {/* A standing initiative has no end, so its tasks are
+                            never late — showing a date without saying so would
+                            invite the reader to treat it as a deadline. */}
+                        {t.dueDate && !t.isStanding ? ` · due ${fmtDate(t.dueDate)}` : ''}
+                        {t.isStanding ? ' · initiative' : ''}
+                      </div>
+                    </div>
+                  ))}
+
+                  {openCommits.length > 0 && openTasks.length > 0 && (
+                    <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280',
+                                  marginTop: 12, marginBottom: 2 }}>
+                      Commitments
+                    </div>
+                  )}
+
+                  {openCommits.map((d, i) => (
                     <div key={d.id} style={{ padding: '7px 0', borderTop: i === 0 ? 'none' : '1px solid #f3f4f6', fontSize: 13 }}>
                       <div style={{ display: 'flex', gap: 8 }}>
-                        <span style={{ flex: 1 }}>{d.description}</span>
+                        {/* `title` from the 2026_140 endpoint, `description`
+                            from the dashboard payload. Both supported so this
+                            renders correctly if the backend has not shipped
+                            yet, and during a staged deploy. */}
+                        <span style={{ flex: 1 }}>{d.title || d.description}</span>
                         {d.commitmentType && d.commitmentType !== 'promise' && (
                           <span style={{ fontSize: 10, fontWeight: 600, color: d.commitmentType === 'red_flag' ? '#dc2626' : '#d97706' }}>
                             {d.commitmentType === 'red_flag' ? 'red flag' : 'risk'}
                           </span>
                         )}
                       </div>
-                      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{d.account}{d.dueDate ? ` · due ${fmtDate(d.dueDate)}` : ''}</div>
+                      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
+                        {d.account || d.project}{d.dueDate ? ` · due ${fmtDate(d.dueDate)}` : ''}
+                      </div>
                     </div>
-                  ))
+                  ))}
+                </>
               )}
 
               {/* Communications */}
@@ -7809,7 +7897,7 @@ export default function HandoverView({ openHandoverId, onHandoverOpened }) {
 
   // ── Open one project by id, whether or not it is on the current board ──────
   //
-  // 2026_139. Every deep-link path here used to be `handovers.find(id)` and
+  // 2026_138. Every deep-link path here used to be `handovers.find(id)` and
   // give up silently if it was not there. That is correct only while the board
   // holds EVERY project the viewer can see — which is true today and stops
   // being true the moment GET /sales is paged. A project on page two is
