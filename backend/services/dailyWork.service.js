@@ -457,11 +457,99 @@ function validateEntry(entry, index) {
  * work is still writable the following Wednesday, and a Monday-morning writeup
  * of the previous week is not a special case.
  *
- * A CONSTANT, not a per-org setting, until someone asks for one. The value is
- * policy and lives here rather than in a CHECK constraint precisely so it can
- * become a setting without a migration.
+ * NOW A PER-ORG SETTING (2026_140). The original comment said this lived here
+ * "precisely so it can become a setting without a migration" — someone asked,
+ * and it did, with no migration.
+ *
+ * The value is stored at organizations.settings->'dailywork'->>'backfill_days',
+ * alongside reminder_hour, and this constant is the fallback for an org that
+ * has never set one. Every existing org therefore keeps five days until
+ * somebody changes it.
  */
 const BACKFILL_DAYS = 5;
+
+// The bounds a setting may take. Enforced in resolveBackfillDays, not in a
+// CHECK, for the same reason the value itself is not: it is policy.
+//
+// The lower bound is 0, not 1 — an org that wants same-day-only logging has a
+// coherent position, and refusing to express it would push them to 1 and get a
+// different rule than they asked for. The upper bound of 90 is where the
+// original comment's warning bites: "if the client picks the date, a month of
+// history can be constructed on the 30th and the logging rate stops meaning
+// anything". Ninety is generous enough for a quarterly catch-up and still short
+// of a year of invented history.
+const BACKFILL_MIN = 0;
+const BACKFILL_MAX = 90;
+
+/**
+ * This org's backfill window, in days.
+ *
+ * Falls back to BACKFILL_DAYS on absent, malformed or out-of-range values
+ * rather than throwing. A settings blob is edited by people and by future code;
+ * a bad value there should narrow to the default, not break every save on the
+ * module for everyone in the org.
+ */
+async function resolveBackfillDays(client, orgId) {
+  try {
+    const { rows } = await client.query(
+      `SELECT settings->'dailywork'->>'backfill_days' AS d
+         FROM organizations WHERE id = $1`, [orgId]);
+    const n = parseInt(rows[0]?.d, 10);
+    if (!Number.isInteger(n) || n < BACKFILL_MIN || n > BACKFILL_MAX) return BACKFILL_DAYS;
+    return n;
+  } catch {
+    return BACKFILL_DAYS;
+  }
+}
+
+/**
+ * Read and write the module's org-level settings.
+ *
+ * A read-modify-write on the 'dailywork' key rather than a whole-settings
+ * replace: organizations.settings carries every module's configuration, and
+ * writing the column wholesale from here would drop whatever else is in it.
+ * jsonb_set with create_missing does the merge in the database, so two admins
+ * saving different modules at once cannot clobber each other.
+ */
+async function getOrgSettings(orgId) {
+  return withOrgTransaction(orgId, async (client) => {
+    const backfillDays = await resolveBackfillDays(client, orgId);
+    const { rows } = await client.query(
+      `SELECT settings->'dailywork'->>'backfill_days' AS raw
+         FROM organizations WHERE id = $1`, [orgId]);
+    return {
+      backfillDays,
+      // Whether it is SET, as opposed to what it resolves to. The UI says
+      // "5 days (the default)" versus "5 days", and an admin deciding whether
+      // to change something needs to know if anyone ever chose it.
+      backfillDaysIsDefault: rows[0]?.raw == null,
+      backfillMin: BACKFILL_MIN,
+      backfillMax: BACKFILL_MAX,
+    };
+  });
+}
+
+async function setOrgSettings(orgId, patch = {}) {
+  const n = parseInt(patch.backfillDays, 10);
+  if (!Number.isInteger(n) || n < BACKFILL_MIN || n > BACKFILL_MAX) {
+    throw new DailyWorkError(
+      `The backfill window must be a whole number of days between ${BACKFILL_MIN} and ${BACKFILL_MAX}.`,
+      'BAD_BACKFILL_DAYS', { backfillDays: patch.backfillDays });
+  }
+
+  return withOrgTransaction(orgId, async (client) => {
+    await client.query(
+      `UPDATE organizations
+          SET settings = jsonb_set(
+                COALESCE(settings, '{}'::jsonb),
+                '{dailywork,backfill_days}',
+                to_jsonb($2::int),
+                TRUE)
+        WHERE id = $1`,
+      [orgId, n]);
+    return getOrgSettings(orgId);
+  });
+}
 
 /**
  * saveDay's body, on a caller-supplied client.
@@ -518,11 +606,16 @@ async function _saveDayIn(client, orgId, userId, entries, { asOf = new Date(), d
         throw new DailyWorkError('You cannot log work for a future day',
           'FUTURE_DATE', { date });
       }
-      const earliest = dwDate.addDays(today, -BACKFILL_DAYS);
+      // Resolved per save, on the same client, so a window an admin widened a
+      // minute ago applies to the next save rather than at the next restart.
+      const backfillDays = await resolveBackfillDays(client, orgId);
+      const earliest = dwDate.addDays(today, -backfillDays);
       if (date < earliest) {
         throw new DailyWorkError(
-          `You can only log work for the last ${BACKFILL_DAYS} days. ${date} is further back than that.`,
-          'OUTSIDE_BACKFILL_WINDOW', { date, earliest });
+          backfillDays === 0
+            ? `Work can only be logged for the current day. ${date} is earlier than that.`
+            : `You can only log work for the last ${backfillDays} days. ${date} is further back than that.`,
+          'OUTSIDE_BACKFILL_WINDOW', { date, earliest, backfillDays });
       }
       entryDate = date;
     }
@@ -2013,12 +2106,14 @@ async function getSetupReadiness(orgId) {
                 ) s ON TRUE
           WHERE g.org_id = $1 AND g.module_key = 'dailywork'`, [orgId]),
       client.query(
-        `SELECT settings->'dailywork'->>'reminder_hour' AS hour
+        `SELECT settings->'dailywork'->>'reminder_hour'  AS hour,
+                settings->'dailywork'->>'backfill_days' AS backfill_days
            FROM organizations WHERE id = $1`, [orgId]),
     ]);
 
     const t = types.rows[0], c = cals.rows[0], s = sched.rows[0];
     const rawHour = org.rows[0]?.hour;
+    const rawBackfill = org.rows[0]?.backfill_days;
 
     const checks = [
       {
@@ -2070,6 +2165,17 @@ async function getSetupReadiness(orgId) {
         key: 'reminder_hour', ok: true, advisory: true,
         label: 'Reminder hour',
         detail: rawHour ? `${rawHour}:00 local` : '17:00 local (the default)',
+      },
+      {
+        // Advisory for the same reason: every value is valid, and an org that
+        // never touches it is on the default rather than misconfigured.
+        key: 'backfill_days', ok: true, advisory: true,
+        label: 'Backfill window',
+        detail: rawBackfill == null
+          ? `${BACKFILL_DAYS} days (the default)`
+          : (Number(rawBackfill) === 0
+              ? 'Same day only'
+              : `${rawBackfill} days`),
       },
     ];
 
@@ -2135,6 +2241,9 @@ async function bulkSetTimezone(orgId, timezone) {
 }
 
 module.exports = {
+  getOrgSettings,
+  setOrgSettings,
+  resolveBackfillDays,
   // Exported so the route and any future settings screen read the same number
   // the validation uses, rather than repeating 5 in three places.
   BACKFILL_DAYS,

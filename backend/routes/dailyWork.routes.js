@@ -944,6 +944,26 @@ router.post('/activity-types/:key/merge', async (req, res) => {
 
 const adminOnly = requireRole('owner', 'admin');
 
+// ── GET / PATCH /settings — the module's org-level policy ────────────────────
+//
+// 2026_140. One setting so far: how many days back a person may log.
+//
+// READ is not adminOnly. The My day screen has to be able to say "you can log
+// back to Monday" before somebody discovers the bound by being refused, and
+// there is nothing sensitive in a number that governs everyone equally. WRITE
+// is admin, like every other policy on this router.
+router.get('/settings', async (req, res) => {
+  try {
+    res.json(await dailyWork.getOrgSettings(req.orgId));
+  } catch (err) { handle(res, err, 'GET /settings'); }
+});
+
+router.patch('/settings', adminOnly, async (req, res) => {
+  try {
+    res.json(await dailyWork.setOrgSettings(req.orgId, req.body || {}));
+  } catch (err) { handle(res, err, 'PATCH /settings'); }
+});
+
 router.get('/calendars', adminOnly, async (req, res) => {
   try {
     res.json(await dailyWork.listCalendars(req.orgId));

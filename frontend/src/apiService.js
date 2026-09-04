@@ -1144,6 +1144,12 @@ twilio: {
 
     // The shared list, used by every picker: the per-row dropdown, the
     // add-item form, and the manager's merge target.
+    // 2026_140. Module policy for the org. Read is open to anyone with the
+    // module (My day needs the bound to say how far back it can log); write is
+    // admin, enforced on the route.
+    getSettings: ()       => api.get('/daily-work/settings'),
+    setSettings: (patch)  => api.patch('/daily-work/settings', patch),
+
     listActivityTypes: () => api.get('/daily-work/activity-types'),
 
     // The management screen's view: retired types included, so it can show

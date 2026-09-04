@@ -117,6 +117,7 @@ export default function DailyWorkSetupView() {
           because it is silent: a wrong rate looks exactly like a right one. */}
       <ReadinessPanel readiness={readiness} calendars={calendars} onRun={run} />
 
+      <BackfillSection onRun={run} />
       <ActivityTypeSection onRun={run} />
       <CalendarSection calendars={calendars} onRun={run} />
       <ScheduleSection schedules={schedules} calendars={calendars} onRun={run} />
@@ -288,6 +289,114 @@ function ReadinessPanel({ readiness, calendars, onRun }) {
       </div>
     </div>
   );
+}
+
+/* ── backfill window ────────────────────────────────────────────────── */
+
+/**
+ * How many days back somebody may log work.
+ *
+ * WHY THIS IS A SETTING AT ALL (2026_140). It was a constant of 5, whose own
+ * comment said it lived in the service "precisely so it can become a setting
+ * without a migration". The pilot hit the edge: with a five-day window, a
+ * Monday write-up of the previous Monday is impossible, and a Friday catch-up
+ * on the whole week sits exactly on the boundary.
+ *
+ * SELF-FETCHING, like the sections beside it, rather than taking the value as a
+ * prop. The parent loads calendars, schedules and readiness; threading a fourth
+ * through for one number would make every section depend on one loader.
+ */
+function BackfillSection({ onRun }) {
+  const [cfg, setCfg]     = useState(null);
+  const [value, setValue] = useState('');
+  const [busy, setBusy]   = useState(false);
+  const [msg, setMsg]     = useState(null);
+
+  const load = useCallback(async () => {
+    if (typeof apiService.dailyWork?.getSettings !== 'function') return;
+    try {
+      const { data } = await apiService.dailyWork.getSettings();
+      setCfg(data);
+      setValue(String(data.backfillDays));
+    } catch { setCfg(null); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const save = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const { data } = await apiService.dailyWork.setSettings({ backfillDays: Number(value) });
+      setCfg(data);
+      setValue(String(data.backfillDays));
+      setMsg({ kind: 'info', text: 'Saved.' });
+      onRun?.();
+    } catch (err) {
+      setMsg({ kind: 'stop', text: readError(err, 'Could not save that.') });
+    } finally { setBusy(false); }
+  };
+
+  if (!cfg) return null;
+
+  const n = Number(value);
+  const valid = Number.isInteger(n) && n >= cfg.backfillMin && n <= cfg.backfillMax;
+  const dirty = String(cfg.backfillDays) !== String(value);
+
+  return (
+    <div className="dw-card" style={{ marginTop: 14 }}>
+      <div className="dw-card-head">
+        <h2>How far back people can log</h2>
+        <span className="m">
+          {cfg.backfillDaysIsDefault ? 'Not set — using the default' : 'Set for this organisation'}
+        </span>
+      </div>
+      <div className="dw-item-body" style={{ paddingTop: 10 }}>
+        <p className="dw-meta" style={{ marginTop: 0 }}>
+          Most people write up yesterday's work this morning, so some window is
+          necessary. A long one is not free: if a month of history can be
+          entered on the last day of it, the logging rate stops describing
+          anything.
+        </p>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap',
+                      marginTop: 10 }}>
+          <input type="number" value={value} min={cfg.backfillMin} max={cfg.backfillMax}
+                 onChange={e => setValue(e.target.value)}
+                 style={{ width: 90, padding: '6px 8px', borderRadius: 6,
+                          border: '1px solid var(--dw-line-2)', fontFamily: 'inherit' }} />
+          <span className="dw-meta">
+            days back{n === 0 && valid ? ' — the current day only' : ''}
+          </span>
+          <button className="dw-btn" disabled={busy || !valid || !dirty} onClick={save}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+          {!valid && (
+            <span className="dw-meta" style={{ color: 'var(--dw-stop, #991b1b)' }}>
+              A whole number between {cfg.backfillMin} and {cfg.backfillMax}.
+            </span>
+          )}
+        </div>
+        {/* Says what the number MEANS today, not just what it is. "5" is
+            abstract; "back to Sunday 30 August" is the thing an admin is
+            actually deciding. */}
+        {valid && (
+          <p className="dw-meta" style={{ marginTop: 8 }}>
+            {n === 0
+              ? 'People will only be able to log the current day.'
+              : `Today, that reaches back to ${backfillEdgeLabel(n)}.`}
+          </p>
+        )}
+        {msg && <div className={`dw-banner ${msg.kind}`} style={{ marginTop: 10 }}>{msg.text}</div>}
+      </div>
+    </div>
+  );
+}
+
+/** The earliest date the current window allows, as words. */
+function backfillEdgeLabel(days) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toLocaleDateString(undefined,
+    { weekday: 'long', day: 'numeric', month: 'long' });
 }
 
 /* ── activity types ─────────────────────────────────────────────────── */
