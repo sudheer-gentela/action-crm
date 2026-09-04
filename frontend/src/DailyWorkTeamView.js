@@ -1213,8 +1213,15 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
         </td>
         <td>
           {person.entry_count}
-          {person.account_ids.length > 0 && (
-            <div className="dw-meta">{person.account_ids.length} accounts</div>
+          {/* 2026_141. account_count, not account_ids.length. The server now
+              sends the number instead of the array — only the count was ever
+              read here. `?? (person.account_ids || []).length` keeps this
+              rendering correctly against a backend that has not shipped yet,
+              rather than showing nothing during a staged deploy. */}
+          {(person.account_count ?? (person.account_ids || []).length) > 0 && (
+            <div className="dw-meta">
+              {person.account_count ?? (person.account_ids || []).length} accounts
+            </div>
           )}
         </td>
         <td className="dw-col-work">

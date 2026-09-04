@@ -289,7 +289,25 @@ async function loadCalendars(client, orgId, userIds, from, to) {
  * days is returned as a per-date map so the caller can draw the strip of
  * logged/not-logged squares without another round trip.
  */
-async function getRollup(orgId, { userIds, from, to, filters = {} }) {
+/**
+ * @param {boolean} [opts.slim=false]  2026_141. Return only the counted fields.
+ *
+ * WHY slim EXISTS. GET /people calls this TWICE — once for the window on
+ * screen, and once for a trailing 28 days to answer "are they keeping up
+ * generally". The second call built the full payload for every person: the
+ * per-day strip, the logged and working date arrays, the account ids, the
+ * activity keys — 28 days of it — and the route then read exactly TWO integers
+ * off each row and threw the rest away.
+ *
+ * On a 40-person team that is 40 x 28 day objects plus four arrays per person,
+ * serialised, sent over the wire and discarded by the client. slim skips the
+ * per-day construction and the array aggregation entirely.
+ *
+ * The counts are unaffected: days_logged, working_days and rate come from
+ * dwDate.loggingRate over the same inputs either way, so the trailing figures
+ * are identical to what they were.
+ */
+async function getRollup(orgId, { userIds, from, to, filters = {}, slim = false }) {
   if (!userIds || userIds.length === 0) return [];
 
   return withOrgTransaction(orgId, async (client) => {
@@ -301,8 +319,11 @@ async function getRollup(orgId, { userIds, from, to, filters = {} }) {
               u.first_name, u.last_name,
               array_agg(DISTINCT e.entry_date::text)                      AS logged_dates,
               count(*)::int                                               AS entry_count,
-              array_remove(array_agg(DISTINCT e.account_id), NULL)        AS account_ids,
-              array_remove(array_agg(DISTINCT e.activity_type_key), NULL) AS activity_keys
+              -- 2026_141. Both arrays are aggregated only when they will be
+              -- read. logged_dates is NOT optional — loggingRate needs it even
+              -- in slim mode, which is why it stays unconditional.
+              ${slim ? `'{}'::int[]  AS account_ids` : `array_remove(array_agg(DISTINCT e.account_id), NULL)        AS account_ids`},
+              ${slim ? `'{}'::text[] AS activity_keys` : `array_remove(array_agg(DISTINCT e.activity_type_key), NULL) AS activity_keys`}
          FROM daily_work_entries e
          JOIN users u ON u.id = e.user_id
         WHERE e.org_id = $1
@@ -334,16 +355,40 @@ async function getRollup(orgId, { userIds, from, to, filters = {} }) {
       const rate = dwDate.loggingRate(logged, workingDates);
 
       const who = nameById.get(userId) || {};
+      if (slim) {
+        // Exactly what the trailing caller reads, and nothing else. Returning a
+        // narrower shape rather than the full one with empty arrays is
+        // deliberate: an empty `days` would render as a strip with no squares
+        // if this row ever reached the UI, which is a plausible-looking lie.
+        // An absent key is not.
+        return {
+          user_id: userId,
+          days_logged: rate.logged,
+          working_days: rate.working,
+          rate: rate.rate,
+          has_schedule: cal.hasSchedule,
+        };
+      }
       return {
         user_id: userId,
         first_name: who.first_name || null,
         last_name: who.last_name || null,
         entry_count: row.entry_count || 0,
+        // 2026_141. The COUNT, not the ids. DailyWorkTeamView reads only
+        // `.length` off this — "3 accounts" under the entry count — and an
+        // active rep's id array is far larger than the one number drawn from
+        // it. The ids are still aggregated above for any caller that wants
+        // them; this is about what crosses the wire by default.
+        account_count: (row.account_ids || []).length,
         account_ids: row.account_ids || [],
         activity_keys: row.activity_keys || [],
-        logged_dates: logged,
-        working_dates: workingDates,
         // The strip the manager reads at a glance, in date order.
+        //
+        // logged_dates and working_dates are NOT returned any more. `days`
+        // encodes both — every working date is a key, and `logged` is
+        // membership of the other array — so sending all three was the same
+        // information three times, and nothing in the frontend read either of
+        // the two that are gone.
         days: workingDates.map(d => ({ date: d, logged: logged.includes(d) })),
         days_logged: rate.logged,
         working_days: rate.working,

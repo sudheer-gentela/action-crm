@@ -98,6 +98,10 @@ Module._load = function (request, parent, isMain) {
       dbStub = {
         pool: { query: respond, connect: async () => ({ query: respond, release() {} }) },
         query: respond,
+        // dailyWorkQuery wraps every read in this. Stubbed as a pass-through
+        // that hands the callback a client speaking the same query interface —
+        // the transaction is not what is under test here, the SQL it wraps is.
+        withOrgTransaction: async (orgId, fn) => fn({ query: respond }),
       };
     }
     return dbStub;
@@ -322,6 +326,73 @@ const listSql = () => sqlSeen.find(s => /FROM sales_handovers h/.test(s.sql) && 
     !/h\.status NOT IN/.test(commitPart) && !/h\.retired_at/.test(commitPart),
     'the asymmetry documented at OPEN_COMMITMENT_PREDICATES has changed');
 
-  console.log(failures ? `\n${failures} problem(s).` : '\nAll paging and split checks passed.');
+  // ══ 6. Rollup payload bounding (2026_141) ═════════════════════════════════
+  //
+  // The silent failure: slim mode must change WHAT IS SENT and nothing about
+  // WHAT IS COUNTED. If the counts drifted, the People screen's "last 4 weeks"
+  // figure would be quietly wrong — a number nobody can check by eye.
+  console.log('\n── rollup payload bounding ──');
+  const dq = require(path.join(ROOT, 'services/dailyWorkQuery.service.js'));
+
+  // Two people, one of whom logged on two of the days in the window.
+  const entryRows = [
+    { user_id: 7, first_name: 'Ann', last_name: 'A',
+      logged_dates: ['2026-09-01', '2026-09-02'], entry_count: 5,
+      account_ids: [11, 12, 13], activity_keys: ['call', 'email'] },
+  ];
+  const nameRows = [{ id: 7, first_name: 'Ann', last_name: 'A' },
+                    { id: 8, first_name: 'Bob', last_name: 'B' }];
+
+  const rollupHandlers = () => ([
+    [/array_agg\(DISTINCT e\.entry_date/, () => ({ rows: entryRows })],
+    [/SELECT id, first_name, last_name FROM users/, () => ({ rows: nameRows })],
+  ]);
+
+  reset(); handlers = rollupHandlers();
+  const full = await dq.getRollup(1, { userIds: [7, 8], from: '2026-09-01', to: '2026-09-04' });
+  const fullSql = sqlSeen.find(s => /array_agg\(DISTINCT e\.entry_date/.test(s.sql))?.sql || '';
+
+  reset(); handlers = rollupHandlers();
+  const slim = await dq.getRollup(1, { userIds: [7, 8], from: '2026-09-01', to: '2026-09-04', slim: true });
+  const slimSql = sqlSeen.find(s => /array_agg\(DISTINCT e\.entry_date/.test(s.sql))?.sql || '';
+
+  check('both modes return one row per person', full.length === 2 && slim.length === 2,
+    `${full.length} / ${slim.length}`);
+
+  // THE INVARIANT.
+  const fullBy = new Map(full.map(r => [r.user_id, r]));
+  const slimBy = new Map(slim.map(r => [r.user_id, r]));
+  check('slim counts are IDENTICAL to full counts',
+    [...fullBy.keys()].every(id =>
+      fullBy.get(id).days_logged === slimBy.get(id).days_logged
+      && fullBy.get(id).working_days === slimBy.get(id).working_days
+      && fullBy.get(id).rate === slimBy.get(id).rate),
+    JSON.stringify([...slimBy.values()]));
+
+  check('slim omits the per-day strip', slim.every(r => r.days === undefined));
+  check('slim omits the account and activity arrays',
+    slim.every(r => r.account_ids === undefined && r.activity_keys === undefined));
+  // An empty `days` would draw a strip with no squares — a plausible-looking
+  // lie. Absent is the honest shape.
+  check('slim omits rather than empties', slim.every(r => !('days' in r)));
+
+  check('slim skips the array aggregation in SQL',
+    /'\{\}'::int\[\]\s+AS account_ids/.test(slimSql), 'account_ids still aggregated');
+  check('full mode still aggregates them',
+    /array_remove\(array_agg\(DISTINCT e\.account_id\), NULL\)/.test(fullSql));
+  // logged_dates feeds loggingRate and must survive slim, or the counts break.
+  check('logged_dates is aggregated in BOTH modes',
+    /array_agg\(DISTINCT e\.entry_date/.test(slimSql) && /array_agg\(DISTINCT e\.entry_date/.test(fullSql));
+
+  check('full mode sends account_count', full.every(r => typeof r.account_count === 'number'));
+  check('and the count matches the ids it replaced',
+    fullBy.get(7).account_count === 3, String(fullBy.get(7).account_count));
+  // Sending days plus both date arrays was the same information three times.
+  check('full mode no longer sends logged_dates or working_dates',
+    full.every(r => r.logged_dates === undefined && r.working_dates === undefined));
+  check('but still sends the strip the screen draws',
+    full.every(r => Array.isArray(r.days)));
+
+  console.log(failures ? `\n${failures} problem(s).` : '\nAll paging, split and payload checks passed.');
   process.exit(failures ? 1 : 0);
 })().catch(e => { console.error('harness error:', e); process.exit(1); });

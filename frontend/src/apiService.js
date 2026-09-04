@@ -992,6 +992,16 @@ twilio: {
     // happens to be.
     setMyReviewWatch: (id, subscribed) =>
       api.put(`/handovers/sales/${id}/review-watchers/me`, { subscribed }),
+    // 2026_140. Per-TASK following. Every task on this project the caller
+    // follows, as bare ids — one call for the whole checklist rather than one
+    // per row, which on a 49-task plan is the difference between one request
+    // and forty-nine.
+    myPlayWatches: (id) => api.get(`/handovers/sales/${id}/play-watchers/me`),
+    setPlayWatch: (id, instanceId, subscribed) =>
+      api.put(`/handovers/sales/${id}/plays/${instanceId}/watchers/me`, { subscribed }),
+    // Everyone following one task, for the task's own panel.
+    playWatchers: (id, instanceId) =>
+      api.get(`/handovers/sales/${id}/plays/${instanceId}/watchers`),
     removePlay: (id, instanceId) => api.delete(`/handovers/sales/${id}/plays/${instanceId}`),
     reorderPlays: (id, stageKey, orderedIds) =>
       api.patch(`/handovers/sales/${id}/plays/reorder`, { stageKey, orderedIds }),

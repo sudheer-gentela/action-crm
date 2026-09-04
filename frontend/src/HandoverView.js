@@ -1647,7 +1647,11 @@ function NoteCountBadge({ count }) {
 function PlaySection({ play, canEdit, canDelete = canEdit, onComplete, onRemove, onEdit, onSetStatus, onSetDeps, siblings, users, stages, evidencePolicy,
                        handoverId, canAddNotes, canMarkNotesInternal, onNoteCountChange,
                        onReview, isManager = false, canAct = false,
-                       onDuplicate, onDelete }) {
+                       onDuplicate, onDelete,
+                       // 2026_140. isFollowed comes from ONE ids array fetched
+                       // per project, not a call per row — a 49-task checklist
+                       // would otherwise open with 49 requests.
+                       isFollowed = false, onToggleFollow }) {
   // Done-state mirrors the backend gate, which treats a play as satisfied when
   // its status is 'completed' OR 'skipped' — not merely when completedAt is set.
   // (A skipped play has no completedAt but still clears the gate.)
@@ -1882,6 +1886,37 @@ function PlaySection({ play, canEdit, canDelete = canEdit, onComplete, onRemove,
             </span>
             {play.channel && CH_LABEL[play.channel] && (
               <span style={{ fontSize: 10, color: '#9ca3af' }}>· {CH_LABEL[play.channel]}</span>
+            )}
+            {/* ── Follow this task (2026_140) ──────────────────────────────
+                In the META row rather than with the actions on the right.
+                The actions are things you DO to the task — complete it, edit
+                it, delete it — and are gated on canEdit. Following is a
+                statement about yourself, available to anyone on the project
+                including people who can change nothing here, so grouping it
+                with owner and status is the honest placement.
+
+                Rendered only when the handler is supplied, so the Table and
+                Compact layouts that do not pass it show nothing rather than a
+                dead control.
+
+                Shown on DONE tasks too. Following is how you find out a task
+                was reopened or sent back, and those are exactly the events
+                that happen after it first looks finished. */}
+            {onToggleFollow && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onToggleFollow(play.playInstanceId, !isFollowed); }}
+                title={isFollowed
+                  ? 'You are following this task. You will hear when it is sent for review, approved, sent back, or unblocked.'
+                  : 'Follow this task to hear when it moves, even if it is not yours.'}
+                style={{
+                  fontSize: 10, padding: '1px 8px', borderRadius: 10, cursor: 'pointer',
+                  border: `1px solid ${isFollowed ? '#93c5fd' : '#e5e7eb'}`,
+                  background: isFollowed ? '#eff6ff' : 'transparent',
+                  color: isFollowed ? '#1d4ed8' : '#9ca3af',
+                  fontWeight: isFollowed ? 600 : 400,
+                }}>
+                {isFollowed ? '🔔 Following' : '🔔 Follow'}
+              </button>
             )}
           </div>
         </div>
@@ -3471,11 +3506,19 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
       .catch(() => setEvidencePolicy(null));
   }, [h?.id]);
 
-  const flash = (type, msg) => {
+  // Memoised in 2026_140. It did not need to be while every caller was a plain
+  // handler, but handleToggleFollow is a useCallback that depends on it — and an
+  // un-memoised flash would be a new function on every render, so that callback
+  // would be rebuilt on every render too. The CRA lint catches this as an
+  // exhaustive-deps warning, and CI=true turns the warning into a failed build.
+  //
+  // The setters are stable across renders by React's guarantee, so the empty
+  // dependency array is correct rather than a suppression.
+  const flash = useCallback((type, msg) => {
     if (type === 'success') { setSuccess(msg); setError(''); }
     else { setError(msg); setSuccess(''); }
     setTimeout(() => { setSuccess(''); setError(''); }, 4000);
-  };
+  }, []);
 
   // The noun follows the thing acted on. Only the transitions an initiative can
   // actually reach are branched: with Start removed and completion refused by
@@ -3542,6 +3585,60 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     if (target === 'cancelled' && !closureText.trim()) return; // required; button is disabled anyway
     handleAction(target, closureText.trim() || null);
   };
+
+  // ── Followed tasks (2026_140) ─────────────────────────────────────────────
+  //
+  // A Set of playInstanceIds, fetched ONCE per project. The alternative — each
+  // row asking whether the viewer follows it — is 49 requests on open, and the
+  // checklist already has every row on screen, so a single array of ids is all
+  // the client needs to mark them.
+  //
+  // A Set rather than an array: this is read once per row on every render, and
+  // includes() on an array turns that into a quadratic scan on a large plan.
+  const [followedPlays, setFollowedPlays] = useState(() => new Set());
+
+  const loadFollowed = useCallback(async () => {
+    if (!h?.id) return;
+    // Guarded like the watcher panel: a missing method throws synchronously,
+    // before any promise exists, so a trailing .catch() would not catch it and
+    // a stale bundle would take the whole checklist down rather than just
+    // hiding a button.
+    if (typeof apiService.handovers?.myPlayWatches !== 'function') return;
+    try {
+      const r = await apiService.handovers.myPlayWatches(h.id);
+      setFollowedPlays(new Set(r.data?.playInstanceIds || []));
+    } catch {
+      // Silent. Not knowing which tasks you follow is a cosmetic loss — every
+      // button simply reads "Follow" — and it must not block the checklist.
+      setFollowedPlays(new Set());
+    }
+  }, [h?.id]);
+
+  useEffect(() => { loadFollowed(); }, [loadFollowed]);
+
+  const handleToggleFollow = useCallback(async (playInstanceId, next) => {
+    if (!playInstanceId) return;
+    // Optimistic, and reverted on failure. This button sits in a row the user
+    // may click several of in a row, and a round trip before the state changes
+    // reads as the click not registering — which is how people double-click and
+    // toggle themselves back off.
+    setFollowedPlays(prev => {
+      const s = new Set(prev);
+      if (next) s.add(playInstanceId); else s.delete(playInstanceId);
+      return s;
+    });
+    try {
+      await apiService.handovers.setPlayWatch(h.id, playInstanceId, next);
+    } catch (err) {
+      setFollowedPlays(prev => {
+        const s = new Set(prev);
+        if (next) s.delete(playInstanceId); else s.add(playInstanceId);
+        return s;
+      });
+      flash('error', err?.response?.data?.error?.message
+        || (next ? 'Could not follow that task.' : 'Could not unfollow that task.'));
+    }
+  }, [h?.id, flash]);
 
   const handleCompletePlay = async (playInstanceId, data) => {
     try {
@@ -4641,6 +4738,8 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                                 canMarkNotesInternal={detail.canMarkNotesInternal}
                                 onReview={openReview} isManager={canReviewPlays}
                                 canAct={canActOnPlay(play)}
+                                isFollowed={followedPlays.has(play.playInstanceId)}
+                                onToggleFollow={handleToggleFollow}
                                 onNoteCountChange={noteCountChanged} />
                             </div>
                           )}
@@ -4827,6 +4926,8 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                                 canMarkNotesInternal={detail.canMarkNotesInternal}
                                 onReview={openReview} isManager={canReviewPlays}
                                 canAct={canActOnPlay(play)}
+                                isFollowed={followedPlays.has(play.playInstanceId)}
+                                onToggleFollow={handleToggleFollow}
                                 onNoteCountChange={noteCountChanged} />
                                 </td>
                               </tr>

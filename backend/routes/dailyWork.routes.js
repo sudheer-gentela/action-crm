@@ -486,7 +486,11 @@ router.get('/people', async (req, res) => {
 
     const [rollup, trailing, departments, workload] = await Promise.all([
       dailyQuery.getRollup(req.orgId, { userIds, from: win.from, to: win.to, filters }),
-      dailyQuery.getRollup(req.orgId, { userIds, from: trailingFrom, to: win.to, filters }),
+      // 2026_141: slim. Two integers per person are read off this — see
+      // trailingBy below — and it was building and serialising a full 28-day
+      // strip, four arrays and a name for each of them to produce them.
+      dailyQuery.getRollup(req.orgId, {
+        userIds, from: trailingFrom, to: win.to, filters, slim: true }),
       dailyQuery.getDepartmentsByUser(req.orgId, userIds),
       _projectSideOrEmpty('workload',
         () => handoverService.getProjectWorkloadByUser(req.orgId, userIds),
