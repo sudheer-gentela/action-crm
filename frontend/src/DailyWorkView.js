@@ -611,6 +611,11 @@ export default function DailyWorkView() {
         onOpenTeam={() => setTab('team')}
       />
 
+      {/* 2026_141. Above My project work, because a review is somebody ELSE
+          waiting on you — it has a person attached and it goes stale in a way
+          your own task list does not. */}
+      <ReviewQueueCard />
+
       {/* onPosted reloads the day. Logging against a project task from here
           creates a daily work item, and the log underneath has to pick it up —
           without this the person posts an update and their own day still says
@@ -1009,6 +1014,115 @@ function ProjectWorkTable({ items, person, today, onRefuse, onPosted }) {
  * no Projects module at all — where this call returns nothing and this stays
  * invisible.
  */
+/**
+ * Task reviews waiting on this person, on their own day (2026_141).
+ *
+ * ── WHY IT IS HERE AND NOT ONLY IN PROJECTS ─────────────────────────────────
+ *
+ * myReviewQueue has existed since the review loop shipped and was rendered on
+ * ONE screen: Projects → My Work. Daily Work has no concept of a review at all
+ * — grep the module and the only hit is daily_work_items.status, an unrelated
+ * column.
+ *
+ * That is fine for someone who lives in Projects. It is not fine for a Project
+ * Manager whose day starts in Daily Work: six approvals sat one module away
+ * from the person they were waiting on, which is exactly the "review sitting
+ * unseen" failure the notification work was built to prevent.
+ *
+ * ── IT DOES NOT DUPLICATE THE PROJECTS BANNER ───────────────────────────────
+ *
+ * Same endpoint, same rows, deliberately. This is not a second queue with its
+ * own rules — myReviewQueue is the single definition of "awaiting my review",
+ * and it is scoped by the same authority rule as everything else
+ * (manageableProjectSql). A second query here would be a second answer.
+ *
+ * ── RENDERS NOTHING WHEN EMPTY ──────────────────────────────────────────────
+ *
+ * Most people are not reviewers, and a permanent "0 awaiting review" card on
+ * everyone's day is noise on the screen people open first every morning.
+ */
+function ReviewQueueCard() {
+  const [rows, setRows] = useState(null);   // null = loading or unavailable
+
+  useEffect(() => {
+    // Guarded like the other cross-module reads: a missing method throws
+    // synchronously, before a promise exists, so a trailing .catch() would not
+    // catch it and a stale bundle would take My day down rather than hiding a
+    // card.
+    if (typeof apiService.handovers?.myReviewQueue !== 'function') return;
+    let alive = true;
+    apiService.handovers.myReviewQueue()
+      .then(r => { if (alive) setRows(r.data?.items || r.data || []); })
+      // Silent. Projects may not be enabled for this person at all, and Daily
+      // Work must not report a failure for a module they were never offered.
+      .catch(() => { if (alive) setRows([]); })
+    return () => { alive = false; };
+  }, []);
+
+  if (!rows || rows.length === 0) return null;
+
+  // Grouped by project, matching the Projects banner. A flat list of six task
+  // titles from two projects reads as six unrelated things.
+  const byProject = new Map();
+  for (const r of rows) {
+    const key = r.handoverId;
+    if (!byProject.has(key)) byProject.set(key, { name: r.projectName, items: [] });
+    byProject.get(key).items.push(r);
+  }
+
+  return (
+    <div className="dw-card" style={{ borderLeft: '3px solid #f59e0b' }}>
+      <div className="dw-card-head">
+        <h2>🔔 Awaiting your review</h2>
+        <span className="m">
+          {rows.length} {rows.length === 1 ? 'task' : 'tasks'} across{' '}
+          {byProject.size} {byProject.size === 1 ? 'project' : 'projects'}
+        </span>
+      </div>
+      <div className="dw-item-body" style={{ paddingTop: 8 }}>
+        {[...byProject.entries()].map(([hid, grp]) => (
+          <div key={hid} style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#374151', marginBottom: 3 }}>
+              {grp.name}
+            </div>
+            {grp.items.map(i => (
+              <div key={i.playInstanceId}
+                   /* 'open-project-task', NOT 'handover-deeplink'.
+                      The second is listened for inside HandoverView, which is
+                      not mounted while this screen is on — dispatching it from
+                      here fires into nothing, silently. App.js listens for
+                      this one, changes the route, and then raises the other.
+                      dailyWorkProjectLink already uses it for the same reason.
+
+                      No checkProjectLink call first, unlike that component:
+                      this row exists because the SERVER put it in the review
+                      queue, so the viewer's authority is already established.
+                      Re-asking would be asking a different question (does this
+                      person have open work here) than the one that produced
+                      the row. */
+                   onClick={() => window.dispatchEvent(new CustomEvent('open-project-task', {
+                     detail: { handoverId: hid, playInstanceId: i.playInstanceId,
+                               scope: 'assigned', sub: 'details' } }))}
+                   style={{ fontSize: 13, padding: '3px 0', cursor: 'pointer', color: '#1f2937' }}>
+                {i.title}
+                {i.submittedByName && (
+                  <span className="dw-meta" style={{ marginLeft: 6 }}>
+                    {/* Names the person, not the status. "Deepika asked to mark
+                        it done" tells you who is blocked; "in_review" does
+                        not. */}
+                    — {i.submittedByName} asked to mark it{' '}
+                    {String(i.targetStatus || 'completed').replace(/_/g, ' ')}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function MyProjectWork({ me, today, onPosted }) {
   const [items, setItems] = useState([]);
   const [notice, setNotice] = useState(null);
