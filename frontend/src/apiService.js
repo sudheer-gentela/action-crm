@@ -1269,8 +1269,15 @@ twilio: {
     // One person: their daily work log and their project items, returned
     // SEPARATELY. An entry is anchored to the day it was done, a task to the
     // day it is due — the client interleaves them and keeps them labelled.
-    person: (userId, { from, to, ...filters } = {}) =>
-      api.get(`/daily-work/people/${userId}`, { params: { from, to, ...filters } }),
+    // includeClosed also returns completed and dropped work; windowWork=false
+    // leaves the work tables unfiltered while the log stays windowed. Both
+    // default to the previous behaviour when omitted.
+    person: (userId, { from, to, includeClosed, windowWork, ...filters } = {}) =>
+      api.get(`/daily-work/people/${userId}`, { params: {
+        from, to, ...filters,
+        ...(includeClosed ? { includeClosed: 'true' } : {}),
+        ...(windowWork === false ? { windowWork: 'false' } : {}),
+      } }),
 
     // 2026_140. The daily work this person logged against their project tasks.
     // Task ids are sent from the client because it already has the list on

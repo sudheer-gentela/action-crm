@@ -785,25 +785,73 @@ function CopyLinkButton() {
   );
 }
 
+/**
+ * The person page's own period control (2026_140).
+ *
+ * SEPARATE FROM the People screen's Day/Week/Month. That one governs a table of
+ * nine people and is about compliance over a fixed span; this one is about one
+ * person and has to reach forwards, because half of what is on this page is
+ * work that is DUE rather than work that was DONE. A Month button cannot ask
+ * "what has he got coming".
+ *
+ * Offsets rather than named ranges, so "past 7" and "next 7" are the same
+ * arithmetic in opposite directions and cannot drift apart.
+ */
+const PERSON_RANGES = [
+  { key: 'past7',   label: 'Past 7 days',  back: 6,  fwd: 0 },
+  { key: 'past30',  label: 'Past 30 days', back: 29, fwd: 0 },
+  { key: 'next7',   label: 'Next 7 days',  back: 0,  fwd: 6 },
+  { key: 'next30',  label: 'Next 30 days', back: 0,  fwd: 29 },
+];
+
+function personRange(key) {
+  const r = PERSON_RANGES.find(x => x.key === key) || PERSON_RANGES[0];
+  const today = new Date();
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const shift = (n) => { const d = new Date(today); d.setDate(d.getDate() + n); return d; };
+  return { from: iso(shift(-r.back)), to: iso(shift(r.fwd)) };
+}
+
 function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
-  const [state, setState] = useState({ loading: true, log: [], projectItems: [], projects: [] });
+  const [state, setState] = useState({
+    loading: true, log: [], projectItems: [], projects: [],
+    assigned: [], assignedOutside: 0, projectItemsOutside: 0,
+  });
+  // Defaults to the past week: the question someone arrives with is almost
+  // always "has this person been logging", and that is backward-looking.
+  const [rangeKey, setRangeKey] = useState('past7');
+  const [showAll,  setShowAll]  = useState(false);
   // Local rather than the list's notice: that one is rendered in the branch
   // above this component, so it is off-screen whenever a person is open.
   const [linkNotice, setLinkNotice] = useState(null);
   const onRefuse = useCallback((text) => setLinkNotice(text), []);
 
+  const pRange = personRange(rangeKey);
+
   useEffect(() => {
     let alive = true;
     setState(s => ({ ...s, loading: true }));
-    apiService.dailyWork.person(person.user_id, { ...range, ...filters })
-      .then(({ data }) => { if (alive) setState({ loading: false, log: data.log || [],
-        projectItems: data.projectItems || [], projects: data.projects || [] }); })
-      .catch(() => { if (alive) setState({ loading: false, log: [], projectItems: [], projects: [] }); });
+    apiService.dailyWork.person(person.user_id, {
+      ...pRange, ...filters, includeClosed: showAll,
+    })
+      .then(({ data }) => { if (alive) setState({
+        loading: false,
+        log: data.log || [],
+        projectItems: data.projectItems || [],
+        projects: data.projects || [],
+        assigned: data.assigned || [],
+        assignedOutside: data.assignedOutside || 0,
+        projectItemsOutside: data.projectItemsOutside || 0,
+      }); })
+      .catch(() => { if (alive) setState({ loading: false, log: [], projectItems: [],
+        projects: [], assigned: [], assignedOutside: 0, projectItemsOutside: 0 }); });
     return () => { alive = false; };
-  }, [person.user_id, range.from, range.to]); // eslint-disable-line react-hooks/exhaustive-deps
+    // pRange is derived from rangeKey, so keying on the key rather than the
+    // object avoids a new object identity refetching on every render.
+  }, [person.user_id, rangeKey, showAll]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const name = `${person.first_name || ''} ${person.last_name || ''}`.trim() || 'Unknown';
-  const { log, projectItems, projects } = state;
+  const { log, projectItems, projects, assigned, assignedOutside, projectItemsOutside } = state;
 
   // ── Updates logged against each task (2026_140) ───────────────────────────
   //
@@ -899,6 +947,36 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
         </div>
       )}
 
+      {/* ── The two controls (2026_140) ────────────────────────────────────
+          Separate rather than one combined dropdown: "when" and "what state"
+          are independent questions, and folding them together produces eight
+          combinations with names nobody thinks in. */}
+      <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap',
+                    margin: '0 0 14px' }}>
+        <div style={{ display: 'inline-flex', border: '0.5px solid var(--dw-line-2)',
+                      borderRadius: 8, overflow: 'hidden' }}>
+          {PERSON_RANGES.map(r => (
+            <button key={r.key} type="button"
+                    onClick={() => setRangeKey(r.key)}
+                    aria-pressed={rangeKey === r.key}
+                    style={{ padding: '5px 11px', fontSize: 12, border: 'none',
+                             cursor: 'pointer', fontFamily: 'inherit',
+                             background: rangeKey === r.key ? '#0f2f4a' : 'transparent',
+                             color: rangeKey === r.key ? '#fff' : 'inherit' }}>
+              {r.label}
+            </button>
+          ))}
+        </div>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+          <input type="checkbox" checked={showAll}
+                 onChange={e => setShowAll(e.target.checked)} />
+          {/* "and dropped" is spelled out. A dropped item is a fact a manager
+              wants, and rolling it silently under the word "submitted" would
+              make abandoned work indistinguishable from work never started. */}
+          Show all work submitted (completed and dropped)
+        </label>
+      </div>
+
       {projects.length > 0 && (
         <div className="dw-card" style={{ marginBottom: 14 }}>
           <div className="dw-card-head">
@@ -926,6 +1004,112 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
       ) : (
         <>
           <div className="dw-card">
+            <div className="dw-card-head">
+              <h2>Their daily log</h2>
+              <span className="m">Every working day in this period</span>
+            </div>
+            {days.length === 0 ? (
+              <div className="dw-empty"><p>Nothing in this period.</p></div>
+            ) : (
+              <table className="dw-logtable">
+                <colgroup>
+                  <col style={{ width: '18%' }} />
+                  <col style={{ width: '15%' }} />
+                  <col style={{ width: '67%' }} />
+                </colgroup>
+                <thead>
+                  <tr><th>Date</th><th>Item</th><th>What was done</th></tr>
+                </thead>
+                <tbody>
+                  {days.map(d => {
+                    const e = d.entries[0];
+                    const count = d.entries.reduce((n, x) => n + (x.item_count || 0), 0);
+                    return (
+                      <tr key={d.date}>
+                        <td className="dw-logdate">{formatDate(d.date)}</td>
+                        <td className="dw-logitem muted">
+                          {e ? `${count} ${count === 1 ? 'item' : 'items'}` : 'Not logged'}
+                        </td>
+                        <td className="dw-logwork">
+                          {e
+                            ? d.entries.map(x => x.work_done).filter(Boolean).join(' ')
+                            : <span className="dw-none">—</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+          <div className="dw-card" style={{ marginTop: 14 }}>
+            <div className="dw-card-head">
+              <h2>Assigned to them</h2>
+              <span className="m">
+                {assigned.length} {assigned.length === 1 ? 'item' : 'items'}
+                {showAll ? ' · including completed and dropped' : ''}
+              </span>
+            </div>
+            {assigned.length === 0 ? (
+              <div className="dw-empty"><p>Nothing assigned in this period.</p></div>
+            ) : (
+              <table className="dw-logtable dw-tasktable">
+                <colgroup>
+                  <col style={{ width: '38%' }} />
+                  <col style={{ width: '20%' }} />
+                  <col style={{ width: '16%' }} />
+                  <col style={{ width: '14%' }} />
+                  <col style={{ width: '12%' }} />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>Item</th><th>Assigned by</th><th>Target</th>
+                    <th>Status</th><th>Last logged</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {assigned.map(a => (
+                    <tr key={a.id}>
+                      <td className="dw-logwork">
+                        <b>{a.title}</b>
+                        {/* chk_dwi_linked_is_assigned restricts play_instance_id
+                            to assigned items, so this is the only place the
+                            project link can surface. Marked rather than
+                            duplicated as a row in the project table below. */}
+                        {a.playInstanceId && (
+                          <span className="dw-badge" style={{ marginLeft: 6 }}>on a project task</span>
+                        )}
+                      </td>
+                      <td className="dw-logitem muted">{a.assignedByName || '—'}</td>
+                      <td>
+                        {a.targetDate
+                          ? <span className="dw-badge">{formatDate(a.targetDate)}</span>
+                          : <span className="dw-meta">no date</span>}
+                      </td>
+                      <td className="dw-logitem muted">
+                        {String(a.status || '').replace(/_/g, ' ')}
+                      </td>
+                      <td className="dw-logitem muted">
+                        {/* Never logged is the state that matters most here: an
+                            item nobody has touched is exactly what this table
+                            was added to make visible. */}
+                        {a.lastEntryDate
+                          ? formatDate(a.lastEntryDate)
+                          : <span className="dw-none">never</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {assignedOutside > 0 && (
+              <div className="dw-meta" style={{ padding: '8px 14px 10px' }}>
+                {assignedOutside} more open outside this period.
+              </div>
+            )}
+          </div>
+
+          <div className="dw-card" style={{ marginTop: 14 }}>
             <div className="dw-card-head">
               <h2>Their project work</h2>
               <span className="m">
@@ -1023,47 +1207,13 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
                 </tbody>
               </table>
             )}
-          </div>
-
-          <div className="dw-card" style={{ marginTop: 14 }}>
-            <div className="dw-card-head">
-              <h2>Their daily log</h2>
-              <span className="m">Every working day in this period</span>
-            </div>
-            {days.length === 0 ? (
-              <div className="dw-empty"><p>Nothing in this period.</p></div>
-            ) : (
-              <table className="dw-logtable">
-                <colgroup>
-                  <col style={{ width: '18%' }} />
-                  <col style={{ width: '15%' }} />
-                  <col style={{ width: '67%' }} />
-                </colgroup>
-                <thead>
-                  <tr><th>Date</th><th>Item</th><th>What was done</th></tr>
-                </thead>
-                <tbody>
-                  {days.map(d => {
-                    const e = d.entries[0];
-                    const count = d.entries.reduce((n, x) => n + (x.item_count || 0), 0);
-                    return (
-                      <tr key={d.date}>
-                        <td className="dw-logdate">{formatDate(d.date)}</td>
-                        <td className="dw-logitem muted">
-                          {e ? `${count} ${count === 1 ? 'item' : 'items'}` : 'Not logged'}
-                        </td>
-                        <td className="dw-logwork">
-                          {e
-                            ? d.entries.map(x => x.work_done).filter(Boolean).join(' ')
-                            : <span className="dw-none">—</span>}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            {projectItemsOutside > 0 && (
+              <div className="dw-meta" style={{ padding: '8px 14px 10px' }}>
+                {projectItemsOutside} more open outside this period.
+              </div>
             )}
           </div>
+
         </>
       )}
 

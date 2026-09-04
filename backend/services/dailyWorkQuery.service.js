@@ -625,9 +625,121 @@ async function getTaskUpdates(orgId, userId, playInstanceIds = []) {
   });
 }
 
+/**
+ * Ad-hoc work ASSIGNED to someone, as items rather than as logged entries.
+ *
+ * ── THE GAP THIS FILLS ──────────────────────────────────────────────────────
+ *
+ * daily_work_items.kind is 'recurring' or 'assigned'. An assigned item is real
+ * open work — it has a target_date, an assigned_by, and a status running
+ * yet_to_start → in_progress → in_review → completed/dropped.
+ *
+ * Nothing showed it. The person page listed ENTRIES, which are work that was
+ * LOGGED — so an item nobody has touched yet has no entry and was invisible.
+ * The only surface anywhere was the stalled queue on the People list, and only
+ * once an item had been quiet for three days.
+ *
+ * The failure mode was the bad kind: somebody with six things assigned and none
+ * started rendered as "1 of 1 days logged · 100%" and nothing else. The page
+ * looked like a clean bill of health precisely when it should not have.
+ *
+ * ── WINDOWED ON target_date, NOT ON opened_on ───────────────────────────────
+ *
+ * The question is "what is due in this period", not "what was created in it".
+ * Items with NO target date are always returned: they are open work with no
+ * deadline, and a date filter that silently drops undated work is the same
+ * mistake in a smaller box.
+ *
+ * @param {boolean} [includeClosed=false] also return completed and dropped.
+ *   'dropped' rides with 'completed' deliberately — a manager asking to see
+ *   everything submitted wants to know what was abandoned too, and hiding it
+ *   makes a dropped item indistinguishable from one that never existed.
+ */
+async function getAssignedItems(orgId, userId, { from, to, includeClosed = false } = {}) {
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows } = await client.query(
+      `SELECT i.id AS item_id, i.title, i.status,
+              i.target_date::text AS target_date,
+              i.opened_on::text   AS opened_on,
+              i.play_instance_id,
+              i.activity_type_key,
+              i.account_id,
+              a.name AS account_name,
+              ab.first_name || ' ' || ab.last_name AS assigned_by_name,
+              last_entry.entry_date::text AS last_entry_date,
+              coalesce(entry_count.n, 0)::int AS entry_count
+         FROM daily_work_items i
+         LEFT JOIN accounts a  ON a.id = i.account_id AND a.org_id = i.org_id
+         LEFT JOIN users    ab ON ab.id = i.assigned_by
+         LEFT JOIN LATERAL (
+                SELECT max(e.entry_date) AS entry_date
+                  FROM daily_work_entries e
+                 WHERE e.item_id = i.id AND e.org_id = i.org_id
+              ) last_entry ON TRUE
+         LEFT JOIN LATERAL (
+                SELECT count(*)::int AS n
+                  FROM daily_work_entries e
+                 WHERE e.item_id = i.id AND e.org_id = i.org_id
+              ) entry_count ON TRUE
+        WHERE i.org_id = $1
+          AND i.owner_user_id = $2
+          AND i.kind = 'assigned'
+          AND ($5::boolean IS TRUE
+               OR i.status IN ('yet_to_start', 'in_progress', 'in_review'))
+          AND (i.target_date IS NULL
+               OR $3::date IS NULL
+               OR i.target_date BETWEEN $3::date AND $4::date)
+        ORDER BY (i.target_date IS NULL), i.target_date, i.id`,
+      [orgId, userId, from || null, to || null, includeClosed]);
+
+    return rows.map(r => ({
+      id: `item-${r.item_id}`,
+      itemId: r.item_id,
+      title: r.title,
+      status: r.status,
+      targetDate: r.target_date,
+      openedOn: r.opened_on,
+      // Set only on an item filed against a project task — chk_dwi_linked_is_assigned
+      // restricts play_instance_id to kind='assigned', so this is the ONLY
+      // place the link can appear. The two are not separate kinds of work.
+      playInstanceId: r.play_instance_id,
+      account: r.account_name,
+      assignedByName: r.assigned_by_name,
+      lastEntryDate: r.last_entry_date,
+      entryCount: r.entry_count,
+      isOpen: ['yet_to_start', 'in_progress', 'in_review'].includes(r.status),
+    }));
+  });
+}
+
+/**
+ * How many OPEN assigned items fall outside the window being shown.
+ *
+ * So the table can say "8 more outside this period" rather than silently
+ * omitting them. A filter that hides open work with no trace is how somebody
+ * concludes a person has nothing on.
+ */
+async function countAssignedOutside(orgId, userId, { from, to } = {}) {
+  if (!from || !to) return 0;
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows: [r] } = await client.query(
+      `SELECT count(*)::int AS n
+         FROM daily_work_items i
+        WHERE i.org_id = $1 AND i.owner_user_id = $2
+          AND i.kind = 'assigned'
+          AND i.status IN ('yet_to_start', 'in_progress', 'in_review')
+          AND i.target_date IS NOT NULL
+          AND (i.target_date < $3::date OR i.target_date > $4::date)`,
+      [orgId, userId, from, to]);
+    return r?.n || 0;
+  });
+}
+
 module.exports = {
   getVisibleUserIds,
   getTaskUpdates,
+  getAssignedItems,
+  countAssignedOutside,
   getLog,
   getDepartmentsByUser,
   getDayDetail,

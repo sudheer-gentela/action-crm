@@ -5954,8 +5954,21 @@ const OPEN_COMMITMENT_PREDICATES = `
  * against it any more. getPersonProjectLink below answers the "is this link
  * still honest" question directly.
  */
-async function getPersonProjectItems(userId, orgId) {
+async function getPersonProjectItems(userId, orgId, opts = {}) {
   const today = toDateStr(new Date());
+  // 2026_140. from/to and includeClosed are OPTIONAL and default to today's
+  // behaviour — every existing caller passes neither and gets exactly what it
+  // got before. Only the person page sends them.
+  //
+  // includeClosed drops the task-status half of OPEN_PLAY_PREDICATES but KEEPS
+  // the project half: a completed task on a cancelled project is not "work
+  // submitted", it is the residue of something abandoned. The two halves are
+  // separated here rather than by a second constant, so the shared predicate
+  // the read-path split depends on stays one text.
+  const { from = null, to = null, includeClosed = false } = opts;
+  const playPredicates = includeClosed
+    ? `h.status NOT IN ('completed', 'cancelled') AND h.retired_at IS NULL`
+    : OPEN_PLAY_PREDICATES;
 
   const { rows: plays } = await pool.query(
     `SELECT ppi.id, ppi.title, ppi.due_date::text AS due_date, ppi.status,
@@ -5965,11 +5978,16 @@ async function getPersonProjectItems(userId, orgId) {
        JOIN sales_handovers h ON h.id = ppi.handover_id AND h.org_id = ppi.org_id
        LEFT JOIN deals d ON d.id = h.deal_id
       WHERE ppi.org_id = $2 AND ppi.owner_user_id = $1
-        AND ${OPEN_PLAY_PREDICATES}
+        AND ${playPredicates}
+        -- Undated tasks are ALWAYS returned, whatever the window. They are open
+        -- work with no deadline, and a date filter that silently drops them is
+        -- the failure this whole section exists to avoid.
+        AND (ppi.due_date IS NULL OR $3::date IS NULL
+             OR ppi.due_date BETWEEN $3::date AND $4::date)
       ORDER BY ppi.due_date NULLS LAST, ppi.id`,
-    [userId, orgId]);
+    [userId, orgId, from, to]);
 
-  const commitments = await _personCommitments(userId, orgId, { openOnly: true });
+  const commitments = await _personCommitments(userId, orgId, { openOnly: !includeClosed });
 
   const shape = (r, kind) => ({
     id:         `${kind}-${r.id}`,
@@ -5984,6 +6002,7 @@ async function getPersonProjectItems(userId, orgId) {
     project:    r.project || `Project #${r.handover_id}`,
     handoverId: r.handover_id,
     dueDate:    r.due_date,
+    status:     r.status,
     isStanding: r.tracking_mode === 'standing',
     isOverdue:  r.tracking_mode !== 'standing' && !!r.due_date && r.due_date < today,
   });
@@ -5992,6 +6011,27 @@ async function getPersonProjectItems(userId, orgId) {
     ...plays.map(r => shape(r, 'task')),
     ...commitments.map(r => shape(r, 'commitment')),
   ];
+}
+
+/**
+ * How many OPEN project tasks fall outside the window being shown.
+ *
+ * Feeds the "N more outside this period" line. Counted rather than listed: the
+ * point is that the reader knows the table is narrowed, not that they can read
+ * the rows without changing the filter.
+ */
+async function countPersonProjectItemsOutside(userId, orgId, { from, to } = {}) {
+  if (!from || !to) return 0;
+  const { rows: [r] } = await pool.query(
+    `SELECT count(*)::int AS n
+       FROM project_play_instances ppi
+       JOIN sales_handovers h ON h.id = ppi.handover_id AND h.org_id = ppi.org_id
+      WHERE ppi.org_id = $2 AND ppi.owner_user_id = $1
+        AND ${OPEN_PLAY_PREDICATES}
+        AND ppi.due_date IS NOT NULL
+        AND (ppi.due_date < $3::date OR ppi.due_date > $4::date)`,
+    [userId, orgId, from, to]);
+  return r?.n || 0;
 }
 
 /**
@@ -6381,6 +6421,7 @@ module.exports = {
   getProjectWorkloadByUser, // People screen — open/overdue per person
   getPersonProjectItems,    // People screen — one person's project rows
   getPersonProjectLink,     // 2026_138 — validates ONE "open this project" click
+  countPersonProjectItemsOutside,  // 2026_140 — what the date filter is hiding
   canSeePersonWork,         // 2026_140 — reporting line OR project authority
   getPersonOpenWork,        // 2026_140 — a person's open tasks, scoped
   getOverdueProjectItemsByUsers, // People screen — the overdue chip's queue

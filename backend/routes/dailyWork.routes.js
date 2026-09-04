@@ -687,17 +687,40 @@ router.get('/people/:userId', async (req, res) => {
     const win = await readWindow(req);
     if (win.bad) return res.status(400).json({ error: 'from and to must be YYYY-MM-DD' });
 
-    const [log, projectSide] = await Promise.all([
+    // 2026_140. Two new switches, both defaulting to what this route did
+    // before, so the People screen's own callers are unaffected.
+    //
+    //   includeClosed — also return completed and dropped work
+    //   window        — whether the date range narrows the WORK tables too, or
+    //                   only the daily log
+    //
+    // The window applies to target_date / due_date, which is a different axis
+    // from the entry_date the log is filtered on. That is the point: "what is
+    // due this week" and "what was logged this week" are the two questions this
+    // page answers, and they were being answered with one date.
+    const includeClosed = req.query.includeClosed === 'true';
+    const windowWork    = req.query.windowWork !== 'false';
+    const workRange     = windowWork ? { from: win.from, to: win.to } : {};
+
+    const [log, assigned, assignedOutside, projectSide] = await Promise.all([
       dailyQuery.getLog(req.orgId, {
         userIds: [target], from: win.from, to: win.to, filters: readFilters(req.query) }),
+      dailyQuery.getAssignedItems(req.orgId, target, { ...workRange, includeClosed }),
+      // Only meaningful when the window is narrowing something. Skipped
+      // otherwise rather than returning a misleading zero.
+      windowWork ? dailyQuery.countAssignedOutside(req.orgId, target, workRange) : 0,
       _projectSideOrEmpty('person items', async () => ({
-        projectItems: await handoverService.getPersonProjectItems(target, req.orgId),
+        projectItems: await handoverService.getPersonProjectItems(target, req.orgId,
+          { ...workRange, includeClosed }),
+        projectItemsOutside: windowWork
+          ? await handoverService.countPersonProjectItemsOutside(target, req.orgId, workRange)
+          : 0,
         projects: (await handoverService.getTeamMemberProjects(target, req.orgId))
           .filter(p => !p.isRetired),
-      }), { projectItems: [], projects: [] }),
+      }), { projectItems: [], projectItemsOutside: 0, projects: [] }),
     ]);
 
-    res.json({ ...win, log, ...projectSide });
+    res.json({ ...win, log, assigned, assignedOutside, includeClosed, windowWork, ...projectSide });
   } catch (err) { handle(res, err, 'GET /people/:userId'); }
 });
 
