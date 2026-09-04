@@ -4139,7 +4139,14 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                       style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 14px', fontSize: 13, border: 'none', background: '#fff', color: '#1f2937', cursor: 'pointer' }}
                       onMouseEnter={e => { e.currentTarget.style.background = '#f9fafb'; }}
                       onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}>
-                      ⌸ Save as project template
+                      {/* NO noun, unlike "Duplicate initiative" above it.
+                          playbook_plays records stage_key, title, depends_on
+                          and offsets — and nothing about tracking mode. A
+                          template extracted from an initiative attaches to a
+                          timeboxed project and vice versa, so naming it after
+                          its source would imply a restriction that does not
+                          exist, and someone would skip it in a picker. */}
+                      ⌸ Save as template
                     </button>
                     <button onClick={() => { setMenuOpen(false); setClosureFor('cancelled'); setClosureText(''); }}
                       style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 14px', fontSize: 13, border: 'none', background: '#fff', color: '#b91c1c', cursor: 'pointer' }}
@@ -5350,7 +5357,7 @@ function CopyProjectDialog({ detail, mode, onClose, onDone }) {
   const noun = detail.isStanding ? 'initiative' : 'project';
 
   const [name, setName] = useState(
-    isTemplate ? `${detail.name || detail.projectName || noun} template`
+    isTemplate ? `${detail.name || detail.projectName || noun} template`   // "Contact Research template" reads correctly either way
                : `${detail.name || detail.projectName || noun} (copy)`);
   const [description, setDescription] = useState('');
   const [goLiveDate, setGoLive]       = useState('');
@@ -5389,14 +5396,24 @@ function CopyProjectDialog({ detail, mode, onClose, onDone }) {
                     maxHeight: '86vh', overflowY: 'auto', padding: 20,
                     boxShadow: '0 18px 50px rgba(0,0,0,0.22)' }}>
         <h3 style={{ margin: '0 0 4px', fontSize: 17, fontWeight: 600 }}>
-          {isTemplate ? 'Save as project template' : `Duplicate this ${noun}`}
+          {isTemplate ? 'Save as a reusable template' : `Duplicate this ${noun}`}
         </h3>
         <p style={{ margin: '0 0 14px', fontSize: 12.5, color: '#6b7280', lineHeight: 1.55 }}>
           {isTemplate
-            ? 'The plan becomes reusable: stages, tasks and the order they depend on '
-              + 'each other. Dates become offsets, so it does not carry this '
-              + `${noun}'s calendar. Owners are not part of a template.`
+            ? (detail.isStanding
+                // A standing initiative has no go-live date — chk_sh_standing_no_go_live
+                // forbids one — so there is nothing to measure offsets FROM and every
+                // task lands with a null offset. Correct, and worth saying: somebody
+                // expecting the schedule to travel would otherwise find out later.
+                ? 'The plan becomes reusable: stages, tasks and the order they depend on '
+                  + 'each other. A standing initiative has no end date to measure from, so '
+                  + 'the template carries no timing — tasks take their dates from whatever '
+                  + 'you apply it to. Owners are not part of a template.'
+                : 'The plan becomes reusable: stages, tasks and the order they depend on '
+                  + 'each other. Dates become offsets from go-live, so it does not carry '
+                  + `this ${noun}'s calendar. Owners are not part of a template.`)
             : `A new ${noun} with the same stages and tasks, all reset to not started.`}
+          {isTemplate && ' It can be applied to either a project or an initiative.'}
         </p>
 
         {done ? (
