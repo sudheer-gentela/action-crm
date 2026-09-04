@@ -668,15 +668,39 @@ async function _saveDayIn(client, orgId, userId, entries, { asOf = new Date(), d
             playInstanceId: item.play_instance_id });
       }
 
-      // An entry cannot predate its item. Without this, backfilling five days
-      // lets someone log work against an item created this morning onto a day
-      // when it did not exist — which reads, later, as a record that was always
-      // there. opened_on is the item's own local-date field, so this compares
-      // like with like.
+      // ── Backfilling earlier than the item opens: LOWER IT, do not refuse ──
+      //
+      // This used to throw ITEM_NOT_OPEN_YET, on the reasoning that logging
+      // against an item created this morning onto an earlier day "reads, later,
+      // as a record that was always there".
+      //
+      // TWO THINGS MAKE THAT WRONG HERE.
+      //
+      // First, it guarded nothing the window does not already guard. The
+      // backfill-window check runs ABOVE this one and has already refused
+      // anything older than the org's limit. So the only entries that ever
+      // reached this line were within-window backfills — the exact case the
+      // window exists to allow.
+      //
+      // Second, postTaskUpdate below has resolved this same question the other
+      // way since 2026_136, and its reasoning applies verbatim: "the very first
+      // update on a task could never be backfilled: writing up Monday's work on
+      // Wednesday would create the item on Wednesday and then refuse Monday,
+      // which is exactly the Monday-morning writeup the five-day window exists
+      // for." One rule, two paths, two answers — and the path most people use
+      // had the answer that blocked them.
+      //
+      // ONLY EVER DOWNWARD. An item that has held Monday keeps holding it;
+      // logging Wednesday against it does not move it to Wednesday. Same
+      // invariant postTaskUpdate states, so an item's opened_on always means
+      // "the earliest day work has been recorded against this", whichever path
+      // wrote it.
       if (item.opened_on && entryDate < item.opened_on) {
-        throw new DailyWorkError(
-          'That item did not exist yet on the day you are logging',
-          'ITEM_NOT_OPEN_YET', { itemId: entry.itemId, entryDate, openedOn: item.opened_on });
+        await client.query(
+          `UPDATE daily_work_items
+              SET opened_on = $3::date
+            WHERE id = $1 AND org_id = $2 AND opened_on > $3::date`,
+          [entry.itemId, orgId, entryDate]);
       }
 
       // Carried over, rather than started today. Cheap to compute here and
@@ -824,20 +848,21 @@ async function getTaskForUpdate(orgId, playInstanceId, client = null) {
  *
  * ── WHY opened_on IS THE ENTRY DATE, NOT TODAY ───────────────────────
  *
- * _saveDayIn refuses an entry that predates its item (ITEM_NOT_OPEN_YET), and
- * that rule is right for ordinary items: backfilling onto a day before the
- * item existed would read later as a record that was always there.
- *
- * A linked item is different. It is an artefact of the first POST, not of
- * when the work began — the task itself existed all along. Left at the
- * CURRENT_DATE default, the very first update on a task could never be
+ * An item is an artefact of the first save, not of when the work began. Left
+ * at the CURRENT_DATE default, the very first update on a task could never be
  * backfilled: writing up Monday's work on Wednesday would create the item on
  * Wednesday and then refuse Monday, which is exactly the Monday-morning
- * writeup the five-day window exists for.
+ * writeup the backfill window exists for.
  *
  * So the item opens on the day being logged, and an existing item's
  * opened_on is lowered when someone backfills further than they have before.
  * It never moves forward — an item that has held Monday keeps holding it.
+ *
+ * _saveDayIn NOW DOES THE SAME (2026_140). This note used to say the opposite —
+ * that refusing was "right for ordinary items" and only linked ones were the
+ * exception. That distinction did not survive contact with the product: the
+ * ordinary path is the one most people use, and it was refusing the same
+ * legitimate backfill this comment describes. One rule, both paths.
  */
 async function postTaskUpdate(orgId, userId, input = {}) {
   const {
