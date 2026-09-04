@@ -290,7 +290,7 @@ async function loadCalendars(client, orgId, userIds, from, to) {
  * logged/not-logged squares without another round trip.
  */
 /**
- * @param {boolean} [opts.slim=false]  2026_141. Return only the counted fields.
+ * @param {boolean} [opts.slim=false]  2026_140. Return only the counted fields.
  *
  * WHY slim EXISTS. GET /people calls this TWICE — once for the window on
  * screen, and once for a trailing 28 days to answer "are they keeping up
@@ -319,7 +319,7 @@ async function getRollup(orgId, { userIds, from, to, filters = {}, slim = false 
               u.first_name, u.last_name,
               array_agg(DISTINCT e.entry_date::text)                      AS logged_dates,
               count(*)::int                                               AS entry_count,
-              -- 2026_141. Both arrays are aggregated only when they will be
+              -- 2026_140. Both arrays are aggregated only when they will be
               -- read. logged_dates is NOT optional — loggingRate needs it even
               -- in slim mode, which is why it stays unconditional.
               ${slim ? `'{}'::int[]  AS account_ids` : `array_remove(array_agg(DISTINCT e.account_id), NULL)        AS account_ids`},
@@ -374,7 +374,7 @@ async function getRollup(orgId, { userIds, from, to, filters = {}, slim = false 
         first_name: who.first_name || null,
         last_name: who.last_name || null,
         entry_count: row.entry_count || 0,
-        // 2026_141. The COUNT, not the ids. DailyWorkTeamView reads only
+        // 2026_140. The COUNT, not the ids. DailyWorkTeamView reads only
         // `.length` off this — "3 accounts" under the entry count — and an
         // active rep's id array is far larger than the one number drawn from
         // it. The ids are still aggregated above for any caller that wants
@@ -554,8 +554,80 @@ async function getCandidateActivityTypes(orgId) {
   });
 }
 
+/**
+ * The daily work somebody logged AGAINST their project tasks.
+ *
+ * ── WHY THIS EXISTS ─────────────────────────────────────────────────────────
+ *
+ * daily_work_items.play_instance_id has existed since 2026_136 — an item can be
+ * filed against a specific checklist task — and NOTHING has ever read it back.
+ * Every query in this file selects around it. So the link was being written and
+ * was unreadable, which meant a manager looking at somebody's overdue task
+ * could see that it was late and had no way to see what the person had actually
+ * been doing about it. That is the single most useful thing on the screen and
+ * it was one column away.
+ *
+ * ── SHAPE: ALL TASKS AT ONCE, KEYED BY TASK ─────────────────────────────────
+ *
+ * One call per person, not one per task. The person page renders a table of
+ * their open work and needs a count on every row — fetching per row is N
+ * requests to render one screen, and the counts would pop in one at a time.
+ *
+ * ── NOT WINDOW-BOUNDED, DELIBERATELY ────────────────────────────────────────
+ *
+ * Every other read here is bounded by the from/to the screen is showing. This
+ * one is not, because the task table it feeds is not either: a task that has
+ * been open for six weeks shows on the list regardless of the period, and its
+ * updates are the history of that task rather than of this week. Bounding them
+ * to the visible window would show "Updates (0)" on a task somebody worked on
+ * heavily a fortnight ago — a confident and wrong answer.
+ *
+ * Capped per task instead. PER_TASK_CAP is applied in JS after ordering, not as
+ * a SQL LIMIT, because one LIMIT across the whole result would silently starve
+ * the last tasks in the list while the first ones showed everything.
+ */
+const TASK_UPDATE_CAP = 20;
+
+async function getTaskUpdates(orgId, userId, playInstanceIds = []) {
+  const ids = [...new Set((playInstanceIds || [])
+    .map(n => parseInt(n, 10)).filter(Number.isInteger))];
+  if (!ids.length) return {};
+
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows } = await client.query(
+      `SELECT i.play_instance_id,
+              e.entry_date::text AS entry_date,
+              e.description,
+              e.id AS entry_id
+         FROM daily_work_entries e
+         JOIN daily_work_items i ON i.id = e.item_id AND i.org_id = e.org_id
+        WHERE e.org_id = $1
+          AND i.owner_user_id = $2
+          AND i.play_instance_id = ANY($3::int[])
+        ORDER BY i.play_instance_id, e.entry_date DESC, e.id DESC`,
+      [orgId, userId, ids]);
+
+    const byTask = {};
+    for (const r of rows) {
+      const key = String(r.play_instance_id);
+      if (!byTask[key]) byTask[key] = { updates: [], total: 0 };
+      byTask[key].total += 1;
+      // The cap trims what is SENT, never what is COUNTED. A row reading
+      // "Updates (34)" that opens onto twenty is honest; a row reading
+      // "Updates (20)" when there are thirty-four is not.
+      if (byTask[key].updates.length < TASK_UPDATE_CAP) {
+        byTask[key].updates.push({
+          entryId: r.entry_id, date: r.entry_date, description: r.description,
+        });
+      }
+    }
+    return byTask;
+  });
+}
+
 module.exports = {
   getVisibleUserIds,
+  getTaskUpdates,
   getLog,
   getDepartmentsByUser,
   getDayDetail,

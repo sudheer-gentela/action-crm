@@ -176,7 +176,11 @@ export function daysBetween(from, to) {
  *             update creates a daily work item that My day's log has to pick up.
  */
 export function ProjectItemRow({ item, person, period, anchorDate, filters, onRefuse,
-                                who = null, canLog = false, today = null, onPosted = null }) {
+                                who = null, canLog = false, today = null, onPosted = null,
+                                // 'card' (default) keeps My Day and the overdue
+                                // queue exactly as they are; 'link' is the bare
+                                // control for a table cell.
+                                variant = 'card' }) {
   const [logging, setLogging] = useState(false);
   const { open, busy, linkable } = useOpenProjectTask({
     item, person, period, anchorDate, filters, onRefuse });
@@ -206,6 +210,30 @@ export function ProjectItemRow({ item, person, period, anchorDate, filters, onRe
   );
 
   // ── The plain row: neither link nor composer ──────────────────────────
+  // ── variant="link": the CONTROL only, no card body (2026_140) ─────────
+  //
+  // The person page renders its tasks as table rows now, so the title, project
+  // and due date are already columns — and repeating them inside a card in the
+  // actions cell would print each one twice. What that screen needs from this
+  // component is the one thing worth sharing: the open-this-task behaviour,
+  // with its crumb, its liveness check and its refusal text.
+  //
+  // A VARIANT rather than a second component, for the reason in this file's
+  // header. Two copies of the link would agree on the day they were written
+  // and drift on the first fix applied to one of them, invisibly, because each
+  // screen looks right on its own.
+  //
+  // Returns a fragment, not a div: this renders inside a <td> beside a sibling
+  // button, and a block wrapper would push that button onto its own line.
+  if (variant === 'link') {
+    if (!linkable) return null;
+    return (
+      <button type="button" className="dw-btn-link" onClick={open} disabled={busy}>
+        {busy ? 'opening…' : 'Open'}
+      </button>
+    );
+  }
+
   if (!linkable && !loggable) return <div className="dw-detail-item">{body}</div>;
 
   // ── Otherwise a container with its own controls ───────────────────────

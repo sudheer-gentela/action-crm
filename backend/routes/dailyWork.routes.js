@@ -486,7 +486,7 @@ router.get('/people', async (req, res) => {
 
     const [rollup, trailing, departments, workload] = await Promise.all([
       dailyQuery.getRollup(req.orgId, { userIds, from: win.from, to: win.to, filters }),
-      // 2026_141: slim. Two integers per person are read off this — see
+      // 2026_140: slim. Two integers per person are read off this — see
       // trailingBy below — and it was building and serialising a full 28-day
       // strip, four arrays and a name for each of them to produce them.
       dailyQuery.getRollup(req.orgId, {
@@ -640,6 +640,42 @@ router.get('/people/:userId/project/:handoverId', async (req, res) => {
 // it was DONE; a project task is anchored to the day it is DUE. Those are
 // different meanings, and flattening them into one sorted list here would throw
 // away the distinction the client needs to label them.
+// ── GET /people/:userId/task-updates — what they logged against their tasks ──
+//
+// 2026_140. daily_work_items.play_instance_id has been written since 2026_136
+// and read by nothing. This is the read.
+//
+// Scoped by getVisibleUserIds, exactly like every other /people route here —
+// NOT by the wider project-authority rule the Projects module uses. The two
+// modules bound team reads differently on purpose, and quietly widening one of
+// them through a new endpoint is how a boundary stops meaning anything. A
+// project manager who is not in the reporting line reads this person's work on
+// the Projects side, where that rule lives.
+//
+// Task ids come from the caller rather than being derived here: the client
+// already has the person's task list on screen, and re-deriving it server-side
+// would be a second definition of "their open work" that could disagree with
+// the one the rows were drawn from.
+router.get('/people/:userId/task-updates', async (req, res) => {
+  try {
+    const target = asId(req.params.userId);
+    if (!target) return res.status(400).json({ error: 'userId must be a positive integer' });
+
+    const visible = await dailyQuery.getVisibleUserIds(req.orgId, req.userId);
+    if (!visible.includes(target)) return res.json({ byTask: {} });
+
+    const ids = String(req.query.plays || '')
+      .split(',').map(x => asId(x)).filter(Boolean);
+    // Bounded so a hand-built URL cannot ask for an unbounded array. A plan of
+    // 49 tasks is the case this serves; 200 is generous for it.
+    if (ids.length > 200) {
+      return res.status(400).json({ error: 'too many task ids — send at most 200' });
+    }
+
+    res.json({ byTask: await dailyQuery.getTaskUpdates(req.orgId, target, ids) });
+  } catch (err) { handle(res, err, 'GET /people/:userId/task-updates'); }
+});
+
 router.get('/people/:userId', async (req, res) => {
   try {
     const target = asId(req.params.userId);

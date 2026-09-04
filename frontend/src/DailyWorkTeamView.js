@@ -32,7 +32,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
 import { hashIdSegment, hashSegment, writeHash } from './hashNav';
-import { ProjectItemRow } from './dailyWorkProjectLink';
+import { ProjectItemRow, dueText } from './dailyWorkProjectLink';
 import './DailyWork.css';
 
 const PERIODS = [
@@ -805,21 +805,72 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
   const name = `${person.first_name || ''} ${person.last_name || ''}`.trim() || 'Unknown';
   const { log, projectItems, projects } = state;
 
-  const dated   = projectItems.filter(i => i.dueDate);
-  const undated = projectItems.filter(i => !i.dueDate);
+  // ── Updates logged against each task (2026_140) ───────────────────────────
+  //
+  // ONE call for every task on screen, not one per row. The table needs a count
+  // on every row, and fetching per row is N requests to render one screen with
+  // counts popping in one at a time.
+  //
+  // Keyed off a sorted, joined id string rather than the array: a new array
+  // with identical contents is a new dependency on every render, so passing
+  // projectItems itself would refetch forever.
+  const [updates, setUpdates] = useState({});
+  const [openTask, setOpenTask] = useState(null);
+  const taskIds = projectItems
+    .filter(i => i.kind === 'task' && i.playInstanceId)
+    .map(i => i.playInstanceId);
+  const taskIdKey = [...taskIds].sort((a, b) => a - b).join(',');
+
+  useEffect(() => {
+    if (!taskIdKey) { setUpdates({}); return; }
+    if (typeof apiService.dailyWork?.personTaskUpdates !== 'function') return;
+    let alive = true;
+    apiService.dailyWork.personTaskUpdates(person.user_id, taskIdKey.split(',').map(Number))
+      .then(({ data }) => { if (alive) setUpdates(data.byTask || {}); })
+      // Silent. Not knowing the counts is a cosmetic loss — every row reads
+      // "Updates (0)" — and must not take the task table down with it.
+      .catch(() => { if (alive) setUpdates({}); });
+    return () => { alive = false; };
+  }, [person.user_id, taskIdKey]);
+
   const overdue = projectItems.filter(i => i.isOverdue).length;
 
-  // One bucket per working day in the window, newest first, each carrying
-  // whatever landed on it from either side.
+  // ── TWO TABLES, NOT ONE INTERLEAVED TIMELINE (2026_140) ───────────────────
+  //
+  // This screen used to bucket everything by date: one block per day, project
+  // tasks filed on the day they were DUE, daily work on the day it was DONE.
+  // That is the right shape on My Day, where somebody is logging today's work
+  // against today's tasks and the two genuinely belong on one line.
+  //
+  // It is the wrong shape here. A manager opens this page asking "what is
+  // outstanding?", and interleaving buries three overdue tasks among the days
+  // they happened to fall due on — each in its own card, roughly 150px of
+  // height for fifteen words. Three items filled the viewport.
+  //
+  // So: their open work in one table, ordered by how late it is; their daily
+  // log in another, ordered by date. Same two tables My Day already uses, which
+  // is also why they need no explaining to anyone who has seen that screen.
+  //
+  // ORDERED BY LATENESS, not by due date. The old cards showed "due 28 Sept,
+  // due 22 Sept, due 18 Sept" and left the reader subtracting from today to
+  // rank them. Undated work sorts last rather than being exiled to its own
+  // card at the bottom — it is open work, and having no date is not a reason
+  // to put it somewhere else.
+  const taskRows = [...projectItems].sort((a, b) => {
+    if (!a.dueDate && !b.dueDate) return String(a.title).localeCompare(String(b.title));
+    if (!a.dueDate) return 1;
+    if (!b.dueDate) return -1;
+    return a.dueDate.localeCompare(b.dueDate);
+  });
+
+  // Every working day in the window, newest first, whether or not anything was
+  // logged. The GAPS are the point on a compliance screen — a day with no row
+  // at all reads as a day that did not exist.
   const byDate = new Map();
-  for (const d of (person.days || [])) byDate.set(d.date, { date: d.date, entries: [], items: [] });
+  for (const d of (person.days || [])) byDate.set(d.date, { date: d.date, entries: [] });
   for (const l of log) {
-    if (!byDate.has(l.entry_date)) byDate.set(l.entry_date, { date: l.entry_date, entries: [], items: [] });
+    if (!byDate.has(l.entry_date)) byDate.set(l.entry_date, { date: l.entry_date, entries: [] });
     byDate.get(l.entry_date).entries.push(l);
-  }
-  for (const i of dated) {
-    if (!byDate.has(i.dueDate)) byDate.set(i.dueDate, { date: i.dueDate, entries: [], items: [] });
-    byDate.get(i.dueDate).items.push(i);
   }
   const days = [...byDate.values()].sort((a, b) => b.date.localeCompare(a.date));
 
@@ -873,62 +924,149 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
       {state.loading ? (
         <div className="dw-spinner">Loading…</div>
       ) : (
-        <div className="dw-card">
-          <div className="dw-card-head">
-            <h2>Timeline</h2>
-            <span className="m">Work logged, and project tasks on the day they are due</span>
+        <>
+          <div className="dw-card">
+            <div className="dw-card-head">
+              <h2>Their project work</h2>
+              <span className="m">
+                {taskRows.length} open{overdue > 0 ? ` · ${overdue} overdue` : ''}
+              </span>
+            </div>
+            {taskRows.length === 0 ? (
+              <div className="dw-empty"><p>No open project work.</p></div>
+            ) : (
+              <table className="dw-logtable dw-tasktable">
+                <colgroup>
+                  <col style={{ width: '38%' }} />
+                  <col style={{ width: '24%' }} />
+                  <col style={{ width: '17%' }} />
+                  <col style={{ width: '21%' }} />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>Task</th>
+                    <th>Project</th>
+                    <th>Due</th>
+                    <th><span className="dw-sr-only">Actions</span></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {taskRows.map(i => {
+                    const u = updates[String(i.playInstanceId)] || { updates: [], total: 0 };
+                    const isOpen = openTask === i.id;
+                    return (
+                      <React.Fragment key={i.id}>
+                        <tr>
+                          <td className="dw-logwork"><b>{i.title}</b></td>
+                          <td className="dw-logitem muted">
+                            {i.project}{i.isStanding ? ' · standing' : ''}
+                          </td>
+                          <td>
+                            {/* dueText already computes "6 days late" / "due in
+                                5 days". The cards showed the raw date and left
+                                the reader subtracting from today to rank three
+                                overdue tasks. */}
+                            {i.dueDate
+                              ? <span className={`dw-badge ${i.isOverdue ? 'carried' : ''}`}>
+                                  {dueText(i, null)}
+                                </span>
+                              : <span className="dw-meta">no date</span>}
+                            {i.kind === 'commitment' && <span className="dw-badge">commitment</span>}
+                          </td>
+                          <td className="dw-logactions">
+                            <ProjectItemRow item={i} person={person} period={period}
+                                            anchorDate={anchorDate} filters={filters}
+                                            onRefuse={onRefuse} variant="link" />
+                            {i.kind === 'task' && i.playInstanceId && (
+                              <button type="button" className="dw-btn-link"
+                                      aria-expanded={isOpen}
+                                      onClick={() => setOpenTask(isOpen ? null : i.id)}>
+                                {isOpen ? 'Hide' : 'Updates'} ({u.total})
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                        {isOpen && (
+                          <tr className="dw-person-detail">
+                            <td colSpan={4}>
+                              {u.updates.length === 0 ? (
+                                <div className="dw-meta">
+                                  Nothing logged against this task yet.
+                                </div>
+                              ) : (
+                                <>
+                                  <div className="dw-meta" style={{ marginBottom: 6 }}>
+                                    Work logged against this task
+                                  </div>
+                                  {u.updates.map(x => (
+                                    <div className="dw-taskupdate" key={x.entryId}>
+                                      <div className="dw-meta">{formatDate(x.date)}</div>
+                                      <div className="dw-work">{x.description}</div>
+                                    </div>
+                                  ))}
+                                  {/* The count is the truth; the list is capped.
+                                      Saying so beats a row that reads 34 and
+                                      opens onto 20 with no explanation. */}
+                                  {u.total > u.updates.length && (
+                                    <div className="dw-meta" style={{ marginTop: 6 }}>
+                                      Showing the {u.updates.length} most recent of {u.total}.
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
           </div>
-          <div className="dw-daylog">
+
+          <div className="dw-card" style={{ marginTop: 14 }}>
+            <div className="dw-card-head">
+              <h2>Their daily log</h2>
+              <span className="m">Every working day in this period</span>
+            </div>
             {days.length === 0 ? (
               <div className="dw-empty"><p>Nothing in this period.</p></div>
-            ) : days.map(d => (
-              <div className="dw-dayrow" key={d.date}>
-                <div className="dw-meta"><b>{formatDate(d.date)}</b></div>
-
-                {d.entries.map(e => (
-                  <div className="dw-detail-item" key={`e-${e.entry_date}-${e.user_id}`}>
-                    <div className="t">
-                      <span className="dw-badge">logged</span>
-                      <span className="m">{e.item_count} {e.item_count === 1 ? 'item' : 'items'}</span>
-                    </div>
-                    <div className="d">{e.work_done}</div>
-                  </div>
-                ))}
-
-                {d.items.map(i => (
-                  <ProjectItemRow key={i.id} item={i} person={person}
-                                  period={period} anchorDate={anchorDate}
-                                  filters={filters} onRefuse={onRefuse} />
-                ))}
-
-                {d.entries.length === 0 && d.items.length === 0 && (
-                  <div className="dw-meta">Not logged</div>
-                )}
-              </div>
-            ))}
+            ) : (
+              <table className="dw-logtable">
+                <colgroup>
+                  <col style={{ width: '18%' }} />
+                  <col style={{ width: '15%' }} />
+                  <col style={{ width: '67%' }} />
+                </colgroup>
+                <thead>
+                  <tr><th>Date</th><th>Item</th><th>What was done</th></tr>
+                </thead>
+                <tbody>
+                  {days.map(d => {
+                    const e = d.entries[0];
+                    const count = d.entries.reduce((n, x) => n + (x.item_count || 0), 0);
+                    return (
+                      <tr key={d.date}>
+                        <td className="dw-logdate">{formatDate(d.date)}</td>
+                        <td className="dw-logitem muted">
+                          {e ? `${count} ${count === 1 ? 'item' : 'items'}` : 'Not logged'}
+                        </td>
+                        <td className="dw-logwork">
+                          {e
+                            ? d.entries.map(x => x.work_done).filter(Boolean).join(' ')
+                            : <span className="dw-none">—</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
           </div>
-        </div>
+        </>
       )}
 
-      {undated.length > 0 && (
-        <div className="dw-card" style={{ marginTop: 16 }}>
-          <div className="dw-card-head">
-            <h2>Project work with no date</h2>
-            <span className="m">Nothing to place these on, so they sit here rather than on a day</span>
-          </div>
-          <div className="dw-daylog">
-            {undated.map(i => (
-              <div className="dw-dayrow" key={i.id}>
-                <div className="dw-work"><b>{i.title}</b></div>
-                <div className="dw-meta">
-                  {i.project}{i.isStanding ? ' · standing initiative' : ''}
-                  {i.kind === 'commitment' ? ' · commitment' : ''}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

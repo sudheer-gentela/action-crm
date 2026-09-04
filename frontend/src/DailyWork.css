@@ -569,6 +569,29 @@
   color: var(--dw-accent, #0369a1);
 }
 
+/* 2026_140. The person page's task table.
+ *
+ * .dw-logtable is table-layout: fixed, which is what makes these columns hold
+ * their width instead of being redistributed by one long task title. The task
+ * table borrows it and only overrides what differs — the title is the emphasis
+ * here, where in the day log the description is. */
+.dw-tasktable .dw-logwork b { font-weight: 500; }
+.dw-tasktable .dw-logactions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+/* One logged update inside an expanded task row. Left rule rather than a full
+ * border: these are nested two levels deep already, and a boxed card inside a
+ * table cell inside a card reads as three containers for one sentence.
+ * border-radius stays 0 — a single-sided border with rounded corners renders
+ * as a detached arc. */
+.dw-taskupdate {
+  border-left: 2px solid var(--dw-line-2);
+  border-radius: 0;
+  padding: 2px 0 2px 10px;
+  margin-bottom: 8px;
+}
+.dw-taskupdate:last-child { margin-bottom: 0; }
+.dw-taskupdate .dw-work { line-height: 1.6; }
+
 /* The expansion. Padding on the cell rather than a wrapper div, so the nested
  * table can run the full width of the row it belongs to. */
 .dw-person-detail > td { background: #fbfcfe; padding: 12px 14px 16px; }

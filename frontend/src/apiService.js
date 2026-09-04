@@ -1272,6 +1272,14 @@ twilio: {
     person: (userId, { from, to, ...filters } = {}) =>
       api.get(`/daily-work/people/${userId}`, { params: { from, to, ...filters } }),
 
+    // 2026_140. The daily work this person logged against their project tasks.
+    // Task ids are sent from the client because it already has the list on
+    // screen — deriving them again server-side would be a second definition of
+    // "their open work" that could disagree with the rows it annotates.
+    personTaskUpdates: (userId, playInstanceIds = []) =>
+      api.get(`/daily-work/people/${userId}/task-updates`,
+        { params: { plays: (playInstanceIds || []).join(',') } }),
+
     accountSummary: ({ account, from, to, users }) =>
       api.get('/daily-work/team/account-summary', { params: { account, from, to, users } }),
 
