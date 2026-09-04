@@ -5447,6 +5447,343 @@ async function getCommunications(handoverId, orgId) {
  *   handoverIds is meaningful only for 'projects'. Empty for 'all', where there
  *   is nothing to restrict to.
  */
+/**
+ * Copy a project or initiative into a new one (2026_141).
+ *
+ * ── THE HARD PART IS depends_on ─────────────────────────────────────────────
+ *
+ * project_play_instances.depends_on holds SIBLING INSTANCE IDS, and so does
+ * parent_instance_id. Copy a checklist verbatim and the new project's tasks
+ * point at the OLD project's tasks — cross-project dependencies, which
+ * setPlayDependencies refuses outright because "one project's status changes
+ * would silently gate another's".
+ *
+ * Nothing would error. The new project would simply be blocked by work it has
+ * no relationship to, and _outstandingPrereqs would refuse to start tasks whose
+ * prerequisites live somewhere the user cannot see. So the copy runs in two
+ * passes: insert every row, building an old-id → new-id map, then rewrite the
+ * two id-bearing columns from that map.
+ *
+ * An id that is NOT in the map is dropped rather than carried. That can only
+ * happen if depends_on references an instance that no longer exists — the same
+ * dangling case dependencyNotifier's NOT EXISTS was written for — and carrying
+ * it would recreate a dangling reference in a brand new project.
+ *
+ * ── WHAT IS RESET RATHER THAN COPIED ────────────────────────────────────────
+ *
+ * Everything that records what HAPPENED: status, completed_at/by, the
+ * completion note and evidence, action_id, fired_action_ids, overridden_by, and
+ * all four review_* columns. A duplicate is a plan, not a history.
+ *
+ * baseline_due_date and baseline_source are cleared too, and that one is easy
+ * to miss: carrying them would make Plan vs Actual measure the new project
+ * against the ORIGINAL's commitments, which is a wrong answer that looks
+ * entirely plausible on a chart.
+ *
+ * ── WHAT COMES ALONG, AND WHAT DOES NOT ─────────────────────────────────────
+ *
+ *   stages       always — project_stages is per-project, and without them every
+ *                task's stage_key dangles and the strip renders nothing
+ *   tasks        always, reset as above
+ *   members      optional (default on)
+ *   owners       optional (default off) — per-task owner_user_id
+ *   dates        optional (default on), shifted by the go-live gap
+ *
+ * NOT copied, deliberately: contacts (a different customer), commitments
+ * (promises made on the original), watchers, BoQ, notes, evidence, transitions.
+ *
+ * @param {object} opts
+ * @param {string}  opts.name          required, the new project's name
+ * @param {string}  [opts.goLiveDate]  drives the date shift
+ * @param {boolean} [opts.carryOwners=false]
+ * @param {boolean} [opts.carryMembers=true]
+ * @param {boolean} [opts.carryDates=true]
+ */
+async function duplicateProject(sourceId, orgId, userId, opts = {}) {
+  const name = String(opts.name || '').trim();
+  if (!name) throw Object.assign(new Error('A name for the copy is required'), { status: 400 });
+
+  const carryOwners  = opts.carryOwners === true;
+  const carryMembers = opts.carryMembers !== false;
+  const carryDates   = opts.carryDates !== false;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: [src] } = await client.query(
+      `SELECT * FROM sales_handovers WHERE id = $1 AND org_id = $2`, [sourceId, orgId]);
+    if (!src) throw Object.assign(new Error('Project not found'), { status: 404 });
+
+    // The shift, in days, between the two go-live dates. Only computable when
+    // BOTH exist: a standing initiative has none by design, and a timeboxed
+    // copy with no new date given has nothing to shift towards. In those cases
+    // dates are carried verbatim, which is the honest fallback — the caller
+    // asked to keep them and there is no basis for moving them.
+    let shiftDays = 0;
+    const newGoLive = carryDates && opts.goLiveDate ? opts.goLiveDate : null;
+    if (carryDates && newGoLive && src.go_live_date) {
+      shiftDays = Math.round(
+        (Date.parse(newGoLive) - Date.parse(toDateStr(src.go_live_date))) / 86400000);
+    }
+
+    const { rows: [copy] } = await client.query(
+      `INSERT INTO sales_handovers
+         (org_id, kind, name, account_id, deal_id, budget, assigned_service_owner_id,
+          go_live_date, created_by, tracking_mode, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'active')
+       RETURNING id`,
+      [orgId, src.kind, name, src.account_id,
+       // deal_id is NOT carried. A deal produces one project; pointing a second
+       // at it would make the deal's own project view ambiguous and would let
+       // deal-team membership leak into a project the deal did not create.
+       null,
+       src.budget,
+       carryOwners ? src.assigned_service_owner_id : userId,
+       // A standing initiative may not hold a go-live date at all
+       // (chk_sh_standing_no_go_live), so this is nulled rather than carried.
+       src.tracking_mode === 'standing' ? null : (newGoLive || null),
+       userId, src.tracking_mode]);
+
+    const newId = copy.id;
+
+    // ── Stages ───────────────────────────────────────────────────────────
+    // Before the tasks, because every task carries a stage_key that has to
+    // resolve. Keys are copied verbatim: they are the join, and renaming one
+    // would orphan every task that referenced it.
+    await client.query(
+      `INSERT INTO project_stages
+         (handover_id, org_id, key, name, sort_order, is_active, source, gating, created_by)
+       SELECT $2, org_id, key, name, sort_order, is_active, source, gating, $3
+         FROM project_stages WHERE handover_id = $1 AND org_id = $4`,
+      [sourceId, newId, userId, orgId]);
+
+    // ── Tasks, pass one: insert and map ──────────────────────────────────
+    const { rows: srcPlays } = await client.query(
+      `SELECT * FROM project_play_instances
+        WHERE handover_id = $1 AND org_id = $2
+        ORDER BY sort_order, id`, [sourceId, orgId]);
+
+    const idMap = new Map();
+    for (const p of srcPlays) {
+      const due = carryDates && p.due_date
+        ? toDateStr(new Date(Date.parse(toDateStr(p.due_date)) + shiftDays * 86400000))
+        : null;
+      const { rows: [np] } = await client.query(
+        `INSERT INTO project_play_instances
+           (handover_id, org_id, play_id, stage_key, title, description, channel,
+            priority, execution_type, is_gate, due_date, sort_order, status,
+            is_manual, playbook_id, due_anchor, owner_user_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'not_started',$13,$14,$15,$16)
+         RETURNING id`,
+        [newId, orgId, p.play_id, p.stage_key, p.title, p.description, p.channel,
+         p.priority, p.execution_type, p.is_gate, due, p.sort_order,
+         p.is_manual, p.playbook_id, p.due_anchor,
+         carryOwners ? p.owner_user_id : null]);
+      idMap.set(p.id, np.id);
+    }
+
+    // ── Tasks, pass two: rewrite the id-bearing columns ──────────────────
+    //
+    // Separate pass because a task can depend on one inserted after it —
+    // depends_on is a graph, not a tree, and sort_order does not topologically
+    // order it. Doing this inline would silently drop every forward edge.
+    let remappedDeps = 0, remappedParents = 0;
+    for (const p of srcPlays) {
+      const newSelf = idMap.get(p.id);
+      const deps = (p.depends_on || []).map(x => idMap.get(x)).filter(Boolean);
+      const parent = p.parent_instance_id ? idMap.get(p.parent_instance_id) : null;
+      if (!deps.length && !parent) continue;
+      await client.query(
+        `UPDATE project_play_instances
+            SET depends_on = $2, parent_instance_id = $3
+          WHERE id = $1`,
+        [newSelf, deps.length ? deps : null, parent || null]);
+      if (deps.length) remappedDeps += deps.length;
+      if (parent) remappedParents += 1;
+    }
+
+    // ── Members ──────────────────────────────────────────────────────────
+    //
+    // Approved, non-exited only. A pending row is an unreviewed request to
+    // join the ORIGINAL, and copying it would carry someone's unanswered
+    // request onto a project they never asked about.
+    //
+    // can_manage is copied but self-review is not a concern here: the copier
+    // becomes creator, so they hold authority regardless.
+    let members = 0;
+    if (carryMembers) {
+      const { rowCount } = await client.query(
+        `INSERT INTO project_members
+           (org_id, context_type, context_id, user_id, role_id, custom_role,
+            status, side, can_manage, can_rebaseline, requested_by, reviewed_by, reviewed_at)
+         SELECT org_id, 'handover', $2, user_id, role_id, custom_role,
+                'approved', side, can_manage, can_rebaseline, $3, $3, now()
+           FROM project_members
+          WHERE context_type = 'handover' AND context_id = $1 AND org_id = $4
+            AND status = 'approved' AND exited_at IS NULL
+         ON CONFLICT (context_type, context_id, user_id) DO NOTHING`,
+        [sourceId, newId, userId, orgId]);
+      members = rowCount;
+    }
+
+    await client.query('COMMIT');
+    return {
+      handoverId: newId,
+      name,
+      tasks: idMap.size,
+      stages: undefined,
+      members,
+      remappedDeps,
+      remappedParents,
+      shiftDays,
+    };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Save a project's plan as a reusable PROJECT TEMPLATE (2026_141).
+ *
+ * Stored in `playbooks` / `playbook_plays`, which is the existing mechanism —
+ * setPlaybook already instantiates one onto a new project. The user-facing word
+ * is "project template"; "playbook" stays as the table name and nothing more.
+ *
+ * ── WHY THIS EXISTS ALONGSIDE duplicateProject ──────────────────────────────
+ *
+ * A direct duplicate is a one-off copy: do it three times and you have three
+ * checklists that have quietly drifted apart, with nothing recording that they
+ * were ever the same. A template is the version that compounds — the second,
+ * third and tenth project come from one place.
+ *
+ * What it cannot carry is per-task owners and actual dates, because a template
+ * has no concept of either: playbook_plays holds due_offset_days, a number of
+ * days from an anchor, not a date. That is the trade, and it is the right one
+ * for a template — a plan that hard-codes last quarter's dates is not reusable.
+ *
+ * ── THE REMAP RUNS THE OTHER WAY ────────────────────────────────────────────
+ *
+ * duplicateProject maps instance → instance. Here it is instance → PLAY, because
+ * playbook_plays.depends_on holds play ids while project_play_instances.depends_on
+ * holds instance ids. Same two-pass shape, different target space. Getting this
+ * backwards would produce a template whose dependencies point at instance ids
+ * that happen to collide with real play ids — silently wiring a new project's
+ * tasks to unrelated steps from someone else's playbook.
+ *
+ * ── AD-HOC TASKS ARE PROMOTED ───────────────────────────────────────────────
+ *
+ * A task added straight to the checklist has play_id NULL — it came from nobody's
+ * template. It becomes a real playbook_plays row like any other, so the template
+ * is a faithful record of what the project ACTUALLY ran rather than of the
+ * playbook it started from. Without this, the tasks a team added because the
+ * original plan was incomplete are exactly the ones that vanish.
+ *
+ * @param {string} opts.name         template name
+ * @param {string} [opts.description]
+ */
+async function saveProjectAsTemplate(sourceId, orgId, userId, opts = {}) {
+  const name = String(opts.name || '').trim();
+  if (!name) throw Object.assign(new Error('A template name is required'), { status: 400 });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: [src] } = await client.query(
+      `SELECT id, name, tracking_mode, go_live_date FROM sales_handovers
+        WHERE id = $1 AND org_id = $2`, [sourceId, orgId]);
+    if (!src) throw Object.assign(new Error('Project not found'), { status: 404 });
+
+    const { rows: [pb] } = await client.query(
+      `INSERT INTO playbooks (org_id, name, type, description, entity_type, created_by)
+       VALUES ($1, $2, 'custom', $3, 'handover', $4)
+       RETURNING id`,
+      [orgId, name, String(opts.description || '').trim() || null, userId]);
+
+    const { rows: srcPlays } = await client.query(
+      `SELECT * FROM project_play_instances
+        WHERE handover_id = $1 AND org_id = $2
+          -- Cancelled tasks are excluded. A template is what you would do
+          -- again, and a step somebody explicitly abandoned is the clearest
+          -- possible statement that you would not. Completed and skipped ones
+          -- ARE kept: they happened, and a plan that omits its finished steps
+          -- is not a plan.
+          AND status <> 'cancelled'
+        ORDER BY sort_order, id`, [sourceId, orgId]);
+
+    // Offsets are measured from the project's own go-live where there is one,
+    // so a template extracted from a timeboxed project reproduces its shape
+    // rather than its calendar. With no go-live and no due date, due_offset_days
+    // is left NULL and the play inherits whatever the target project anchors to.
+    const anchorDate = src.go_live_date ? toDateStr(src.go_live_date) : null;
+
+    const idMap = new Map();
+    for (const p of srcPlays) {
+      let offset = null;
+      if (p.due_date && anchorDate) {
+        offset = Math.round(
+          (Date.parse(toDateStr(p.due_date)) - Date.parse(anchorDate)) / 86400000);
+      }
+      const { rows: [np] } = await client.query(
+        `INSERT INTO playbook_plays
+           (playbook_id, org_id, stage_key, title, description, channel,
+            sort_order, execution_type, is_gate, due_offset_days, priority,
+            due_anchor, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         RETURNING id`,
+        [pb.id, orgId, p.stage_key, p.title, p.description, p.channel,
+         p.sort_order, p.execution_type, p.is_gate, offset, p.priority,
+         // 'go_live' only where an offset was actually computed from one.
+         // Claiming that anchor with a NULL offset would make every task due on
+         // go-live day itself.
+         offset !== null ? 'go_live' : p.due_anchor, userId]);
+      idMap.set(p.id, np.id);
+    }
+
+    let remappedDeps = 0;
+    for (const p of srcPlays) {
+      const deps = (p.depends_on || []).map(x => idMap.get(x)).filter(Boolean);
+      if (!deps.length) continue;
+      await client.query(
+        `UPDATE playbook_plays SET depends_on = $2 WHERE id = $1`,
+        [idMap.get(p.id), deps]);
+      remappedDeps += deps.length;
+    }
+
+    // Stage NAMES travel with the template, in stage_guidance, because
+    // playbook_plays carries only stage_key. Without them a project created
+    // from this template shows raw keys where the original showed words.
+    const { rows: stages } = await client.query(
+      `SELECT key, name, sort_order, gating FROM project_stages
+        WHERE handover_id = $1 AND org_id = $2 AND is_active = TRUE
+        ORDER BY sort_order`, [sourceId, orgId]);
+    if (stages.length) {
+      await client.query(
+        `UPDATE playbooks SET stage_guidance = $2 WHERE id = $1`,
+        [pb.id, JSON.stringify({ stages })]);
+    }
+
+    await client.query('COMMIT');
+    return {
+      playbookId: pb.id,
+      name,
+      plays: idMap.size,
+      remappedDeps,
+      stages: stages.length,
+      skippedCancelled: true,
+    };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 async function canSeePersonWork(orgId, viewerId, targetId) {
   const EMPTY = { scope: null, handoverIds: [] };
   if (!orgId || !viewerId || !targetId) return EMPTY;
@@ -6448,6 +6785,8 @@ module.exports = {
   getPersonProjectItems,    // People screen — one person's project rows
   getPersonProjectLink,     // 2026_138 — validates ONE "open this project" click
   countPersonProjectItemsOutside,  // 2026_140 — what the date filter is hiding
+  duplicateProject,         // 2026_141 — copy a project or initiative
+  saveProjectAsTemplate,    // 2026_141 — extract its plan as a reusable template
   canSeePersonWork,         // 2026_140 — reporting line OR project authority
   getPersonOpenWork,        // 2026_140 — a person's open tasks, scoped
   getOverdueProjectItemsByUsers, // People screen — the overdue chip's queue

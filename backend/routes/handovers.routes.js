@@ -57,6 +57,7 @@ const upload  = multer({
 
 const projectSettings = require('../services/projectSettings.service');
 const planVariance    = require('../services/planVariance.service');   // 2026_111
+const projectMembers  = require('../services/projectMembers.service');  // 2026_141
 const boq             = require('../services/boq.service');            // 2026_113/114
 const playReview      = require('../services/playReview.service');     // 2026_130
 router.use(authenticateToken);
@@ -1378,6 +1379,66 @@ router.delete('/sales/:id/plays/:instanceId', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('Remove handover play error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── POST /sales/:id/duplicate — copy a project or initiative (2026_141) ──────
+//
+// Behind canManage: copying a project reproduces its whole plan and its team,
+// which is a project-management act. Anyone able to see a project could
+// otherwise mint copies of it.
+// The gate is inline rather than a middleware because handovers.routes has no
+// canManage of its own — that middleware lives in projectMembers.routes. One
+// helper, used by both endpoints below, beats two copies of the same three
+// lines or a fourth definition of project authority.
+async function requireProjectAuthority(req, res) {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: { message: 'Bad project id' } });
+    return null;
+  }
+  const ok = await projectMembers.canManageProject(id, req.orgId, req.user.userId);
+  if (!ok) {
+    res.status(403).json({ error: {
+      message: 'Only an org admin or someone who manages this project can do that.' } });
+    return null;
+  }
+  return id;
+}
+
+router.post('/sales/:id/duplicate', async (req, res) => {
+  try {
+    const id = await requireProjectAuthority(req, res);
+    if (id === null) return;
+    const b = req.body || {};
+    res.json(await handoverService.duplicateProject(
+      id, req.orgId, req.user.userId, {
+        name: b.name,
+        goLiveDate: b.goLiveDate || null,
+        // Explicit booleans, and the defaults live in the service so the API
+        // and a direct caller cannot disagree about them.
+        carryOwners:  b.carryOwners === true,
+        carryMembers: b.carryMembers !== false,
+        carryDates:   b.carryDates !== false,
+      }));
+  } catch (err) {
+    console.error('Duplicate project error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+// ── POST /sales/:id/save-as-template — extract the plan (2026_141) ───────────
+router.post('/sales/:id/save-as-template', async (req, res) => {
+  try {
+    const id = await requireProjectAuthority(req, res);
+    if (id === null) return;
+    const b = req.body || {};
+    res.json(await handoverService.saveProjectAsTemplate(
+      id, req.orgId, req.user.userId,
+      { name: b.name, description: b.description }));
+  } catch (err) {
+    console.error('Save as template error:', err);
     res.status(err.status || 500).json({ error: { message: err.message } });
   }
 });
