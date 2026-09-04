@@ -6047,8 +6047,16 @@ async function countPersonProjectItemsOutside(userId, orgId, { from, to } = {}) 
         -- Only work due AFTER the window. Overdue work is no longer hidden by
         -- the filter, so counting it here would report as "hidden" something
         -- the reader can see in the table directly above the line.
-        AND ppi.due_date > $4::date`,
-    [userId, orgId, from, to]);
+        --
+        -- The window start is deliberately not passed. Postgres refuses a statement given
+        -- a parameter it never references, and the overdue clause above removed
+        -- this query's only use of it. Here the throw was SILENT — the call
+        -- sits inside _projectSideOrEmpty, which swallows failures so the
+        -- project half cannot take the Daily Work screen down. The cost of that
+        -- safety net is that this returned an empty project list and looked
+        -- like a person with no work.
+        AND ppi.due_date > $3::date`,
+    [userId, orgId, to]);
   return r?.n || 0;
 }
 

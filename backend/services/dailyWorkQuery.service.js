@@ -736,8 +736,16 @@ async function countAssignedOutside(orgId, userId, { from, to } = {}) {
           AND i.target_date IS NOT NULL
           -- After the window only. Overdue items are shown now, so counting
           -- them as hidden would contradict the table above the line.
-          AND i.target_date > $4::date`,
-      [orgId, userId, from, to]);
+          --
+          -- The window start is NOT a parameter here. It was, until the overdue clause
+          -- above removed the only reference to it — and Postgres rejects a
+          -- statement that is handed a parameter it never mentions with
+          -- "could not determine data type of parameter $3". That threw on
+          -- every call, and because this sits directly in the route's
+          -- Promise.all it took the whole request down: the person page went
+          -- blank, with no log, no rate, no tasks and no error on screen.
+          AND i.target_date > $3::date`,
+      [orgId, userId, to]);
     return r?.n || 0;
   });
 }
