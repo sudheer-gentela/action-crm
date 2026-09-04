@@ -85,8 +85,9 @@ const EVIDENCE_MAX = 4000;
 /**
  * Who is this user, relative to ONE play?
  *
- * 'manager'  — org admin/owner, the Project Manager (assigned_service_owner_id)
- *              or the project creator. Delegates to canManageProject so there
+ * 'manager'  — org admin/owner, the Project Manager (assigned_service_owner_id),
+ *              the project creator, or (2026_137) an approved project_members
+ *              row carrying can_manage. Delegates to canManageProject so there
  *              is one definition of project authority in the codebase.
  * 'assignee' — project_play_instances.owner_user_id, and only that. The
  *              project_play_assignees table looks like a second answer but is
@@ -770,7 +771,26 @@ async function reviewQueue(handoverId, orgId) {
  *
  * SCOPE mirrors canManageProject, expressed as one query rather than N calls:
  *   • org admin/owner  → every project in the org
- *   • everyone else    → projects where they are the service owner or creator
+ *   • everyone else    → projects where they are the service owner, the
+ *                        creator, or an approved member with can_manage
+ *
+ * THE NON-ADMIN ARM IS NOT WRITTEN OUT HERE ANY MORE. It comes from
+ * projectMembers.manageableProjectSql, which is the same fragment
+ * canManageProject is built from.
+ *
+ * This is why. The rule used to be hand-copied into this query, and when
+ * 2026_137 added can_manage the copy did not know. The result would have been
+ * silent and confusing in the specific way permission bugs always are: a member
+ * granted authority sees approve and reject buttons on every task on the
+ * project — because the checklist asks canManageProject — and then opens their
+ * review queue and finds it empty, because this query still believed authority
+ * meant two columns on sales_handovers. Nothing errors. The screen just
+ * disagrees with itself, and the person concludes the queue is broken.
+ *
+ * Sharing the fragment does not remove the duplication — this still cannot call
+ * the function once per project — but it makes the duplication one edit deep
+ * instead of two, and a grep for manageableProjectSql now finds every query
+ * that depends on the rule.
  *
  * Watchers are deliberately NOT in scope. Being told about a review is not the
  * same as being able to act on one, and a queue that lists work you cannot
@@ -812,8 +832,7 @@ async function myReviewQueue(orgId, userId, { limit = 100 } = {}) {
         -- loose end to clean up, not work to action.
         AND h.status NOT IN ('cancelled', 'completed')
         AND ($3::boolean IS TRUE
-             OR h.assigned_service_owner_id = $2
-             OR h.created_by = $2)
+             OR ${projectMembers.manageableProjectSql('h', '$2', '$1')})
       ORDER BY p.review_submitted_at ASC NULLS LAST, p.id
       LIMIT $4`,
     [orgId, userId, isOrgAdmin, limit]);

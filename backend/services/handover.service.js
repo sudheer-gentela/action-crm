@@ -77,11 +77,22 @@ function toDateStr(d) {
 /**
  * May this user reset the baseline on this project?
  *
- * Three routes in: org admin/owner, the two people accountable for the project
- * (service owner, creator) — both already covered by canManageProject — or an
- * approved member explicitly granted can_rebaseline.
+ * Two routes in: anyone canManageProject already admits — org admin/owner, the
+ * service owner, the creator, and since 2026_137 an approved member granted
+ * can_manage — or an approved member explicitly granted can_rebaseline.
  *
- * The grant is per-project by design. Someone overseeing one delivery should
+ * NOTE THAT can_manage NOW IMPLIES can_rebaseline, through the first line of
+ * the body. That is deliberate and not an oversight: can_manage is defined as
+ * "the same per-project authority as the service owner", and the service owner
+ * has always been able to rebaseline. A can_manage that stopped short of it
+ * would mean a project manager who can approve the work but cannot move the
+ * plan the work is measured against.
+ *
+ * can_rebaseline therefore keeps its own reason to exist: it is the NARROWER
+ * grant, for someone who should be able to re-plan without being able to
+ * approve submissions or change the team.
+ *
+ * Both grants are per-project by design. Someone overseeing one delivery should
  * not thereby be able to reset baselines on every other project in the org.
  */
 async function canRebaseline(handoverId, orgId, userId) {
@@ -572,13 +583,35 @@ async function createProject(orgId, userId, data = {}) {
         new Error('A standing initiative has no end date. Create it as a time-boxed project if it needs one.'),
         { status: 400 });
     }
-    if (serviceOwnerId) {
-      // Not an error — an owner is meaningless rather than harmful here, and
-      // the picker may simply have been left populated. Dropped and not stored,
-      // so it cannot later be read as "this initiative has an owner".
-      console.warn(
-        `[handover] owner ignored on standing initiative "${name}" — standing work has no single owner`);
-    }
+    // An owner on a standing initiative is OPTIONAL BUT PERSISTED (2026_137).
+    //
+    // This used to drop it and log a warning, on the reasoning that standing
+    // work has no single owner. That reasoning is right about ACCOUNTABILITY
+    // and wrong about AUTHORITY, and the column carries both.
+    //
+    // assigned_service_owner_id is one of only three things canManageProject
+    // consults. An initiative created without it therefore had no manager at
+    // all except the org's admins and whoever happened to click Create — so the
+    // person who set it up could not approve a task on it, could not set its
+    // watchers, and could not staff it, on a container the whole org files
+    // daily work against. The picker was subsequently hidden in the UI, which
+    // made the symptom invisible without fixing anything: update() has always
+    // persisted this column, so the value could be set the moment after
+    // creation through the ordinary edit form. Creation was the only path that
+    // threw it away.
+    //
+    // Nothing else has to change to allow it. There is no CHECK constraint on
+    // this column for standing rows — chk_sh_standing_no_go_live and
+    // chk_sh_standing_never_completes are the only two, and neither mentions
+    // it. And list() computes isUnassigned as
+    //   owner IS NULL && tracking_mode === 'timeboxed'
+    // so a standing initiative WITH an owner is still not counted as
+    // unassigned, exactly as one without an owner already was not. The
+    // "7 unassigned" figure 2026_133 was written to fix stays fixed.
+    //
+    // Optional, not required: the timeboxed branch below demands an owner, and
+    // this branch deliberately does not. An initiative with nobody named is
+    // still a legitimate initiative.
   } else {
     // THIS IS THE RULE THAT CANNOT BE A CHECK CONSTRAINT.
     //
@@ -613,8 +646,11 @@ async function createProject(orgId, userId, data = {}) {
           tracking_mode)
        VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, 'draft', $8, $9)
        RETURNING *`,
+      // serviceOwnerId is passed through for BOTH tracking modes now. See the
+      // note above the standing branch: dropping it here was what left a
+      // standing initiative with no manager but the org's admins.
       [orgId, kind, name, accountId, budget,
-       trackingMode === 'standing' ? null : serviceOwnerId,
+       serviceOwnerId,
        goLiveDate, userId, trackingMode]
     );
     const h = rows[0];
@@ -1063,6 +1099,19 @@ async function getById(handoverId, orgId, userId = null) {
     ? { id: handover.playbookId, name: rows[0].playbook_name, gateEnforcement: rows[0].playbook_gate_enforcement }
     : null;
 
+  // Resolved ONCE. Two flags below are the same question — may this viewer
+  // manage this project — and each used to run its own canManageProject call,
+  // which is a query apiece on a function already called on the hot path.
+  //
+  // Hoisting it also removes the way they could disagree. They cannot today
+  // (both call the same function), but two separately-awaited copies of one
+  // permission is precisely the shape that drifts the moment somebody adds a
+  // condition to one line and not the other — which is the bug 2026_137 found
+  // in myReviewQueue.
+  const canManage = userId
+    ? await projectMembers.canManageProject(handoverId, orgId, userId)
+    : false;
+
   return {
     ...handover, stakeholders, commitments, plays, dealTeam, playbook,
     contactAddPolicy:      rows[0].contact_add_policy || { deal_owner: true, service_owner: true, admins: true, named_users: [] },
@@ -1077,7 +1126,23 @@ async function getById(handoverId, orgId, userId = null) {
     // submission or reopen a closed task. Resolved once here rather than
     // per-row in the checklist — it is a property of the project, not of the
     // task, and asking per row would be N identical queries.
-    canReviewPlays:        userId ? await projectMembers.canManageProject(handoverId, orgId, userId) : false,
+    canReviewPlays:        canManage,
+    // 2026_137. The SAME permission as canReviewPlays, under the name the
+    // People card needs it by.
+    //
+    // Not an alias for tidiness — the two names answer different questions and
+    // the member UI was reading the wrong one. Editing a member was gated on
+    // `isProjectAdmin`, which is org admin ONLY, so the routes and the screen
+    // disagreed: PATCH /handovers/:id/members/:mid has always been behind
+    // canManage (org admin OR project authority), while the button that calls
+    // it only rendered for org admins. A project manager could change a
+    // member's role by curl and not by clicking.
+    //
+    // Sending it under its own name means the client asks "may I manage the
+    // people on this project" rather than borrowing the answer to "may I
+    // approve a task", and the day those two stop being the same permission
+    // this line is where it is noticed.
+    canManageMembers:      canManage,
     // Sent so the checklist can work out, per row, whether the VIEWER is that
     // task's assignee. The alternative — a canAct flag computed per play on the
     // server — would mean re-resolving project authority once per row for a

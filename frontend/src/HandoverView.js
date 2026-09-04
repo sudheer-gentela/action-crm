@@ -2307,7 +2307,24 @@ function AddPlayForm({ users, onAdd, stages }) {
 
 // ── StakeholderSection ────────────────────────────────────────────────────────
 
-function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRefresh, onOpenMember,
+// `canManage` replaced `isAdmin` here (2026_137).
+//
+// It was reading detail.isProjectAdmin, which is org admin/owner ONLY — while
+// every endpoint these controls call has always been behind the route's
+// `canManage` middleware, which is org admin OR canManageProject. So the screen
+// was strictly stricter than the API it drives: a Project Manager could change
+// a member's role, approve a pending request or remove someone with a curl, and
+// could not see a single one of those buttons on their own project.
+//
+// That gap is why the "restore a prior role after a demotion" question had no
+// mechanism behind it in practice even after the PATCH endpoint shipped — the
+// endpoint existed and nobody who needed it could reach it.
+//
+// Aligning the two WIDENS what a Project Manager sees. That is the intended
+// direction: projectMembers.canManageProject is documented as giving the
+// service owner and creator "the same authority over it that an org admin has",
+// and this component was the one place that did not honour it.
+function ProjectMembersSection({ handoverId, members, canManage, canRequest, onRefresh, onOpenMember,
                                 serviceOwnerId = null, managerLabel = 'Project Manager',
                                 isStanding = false }) {
   // The stored custom_role for the accountable person is the literal string
@@ -2397,6 +2414,29 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
     } catch (e) { setErr(e?.response?.data?.error?.message || 'Could not change the role.'); }
   };
 
+  // 2026_137. Grant or withdraw per-project authority.
+  //
+  // Deliberately does NOT close the editor on success, unlike saveRole. This is
+  // the one control here whose effect is invisible on the row it sits on until
+  // the refresh lands, and collapsing the panel at the same moment leaves the
+  // person unsure whether the click registered. The badge appearing beside the
+  // name is the confirmation, and they need to still be looking at the row to
+  // see it.
+  //
+  // The server refuses this on a pending row and on an internal customer, with
+  // a message written for the reader — so there is no client-side pre-check
+  // here beyond hiding the control. A pre-check would be a second copy of a
+  // rule that lives in changeRole, and the two would drift.
+  const saveCanManage = async (mid, next) => {
+    setErr('');
+    try {
+      await apiService.handovers.updateMember(handoverId, mid, { canManage: next });
+      await refresh();
+    } catch (e) {
+      setErr(e?.response?.data?.error?.message || 'Could not change project authority.');
+    }
+  };
+
   const request = async () => {
     setErr(''); setMsg('');
     try {
@@ -2444,7 +2484,7 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
                 would have removed contact editing from every initiative member
                 as a side effect of a wording change. Relabelled instead, so the
                 opener says what it now opens. */}
-            {isAdmin ? (
+            {canManage ? (
               <button
                 onClick={() => setEditing(x => (x === m.id ? null : m.id))}
                 title={displayRole(m) ? "Change this person's role" : 'Contact details'}
@@ -2459,6 +2499,28 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
               <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, padding: '1px 7px',
                              borderRadius: 999, background: '#f5f3ff', color: '#6d28d9',
                              textTransform: 'uppercase', letterSpacing: 0.3 }}>internal customer</span>
+            )}
+            {/* 2026_137. Shown to EVERYONE who can see the member list, not
+                only to people who can change it.
+
+                A permission that is only visible to those able to grant it is
+                one nobody else can audit — and the question this badge answers
+                ("who on this project can approve my submission?") is asked far
+                more often by people who hold no authority than by people who
+                do. It is also the answer to "why did that get approved by
+                them", which is a question you want answerable from the screen
+                rather than from the database.
+
+                Suppressed on the service owner's own row: they hold this
+                authority through sales_handovers.assigned_service_owner_id and
+                their can_manage flag is almost certainly false, so a row
+                reading "Project Manager" with no authority badge beside it
+                would be actively misleading. displayRole already names them. */}
+            {m.canManage && m.status === 'approved' && m.userId !== serviceOwnerId && (
+              <span title="Can approve task reviews, manage the team and set watchers on this project"
+                    style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, padding: '1px 7px',
+                             borderRadius: 999, background: '#ecfdf5', color: '#047857',
+                             textTransform: 'uppercase', letterSpacing: 0.3 }}>can manage</span>
             )}
             {editing === m.id && (
               <div style={{ marginTop: 6, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -2496,6 +2558,61 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
                   {m.email} · email is changed in account settings
                 </span>
 
+                {/* ── Project authority (2026_137) ──────────────────────────
+                    On its own line, with a divider. It is not another field
+                    like role or phone: those describe the person, this changes
+                    what they can do to the project, and putting it in the same
+                    wrapping row as a phone number invites it to be flipped in
+                    passing.
+
+                    Three states, and each renders something rather than
+                    silently disappearing — a control that vanishes with no
+                    explanation is read as a bug, and the reasons here are ones
+                    the person needs to know to act:
+
+                      • service owner   → already has it, nothing to grant
+                      • internal customer → refused, and why
+                      • pending         → approve them first
+                      • approved delivery → the actual checkbox
+
+                    The server enforces all of this in changeRole. These
+                    branches exist to explain, not to protect. */}
+                <div style={{ width: '100%', marginTop: 6, paddingTop: 6,
+                              borderTop: '1px solid #e5e7eb' }}>
+                  {m.userId === serviceOwnerId ? (
+                    <span style={{ fontSize: 11, color: '#6b7280' }}>
+                      Has full authority on this project as {managerLabel}.
+                    </span>
+                  ) : m.side === 'internal_customer' ? (
+                    <span style={{ fontSize: 11, color: '#6b7280' }}>
+                      The internal customer accepts the work, so they cannot also approve
+                      the tasks that make it up.
+                    </span>
+                  ) : m.status !== 'approved' ? (
+                    <span style={{ fontSize: 11, color: '#6b7280' }}>
+                      Approve them onto the project before giving them project authority.
+                    </span>
+                  ) : (
+                    <label style={{ fontSize: 12, color: '#374151', display: 'inline-flex',
+                                    alignItems: 'flex-start', gap: 6, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={m.canManage === true}
+                        onChange={e => saveCanManage(m.id, e.target.checked)}
+                        style={{ marginTop: 2 }} />
+                      <span>
+                        Can manage this {isStanding ? 'initiative' : 'project'}
+                        <span style={{ display: 'block', fontSize: 11, color: '#9ca3af' }}>
+                          Approve and send back task reviews, add and remove team members,
+                          choose who gets alerted, and re-baseline the plan. This
+                          {isStanding ? ' initiative' : ' project'} only — it grants nothing
+                          anywhere else.
+                        </span>
+                      </span>
+                    </label>
+                  )}
+                </div>
+
                 <button onClick={() => setEditing(null)} style={{ fontSize: 11, padding: '3px 9px',
                   borderRadius: 4, border: '1px solid #d1d5db', background: '#fff', cursor: 'pointer' }}>Done</button>
               </div>
@@ -2504,14 +2621,14 @@ function ProjectMembersSection({ handoverId, members, isAdmin, canRequest, onRef
             {m.status === 'rejected' && <span style={{ marginLeft: 8 }}>{badge('rejected', '#fee2e2', '#991b1b')}</span>}
             {m.status === 'rejected' && m.reviewReason && <div style={{ fontSize: 11, color: '#991b1b' }}>Reason: {m.reviewReason}</div>}
           </div>
-          {isAdmin && m.status === 'pending' && (
+          {canManage && m.status === 'pending' && (
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
               <button onClick={() => review(m.id, 'approve')} style={{ fontSize: 11, padding: '3px 10px', borderRadius: 5, border: 'none', background: '#059669', color: '#fff', cursor: 'pointer' }}>Approve</button>
               <input value={rejecting[m.id] || ''} onChange={e => setRejecting(x => ({ ...x, [m.id]: e.target.value }))} placeholder="reason" style={{ ...inp, width: 120 }} />
               <button onClick={() => review(m.id, 'reject')} style={{ fontSize: 11, padding: '3px 10px', borderRadius: 5, border: '1px solid #fca5a5', background: '#fff', color: '#991b1b', cursor: 'pointer' }}>Reject</button>
             </div>
           )}
-          {isAdmin && m.status !== 'pending' && (
+          {canManage && m.status !== 'pending' && (
             <button onClick={() => remove(m.id)} title="Remove" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444', fontSize: 12 }}>✕</button>
           )}
         </div>
@@ -5910,7 +6027,7 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onG
                 handoverId={detail.id}
                 members={detail.projectMembers || []}
                 onOpenMember={setOpenMember}
-                isAdmin={detail.isProjectAdmin}
+                canManage={detail.canManageMembers === true}
                 canRequest={detail.canRequestMember}
                 onRefresh={onRefresh}
                 serviceOwnerId={detail.assignedServiceOwnerId}
@@ -6100,8 +6217,16 @@ function HandoverSummary({ detail, users, canEdit, onRefresh, onOpenProject, onG
 
       </div>
 
+      {/* canManage: same correction as ProjectMembersSection (2026_137). This
+          passed isProjectAdmin — org admin only — while the comment on the
+          branch that consumes it already said "an org admin or the Project
+          Manager", and PATCH .../users/:userId/contact has always been behind
+          the route's canManage middleware. So the promise in the comment, the
+          rule in the API and the value being passed were three different
+          things. */}
       {openMember && <PersonPanel member={openMember} onClose={() => setOpenMember(null)}
-        onOpenProject={onOpenProject} handoverId={detail.id} canManage={!!detail.isProjectAdmin} />}
+        onOpenProject={onOpenProject} handoverId={detail.id}
+        canManage={detail.canManageMembers === true} />}
       {openCommitment && <DeliverableModal commitmentId={openCommitment} onClose={() => setOpenCommitment(null)} />}
       {openContact && <CustomerContactPanel stakeholder={openContact} onClose={() => setOpenContact(null)} />}
     </>
