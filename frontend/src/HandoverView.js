@@ -3643,10 +3643,36 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
     }
   }, [h?.id, flash]);
 
+  // ── Prompt to log the day's work after finishing a task (2026_141) ────────
+  //
+  // WHY. Completing a project task writes to project_play_instances and
+  // NOTHING ELSE — playReview and PlaybookPlayService never touch
+  // daily_work_entries. So somebody could submit six tasks in a morning and
+  // their Daily Work would still read "not logged · 0 entries · 5%". Both
+  // records were correct and they described the same person doing the same
+  // work.
+  //
+  // A PROMPT, not an automatic entry. postTaskUpdate could be called on
+  // completion with the completion note as the description, and that was the
+  // tempting version — but a log that fills with "task X completed" stops being
+  // worth reading, which is the exact failure Daily Work exists to prevent. The
+  // person still writes what they did; this only puts the box in front of them
+  // at the moment they did it.
+  //
+  // Holds the task, not a boolean: the composer needs the instance id, and the
+  // title is what makes the prompt say something rather than ask a bare
+  // question.
+  const [logPrompt, setLogPrompt] = useState(null);
+
   const handleCompletePlay = async (playInstanceId, data) => {
     try {
       await apiService.handovers.completePlay(h.id, playInstanceId, data);
       await load();
+      // AFTER load(), so the checklist has already updated behind the prompt.
+      // Offering it first would leave the task looking untouched underneath a
+      // dialog congratulating them on finishing it.
+      const done = plays.find(p => p.playInstanceId === playInstanceId);
+      setLogPrompt({ playInstanceId, title: done?.title || 'that task' });
     } catch (err) {
       flash('error', err?.response?.data?.error?.message || 'Could not mark that play done');
     }
@@ -4166,6 +4192,53 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
             PersonPanel, several hundred lines away in a DIFFERENT component —
             it compiled, and every reference to the state was undefined. The
             linter caught it; nothing else would have. */}
+        {/* ── "Log this as today's work" (2026_141) ─────────────────────────
+            Reuses TaskWorkComposer — the same component behind "Log work on
+            this" in Daily Work and on the person page. A second composer would
+            be a second set of rules about which day stages a linked item may
+            take, and the two would drift.
+
+            startOpen so the box is already there. A prompt that asks whether
+            you would like to be asked is one click of pure friction, and the
+            whole point is to catch the moment the work just happened.
+
+            Dismissable and never blocking: the task IS complete. This is an
+            offer, and refusing it must cost nothing — otherwise people start
+            avoiding the completion button, which is far worse than an
+            unlogged day. */}
+        {logPrompt && (
+          <div onClick={() => setLogPrompt(null)}
+               style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.35)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        zIndex: 60 }}>
+            <div onClick={e => e.stopPropagation()}
+                 style={{ background: '#fff', borderRadius: 12, width: 'min(560px, 94vw)',
+                          maxHeight: '86vh', overflowY: 'auto', padding: 20,
+                          boxShadow: '0 18px 50px rgba(0,0,0,0.22)' }}>
+              <h3 style={{ margin: '0 0 4px', fontSize: 16, fontWeight: 600 }}>
+                Log this as today's work?
+              </h3>
+              <p style={{ margin: '0 0 14px', fontSize: 12.5, color: '#6b7280', lineHeight: 1.55 }}>
+                “{logPrompt.title}” is done. Finishing a task does not write your daily
+                log — say what you actually did and it will show on your day and to
+                your manager, linked to this task.
+              </p>
+              <TaskWorkComposer
+                playInstanceId={logPrompt.playInstanceId}
+                startOpen
+                onPosted={() => { setLogPrompt(null); flash('success', 'Logged.'); }} />
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
+                <button onClick={() => setLogPrompt(null)}
+                  style={{ fontSize: 13, padding: '7px 14px', borderRadius: 6,
+                           border: '1px solid #d1d5db', background: '#fff', cursor: 'pointer' }}>
+                  {/* "Not now", not "Cancel". Cancel reads as undoing the
+                      completion, which is not what this button does. */}
+                  Not now
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         {copyMode && (
           <CopyProjectDialog
             detail={detail}
