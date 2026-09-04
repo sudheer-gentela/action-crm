@@ -552,6 +552,22 @@ async function _close({ handoverId, instanceId, orgId, userId, role, from, isOpe
       ).catch(err => console.error(
         `[playReview] dependency release failed after cancelling ${instanceId}:`, err.message));
     }
+
+    // 2026_138. The third and last hook site.
+    //
+    // The completion and skip paths get this inside completePlayForProject /
+    // skipPlayForProject, but a cancellation is written by the UPDATE above and
+    // goes through neither — so without this line, cancelling a prerequisite
+    // would release its dependents and tell nobody. That asymmetry would have
+    // been invisible: the dependents genuinely do unblock, so the only symptom
+    // is an alert that never arrives for one of the three terminal statuses.
+    //
+    // NOT guarded on cancelled.play_id, unlike the call above. play_id is the
+    // playbook template this instance came from, and an ad-hoc task added
+    // straight to the checklist has none — but it can still be somebody's
+    // prerequisite, because setPlayDependencies works on instance ids and does
+    // not care where the instance came from.
+    await PlaybookPlayService._notifyUnblocked(instanceId, orgId, userId);
   }
 
   // Next-play chain. Awaited rather than fire-and-forget: we need to know which
@@ -857,18 +873,48 @@ async function myReviewQueue(orgId, userId, { limit = 100 } = {}) {
 
 async function listWatchers(handoverId, orgId) {
   const { rows } = await pool.query(
-    `SELECT w.user_id, u.first_name || ' ' || u.last_name AS name, u.email
+    `SELECT w.user_id, u.first_name || ' ' || u.last_name AS name, u.email,
+            w.self_subscribed
        FROM project_play_watchers w
        JOIN users u ON u.id = w.user_id
       WHERE w.handover_id = $1 AND w.org_id = $2
       ORDER BY u.first_name, u.last_name`,
     [handoverId, orgId]);
-  return rows.map(r => ({ userId: r.user_id, name: r.name, email: r.email }));
+  return rows.map(r => ({
+    userId: r.user_id, name: r.name, email: r.email,
+    // 2026_138. The panel renders these separately and gives the manager no
+    // remove button for them — see setWatchers for why they must not appear
+    // in the picker's list at all.
+    selfSubscribed: r.self_subscribed === true,
+  }));
 }
 
 /**
- * Replace the watcher list wholesale. Gated on project authority: who gets
- * told about review activity is a project-management decision.
+ * Replace the MANAGER-MANAGED watcher list wholesale. Gated on project
+ * authority: who gets told about review activity is a project-management
+ * decision.
+ *
+ * ── 2026_138: SELF-SUBSCRIBED ROWS ARE NOT TOUCHED ──────────────────────────
+ *
+ * This is a DELETE-then-INSERT, which is the honest shape for "here is the new
+ * list" and a trap once people can add themselves. Before this change, a member
+ * opting in and a manager subsequently adding one person through the panel
+ * meant the member's row was deleted — the PUT carries only the ids the panel
+ * had on screen, and self-subscribers were never on it. They would simply stop
+ * being notified, with no event and nothing to notice.
+ *
+ * So the DELETE excludes self_subscribed rows, and the INSERT marks everything
+ * it writes as manager-managed. A person who subscribed themselves is removed
+ * by themselves, or by leaving the project — never by a manager saving a list
+ * they were never shown.
+ *
+ * THE CONFLICT CASE MATTERS. If a manager explicitly adds someone who is
+ * already self-subscribed, the ON CONFLICT below deliberately does NOT flip
+ * self_subscribed to false. Doing so would let a manager silently convert
+ * somebody's own subscription into one the manager can then delete — the exact
+ * outcome this change exists to prevent, arriving by a longer route. The row
+ * stays theirs, and the manager's add is a no-op because the person is already
+ * on the list.
  */
 async function setWatchers(handoverId, orgId, actorId, userIds = []) {
   if (!(await projectMembers.canManageProject(handoverId, orgId, actorId))) {
@@ -882,12 +928,13 @@ async function setWatchers(handoverId, orgId, actorId, userIds = []) {
   try {
     await client.query('BEGIN');
     await client.query(
-      `DELETE FROM project_play_watchers WHERE handover_id = $1 AND org_id = $2`,
+      `DELETE FROM project_play_watchers
+        WHERE handover_id = $1 AND org_id = $2 AND self_subscribed = FALSE`,
       [handoverId, orgId]);
     for (const uid of ids) {
       await client.query(
-        `INSERT INTO project_play_watchers (org_id, handover_id, user_id, created_by)
-         VALUES ($1, $2, $3, $4) ON CONFLICT (handover_id, user_id) DO NOTHING`,
+        `INSERT INTO project_play_watchers (org_id, handover_id, user_id, created_by, self_subscribed)
+         VALUES ($1, $2, $3, $4, FALSE) ON CONFLICT (handover_id, user_id) DO NOTHING`,
         [orgId, handoverId, uid, actorId]);
     }
     await client.query('COMMIT');
@@ -898,6 +945,104 @@ async function setWatchers(handoverId, orgId, actorId, userIds = []) {
     client.release();
   }
   return listWatchers(handoverId, orgId);
+}
+
+/**
+ * Put yourself on, or take yourself off, a project's review alert list.
+ *
+ * WHY THIS EXISTS. Everything about who hears what was a manager's decision —
+ * setWatchers is gated on canManageProject, so a member who wanted to follow a
+ * project had to ask someone to add them. And since 2026_138 gives members
+ * completion traffic only, "I want to see the rest of it" is now a normal thing
+ * to want, and it needs an answer that is not a favour.
+ *
+ * ── WHO MAY SUBSCRIBE ───────────────────────────────────────────────────────
+ *
+ * Only people who can already see the project: an approved project member, the
+ * service owner, the creator, or an org admin. Review notifications carry task
+ * titles and project names, so an open endpoint would be a way to read the
+ * shape of a project you are not on — one subscribe call and its checklist is
+ * mailed to you as it happens.
+ *
+ * Deliberately NOT gated on canManageProject, which is the authority to change
+ * OTHER people's subscriptions. Subscribing yourself is not an act of
+ * authority, and requiring it would leave the feature reachable only by the
+ * people who never needed it.
+ *
+ * @param {boolean} on  true to subscribe, false to unsubscribe
+ */
+async function setSelfWatch(handoverId, orgId, userId, on) {
+  if (!userId) throw Object.assign(new Error('Not signed in'), { status: 401 });
+
+  if (!on) {
+    // Unsubscribe needs no eligibility check. Someone who has lost access to
+    // the project must still be able to take themselves off the list, and a
+    // gate here would trap them on it.
+    //
+    // Scoped to self_subscribed rows so this can never delete a manager's
+    // entry: a member quietly removing themselves from a list the PM
+    // deliberately put them on is a different feature, and not this one.
+    const { rowCount } = await pool.query(
+      `DELETE FROM project_play_watchers
+        WHERE handover_id = $1 AND org_id = $2 AND user_id = $3 AND self_subscribed = TRUE`,
+      [handoverId, orgId, userId]);
+    return { subscribed: false, changed: rowCount > 0 };
+  }
+
+  const { rows: [ok] } = await pool.query(
+    `SELECT 1 AS ok
+       FROM sales_handovers h
+       JOIN org_users ou ON ou.org_id = h.org_id AND ou.user_id = $3 AND ou.is_active = TRUE
+      WHERE h.id = $1 AND h.org_id = $2
+        AND ( ou.role IN ('admin', 'owner')
+           OR h.assigned_service_owner_id = $3
+           OR h.created_by = $3
+           OR EXISTS (SELECT 1 FROM project_members pm
+                       WHERE pm.context_type = 'handover'
+                         AND pm.context_id   = h.id
+                         AND pm.org_id       = h.org_id
+                         AND pm.user_id      = $3
+                         AND pm.status       = 'approved'
+                         AND pm.exited_at IS NULL) )`,
+    [handoverId, orgId, userId]);
+
+  if (!ok) {
+    throw Object.assign(
+      new Error('You need to be on this project to follow its updates.'),
+      { status: 403, code: 'NOT_ON_PROJECT' });
+  }
+
+  // DO NOTHING, not DO UPDATE. If a manager already added this person the row
+  // stays manager-managed and the subscribe is a no-op — they are on the list
+  // either way, and converting it would let them delete a row the manager owns.
+  const { rowCount } = await pool.query(
+    `INSERT INTO project_play_watchers (org_id, handover_id, user_id, created_by, self_subscribed)
+     VALUES ($1, $2, $3, $3, TRUE)
+     ON CONFLICT (handover_id, user_id) DO NOTHING`,
+    [orgId, handoverId, userId]);
+
+  return { subscribed: true, changed: rowCount > 0 };
+}
+
+/**
+ * Is this user on the alert list, and by whose doing?
+ *
+ * Sent to the client so the Follow button can render its state without the
+ * panel having to infer it from a list, and so it can distinguish the two
+ * cases. Someone a manager added is subscribed but not selfSubscribed, and
+ * offering them an Unfollow button would be offering a control that silently
+ * does nothing — setSelfWatch's DELETE only touches self_subscribed rows.
+ */
+async function selfWatchState(handoverId, orgId, userId) {
+  if (!userId) return { subscribed: false, selfSubscribed: false };
+  const { rows: [r] } = await pool.query(
+    `SELECT self_subscribed FROM project_play_watchers
+      WHERE handover_id = $1 AND org_id = $2 AND user_id = $3`,
+    [handoverId, orgId, userId]);
+  return {
+    subscribed: !!r,
+    selfSubscribed: r?.self_subscribed === true,
+  };
 }
 
 /**
@@ -918,8 +1063,14 @@ async function seedWatchersFromOrgDefault(handoverId, orgId, actorId) {
 
   for (const uid of ids) {
     await pool.query(
-      `INSERT INTO project_play_watchers (org_id, handover_id, user_id, created_by)
-       VALUES ($1, $2, $3, $4) ON CONFLICT (handover_id, user_id) DO NOTHING`,
+      // self_subscribed FALSE stated rather than left to the column default.
+      // These people did not ask to be here — they are on the org's default
+      // list — so they are manager-managed and setWatchers may replace them.
+      // This is also the case that makes created_by = user_id an unsound way
+      // to derive self-subscription: a manager who is in the org default gets
+      // a row where the two are equal without having subscribed to anything.
+      `INSERT INTO project_play_watchers (org_id, handover_id, user_id, created_by, self_subscribed)
+       VALUES ($1, $2, $3, $4, FALSE) ON CONFLICT (handover_id, user_id) DO NOTHING`,
       [orgId, handoverId, uid, actorId ?? null]).catch(() => {});
   }
   return listWatchers(handoverId, orgId);
@@ -936,6 +1087,8 @@ module.exports = {
   dependentsInFlight,
   listWatchers,
   setWatchers,
+  setSelfWatch,
+  selfWatchState,
   seedWatchersFromOrgDefault,
   OPEN_STATUSES,
   TERMINAL_STATUSES,

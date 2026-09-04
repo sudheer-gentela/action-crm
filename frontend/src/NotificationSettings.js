@@ -259,6 +259,13 @@ export default function NotificationSettings() {
     ...p,
     channels: { ...(p.channels || {}), review_email_mode: val },
   }));
+  // 2026_138. WHICH review events reach email, as opposed to how they are
+  // paced. Separate from setReviewEmailMode because the two questions are
+  // independent — someone can want completions only, hourly.
+  const setReviewEmailScope = (val) => setPrefs(p => ({
+    ...p,
+    channels: { ...(p.channels || {}), review_email_scope: val },
+  }));
 
   const setSlackCategory = (cat, val) => setPrefs(p => ({
     ...p,
@@ -411,9 +418,18 @@ export default function NotificationSettings() {
         const on   = ch.email_enabled === true;      // === true, not !== false:
         const cat  = ch.email_categories || {};      // an older prefs row has no
         const mode = ch.review_email_mode || 'immediate';   // key, and that is off
+        // 2026_138. Defaults to 'completions' to match the server default in
+        // notificationService.DEFAULT_PREFS. Both sides must agree or the
+        // screen shows one thing and the mailer does another.
+        const scope = ch.review_email_scope || 'completions';
         const CATEGORIES = [
           ['digest',     'Daily overdue summary', 'One email a day listing what is overdue.'],
           ['review',     'Task reviews',          'Sent for review, approved, or sent back.'],
+          // Listed directly under reviews because that is where someone will
+          // look for it, and worded to say what it is FOR rather than what
+          // triggers it — "a task you can start" is the thing the reader cares
+          // about; "a prerequisite reached a terminal status" is not.
+          ['unblocked',  'Ready to start',        'When a task of yours stops being blocked.'],
           ['immediate',  'Immediate alerts',      'Time-sensitive updates as they happen.'],
           ['escalation', 'Escalations',           'When something has been ignored too long.'],
           ['revisit',    'Revisit reminders',     'When a prospect or account is due a look.'],
@@ -456,6 +472,40 @@ export default function NotificationSettings() {
 
                   {cat.review !== false && (
                     <>
+                      {/* 2026_138. WHICH events, then HOW OFTEN — in that
+                          order, because the first narrows what the second is
+                          pacing. Two separate pickers rather than one list of
+                          four combinations: the questions are independent, and
+                          a four-way control would have to name combinations
+                          nobody thinks in ("all, hourly"). */}
+                      <div className="ns-card-desc" style={{ margin: '14px 0 8px' }}>
+                        Which review emails
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        {[
+                          ['completions', 'Only when a task finishes',
+                           'Approved, skipped or cancelled. Not submissions or rework.'],
+                          ['all',         'Everything in the review loop',
+                           'Also sent-for-review and sent-back. A lot on a large plan.'],
+                        ].map(([key, label, desc]) => (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() => setReviewEmailScope(key)}
+                            title={desc}
+                            style={{
+                              flex: '1 1 200px', textAlign: 'left', padding: '10px 12px',
+                              borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit',
+                              border: `1px solid ${scope === key ? '#0369a1' : '#d1d5db'}`,
+                              background: scope === key ? '#e0f2fe' : '#fff',
+                            }}>
+                            <div style={{ fontSize: 13, fontWeight: 600,
+                                          color: scope === key ? '#0369a1' : '#374151' }}>{label}</div>
+                            <div style={{ fontSize: 11.5, color: '#6b7280', marginTop: 2 }}>{desc}</div>
+                          </button>
+                        ))}
+                      </div>
+
                       <div className="ns-card-desc" style={{ margin: '14px 0 8px' }}>
                         How often for task reviews
                       </div>
@@ -518,6 +568,29 @@ export default function NotificationSettings() {
                   <div className="ns-toggle-row">
                     <div className="ns-card-desc">Revisit reminders</div>
                     <Toggle checked={cat.revisit !== false} onChange={v => setSlackCategory('revisit', v)} />
+                  </div>
+                  {/* 2026_138. These two rows are NEW, and the first is a
+                      correction rather than an addition.
+
+                      There was no 'review' key in slack_categories and
+                      deliverSlack reads an absent key as allowed — so review
+                      alerts have been arriving as Slack DMs for everyone with
+                      Slack connected, with nothing on this screen to turn them
+                      off. Anyone who wanted them stopped had to disable Slack
+                      entirely.
+
+                      Both use `!!cat.x` rather than the `!== false` the rows
+                      above use, because both now have explicit defaults in
+                      DEFAULT_PREFS and the stored value is the answer. The
+                      `!== false` idiom means "on unless told otherwise", which
+                      is the thing that made review inescapable. */}
+                  <div className="ns-toggle-row">
+                    <div className="ns-card-desc">Task reviews</div>
+                    <Toggle checked={!!cat.review} onChange={v => setSlackCategory('review', v)} />
+                  </div>
+                  <div className="ns-toggle-row">
+                    <div className="ns-card-desc">Ready to start (a task of yours is unblocked)</div>
+                    <Toggle checked={cat.unblocked !== false} onChange={v => setSlackCategory('unblocked', v)} />
                   </div>
                   <div className="ns-toggle-row">
                     <div className="ns-card-desc">Daily digests</div>

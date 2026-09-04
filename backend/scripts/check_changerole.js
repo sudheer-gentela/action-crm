@@ -13,7 +13,66 @@
 const Module = require('module');
 const path = require('path');
 
-const ROOT = path.resolve(process.argv[2]);
+// ── Locating the backend ────────────────────────────────────────────────────
+//
+// LOCATE, do not assume. The first version of these harnesses took the backend
+// root as a required argv[2] and did `path.resolve(process.argv[2])` with no
+// guard, so running them the obvious way — `node check_sql.js` — threw
+// ERR_INVALID_ARG_TYPE from inside node:path with a stack trace that named
+// nothing about this script. A verification tool whose failure mode is a
+// cryptic crash is worse than no tool: it costs time and teaches you to
+// distrust it.
+//
+// So: take an explicit root when given one, otherwise search the obvious
+// places. A backend root is identified by the two things every target here
+// needs — a services/ directory and config/database.js — rather than by its
+// name, so a directory called something else still resolves and a directory
+// called 'backend' that is not one does not.
+function locateBackendRoot(explicit) {
+  const fs = require('fs');
+  const isRoot = (p) => {
+    try {
+      return fs.statSync(path.join(p, 'services')).isDirectory()
+          && fs.statSync(path.join(p, 'config', 'database.js')).isFile();
+    } catch { return false; }
+  };
+
+  if (explicit) {
+    const abs = path.resolve(explicit);
+    if (!isRoot(abs)) {
+      console.error(
+        `\nNot a backend root: ${abs}\n` +
+        `Expected to find services/ and config/database.js inside it.\n`);
+      process.exit(2);
+    }
+    return abs;
+  }
+
+  // Walk up from the working directory, checking each level and its backend/
+  // subdirectory. Covers being run from the repo root, from backend/ itself,
+  // or from a scratch directory beside either.
+  const tried = [];
+  let dir = process.cwd();
+  for (let i = 0; i < 6; i++) {
+    for (const cand of [path.join(dir, 'backend'), dir]) {
+      tried.push(cand);
+      if (isRoot(cand)) return cand;
+    }
+    const up = path.dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+
+  console.error(
+    `\nCould not find the backend root.\n\n` +
+    `Pass it explicitly:\n` +
+    `  node ${path.basename(process.argv[1])} <path-to-backend>\n\n` +
+    `e.g.  node ${path.basename(process.argv[1])} C:\\Projects\\gowarmcrm\\backend\n\n` +
+    `Looked in:\n${tried.map(t => `  ${t}`).join('\n')}\n`);
+  process.exit(2);
+}
+
+const ROOT = locateBackendRoot(process.argv[2]);
 
 let memberRow = null;
 let lastUpdate = null;

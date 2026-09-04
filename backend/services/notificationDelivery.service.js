@@ -49,7 +49,36 @@ const TYPE_TO_CATEGORY = {
   play_review_approved:            'review',
   play_review_rejected:            'review',
   play_review_closed:              'review',
+  // 2026_138. Its own category, not 'review'.
+  //
+  // A review alert asks you to look at a task you are involved in. This one
+  // tells you a DIFFERENT task finished and yours can now start — different
+  // audience, different action, and an order of magnitude less of it. Folding
+  // the two together would mean someone muting review chatter also mutes the
+  // one message that tells them to begin working, which is backwards.
+  //
+  // The type prefix matters as much as the category: enqueueReviewDigests
+  // sweeps on `type LIKE 'play_review_%'`, so 'play_unblocked' is never
+  // deferred into an hourly batch. That is deliberate — batching this delays
+  // the one alert whose whole value is arriving before the reader picks up
+  // something else.
+  play_unblocked:                  'unblocked',
 };
+
+// 2026_138. The review events that mean a task FINISHED, by notification type.
+//
+// Duplicated from playReviewNotifier.COMPLETION_EVENTS rather than imported:
+// that module maps event names ('approved') and this one sees notification
+// types ('play_review_approved'), so they are two vocabularies for one idea.
+// Requiring it here would also add a load-time edge from the delivery layer to
+// a notifier that requires notificationService, which requires this file.
+//
+// They must agree. A type listed here that is not a completion would leak
+// mid-loop events to people who asked for completions only.
+const REVIEW_COMPLETION_TYPES = new Set([
+  'play_review_approved',
+  'play_review_closed',
+]);
 const DEAD_TOKEN_ERRORS = new Set(['token_revoked', 'invalid_auth', 'account_inactive']);
 
 // Load + decrypt the org's active Slack install. Returns null if not connected.
@@ -218,6 +247,22 @@ async function deliverEmail(orgId, payload = {}) {
   if (ch.email_enabled !== true) return _stampSkip(notificationId, 'email_disabled');
   if (ch.email_categories && ch.email_categories[category] === false) {
     return _stampSkip(notificationId, `category_off:${category}`);
+  }
+
+  // ── Scope gate: completions only (2026_138) ─────────────────────────────
+  //
+  // Runs BEFORE the digest deferral below, deliberately. Deferring first would
+  // stamp a submission as pending-digest and then drop it at the scope check on
+  // the way out of sendReviewDigest — leaving a permanently stamped row that
+  // the hourly sweep re-enqueues for seven days, doing nothing each time.
+  // Filtering here means the notification is simply never queued for email.
+  //
+  // The in-app row is untouched: it was written before this ever ran, and the
+  // bell is not a channel anyone opted into paring back.
+  if (category === 'review'
+      && (ch.review_email_scope || 'completions') === 'completions'
+      && n && !REVIEW_COMPLETION_TYPES.has(n.type)) {
+    return _stampSkip(notificationId, 'scope_completions_only');
   }
 
   // ── Digest deferral (review category only) ──────────────────────────────

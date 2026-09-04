@@ -1,17 +1,42 @@
 /**
  * playReviewNotifier.service.js
  *
- * DROP-IN LOCATION: backend/services/playReviewNotifier.service.js  (NEW FILE)
- *
- * Who gets told when a task moves through review, and how (2026_130).
+ * Who gets told when a task moves through review, and how (2026_130, 2026_138).
  *
  * ── RECIPIENTS ──────────────────────────────────────────────────────────────
  *
- *   always   the Project Manager (sales_handovers.assigned_service_owner_id)
- *   always   the project creator (created_by)
- *   always   the task's assignee (project_play_instances.owner_user_id)
- *   plus     project_play_watchers — the designated people on this project
- *   never    the person who performed the action
+ * Every recipient carries a BASIS — the reason they are on the list — and the
+ * basis decides which events reach them. Before 2026_138 the list was flat and
+ * everyone on it got everything.
+ *
+ *   basis        who                                      receives
+ *   ─────────────────────────────────────────────────────────────────────────
+ *   owner        the Project Manager                      every event
+ *   creator      whoever created the project              every event
+ *   assignee     the task's owner_user_id                 every event
+ *   watcher      project_play_watchers, incl. self-added  every event
+ *   member       approved project_members (2026_138)      COMPLETIONS ONLY
+ *
+ *   never        the person who performed the action
+ *
+ * WHY MEMBERS ARE NOT SIMPLY ADDED TO THE FLAT LIST. A project team is the
+ * whole point of project_members — on a 49-task plan with eight people, giving
+ * every member every submission, approval and rejection is somewhere near four
+ * hundred alerts for work most of them are not reviewing. A channel that
+ * arrives at that volume gets filtered to a folder, and then the two events
+ * that genuinely needed a human — a rejection, a stalled submission — arrive in
+ * the folder too. Restraint here is what keeps the channel worth having.
+ *
+ * A completion is different in kind. It is the event that changes what other
+ * people can do: it clears dependencies, it moves the stage, it is the thing a
+ * colleague is waiting on. That is worth everyone's attention and nothing else
+ * on this list is.
+ *
+ * A member who WANTS everything subscribes themselves, which promotes them to
+ * basis 'watcher' through the existing mechanism. There is deliberately no
+ * per-project preference table for this: the watcher list already means "tell
+ * this person about review activity on this project", and inventing a second
+ * concept that means the same thing is how two lists start disagreeing.
  *
  * The PM and creator are resolved from the project row rather than from the
  * watchers table on purpose: a membership table that can be emptied must not
@@ -22,13 +47,9 @@
  *
  * ── CHANNELS ────────────────────────────────────────────────────────────────
  *
- * createNotification() writes the in-app row and already fans out to Slack and
- * web push. Email is added HERE rather than inside createNotification, because
- * doing it there would switch email on for every notification type in the
- * product at once — digests, escalations, revisit nudges — which is a much
- * larger decision than this feature. When email should become a general
- * channel, move the enqueue into createNotification and delete the call below;
- * deliverEmail() is written to work either way.
+ * createNotification() writes the in-app row and already fans out to Slack,
+ * web push and email. Nothing here enqueues email directly — see the note in
+ * the dispatch loop.
  */
 
 const { pool }            = require('../config/database');
@@ -49,38 +70,93 @@ const TARGET_VERB = {
   cancelled: 'cancelled',
 };
 
+/**
+ * The events that represent a task REACHING a terminal state.
+ *
+ * 'approved' is a manager approving a submission; 'closed_direct' is a manager
+ * closing a task without one. Both end with the task done. 'submitted' and
+ * 'rejected' are mid-loop, and are the two this list exists to withhold.
+ *
+ * "Completion" here includes a skip and a cancellation, because targetStatus
+ * can be any of the three and all three end the task. Someone waiting on a
+ * prerequisite cares that it is finished with, not which of the three ways it
+ * finished — which is the same rule _outstandingPrereqs already applies.
+ */
+const COMPLETION_EVENTS = ['approved', 'closed_direct'];
+
+/** Bases that receive completions only. Everything else receives everything. */
+const COMPLETION_ONLY_BASES = ['member'];
+
 // ── Recipients ──────────────────────────────────────────────────────────────
 
 /**
- * @returns {Promise<Array<{userId, name, email}>>} deduped, actor removed
+ * @returns {Promise<Array<{userId, name, email, basis}>>} deduped, actor removed
+ *
+ * ONE ROW PER PERSON, not one per reason. Someone can be the creator AND an
+ * approved member AND a watcher; they must be notified once. The basis kept is
+ * the most permissive one, resolved by the DISTINCT ON + ORDER BY rank below.
+ *
+ * That ordering is load-bearing, not tidiness. Without it a Project Manager who
+ * also holds a project_members row could be resolved as 'member' and would stop
+ * receiving submissions on their own project — the exact failure this function
+ * exists to prevent, arriving silently through a rule meant to reduce noise.
  */
 async function resolveRecipients(handoverId, orgId, { actorId, assigneeId } = {}) {
   const { rows } = await pool.query(
-    `SELECT DISTINCT u.id AS user_id,
+    `WITH candidates AS (
+       SELECT h.assigned_service_owner_id AS user_id, 'owner'::text AS basis, 1 AS rank
+         FROM sales_handovers h WHERE h.id = $1 AND h.org_id = $2
+       UNION ALL
+       SELECT h.created_by, 'creator', 2
+         FROM sales_handovers h WHERE h.id = $1 AND h.org_id = $2
+       UNION ALL
+       SELECT $3::int, 'assignee', 3
+       UNION ALL
+       SELECT w.user_id, 'watcher', 4
+         FROM project_play_watchers w
+        WHERE w.handover_id = $1 AND w.org_id = $2
+       UNION ALL
+       -- 2026_138. Approved, non-exited members of THIS project.
+       --
+       -- 'approved' only: a pending row is an unreviewed request to join, and
+       -- notifying on one would leak a project's task titles to somebody who
+       -- has merely asked for access. exited_at is written out for the reader;
+       -- 2026_88's CHECK already makes it redundant against 'approved'.
+       SELECT pm.user_id, 'member', 5
+         FROM project_members pm
+        WHERE pm.context_type = 'handover'
+          AND pm.context_id   = $1
+          AND pm.org_id       = $2
+          AND pm.status       = 'approved'
+          AND pm.exited_at IS NULL
+     )
+     SELECT DISTINCT ON (c.user_id)
+            c.user_id, c.basis,
             u.first_name || ' ' || u.last_name AS name,
             u.email
-       FROM users u
-      WHERE u.id IN (
-              SELECT h.assigned_service_owner_id FROM sales_handovers h
-               WHERE h.id = $1 AND h.org_id = $2
-              UNION
-              SELECT h.created_by FROM sales_handovers h
-               WHERE h.id = $1 AND h.org_id = $2
-              UNION
-              SELECT w.user_id FROM project_play_watchers w
-               WHERE w.handover_id = $1 AND w.org_id = $2
-              UNION
-              SELECT $3::int
-            )
-        AND u.id IS NOT NULL
-        AND u.id <> COALESCE($4::int, -1)
+       FROM candidates c
+       JOIN users u ON u.id = c.user_id
+      WHERE c.user_id IS NOT NULL
+        AND c.user_id <> COALESCE($4::int, -1)
         -- An inactive user's alerts go nowhere useful and their email may be
         -- decommissioned. Scoped to this org: org_users is the membership.
         AND EXISTS (SELECT 1 FROM org_users ou
-                     WHERE ou.org_id = $2 AND ou.user_id = u.id AND ou.is_active = TRUE)`,
+                     WHERE ou.org_id = $2 AND ou.user_id = c.user_id AND ou.is_active = TRUE)
+      ORDER BY c.user_id, c.rank`,
     [handoverId, orgId, assigneeId ?? null, actorId ?? null]
   );
-  return rows.map(r => ({ userId: r.user_id, name: r.name, email: r.email }));
+  return rows.map(r => ({ userId: r.user_id, name: r.name, email: r.email, basis: r.basis }));
+}
+
+/**
+ * Should this recipient hear about this event?
+ *
+ * Exported so any future caller applies one rule rather than re-deriving "is
+ * this a completion" for itself.
+ */
+function shouldNotify(event, basis) {
+  if (!COMPLETION_ONLY_BASES.includes(basis)) return true;
+  return COMPLETION_EVENTS.includes(event);
 }
 
 // ── Copy ────────────────────────────────────────────────────────────────────
@@ -152,7 +228,7 @@ function escapeHtml(s) {
  * with "this task changed while you were working on it".
  *
  * @param {'submitted'|'approved'|'rejected'|'closed_direct'} event
- * @returns {Promise<{recipients:number, errors:number}>}
+ * @returns {Promise<{recipients:number, suppressed:number, errors:number}>}
  */
 async function notify(event, { orgId, handoverId, instance, actorId, targetStatus, reason }) {
   try {
@@ -173,11 +249,19 @@ async function notify(event, { orgId, handoverId, instance, actorId, targetStatu
     const actorName   = ctx?.actor_name   || 'Someone';
     const playTitle   = instance?.title   || 'a task';
 
-    const recipients = await resolveRecipients(handoverId, orgId, {
+    const all = await resolveRecipients(handoverId, orgId, {
       actorId,
       assigneeId: instance?.owner_user_id ?? null,
     });
-    if (!recipients.length) return { recipients: 0, errors: 0 };
+
+    // Filtered AFTER resolution rather than inside the query, so `suppressed`
+    // is a real number the caller can log. A recipient set that silently shrank
+    // from eleven to three is exactly what somebody needs to be able to see
+    // when they ask why a member did not hear about something.
+    const recipients = all.filter(r => shouldNotify(event, r.basis));
+    const suppressed = all.length - recipients.length;
+
+    if (!recipients.length) return { recipients: 0, suppressed, errors: 0 };
 
     const { title, body } = buildMessage(event, {
       projectName, playTitle, actorName,
@@ -191,7 +275,7 @@ async function notify(event, { orgId, handoverId, instance, actorId, targetStatu
     let errors = 0;
     for (const r of recipients) {
       try {
-        const notif = await notificationService.createNotification(
+        await notificationService.createNotification(
           orgId, r.userId, TYPES[event] || TYPES.submitted, title, body,
           'handover', handoverId,
           {
@@ -199,29 +283,33 @@ async function notify(event, { orgId, handoverId, instance, actorId, targetStatu
             event,
             targetStatus: targetStatus ?? null,
             reason: reason ?? null,
+            // Stored so that a later question — "why did this person get this?"
+            // — is answerable from the row itself, rather than by re-running
+            // the resolver against a project whose membership has since
+            // changed and would now give a different answer.
+            basis: r.basis,
             url,
           }
         );
-        // Email is NOT enqueued here any more.
+        // Email is NOT enqueued here.
         //
-        // createNotification() now fans out to email itself, for every
-        // notification type, using the same jobId (`email-del-<id>`). Enqueuing
-        // a second job with that id would be silently dropped by Bull as a
-        // duplicate — and since the generic one is added first, this richer
-        // payload would be the one thrown away. Worse, if the ids ever diverged
-        // the user would get two copies of the same alert.
+        // createNotification() fans out to email itself, for every notification
+        // type, using the same jobId (`email-del-<id>`). Enqueuing a second job
+        // with that id would be silently dropped by Bull as a duplicate — and
+        // since the generic one is added first, this richer payload would be
+        // the one thrown away.
         //
         // The deep link survives: `url` goes into the notification's metadata
-        // below, and deliverEmail reads metadata.url when building the body.
+        // above, and deliverEmail reads metadata.url when building the body.
       } catch (err) {
         errors += 1;
         console.warn(`[playReview] notify failed for user ${r.userId}:`, err.message);
       }
     }
-    return { recipients: recipients.length, errors };
+    return { recipients: recipients.length, suppressed, errors };
   } catch (err) {
     console.warn('[playReview] notify failed:', err.message);
-    return { recipients: 0, errors: 1 };
+    return { recipients: 0, suppressed: 0, errors: 1 };
   }
 }
 
@@ -232,4 +320,11 @@ async function notify(event, { orgId, handoverId, instance, actorId, targetStatu
  * Nothing in this module enqueues email any more.
  */
 
-module.exports = { notify, resolveRecipients, TYPES };
+module.exports = {
+  notify,
+  resolveRecipients,
+  shouldNotify,
+  buildEmail,
+  TYPES,
+  COMPLETION_EVENTS,
+};

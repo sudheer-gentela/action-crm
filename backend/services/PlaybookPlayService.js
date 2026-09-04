@@ -982,7 +982,45 @@ class PlaybookPlayService {
       instance.handover_id, instance.play_id, orgId, userId
     );
 
+    // 2026_138. Tell whoever was waiting on this task that they can start.
+    //
+    // Placed HERE rather than at the call sites deliberately. This method has
+    // two callers — handover.service.completePlay and playReview._close — and
+    // hooking both would mean the notice fires from one path and not the other
+    // the first time somebody adds a third. The completion is what releases a
+    // dependent, so the notice belongs where the completion is written.
+    //
+    // Note this is a DIFFERENT graph from _resolveDependenciesForProject above:
+    // that reads playbook_plays.depends_on (play-template ids) and only ever
+    // touches instances parked in 'blocked'. This reads
+    // project_play_instances.depends_on, the hand-wired graph, which nothing
+    // sets a status from. See dependencyNotifier for the full note.
+    await PlaybookPlayService._notifyUnblocked(instanceId, orgId, userId);
+
     return { instance, activated };
+  }
+
+  /**
+   * Best-effort unblock fan-out, shared by the completion and skip paths.
+   *
+   * Lazily required so this service keeps its current load-time dependency set
+   * — it is required by playReview, which is required by the routes, and the
+   * notifier reaches notificationService and the job queue.
+   *
+   * Swallows everything. The status change is already committed and is the
+   * source of truth; a notification failure that propagated would surface as a
+   * failed completion, the user would retry, and the retry would fail with
+   * "this task changed while you were working on it".
+   */
+  static async _notifyUnblocked(instanceId, orgId, userId) {
+    try {
+      const dependencyNotifier = require('./dependencyNotifier.service');
+      await dependencyNotifier.notifyUnblocked(instanceId, orgId, userId);
+    } catch (err) {
+      console.warn(
+        `[PlaybookPlayService] unblock notice failed after closing instance ${instanceId}:`,
+        err.message);
+    }
   }
 
   static async skipPlayForProject(instanceId, userId, orgId) {
@@ -1007,6 +1045,11 @@ class PlaybookPlayService {
     const activated = await this._resolveDependenciesForProject(
       instance.handover_id, instance.play_id, orgId, userId
     );
+
+    // A skip satisfies a prerequisite exactly as a completion does — that is
+    // what _outstandingPrereqs has always said — so the people waiting on it
+    // are told the same way.
+    await PlaybookPlayService._notifyUnblocked(instanceId, orgId, userId);
 
     return { instance, activated };
   }

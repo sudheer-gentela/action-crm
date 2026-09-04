@@ -425,6 +425,7 @@ export default function ProjectPeoplePanel({ detail, onRefresh, onOpenContact, c
         handoverId={handoverId}
         canManage={detail?.canReviewPlays === true}
         managerLabel={managerLabel}
+        currentUserId={currentUserId}
       />
 
       {iAmAcceptor && (

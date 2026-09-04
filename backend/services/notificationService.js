@@ -455,12 +455,23 @@ const DEFAULT_PREFS = {
   // turns Slack on. Digests are off by default — too noisy as DMs.
   channels: {
     slack_enabled:    false,
-    slack_categories: { immediate: true, escalation: true, revisit: true, digest: false },
-    // Email (2026_130). Defaults ON, unlike Slack: email is the only channel
-    // that reaches someone who is not currently in the app, and a submission
-    // sitting unreviewed because email silently defaulted off is the failure
-    // the review loop exists to prevent. Only the 'review' category is
-    // dispatched today.
+    // 'review' and 'unblocked' added 2026_138.
+    //
+    // review: FALSE. Previously this key was ABSENT, and deliverSlack reads an
+    // absent key as allowed — so every user with Slack connected has been
+    // receiving every review event as a DM, with no toggle anywhere in the
+    // settings screen to stop it. Adding the key with false both gives it a
+    // control and turns it off, matching the email default below.
+    //
+    // unblocked: TRUE. The opposite call, for the opposite reason. It is
+    // low-volume by construction (it fires only when a task's LAST outstanding
+    // prerequisite clears) and it is the one alert that changes what the reader
+    // does next. Defaulting it off would mean shipping a feature nobody
+    // receives.
+    slack_categories: {
+      immediate: true, escalation: true, revisit: true,
+      digest: false, review: false, unblocked: true,
+    },
     // Email defaults OFF, mirroring slack_enabled. Email is the only
     // channel that reaches someone who is not in the app, which is exactly
     // why it is opt-in: mailing every user every notification by default is
@@ -473,7 +484,16 @@ const DEFAULT_PREFS = {
     email_enabled:    false,
     email_categories: {
       immediate: true, escalation: true, revisit: true,
-      digest:    true, review:     true,
+      digest:    true,
+      // review: FALSE as of 2026_138, changed from true.
+      //
+      // Members of a project now receive review traffic by default (they get
+      // completions), which is a much larger audience than the handful of
+      // people who used to be on the list. Leaving the category on would mean
+      // that widening arrives in everyone's inbox the day it ships. The
+      // in-app bell still shows everything; this is only the email channel.
+      review:    false,
+      unblocked: true,
     },
     // 'immediate' sends on every review event; 'digest' batches them into
     // one mail per sweep. On a large project immediate is a lot of mail,
@@ -481,6 +501,25 @@ const DEFAULT_PREFS = {
     // Immediate is still the default: a review sitting unseen is the
     // failure this feature exists to prevent, and batching adds latency.
     review_email_mode: 'immediate',
+    // 2026_138. WHICH review events reach email, independent of how they are
+    // paced. 'all' | 'completions'.
+    //
+    // These are two different questions and were being answered by one control.
+    // review_email_mode above is about TIMING — now, or batched hourly.
+    // This is about VOLUME — everything the loop does, or only the events where
+    // a task finished. Someone on six projects may want to know what completed
+    // without being copied on every submission and rejection, and before this
+    // their only options were all of it or none of it.
+    //
+    // Defaults to 'completions', matching the recipient-side default: an
+    // approved project member is sent completions only, so a member turning
+    // email on gets the same set by both routes rather than discovering the two
+    // layers disagree.
+    //
+    // Applies to EMAIL ONLY. The in-app bell is never filtered — the row is
+    // written for every recipient regardless, and a person opening a project
+    // should see its full history.
+    review_email_scope: 'completions',
   },
 };
 

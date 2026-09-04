@@ -654,6 +654,39 @@ router.put('/sales/:id/review-watchers', async (req, res) => {
   }
 });
 
+// ── GET / PUT /sales/:id/review-watchers/me — follow this project (2026_138) ──
+//
+// Separate from the routes above, and NOT behind their authority check. Those
+// change who ELSE hears about the project, which is a management decision;
+// this changes only the caller's own subscription, which is not. The service
+// applies the eligibility rule — approved member, service owner, creator or
+// org admin — because "may I follow this" is a question about seeing the
+// project, not about running it.
+router.get('/sales/:id/review-watchers/me', async (req, res) => {
+  try {
+    res.json(await playReview.selfWatchState(
+      parseInt(req.params.id), req.orgId, req.user.userId));
+  } catch (err) {
+    console.error('Self watch state error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+router.put('/sales/:id/review-watchers/me', async (req, res) => {
+  try {
+    // Explicit boolean, not a toggle. A toggle endpoint flips whatever the
+    // server currently holds, so a double-tap or a retried request lands on the
+    // opposite of what the user asked for — and the user cannot tell, because
+    // both outcomes return 200.
+    const on = req.body?.subscribed === true;
+    res.json(await playReview.setSelfWatch(
+      parseInt(req.params.id), req.orgId, req.user.userId, on));
+  } catch (err) {
+    console.error('Self watch error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message, code: err.code } });
+  }
+});
+
 // ── POST /sales/:id/plays  — add an ad-hoc checklist item ─────────────────────
 
 // ── PUT /sales/:id/playbook — attach a playbook and activate its first stage ──

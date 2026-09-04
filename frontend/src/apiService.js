@@ -983,6 +983,15 @@ twilio: {
     reviewWatchers:  (id) => api.get(`/handovers/sales/${id}/review-watchers`),
     setReviewWatchers: (id, userIds) =>
       api.put(`/handovers/sales/${id}/review-watchers`, { userIds }),
+    // 2026_138. The caller's OWN subscription. Separate endpoints from the two
+    // above because those change who else is alerted and are gated on project
+    // authority; these are not.
+    myReviewWatch:    (id) => api.get(`/handovers/sales/${id}/review-watchers/me`),
+    // Explicit boolean rather than a toggle: a retried request must land on
+    // what the user asked for, not on the opposite of wherever the server
+    // happens to be.
+    setMyReviewWatch: (id, subscribed) =>
+      api.put(`/handovers/sales/${id}/review-watchers/me`, { subscribed }),
     removePlay: (id, instanceId) => api.delete(`/handovers/sales/${id}/plays/${instanceId}`),
     reorderPlays: (id, stageKey, orderedIds) =>
       api.patch(`/handovers/sales/${id}/plays/reorder`, { stageKey, orderedIds }),
