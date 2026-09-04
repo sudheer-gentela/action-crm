@@ -714,6 +714,7 @@ export default function DailyWorkTeamView() {
                     details={details}
                     onToggle={toggle}
                     onOpenDay={openDay}
+                    onOpenPerson={setOpenPerson}
                   />
                 ))}
               </tbody>
@@ -1069,7 +1070,7 @@ function PersonIdentity({ person }) {
 // Left unused it would be a no-unused-vars warning, and CRA builds with CI=true
 // where a warning fails the build.
 function PersonRow({ person, period, hasProjects = false, log, expanded, details,
-                     onToggle, onOpenDay }) {
+                     onToggle, onOpenDay, onOpenPerson }) {
   const key = `p:${person.user_id}`;
   const isOpen = !!expanded[key];
 
@@ -1088,12 +1089,21 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
       <>
         <tr className={`dw-person-row ${dayOpen ? 'dw-open' : ''}`}>
           <td>
-            {today ? (
-              <button type="button" className="dw-person-toggle" aria-expanded={dayOpen}
-                      onClick={() => onOpenDay(person.user_id, today.entry_date)}>
-                <PersonIdentity person={person} />
-              </button>
-            ) : <PersonIdentity person={person} />}
+            {/* The NAME opens the person page (2026_140). It previously opened
+                that day's items — but the actions cell already carries a
+                Details link that does exactly that, so the row had two controls
+                doing one thing and no control for the thing people actually
+                came for.
+
+                Rendered as a button even when there is nothing logged: the
+                person page is worth opening precisely when somebody has logged
+                nothing, which is the case the old code left with no control at
+                all. */}
+            <button type="button" className="dw-person-toggle dw-person-link"
+                    title="Open this person's full view"
+                    onClick={() => onOpenPerson && onOpenPerson(person)}>
+              <PersonIdentity person={person} />
+            </button>
           </td>
           <td className="dw-col-days">
             <span className={`dw-badge ${today ? '' : 'carried'}`}>
@@ -1113,7 +1123,7 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
               <span className="dw-badge carried">{person.overdueTasks} overdue</span>
             )}
             {today && (
-              <button type="button" className="dw-btn-link"
+              <button type="button" className="dw-btn-link" aria-expanded={dayOpen}
                       onClick={() => onOpenDay(person.user_id, today.entry_date)}>
                 {dayOpen ? 'Hide' : 'Details'}
               </button>
@@ -1198,9 +1208,18 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
     <>
       <tr className={`dw-person-row ${isOpen ? 'dw-open' : ''}`}>
         <td>
-          {/* The name expands the person in place. */}
-          <button type="button" className="dw-person-toggle" aria-expanded={isOpen}
-                  onClick={() => onToggle(key)}>
+          {/* The name opens the person page; the Days link at the end of the
+              row still expands in place (2026_140).
+
+              They both used to call onToggle, so the row offered the same
+              action twice and the person page — which has existed since it
+              shipped and renders the full timeline, logged work interleaved
+              with project tasks on the day they are due — was reachable ONLY by
+              typing its URL. That was carried as an open item across three
+              handoffs. This is the click-through. */}
+          <button type="button" className="dw-person-toggle dw-person-link"
+                  title="Open this person's full view"
+                  onClick={() => onOpenPerson && onOpenPerson(person)}>
             <PersonIdentity person={person} />
           </button>
         </td>
@@ -1213,7 +1232,7 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
         </td>
         <td>
           {person.entry_count}
-          {/* 2026_141. account_count, not account_ids.length. The server now
+          {/* 2026_140. account_count, not account_ids.length. The server now
               sends the number instead of the array — only the count was ever
               read here. `?? (person.account_ids || []).length` keeps this
               rendering correctly against a backend that has not shipped yet,
@@ -1241,7 +1260,12 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
           ) : <span className="dw-meta">—</span>}
         </td>
         <td className="dw-logactions">
-          <button type="button" className="dw-btn-link" onClick={() => onToggle(key)}>
+          {/* aria-expanded moved here from the name in 2026_140, following the
+              behaviour. Leaving it on the name would have told a screen reader
+              that the name expands a region when it now navigates instead —
+              which is worse than having no state at all. */}
+          <button type="button" className="dw-btn-link" aria-expanded={isOpen}
+                  onClick={() => onToggle(key)}>
             {isOpen ? 'Hide' : 'Days'}
           </button>
         </td>

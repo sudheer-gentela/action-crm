@@ -551,6 +551,24 @@
 }
 .dw-person-toggle:focus-visible { outline: 2px solid var(--dw-accent); outline-offset: 2px; }
 
+/* 2026_140. The name now NAVIGATES to the person page rather than expanding the
+ * row in place, so it needs to look like something you can go through — the
+ * comment above ("it must read as a name, not a control") was right while the
+ * name merely expanded, and is wrong now that clicking it leaves the screen.
+ *
+ * Underline on hover only, not at rest. Nine names permanently underlined turns
+ * the first column into a wall of links and buries the day strip beside it,
+ * which is the thing the screen is actually for. The cursor and the title
+ * attribute carry the affordance until the pointer is on the row.
+ *
+ * Scoped to .dw-item-title so only the NAME reacts — the trailing-rate line
+ * under it is metadata, not part of the link's label. */
+.dw-person-link:hover .dw-item-title {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  color: var(--dw-accent, #0369a1);
+}
+
 /* The expansion. Padding on the cell rather than a wrapper div, so the nested
  * table can run the full width of the row it belongs to. */
 .dw-person-detail > td { background: #fbfcfe; padding: 12px 14px 16px; }
