@@ -6,8 +6,15 @@
 //   npm install @modelcontextprotocol/sdk jose zod
 //
 // Env vars (Railway):
-//   AUTHKIT_DOMAIN    https://welcoming-phrase-84-staging.authkit.app   (NO trailing slash; swap to prod later)
-//   MCP_RESOURCE_URL  https://gowarmcrm.com/mcp                          (must match your WorkOS Resource Indicator)
+//   AUTHKIT_DOMAIN         https://welcoming-phrase-84-staging.authkit.app   (NO trailing slash; swap to prod later)
+//   MCP_RESOURCE_URL       https://gowarmcrm.com/mcp                          (must match your WorkOS Resource Indicator)
+//   MCP_SCOPES_SUPPORTED   comma-separated, e.g. "gowarm.read"                (OPTIONAL — see the note below)
+//
+// MCP_SCOPES_SUPPORTED is advertised in the Protected Resource Metadata as
+// `scopes_supported` (RFC 9728 §2). Leave it UNSET until the same scope names
+// exist on the GoWarmCRM resource in the WorkOS dashboard: agents read this
+// list and request those scopes, and AuthKit rejects a scope it does not know
+// with invalid_scope. Unset = field omitted = today's behaviour, unchanged.
 //
 // Wire it up in your app entrypoint, after `const app = express()`:
 //   import('./mcp-server.mjs').then(({ registerMcp }) => registerMcp(app));
@@ -32,14 +39,57 @@ if (!AUTHKIT_DOMAIN) {
   throw new Error('AUTHKIT_DOMAIN env var is required, e.g. https://your-env.authkit.app');
 }
 
-const PUBLIC_ORIGIN = new URL(MCP_RESOURCE_URL).origin; // https://gowarmcrm.com
-const PRM_URL = `${PUBLIC_ORIGIN}/.well-known/oauth-protected-resource`;
+const PUBLIC_ORIGIN = new URL(MCP_RESOURCE_URL).origin;   // https://gowarmcrm.com
+const RESOURCE_PATH  = new URL(MCP_RESOURCE_URL).pathname; // /mcp
+
+// RFC 9728 §3.1 builds the metadata URL by inserting the well-known path
+// between the host and the resource's path, so https://gowarmcrm.com/mcp
+// resolves to .../.well-known/oauth-protected-resource/mcp. That is the URL we
+// name in the challenge. PRM_URL (the bare root) stays served as well, because
+// older MCP clients probe it directly instead of following WWW-Authenticate.
+const PRM_URL           = `${PUBLIC_ORIGIN}/.well-known/oauth-protected-resource`;
+const PRM_URL_CANONICAL = `${PUBLIC_ORIGIN}/.well-known/oauth-protected-resource${RESOURCE_PATH}`;
+
 const JWKS = createRemoteJWKSet(new URL(`${AUTHKIT_DOMAIN}/oauth2/jwks`));
 
-const WWW_AUTHENTICATE = [
-  'Bearer error="unauthorized"',
-  'error_description="Authorization needed to access the GoWarmCRM MCP server"',
-  `resource_metadata="${PRM_URL}"`,
+// Advertised scopes. Empty by default — see the env-var note at the top of this
+// file. Nothing here is enforced per tool: every tool is read-only and gated
+// only on a valid, audience-bound token. Do not add names here as aspiration;
+// an advertised scope that neither WorkOS issues nor this server checks is
+// worse than no list at all.
+const SCOPES_SUPPORTED = (process.env.MCP_SCOPES_SUPPORTED || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+
+if (!SCOPES_SUPPORTED.length) {
+  console.warn(
+    '[mcp] MCP_SCOPES_SUPPORTED is unset — scopes_supported will be omitted from ' +
+    'the Protected Resource Metadata. Define the scopes on the GoWarmCRM resource ' +
+    'in the WorkOS dashboard first, then set this env var to the same names.'
+  );
+}
+
+// RFC 9728 Protected Resource Metadata. One document, served at both paths.
+function protectedResourceMetadata() {
+  const doc = {
+    resource: MCP_RESOURCE_URL,
+    resource_name: 'GoWarmCRM',
+    authorization_servers: [AUTHKIT_DOMAIN],
+    bearer_methods_supported: ['header'],
+    resource_documentation: `${PUBLIC_ORIGIN}/auth.md`,
+  };
+  if (SCOPES_SUPPORTED.length) doc.scopes_supported = SCOPES_SUPPORTED;
+  return doc;
+}
+
+// RFC 6750 reserves the `error` parameter for requests that presented a
+// credential and failed. A request with no Authorization header at all gets a
+// bare challenge; only a rejected token gets error="invalid_token".
+const CHALLENGE_MISSING = `Bearer resource_metadata="${PRM_URL_CANONICAL}"`;
+
+const CHALLENGE_INVALID = [
+  'Bearer error="invalid_token"',
+  'error_description="The access token is expired, revoked, malformed, or bound to a different resource"',
+  `resource_metadata="${PRM_URL_CANONICAL}"`,
 ].join(', ');
 
 // ── Tool result helpers ──────────────────────────────────────────────────────
@@ -97,14 +147,14 @@ async function buildOwnerFilter(actor, scope, params, alias) {
 async function requireAuth(req, res, next) {
   const token = req.headers.authorization?.match(/^Bearer (.+)$/i)?.[1];
   if (!token) {
-    return res.set('WWW-Authenticate', WWW_AUTHENTICATE).status(401).json({ error: 'missing_token' });
+    return res.set('WWW-Authenticate', CHALLENGE_MISSING).status(401).json({ error: 'missing_token' });
   }
   try {
     const { payload } = await jwtVerify(token, JWKS, { issuer: AUTHKIT_DOMAIN, audience: MCP_RESOURCE_URL });
     req.auth = payload;
     next();
   } catch {
-    return res.set('WWW-Authenticate', WWW_AUTHENTICATE).status(401).json({ error: 'invalid_token' });
+    return res.set('WWW-Authenticate', CHALLENGE_INVALID).status(401).json({ error: 'invalid_token' });
   }
 }
 
@@ -398,26 +448,53 @@ async function buildServer(auth) {
 
 export function registerMcp(app) {
   // Discovery — OAuth Protected Resource Metadata (RFC 9728), public.
-  app.options('/.well-known/oauth-protected-resource', (_req, res) => { setCors(res); res.status(204).end(); });
-  app.get('/.well-known/oauth-protected-resource', (_req, res) => {
+  // Served at BOTH paths: the RFC-derived one that WWW-Authenticate points at,
+  // and the bare root that older MCP clients probe. Same document either way.
+  const prmPaths = ['/.well-known/oauth-protected-resource', `/.well-known/oauth-protected-resource${RESOURCE_PATH}`];
+
+  app.options(prmPaths, (_req, res) => { setCors(res); res.status(204).end(); });
+  app.get(prmPaths, (_req, res) => {
     setCors(res);
-    res.json({
-      resource: MCP_RESOURCE_URL,
-      authorization_servers: [AUTHKIT_DOMAIN],
-      bearer_methods_supported: ['header'],
-      resource_documentation: `${PUBLIC_ORIGIN}/auth.md`,
-    });
+    res.set('Cache-Control', 'public, max-age=3600');
+    res.json(protectedResourceMetadata());
   });
 
   // Discovery — proxy AuthKit's Authorization Server Metadata (RFC 8414).
+  // Cached for five minutes so that a slow or flapping AuthKit does not stall
+  // every discovery attempt, and so the agent_auth block appears on its own
+  // once Agent Registration is enabled in the WorkOS dashboard.
+  let asCache = { body: null, at: 0 };
+  const AS_TTL_MS = 5 * 60 * 1000;
+
   app.options('/.well-known/oauth-authorization-server', (_req, res) => { setCors(res); res.status(204).end(); });
   app.get('/.well-known/oauth-authorization-server', async (_req, res) => {
     setCors(res);
+    const now = Date.now();
+
+    if (asCache.body && now - asCache.at < AS_TTL_MS) {
+      res.set('Cache-Control', 'public, max-age=300');
+      return res.json(asCache.body);
+    }
+
     try {
-      const upstream = await fetch(`${AUTHKIT_DOMAIN}/.well-known/oauth-authorization-server`);
-      res.status(upstream.status).json(await upstream.json());
-    } catch {
-      res.status(502).json({ error: 'upstream_metadata_unavailable' });
+      const upstream = await fetch(`${AUTHKIT_DOMAIN}/.well-known/oauth-authorization-server`, {
+        headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!upstream.ok) throw new Error(`upstream ${upstream.status}`);
+      const body = await upstream.json();
+      asCache = { body, at: now };
+      res.set('Cache-Control', 'public, max-age=300');
+      return res.json(body);
+    } catch (err) {
+      console.error('[mcp:as-metadata]', err.message);
+      // Serve a stale copy rather than breaking a discovery flow mid-handshake.
+      if (asCache.body) {
+        res.set('Cache-Control', 'public, max-age=60');
+        return res.json(asCache.body);
+      }
+      res.set('Cache-Control', 'no-store');
+      return res.status(502).json({ error: 'upstream_metadata_unavailable' });
     }
   });
 
