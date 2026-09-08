@@ -493,7 +493,37 @@ router.get('/people', async (req, res) => {
     // calendars differ, so a fixed calendar span is the only span that means
     // the same thing for everyone. getRollup turns it into each person's own
     // working-day count from their own calendar.
-    const trailingFrom = dwDate.addDays(win.to, -27);
+    //
+    // ── CLAMPED TO TODAY (2026_141) ─────────────────────────────────────────
+    //
+    // It used to be addDays(win.to, -27), ending at the WINDOW's end. For a
+    // past window that is right. For the CURRENT month it is not: win.to is the
+    // last day of the month, which has not happened yet, so "last 4 weeks"
+    // became "the 28 days ending on the 30th" — a span mostly in the future.
+    //
+    // Two visible symptoms, both of which read as the figure being broken:
+    //
+    //   • the denominator counted working days nobody could possibly have
+    //     logged, so the rate was structurally depressed — 11% and 5% beside a
+    //     month showing far better
+    //   • days logged EARLY in the month fell outside the trailing span
+    //     entirely, so one person showed "4 of 21 this month" next to
+    //     "2 of 19 last 4 weeks" for the same weeks of the same month
+    //
+    // Clamping the END to today makes the span mean what its label says. A past
+    // window is untouched: win.to is already behind today, so the min is win.to
+    // and the trailing figure is exactly what it was.
+    //
+    // pool is required locally, matching readWindow above — this router does
+    // not hold it at module scope.
+    const { pool: _pool } = require('../config/database');
+    const _tz = await dwDate.resolveTimezone(
+      (sql, params) => _pool.query(sql, params), req.orgId, req.userId);
+    const localToday = dwDate.localDate(_tz);
+    // String compare is intended: both are YYYY-MM-DD, which sorts
+    // lexicographically the same way it sorts chronologically.
+    const trailingTo   = win.to < localToday ? win.to : localToday;
+    const trailingFrom = dwDate.addDays(trailingTo, -27);
 
     const [rollup, trailing, departments, workload] = await Promise.all([
       dailyQuery.getRollup(req.orgId, { userIds, from: win.from, to: win.to, filters }),
@@ -501,7 +531,7 @@ router.get('/people', async (req, res) => {
       // trailingBy below — and it was building and serialising a full 28-day
       // strip, four arrays and a name for each of them to produce them.
       dailyQuery.getRollup(req.orgId, {
-        userIds, from: trailingFrom, to: win.to, filters, slim: true }),
+        userIds, from: trailingFrom, to: trailingTo, filters, slim: true }),
       dailyQuery.getDepartmentsByUser(req.orgId, userIds),
       _projectSideOrEmpty('workload',
         () => handoverService.getProjectWorkloadByUser(req.orgId, userIds),
@@ -516,6 +546,9 @@ router.get('/people', async (req, res) => {
       // rather than render a row of zeros that reads as "nothing assigned".
       projectsAvailable: workload.size > 0 || userIds.length === 0,
       trailingFrom,
+      // Returned so the client can describe the span truthfully. A UI reading
+      // only trailingFrom would still imply a window ending at the month's end.
+      trailingTo,
       people: rollup.map(p => {
         const t = trailingBy.get(p.user_id) || {};
         return {
