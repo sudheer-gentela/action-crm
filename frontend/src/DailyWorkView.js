@@ -34,6 +34,10 @@ import { apiService } from './apiService';
 import { hashSegment, writeHash } from './hashNav';
 import { ProjectItemRow, daysBetween, dueText, useOpenProjectTask } from './dailyWorkProjectLink';
 import { DayItemTitles, itemTitleList } from './dailyWorkItemTitles';
+// Shared with the People screen, which renders the same panel in its manager
+// position. mode='own' is the difference: a day marked here is a REQUEST, and
+// the server decides that from who is asking — not from anything sent here.
+import { LeavePanel } from './dailyWorkLeave';
 import TaskWorkComposer from './TaskWorkComposer';
 import DailyWorkTeamView from './DailyWorkTeamView';
 import DailyWorkSetupView from './DailyWorkSetupView';
@@ -56,6 +60,10 @@ const isOrgAdmin = () => {
     return ['owner', 'admin'].includes(u.org_role || u.role);
   } catch { return false; }
 };
+
+// The day log's columns, in one place, so the leave panel underneath takes the
+// same widths and its rows line up with the day rows above them.
+const LOG_TABLE_WIDTHS = ['11%', '24%', '28%', '13%', '14%', '10%'];
 
 const SOFT_LIMIT = 1000;
 const HARD_LIMIT = 2000;
@@ -627,6 +635,7 @@ export default function DailyWorkView() {
         ? <DayLog day={day} rows={rows} written={written} drafts={drafts} saved={saved}
                   history={history.filter(h => h.entry_date !== day.entryDate)}
                   me={me} activityTypes={activityTypes}
+                  onLeaveChanged={load}
                   onEdit={itemId => { setOpenItem(itemId); setMode('edit'); }} />
         : (
           <>
@@ -1234,7 +1243,8 @@ function MyProjectWork({ me, today, onPosted }) {
  * row is built from the drafts so unsaved work shows immediately; earlier days
  * come from the server already grouped and concatenated.
  */
-function DayLog({ day, rows, written, drafts, saved, history, onEdit, me, activityTypes }) {
+function DayLog({ day, rows, written, drafts, saved, history, onEdit, me, activityTypes,
+                  onLeaveChanged }) {
   // key -> label, for the Activity column. Built once per render rather than
   // scanned per row: a day with six items would otherwise walk the whole
   // vocabulary six times to print six words.
@@ -1297,12 +1307,7 @@ function DayLog({ day, rows, written, drafts, saved, history, onEdit, me, activi
               its items rather than counting them. The description column is
               still the widest and is clamped past three lines regardless. */}
           <colgroup>
-            <col style={{ width: '11%' }} />
-            <col style={{ width: '24%' }} />
-            <col style={{ width: '28%' }} />
-            <col style={{ width: '13%' }} />
-            <col style={{ width: '14%' }} />
-            <col style={{ width: '10%' }} />
+            {LOG_TABLE_WIDTHS.map((w, i) => <col key={i} style={{ width: w }} />)}
           </colgroup>
           <thead>
             <tr>
@@ -1364,6 +1369,30 @@ function DayLog({ day, rows, written, drafts, saved, history, onEdit, me, activi
           </tbody>
         </table>
       </div>
+
+      {/* DIRECTLY UNDER THE LOG, because "I logged nothing on Monday" and "I
+          was off on Monday" are the same thought, and the second one is what
+          somebody looking at a gap in their own week has come to say.
+
+          No window passed: My day does not hold one — the history above comes
+          from the server's default seven days — so the panel sends none and
+          captions itself with whatever window comes back. Inventing a window
+          here would be a second definition of "recently" that could disagree
+          with the rows above it.
+
+          onChanged reloads the day. A request does not move any figure yet,
+          but an owner or admin marking their own day IS approved on the spot,
+          and their rate chip would otherwise stay stale until a refresh. */}
+      {/* Guarded on `me`: it is read from localStorage and is null for the
+          first render. Without this the panel would ask the server for user
+          "null" once on every load. */}
+      {me && (
+        <div className="dw-card" style={{ marginTop: 14 }}>
+          <LeavePanel userId={me} mode="own"
+                      widths={LOG_TABLE_WIDTHS}
+                      onChanged={onLeaveChanged} />
+        </div>
+      )}
     </div>
   );
 }

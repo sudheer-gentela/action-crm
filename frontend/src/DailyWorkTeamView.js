@@ -34,7 +34,16 @@ import { apiService } from './apiService';
 import { hashIdSegment, hashSegment, writeHash } from './hashNav';
 import { ProjectItemRow, dueText } from './dailyWorkProjectLink';
 import { DayItemTitles, itemTitleList } from './dailyWorkItemTitles';
+// Shared with My day. Both screens must agree on what a leave row looks like,
+// when Approve is offered, and what the result sentence claims — see the
+// module header for why that cannot be two copies.
+import { LeavePanel } from './dailyWorkLeave';
 import './DailyWork.css';
+
+// The day table's columns, in one place. The leave panel renders under this
+// table and takes the same widths, so the two line up cell for cell — and if
+// the table is ever re-proportioned, the panel follows instead of drifting.
+const DAY_TABLE_WIDTHS = ['13%', '26%', '28%', '13%', '13%', '7%'];
 
 const PERIODS = [
   { value: 'day',   label: 'Day' },
@@ -1204,7 +1213,7 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
               and "they were off on the 7th" are the same conversation. The
               window is this page's own range picker, not the list's. */}
           <div className="dw-card" style={{ marginTop: 14 }}>
-            <LeavePanel userId={person.user_id}
+            <LeavePanel userId={person.user_id} mode="manage"
                         from={pRange.from} to={pRange.to}
                         onChanged={() => bumpReload(n => n + 1)} />
           </div>
@@ -1407,235 +1416,6 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
  * A 404 means the Projects module is off for this org. That is not an error
  * worth showing — the panel simply does not exist here.
  */
-/**
- * Leave and absences for one person, over one window.
- *
- * ── WHY THIS IS A PANEL AND NOT A CLICKABLE SQUARE ───────────────────
- *
- * The obvious affordance is to click the red square in the strip. It is also
- * the wrong one: the squares are 12px, they sit inside a row whose name is
- * already a link and whose end is already a button, and the day a manager most
- * wants to mark is often one the strip does not show at all — a day the person
- * was scheduled but which the current period has scrolled past. So the strip
- * stays a read: it says what happened, in colour and in a tooltip. Writing
- * happens here, where there is room for the reason.
- *
- * ── THE REASON IS NOT OPTIONAL ───────────────────────────────────────
- *
- * The database refuses a blank one (chk_dwe_reason_not_blank) and so does the
- * service, but the real argument is what this panel is for: a grey square with
- * no reason is only marginally better than the vanished square it replaced.
- * "Leave" on its own is accepted — the field exists to be answerable, not to
- * be interrogated.
- *
- * ── PENDING ROWS ARE SHOWN, LOUDLY ───────────────────────────────────
- *
- * A request nobody has granted still counts against the person's rate, by
- * design. It is invisible on every other screen, so if this panel quietly
- * listed it beside approved days a manager would reasonably assume it had been
- * handled. It says "still counted" instead, next to the button that fixes it.
- */
-function LeavePanel({ userId, from, to, onChanged }) {
-  const [rows, setRows]   = useState(null);      // null = not loaded yet
-  const [date, setDate]   = useState('');
-  const [reason, setReason] = useState('');
-  const [busy, setBusy]   = useState(false);
-  const [note, setNote]   = useState(null);      // { kind, text }
-
-  const load = useCallback(async () => {
-    try {
-      const { data } = await apiService.dailyWork.listLeave({ from, to, users: String(userId) });
-      setRows(data.rows || []);
-    } catch {
-      // An empty array, not a stuck spinner. The panel is a sidecar to the
-      // day log; failing to load leave must not make the row look broken.
-      setRows([]);
-    }
-  }, [userId, from, to]);
-
-  useEffect(() => { load(); }, [load]);
-
-  // Both writes and the delete funnel through here so the reload and the
-  // error handling exist once. onChanged re-fetches the LIST above us —
-  // approving a day changes that person's denominator, and leaving the rate
-  // beside the strip stale would be the screen disagreeing with itself.
-  const run = async (fn, okText) => {
-    setBusy(true);
-    setNote(null);
-    try {
-      const result = await fn();
-      await load();
-      if (onChanged) onChanged();
-      setNote({ kind: 'info', text: okText(result) });
-      return true;
-    } catch (err) {
-      setNote({ kind: 'stop', text: err?.response?.data?.error || 'That did not go through' });
-      return false;
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const mark = async () => {
-    if (!date || !reason.trim()) return;
-    const ok = await run(
-      () => apiService.dailyWork.markLeave({ userId, date, reason }).then(r => r.data),
-      (r) => {
-        if (r.countsTowardRate) {
-          return `${formatDate(r.exception_date)} is marked as leave and no longer counts against them.`;
-        }
-        if (r.approved) {
-          // Approved but moving nothing: a weekend, a holiday, or a day outside
-          // their working week. Saying so is the point — silence here reads as
-          // "it worked" while no figure on the screen changes.
-          return `${formatDate(r.exception_date)} is recorded, but it was not a working day for them, so no figure changes.`;
-        }
-        return `${formatDate(r.exception_date)} is recorded and waiting for approval — it still counts until then.`;
-      });
-    // Cleared only on success. A failed save that also wiped the fields would
-    // make the reader retype what they just typed to find out whether the
-    // second attempt fails the same way.
-    if (ok) { setDate(''); setReason(''); }
-  };
-
-  const loading = rows === null;
-  const canSubmit = !!date && !!reason.trim() && !busy;
-
-  // THE SAME SIX COLUMNS AS THE DAY ROWS ABOVE, and the same widths.
-  //
-  // This was a stack: a heading, a bulleted list, then a two-line form. Beside
-  // a table it read as a different kind of object that happened to be nearby,
-  // and the eye had to start over on each block to find the date. It carries
-  // the same shape of fact the day rows do — a date, what it was, and a
-  // control at the end — so it lines up under them and is read the same way.
-  //
-  // Duplicated rather than shared with the day table because the two are not
-  // one table: the day rows come from the log and this comes from the leave
-  // record, and merging them would put "nothing was logged" and "they were
-  // off" in one list where a reader could not tell which was which.
-  const cols = (
-    <colgroup>
-      <col style={{ width: '13%' }} />
-      <col style={{ width: '26%' }} />
-      <col style={{ width: '28%' }} />
-      <col style={{ width: '13%' }} />
-      <col style={{ width: '13%' }} />
-      <col style={{ width: '7%' }} />
-    </colgroup>
-  );
-
-  return (
-    <div className="dw-leave">
-      <div className="dw-leave-head">
-        <b>Leave and absences</b>
-        {/* One date, not "Mon, 7 Sep — Mon, 7 Sep". The Day period sets from
-            and to to the same day, and a range that repeats itself reads as a
-            rendering fault rather than as a one-day window. */}
-        <span className="dw-leave-window">
-          {from === to ? formatDate(from) : `${formatDate(from)} — ${formatDate(to)}`}
-        </span>
-      </div>
-
-      {note && <div className={`dw-leave-note ${note.kind}`}>{note.text}</div>}
-
-      <table className="dw-logtable dw-leavetable">
-        {cols}
-        <tbody>
-          {/* ── the rows that exist ──────────────────────────────────── */}
-          {loading && (
-            <tr><td colSpan={6} className="dw-item-status">Loading…</td></tr>
-          )}
-          {!loading && rows.length === 0 && (
-            <tr><td colSpan={6} className="dw-item-status">Nothing marked in this window.</td></tr>
-          )}
-          {!loading && rows.map(r => (
-            <tr key={r.id}>
-              <td className="dw-logdate">{formatDate(r.exception_date)}</td>
-              <td className="dw-logitem">
-                Leave
-                {r.approved
-                  ? <span className="dw-badge">approved</span>
-                  : <span className="dw-badge carried">awaiting approval</span>}
-              </td>
-              <td>
-                {r.reason}
-                {/* Under the reason rather than in the badge beside it: a
-                    pending day STILL COUNTS against them, which is the
-                    consequence a reader needs and not a restatement of the
-                    status word next to it. */}
-                {!r.approved && (
-                  <div className="dw-meta dw-leave-still">Still counted until approved</div>
-                )}
-              </td>
-              {/* Named here, where the day rows have to leave Activity blank —
-                  a day rolls up several items with different activities, but a
-                  leave day has exactly one person who decided it. */}
-              <td className="dw-col-activity dw-meta">
-                {r.approved
-                  ? (r.approved_by_first ? `approved by ${r.approved_by_first}` : '—')
-                  : (r.requested_by_first ? `asked by ${r.requested_by_first}` : '—')}
-              </td>
-              <td className="dw-col-initiative dw-meta" />
-              <td className="dw-logactions">
-                {!r.approved && (
-                  <button type="button" className="dw-btn-link" disabled={busy}
-                          onClick={() => run(
-                            () => apiService.dailyWork.approveLeave(r.id),
-                            () => `${formatDate(r.exception_date)} approved.`)}>
-                    Approve
-                  </button>
-                )}
-                <button type="button" className="dw-btn-link" disabled={busy}
-                        onClick={() => run(
-                          () => apiService.dailyWork.removeLeave(r.id),
-                          () => `${formatDate(r.exception_date)} is a working day again.`)}>
-                  Remove
-                </button>
-              </td>
-            </tr>
-          ))}
-
-          {/* ── the row that adds one ────────────────────────────────── */}
-          {/*
-            One row, in the same columns as the rows above it: the date sits
-            under the dates, the reason under the reasons. An editor whose
-            fields do not line up with the values they produce makes the reader
-            check, after saving, that the thing they typed landed where they
-            meant it to.
-
-            No <form>. This table is nested inside the People table, and a form
-            in there submits on Enter and reloads the page — so Enter is wired
-            to the same handler as the button instead, because a two-field row
-            that cannot be finished from the keyboard is one nobody uses twice.
-          */}
-          <tr className="dw-leave-add">
-            <td>
-              <input type="date" value={date} min={from} max={to} disabled={busy}
-                     aria-label="Date they were off"
-                     onChange={e => setDate(e.target.value)} />
-            </td>
-            <td className="dw-logitem muted">Leave</td>
-            <td colSpan={2}>
-              <input type="text" value={reason} maxLength={200} disabled={busy}
-                     placeholder="Reason — e.g. Leave, sick, public holiday"
-                     aria-label="Reason"
-                     onChange={e => setReason(e.target.value)}
-                     onKeyDown={e => { if (e.key === 'Enter' && canSubmit) mark(); }} />
-            </td>
-            {/* Two columns for the button: the actions column alone is 7% and
-                would wrap "Mark as leave" onto three lines. */}
-            <td colSpan={2} className="dw-logactions">
-              <button type="button" className="dw-btn" disabled={!canSubmit} onClick={mark}>
-                {busy ? 'Saving…' : 'Mark as leave'}
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 function PersonProjectPanel({ userId }) {
   const [state, setState] = useState({ loading: true, data: null, unavailable: false });
 
@@ -1837,8 +1617,9 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
         {leaveOpen && (
           <tr className="dw-person-detail">
             <td colSpan={5}>
-              <LeavePanel userId={person.user_id}
+              <LeavePanel userId={person.user_id} mode="manage"
                           from={window_.from} to={window_.to}
+                          widths={DAY_TABLE_WIDTHS}
                           onChanged={onChanged} />
             </td>
           </tr>
@@ -1871,12 +1652,7 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
                       purpose — the columns must not move when the period
                       changes. */}
                   <colgroup>
-                    <col style={{ width: '13%' }} />
-                    <col style={{ width: '26%' }} />
-                    <col style={{ width: '28%' }} />
-                    <col style={{ width: '13%' }} />
-                    <col style={{ width: '13%' }} />
-                    <col style={{ width: '7%' }} />
+                    {DAY_TABLE_WIDTHS.map((w, i) => <col key={i} style={{ width: w }} />)}
                   </colgroup>
                   <thead>
                     <tr>
@@ -2011,12 +1787,7 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
                     purpose — the columns must not move when the period
                     changes. */}
                 <colgroup>
-                  <col style={{ width: '13%' }} />
-                  <col style={{ width: '26%' }} />
-                  <col style={{ width: '28%' }} />
-                  <col style={{ width: '13%' }} />
-                  <col style={{ width: '13%' }} />
-                  <col style={{ width: '7%' }} />
+                  {DAY_TABLE_WIDTHS.map((w, i) => <col key={i} style={{ width: w }} />)}
                 </colgroup>
                 <thead>
                   <tr>
@@ -2095,8 +1866,9 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
             {/* Below the days, above the projects. The question this answers
                 — "why is Monday red" — is one the reader has only after
                 looking at the day rows, and it belongs to the same window. */}
-            <LeavePanel userId={person.user_id}
+            <LeavePanel userId={person.user_id} mode="manage"
                         from={window_.from} to={window_.to}
+                        widths={DAY_TABLE_WIDTHS}
                         onChanged={onChanged} />
 
             <PersonProjectPanel userId={person.user_id} />
