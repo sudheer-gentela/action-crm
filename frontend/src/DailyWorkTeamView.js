@@ -1501,6 +1501,29 @@ function LeavePanel({ userId, from, to, onChanged }) {
   const loading = rows === null;
   const canSubmit = !!date && !!reason.trim() && !busy;
 
+  // THE SAME SIX COLUMNS AS THE DAY ROWS ABOVE, and the same widths.
+  //
+  // This was a stack: a heading, a bulleted list, then a two-line form. Beside
+  // a table it read as a different kind of object that happened to be nearby,
+  // and the eye had to start over on each block to find the date. It carries
+  // the same shape of fact the day rows do — a date, what it was, and a
+  // control at the end — so it lines up under them and is read the same way.
+  //
+  // Duplicated rather than shared with the day table because the two are not
+  // one table: the day rows come from the log and this comes from the leave
+  // record, and merging them would put "nothing was logged" and "they were
+  // off" in one list where a reader could not tell which was which.
+  const cols = (
+    <colgroup>
+      <col style={{ width: '13%' }} />
+      <col style={{ width: '26%' }} />
+      <col style={{ width: '28%' }} />
+      <col style={{ width: '13%' }} />
+      <col style={{ width: '13%' }} />
+      <col style={{ width: '7%' }} />
+    </colgroup>
+  );
+
   return (
     <div className="dw-leave">
       <div className="dw-leave-head">
@@ -1515,55 +1538,100 @@ function LeavePanel({ userId, from, to, onChanged }) {
 
       {note && <div className={`dw-leave-note ${note.kind}`}>{note.text}</div>}
 
-      {loading ? (
-        <div className="dw-item-status">Loading…</div>
-      ) : rows.length === 0 ? (
-        <div className="dw-item-status">Nothing marked in this window.</div>
-      ) : (
-        <ul className="dw-leave-list">
-          {rows.map(r => (
-            <li key={r.id}>
-              <span className="dw-leave-date">{formatDate(r.exception_date)}</span>
-              <span className="dw-leave-reason">{r.reason}</span>
-              {r.approved
-                ? <span className="dw-badge">approved</span>
-                : <span className="dw-badge carried">awaiting approval · still counted</span>}
-              {!r.approved && (
+      <table className="dw-logtable dw-leavetable">
+        {cols}
+        <tbody>
+          {/* ── the rows that exist ──────────────────────────────────── */}
+          {loading && (
+            <tr><td colSpan={6} className="dw-item-status">Loading…</td></tr>
+          )}
+          {!loading && rows.length === 0 && (
+            <tr><td colSpan={6} className="dw-item-status">Nothing marked in this window.</td></tr>
+          )}
+          {!loading && rows.map(r => (
+            <tr key={r.id}>
+              <td className="dw-logdate">{formatDate(r.exception_date)}</td>
+              <td className="dw-logitem">
+                Leave
+                {r.approved
+                  ? <span className="dw-badge">approved</span>
+                  : <span className="dw-badge carried">awaiting approval</span>}
+              </td>
+              <td>
+                {r.reason}
+                {/* Under the reason rather than in the badge beside it: a
+                    pending day STILL COUNTS against them, which is the
+                    consequence a reader needs and not a restatement of the
+                    status word next to it. */}
+                {!r.approved && (
+                  <div className="dw-meta dw-leave-still">Still counted until approved</div>
+                )}
+              </td>
+              {/* Named here, where the day rows have to leave Activity blank —
+                  a day rolls up several items with different activities, but a
+                  leave day has exactly one person who decided it. */}
+              <td className="dw-col-activity dw-meta">
+                {r.approved
+                  ? (r.approved_by_first ? `approved by ${r.approved_by_first}` : '—')
+                  : (r.requested_by_first ? `asked by ${r.requested_by_first}` : '—')}
+              </td>
+              <td className="dw-col-initiative dw-meta" />
+              <td className="dw-logactions">
+                {!r.approved && (
+                  <button type="button" className="dw-btn-link" disabled={busy}
+                          onClick={() => run(
+                            () => apiService.dailyWork.approveLeave(r.id),
+                            () => `${formatDate(r.exception_date)} approved.`)}>
+                    Approve
+                  </button>
+                )}
                 <button type="button" className="dw-btn-link" disabled={busy}
                         onClick={() => run(
-                          () => apiService.dailyWork.approveLeave(r.id),
-                          () => `${formatDate(r.exception_date)} approved.`)}>
-                  Approve
+                          () => apiService.dailyWork.removeLeave(r.id),
+                          () => `${formatDate(r.exception_date)} is a working day again.`)}>
+                  Remove
                 </button>
-              )}
-              <button type="button" className="dw-btn-link" disabled={busy}
-                      onClick={() => run(
-                        () => apiService.dailyWork.removeLeave(r.id),
-                        () => `${formatDate(r.exception_date)} is a working day again.`)}>
-                Remove
-              </button>
-            </li>
+              </td>
+            </tr>
           ))}
-        </ul>
-      )}
 
-      {/* No <form>: a nested form inside the People table would submit on
-          Enter and reload the page. Enter is wired to the same handler as the
-          button instead, because a two-field row that cannot be finished from
-          the keyboard is a row nobody uses twice. */}
-      <div className="dw-leave-add">
-        <input type="date" value={date} min={from} max={to} disabled={busy}
-               aria-label="Date they were off"
-               onChange={e => setDate(e.target.value)} />
-        <input type="text" value={reason} maxLength={200} disabled={busy}
-               placeholder="Reason — e.g. Leave, sick, public holiday"
-               aria-label="Reason"
-               onChange={e => setReason(e.target.value)}
-               onKeyDown={e => { if (e.key === 'Enter' && canSubmit) mark(); }} />
-        <button type="button" className="dw-btn" disabled={!canSubmit} onClick={mark}>
-          {busy ? 'Saving…' : 'Mark as leave'}
-        </button>
-      </div>
+          {/* ── the row that adds one ────────────────────────────────── */}
+          {/*
+            One row, in the same columns as the rows above it: the date sits
+            under the dates, the reason under the reasons. An editor whose
+            fields do not line up with the values they produce makes the reader
+            check, after saving, that the thing they typed landed where they
+            meant it to.
+
+            No <form>. This table is nested inside the People table, and a form
+            in there submits on Enter and reloads the page — so Enter is wired
+            to the same handler as the button instead, because a two-field row
+            that cannot be finished from the keyboard is one nobody uses twice.
+          */}
+          <tr className="dw-leave-add">
+            <td>
+              <input type="date" value={date} min={from} max={to} disabled={busy}
+                     aria-label="Date they were off"
+                     onChange={e => setDate(e.target.value)} />
+            </td>
+            <td className="dw-logitem muted">Leave</td>
+            <td colSpan={2}>
+              <input type="text" value={reason} maxLength={200} disabled={busy}
+                     placeholder="Reason — e.g. Leave, sick, public holiday"
+                     aria-label="Reason"
+                     onChange={e => setReason(e.target.value)}
+                     onKeyDown={e => { if (e.key === 'Enter' && canSubmit) mark(); }} />
+            </td>
+            {/* Two columns for the button: the actions column alone is 7% and
+                would wrap "Mark as leave" onto three lines. */}
+            <td colSpan={2} className="dw-logactions">
+              <button type="button" className="dw-btn" disabled={!canSubmit} onClick={mark}>
+                {busy ? 'Saving…' : 'Mark as leave'}
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   );
 }

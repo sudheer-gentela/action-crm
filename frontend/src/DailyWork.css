@@ -529,20 +529,38 @@
 }
 .dw-leave-window { font-size: 12px; color: var(--dw-ink-3); }
 
-.dw-leave-list { list-style: none; margin: 0 0 10px; padding: 0; }
-.dw-leave-list li {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 6px 0; border-bottom: 1px solid var(--dw-line-2); font-size: 13.5px;
-}
-.dw-leave-list li:last-child { border-bottom: none; }
-.dw-leave-date { font-weight: 600; white-space: nowrap; }
-/* Takes the slack so the badges and buttons sit together at the right rather
- * than drifting apart by however long the reason happens to be. */
-.dw-leave-reason { flex: 1 1 auto; min-width: 120px; overflow-wrap: anywhere; }
+/* The rows themselves inherit .dw-logtable, so a leave row lines up with the
+ * day rows above it cell for cell. Only what differs is set here. */
+.dw-leavetable { margin-top: 4px; }
+/* Vertically centred, unlike the day rows: those are top-aligned because a
+ * clamped three-line description has to start level with its date, and these
+ * rows are one line with a control at the end. */
+.dw-leavetable td { font-size: 13.5px; vertical-align: middle; }
+.dw-leave-still { font-size: 12px; color: var(--dw-ink-3); margin-top: 2px; }
 
-.dw-leave-add { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.dw-leave-add input[type="date"] { flex: 0 0 auto; }
-.dw-leave-add input[type="text"] { flex: 1 1 200px; min-width: 160px; }
+/* The editor row. Fields fill their cell so they sit under the values they
+ * produce — a date box the width of the date column, a reason box the width
+ * of the reason column. */
+.dw-leave-add input {
+  appearance: none; font: inherit; font-size: 13.5px; width: 100%;
+  border: 1.5px solid var(--dw-line); border-radius: 8px;
+  padding: 8px 10px; background: var(--dw-paper); color: var(--dw-ink);
+  min-height: 40px; box-sizing: border-box;
+}
+.dw-leave-add input:focus-visible { outline: 2px solid var(--dw-accent); outline-offset: 1px; }
+.dw-leave-add input:disabled { opacity: 0.6; }
+/* Smaller than the default .dw-btn: 44px is a thumb target for a page's main
+ * action, and this button sits in a table row where that height would push
+ * every other cell down with it. */
+.dw-leave-add .dw-btn { min-height: 40px; padding: 8px 14px; font-size: 13.5px; white-space: nowrap; }
+.dw-leave-add .dw-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Narrow screens: the six-column grid stops being readable long before the
+ * fields do, so the editor row stacks and the date and reason go full width.
+ * .dw-logtable already scrolls horizontally at this size for the day rows. */
+@media (max-width: 768px) {
+  .dw-leavetable .dw-col-activity { display: none; }
+}
 
 /* The result line. Says what the write actually did — including the case
  * where it correctly did nothing to any figure, which silence would misreport
