@@ -764,10 +764,23 @@ router.get('/people/:userId', async (req, res) => {
     // because the list happened to be on Day view. Two windows, one number,
     // and the number belonged to the wrong one.
     //
-    // slim: the counts are all that is read here — no strip, no arrays.
+    // ── AND THE SAME FIX HAD TO REACH THE DAY LIST ──────────────────────
+    //
+    // That change corrected the numerator and denominator in the header and
+    // stopped there. The table underneath still drew one row per working day
+    // from the LIST's window, so the two disagreed on screen: the header said
+    // "2 of 5 days logged" for the past week while the table listed every
+    // working day in September, and Next 7 days rendered a month of past days
+    // under the words "Nothing is logged ahead of today".
+    //
+    // So this call now returns the day list too, and it is no longer slim.
+    // slim exists to skip building that list — see getRollup — which is right
+    // for the trailing 28-day call in GET /people across a whole team, and
+    // exactly wrong here, where the list is the thing being asked for. One
+    // person, one window: the saving was never the point on this route.
     const [rateRow] = await dailyQuery.getRollup(req.orgId, {
       userIds: [target], from: win.from, to: win.to,
-      filters: readFilters(req.query), slim: true,
+      filters: readFilters(req.query),
     });
 
     const [log, assigned, assignedOutside, projectSide] = await Promise.all([
@@ -795,7 +808,14 @@ router.get('/people/:userId', async (req, res) => {
       // which won.
       rate: rateRow
         ? { daysLogged: rateRow.days_logged, workingDays: rateRow.working_days,
-            rate: rateRow.rate, hasSchedule: rateRow.has_schedule }
+            rate: rateRow.rate, hasSchedule: rateRow.has_schedule,
+            // The working days themselves, not just how many. Carried inside
+            // `rate` rather than at the top level because it is the SAME
+            // window and the same computation as the counts beside it — the
+            // list and the denominator cannot come apart if they arrive
+            // together. Each entry also carries its leave state, so a day off
+            // reads as one here instead of as a silent gap.
+            days: rateRow.days || [] }
         : null,
       ...projectSide });
   } catch (err) { handle(res, err, 'GET /people/:userId'); }

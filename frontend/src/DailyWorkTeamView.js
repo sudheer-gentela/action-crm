@@ -976,11 +976,32 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
     return a.dueDate.localeCompare(b.dueDate);
   });
 
-  // Every working day in the window, newest first, whether or not anything was
-  // logged. The GAPS are the point on a compliance screen — a day with no row
-  // at all reads as a day that did not exist.
+  // Every working day in THIS PAGE'S window, newest first, whether or not
+  // anything was logged. The GAPS are the point on a compliance screen — a day
+  // with no row at all reads as a day that did not exist.
+  //
+  // FROM `rate`, NOT FROM `person`. person.days is the People LIST's strip,
+  // built for whatever period that screen was on, and it does not change when
+  // the range picker above this table does. So every range rendered the same
+  // rows: Past 7 days listed a month, and Next 7 days listed past days under
+  // the words "Nothing is logged ahead of today". The header was already right
+  // — it reads state.rate, fetched for pRange — which is what made the two
+  // disagree in plain sight.
+  //
+  // The fallback keeps a staged deploy honest: an older backend sends no
+  // rate.days, and the old (wrong-window) skeleton still beats an empty table.
+  const skeleton = (rate && rate.days && rate.days.length) ? rate.days : (person.days || []);
   const byDate = new Map();
-  for (const d of (person.days || [])) byDate.set(d.date, { date: d.date, entries: [] });
+  for (const d of skeleton) {
+    byDate.set(d.date, {
+      date: d.date, entries: [],
+      // Carried through from the rollup so a day off does not read as a day
+      // ignored. Without this the table says "Not logged" on the very date the
+      // leave panel below it lists as approved leave — the screen contradicting
+      // itself, on a page whose whole job is to say who is keeping up.
+      leave: d.leave || null, leaveReason: d.leave_reason || null,
+    });
+  }
   for (const l of log) {
     if (!byDate.has(l.entry_date)) byDate.set(l.entry_date, { date: l.entry_date, entries: [] });
     byDate.get(l.entry_date).entries.push(l);
@@ -1134,17 +1155,25 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
                               'logged, and here is what', and the empty-day row
                               is the one this screen exists to surface. */}
                           <td className={e && titles.length ? 'dw-logitem' : 'dw-logitem muted'}>
-                            {!e ? 'Not logged'
-                              : isOpen ? null
-                              : <DayItemTitles titles={titles} count={count} />}
+                            {e
+                              ? (isOpen ? null : <DayItemTitles titles={titles} count={count} />)
+                              : d.leave === 'approved' ? 'Leave'
+                              : d.leave === 'requested' ? 'Leave requested'
+                              : 'Not logged'}
                           </td>
                           <td className="dw-logwork">
                             {/* Quiet while the day is open: the item rows in
-                                the panel below say all of this per item. */}
-                            {!e ? <span className="dw-none">—</span>
-                              : isOpen ? null
-                              : <DayItemWork titles={titles} descriptions={works}
-                                             count={count} />}
+                                the panel below say all of this per item. On a
+                                day with no entries, the leave reason is the
+                                only thing there is to say — and it is the
+                                answer to why the row is empty. */}
+                            {e
+                              ? (isOpen ? null
+                                 : <DayItemWork titles={titles} descriptions={works}
+                                                count={count} />)
+                              : d.leave
+                                ? <span className="dw-meta">{d.leaveReason || '—'}</span>
+                                : <span className="dw-none">—</span>}
                           </td>
                           <td className="dw-logactions">
                             {/* Only on days that HAVE something. A day nobody
