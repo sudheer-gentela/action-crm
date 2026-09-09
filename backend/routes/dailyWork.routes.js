@@ -42,8 +42,18 @@
 // GET    /daily-work/team/stalled            assigned work with no movement
 // GET    /daily-work/team/candidates         activity types awaiting a decision
 // POST   /daily-work/items/assign            assign work to a report
+// GET    /daily-work/exceptions              leave in a window, pending included
+// POST   /daily-work/exceptions              mark a day as leave
+// POST   /daily-work/exceptions/:id/approve  grant a pending request
+// DELETE /daily-work/exceptions/:id          take a leave day back
 // POST   /daily-work/activity-types/:key/promote
 // POST   /daily-work/activity-types/:key/merge
+//
+// Leave is NOT in the admin block above, though it does change a denominator.
+// Holidays are org-wide configuration and belong to an admin; a day off is one
+// person's calendar and belongs to their manager, who is the only one who
+// knows about it. Approval is resolved from the actor's position in the
+// hierarchy — see canApproveLeaveFor — never from the request body.
 //
 // ── Gating ───────────────────────────────────────────────────────────────────
 //
@@ -817,6 +827,127 @@ router.get('/team/day-detail', async (req, res) => {
 
     res.json(await dailyQuery.getDayDetail(req.orgId, userId, date, readFilters(req.query)));
   } catch (err) { handle(res, err, 'GET /team/day-detail'); }
+});
+
+/* ───────────────────────── leave ───────────────────────────────────── */
+
+/**
+ * Who may APPROVE a day off for someone.
+ *
+ * Approval removes a working day from that person's denominator and raises
+ * their logging rate, so it is not a thing anyone may do for themselves. The
+ * rule is deliberately the same set the screen already uses — getVisibleUserIds,
+ * the viewer plus their chain — minus the viewer, so "who I can approve for"
+ * and "who I can see" cannot come apart. Owners and admins sit above the
+ * hierarchy and may approve anyone, themselves included; there is nobody above
+ * them to ask.
+ */
+async function canApproveLeaveFor(req, targetUserId) {
+  const role = await projectSettings.resolveRole(req.orgId, req.userId);
+  if (['owner', 'admin'].includes(role)) return true;
+  if (targetUserId === req.userId) return false;
+  const visible = await dailyQuery.getVisibleUserIds(req.orgId, req.userId);
+  return visible.includes(targetUserId);
+}
+
+// The rows behind the leave squares, for the panel that manages them. Pending
+// requests included — they are invisible everywhere else by design, and this
+// is the screen that can act on them.
+router.get('/exceptions', async (req, res) => {
+  try {
+    const win = await readWindow(req);
+    if (win.bad) return res.status(400).json({ error: 'from and to must be YYYY-MM-DD' });
+    const userIds = await scopeUserIds(req.orgId, req.userId, req.query.users);
+    res.json({
+      ...win,
+      rows: await dailyQuery.listExceptions(req.orgId,
+        { userIds, from: win.from, to: win.to }),
+    });
+  } catch (err) { handle(res, err, 'GET /exceptions'); }
+});
+
+/**
+ * Mark a day as leave.
+ *
+ * The body says WHO and WHEN and WHY. It does not say whether the day is
+ * approved — that is decided here from the actor's position, because a field
+ * the browser sets is a field the browser can set to true for itself.
+ *
+ * A member marking their own day gets a request. Their manager gets an
+ * approved day in one step: making a manager file a request and then approve
+ * their own request is ceremony that teaches people to click through dialogs.
+ */
+router.post('/exceptions', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const userId = asId(b.userId) || req.userId;
+    if (userId === undefined) return res.status(400).json({ error: 'userId must be an id' });
+
+    const date = asDate(b.date);
+    if (!date) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+
+    // Same gate as every other team write: you may act on yourself or on
+    // someone in your chain, and asking about anyone else looks like asking
+    // about somebody who does not exist.
+    const visible = await dailyQuery.getVisibleUserIds(req.orgId, req.userId);
+    if (!visible.includes(userId)) {
+      return res.status(403).json({ error: 'That person does not report to you' });
+    }
+
+    const approve = await canApproveLeaveFor(req, userId);
+    const row = await dailyWork.markLeave(req.orgId, req.userId,
+      { userId, date, reason: b.reason, approve });
+    res.status(201).json(row);
+  } catch (err) { handle(res, err, 'POST /exceptions'); }
+});
+
+router.post('/exceptions/:id/approve', async (req, res) => {
+  try {
+    const id = asId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'bad id' });
+
+    // Whose day it is decides who may grant it, so the row is resolved before
+    // anything is written.
+    const row = await dailyWork.leaveRow(req.orgId, id);
+    if (!row) return res.status(404).json({ error: 'No such leave record' });
+    if (!(await canApproveLeaveFor(req, row.user_id))) {
+      return res.status(403).json({ error: 'Only their manager can approve a day off' });
+    }
+
+    res.json(await dailyWork.approveLeave(req.orgId, req.userId, id));
+  } catch (err) { handle(res, err, 'POST /exceptions/:id/approve'); }
+});
+
+/**
+ * Take a leave day back.
+ *
+ * Two ways in, and they are not the same permission. A manager may remove any
+ * day belonging to their chain. Anyone may withdraw their OWN request while it
+ * is still pending — retracting something nobody has acted on needs no
+ * approval — but once it is granted, removing it puts a working day back into
+ * their own denominator, and that is their manager's decision to reverse.
+ */
+router.delete('/exceptions/:id', async (req, res) => {
+  try {
+    const id = asId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'bad id' });
+
+    const row = await dailyWork.leaveRow(req.orgId, id);
+    if (!row) return res.status(404).json({ error: 'No such leave record' });
+
+    if (!(await canApproveLeaveFor(req, row.user_id))) {
+      if (row.user_id !== req.userId) {
+        return res.status(403).json({ error: 'That is not your leave to remove' });
+      }
+      if (row.approved) {
+        return res.status(403).json({
+          error: 'That day is already approved — ask your manager to remove it',
+        });
+      }
+    }
+
+    res.json(await dailyWork.removeLeave(req.orgId, id));
+  } catch (err) { handle(res, err, 'DELETE /exceptions/:id'); }
 });
 
 router.get('/team/rollup', async (req, res) => {

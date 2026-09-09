@@ -716,6 +716,15 @@ export default function DailyWorkTeamView() {
                     onToggle={toggle}
                     onOpenDay={openDay}
                     onOpenPerson={setOpenPerson}
+                    // The window the strip was drawn for, so the leave panel
+                    // inside the expansion asks about the same days the
+                    // squares above it represent.
+                    window_={window_}
+                    // Approving a day changes that person's denominator, so
+                    // the list has to be re-read rather than patched: the rate
+                    // beside the strip is computed server-side and there is no
+                    // correct way to guess the new one here.
+                    onChanged={load}
                   />
                 ))}
               </tbody>
@@ -828,6 +837,12 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
   // above this component, so it is off-screen whenever a person is open.
   const [linkNotice, setLinkNotice] = useState(null);
   const onRefuse = useCallback((text) => setLinkNotice(text), []);
+  // Bumped when something below changes a figure this page shows — marking a
+  // day as leave moves `rate`, which is computed server-side. A counter rather
+  // than patching state locally: there is no correct way to recompute a
+  // denominator here, and a page showing its own guess beside the server's
+  // numbers is worse than one that re-reads.
+  const [reloadKey, bumpReload] = useState(0);
 
   const pRange = personRange(rangeKey);
 
@@ -853,7 +868,7 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
     return () => { alive = false; };
     // pRange is derived from rangeKey, so keying on the key rather than the
     // object avoids a new object identity refetching on every render.
-  }, [person.user_id, rangeKey, showAll]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [person.user_id, rangeKey, showAll, reloadKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const name = `${person.first_name || ''} ${person.last_name || ''}`.trim() || 'Unknown';
   const { log, projectItems, projects, assigned, assignedOutside,
@@ -1185,6 +1200,15 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
               </table>
             )}
           </div>
+          {/* Directly under the log, because "they logged nothing on the 7th"
+              and "they were off on the 7th" are the same conversation. The
+              window is this page's own range picker, not the list's. */}
+          <div className="dw-card" style={{ marginTop: 14 }}>
+            <LeavePanel userId={person.user_id}
+                        from={pRange.from} to={pRange.to}
+                        onChanged={() => bumpReload(n => n + 1)} />
+          </div>
+
           <div className="dw-card" style={{ marginTop: 14 }}>
             <div className="dw-card-head">
               <h2>Assigned to them</h2>
@@ -1383,6 +1407,167 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
  * A 404 means the Projects module is off for this org. That is not an error
  * worth showing — the panel simply does not exist here.
  */
+/**
+ * Leave and absences for one person, over one window.
+ *
+ * ── WHY THIS IS A PANEL AND NOT A CLICKABLE SQUARE ───────────────────
+ *
+ * The obvious affordance is to click the red square in the strip. It is also
+ * the wrong one: the squares are 12px, they sit inside a row whose name is
+ * already a link and whose end is already a button, and the day a manager most
+ * wants to mark is often one the strip does not show at all — a day the person
+ * was scheduled but which the current period has scrolled past. So the strip
+ * stays a read: it says what happened, in colour and in a tooltip. Writing
+ * happens here, where there is room for the reason.
+ *
+ * ── THE REASON IS NOT OPTIONAL ───────────────────────────────────────
+ *
+ * The database refuses a blank one (chk_dwe_reason_not_blank) and so does the
+ * service, but the real argument is what this panel is for: a grey square with
+ * no reason is only marginally better than the vanished square it replaced.
+ * "Leave" on its own is accepted — the field exists to be answerable, not to
+ * be interrogated.
+ *
+ * ── PENDING ROWS ARE SHOWN, LOUDLY ───────────────────────────────────
+ *
+ * A request nobody has granted still counts against the person's rate, by
+ * design. It is invisible on every other screen, so if this panel quietly
+ * listed it beside approved days a manager would reasonably assume it had been
+ * handled. It says "still counted" instead, next to the button that fixes it.
+ */
+function LeavePanel({ userId, from, to, onChanged }) {
+  const [rows, setRows]   = useState(null);      // null = not loaded yet
+  const [date, setDate]   = useState('');
+  const [reason, setReason] = useState('');
+  const [busy, setBusy]   = useState(false);
+  const [note, setNote]   = useState(null);      // { kind, text }
+
+  const load = useCallback(async () => {
+    try {
+      const { data } = await apiService.dailyWork.listLeave({ from, to, users: String(userId) });
+      setRows(data.rows || []);
+    } catch {
+      // An empty array, not a stuck spinner. The panel is a sidecar to the
+      // day log; failing to load leave must not make the row look broken.
+      setRows([]);
+    }
+  }, [userId, from, to]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Both writes and the delete funnel through here so the reload and the
+  // error handling exist once. onChanged re-fetches the LIST above us —
+  // approving a day changes that person's denominator, and leaving the rate
+  // beside the strip stale would be the screen disagreeing with itself.
+  const run = async (fn, okText) => {
+    setBusy(true);
+    setNote(null);
+    try {
+      const result = await fn();
+      await load();
+      if (onChanged) onChanged();
+      setNote({ kind: 'info', text: okText(result) });
+      return true;
+    } catch (err) {
+      setNote({ kind: 'stop', text: err?.response?.data?.error || 'That did not go through' });
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const mark = async () => {
+    if (!date || !reason.trim()) return;
+    const ok = await run(
+      () => apiService.dailyWork.markLeave({ userId, date, reason }).then(r => r.data),
+      (r) => {
+        if (r.countsTowardRate) {
+          return `${formatDate(r.exception_date)} is marked as leave and no longer counts against them.`;
+        }
+        if (r.approved) {
+          // Approved but moving nothing: a weekend, a holiday, or a day outside
+          // their working week. Saying so is the point — silence here reads as
+          // "it worked" while no figure on the screen changes.
+          return `${formatDate(r.exception_date)} is recorded, but it was not a working day for them, so no figure changes.`;
+        }
+        return `${formatDate(r.exception_date)} is recorded and waiting for approval — it still counts until then.`;
+      });
+    // Cleared only on success. A failed save that also wiped the fields would
+    // make the reader retype what they just typed to find out whether the
+    // second attempt fails the same way.
+    if (ok) { setDate(''); setReason(''); }
+  };
+
+  const loading = rows === null;
+  const canSubmit = !!date && !!reason.trim() && !busy;
+
+  return (
+    <div className="dw-leave">
+      <div className="dw-leave-head">
+        <b>Leave and absences</b>
+        {/* One date, not "Mon, 7 Sep — Mon, 7 Sep". The Day period sets from
+            and to to the same day, and a range that repeats itself reads as a
+            rendering fault rather than as a one-day window. */}
+        <span className="dw-leave-window">
+          {from === to ? formatDate(from) : `${formatDate(from)} — ${formatDate(to)}`}
+        </span>
+      </div>
+
+      {note && <div className={`dw-leave-note ${note.kind}`}>{note.text}</div>}
+
+      {loading ? (
+        <div className="dw-item-status">Loading…</div>
+      ) : rows.length === 0 ? (
+        <div className="dw-item-status">Nothing marked in this window.</div>
+      ) : (
+        <ul className="dw-leave-list">
+          {rows.map(r => (
+            <li key={r.id}>
+              <span className="dw-leave-date">{formatDate(r.exception_date)}</span>
+              <span className="dw-leave-reason">{r.reason}</span>
+              {r.approved
+                ? <span className="dw-badge">approved</span>
+                : <span className="dw-badge carried">awaiting approval · still counted</span>}
+              {!r.approved && (
+                <button type="button" className="dw-btn-link" disabled={busy}
+                        onClick={() => run(
+                          () => apiService.dailyWork.approveLeave(r.id),
+                          () => `${formatDate(r.exception_date)} approved.`)}>
+                  Approve
+                </button>
+              )}
+              <button type="button" className="dw-btn-link" disabled={busy}
+                      onClick={() => run(
+                        () => apiService.dailyWork.removeLeave(r.id),
+                        () => `${formatDate(r.exception_date)} is a working day again.`)}>
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {/* No <form>: a nested form inside the People table would submit on
+          Enter and reload the page. Enter is wired to the same handler as the
+          button instead, because a two-field row that cannot be finished from
+          the keyboard is a row nobody uses twice. */}
+      <div className="dw-leave-add">
+        <input type="date" value={date} min={from} max={to} disabled={busy}
+               aria-label="Date they were off"
+               onChange={e => setDate(e.target.value)} />
+        <input type="text" value={reason} maxLength={200} disabled={busy}
+               placeholder="Reason — e.g. Leave, sick, public holiday"
+               aria-label="Reason"
+               onChange={e => setReason(e.target.value)}
+               onKeyDown={e => { if (e.key === 'Enter' && canSubmit) mark(); }} />
+        <button type="button" className="dw-btn" disabled={!canSubmit} onClick={mark}>
+          {busy ? 'Saving…' : 'Mark as leave'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function PersonProjectPanel({ userId }) {
   const [state, setState] = useState({ loading: true, data: null, unavailable: false });
 
@@ -1501,7 +1686,7 @@ function PersonIdentity({ person }) {
 // Left unused it would be a no-unused-vars warning, and CRA builds with CI=true
 // where a warning fails the build.
 function PersonRow({ person, period, hasProjects = false, log, expanded, details,
-                     onToggle, onOpenDay, onOpenPerson }) {
+                     onToggle, onOpenDay, onOpenPerson, window_ = {}, onChanged }) {
   const key = `p:${person.user_id}`;
   const isOpen = !!expanded[key];
 
@@ -1516,6 +1701,13 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
     // one that opens an empty panel.
     const dayKey = today ? `${person.user_id}:${today.entry_date}` : null;
     const dayOpen = !!(dayKey && expanded[dayKey]);
+    // A SEPARATE control from Details, and it has to be, because the person
+    // who most needs a leave day marked is the one with nothing logged — and
+    // Details is not rendered for them at all. Hanging leave off the day
+    // expansion would put the fix behind the very condition it fixes.
+    const leaveKey  = `leave:${person.user_id}`;
+    const leaveOpen = !!expanded[leaveKey];
+    const dayLeave  = ((person.days || [])[0] || {}).leave || null;
     return (
       <>
         <tr className={`dw-person-row ${dayOpen ? 'dw-open' : ''}`}>
@@ -1537,8 +1729,16 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
             </button>
           </td>
           <td className="dw-col-days">
-            <span className={`dw-badge ${today ? '' : 'carried'}`}>
-              {today ? `${today.item_count} logged` : 'not yet'}
+            {/* The Day period draws a badge instead of the strip, so the leave
+                state has to be said here too — otherwise the one period where
+                a manager is looking at a single day is the one period that
+                still reports a day off as "not yet". `days` holds exactly one
+                entry in this period, which is the day on screen. */}
+            <span className={`dw-badge ${today || dayLeave ? '' : 'carried'}`}>
+              {dayLeave === 'approved' ? 'on leave'
+                : today ? `${today.item_count} logged`
+                : dayLeave === 'requested' ? 'leave requested'
+                : 'not yet'}
             </span>
           </td>
           <td>{today ? today.item_count : 0}</td>
@@ -1559,8 +1759,22 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
                 {dayOpen ? 'Hide' : 'Details'}
               </button>
             )}
+            <button type="button" className="dw-btn-link" aria-expanded={leaveOpen}
+                    onClick={() => onToggle(leaveKey)}>
+              Leave
+            </button>
           </td>
         </tr>
+
+        {leaveOpen && (
+          <tr className="dw-person-detail">
+            <td colSpan={5}>
+              <LeavePanel userId={person.user_id}
+                          from={window_.from} to={window_.to}
+                          onChanged={onChanged} />
+            </td>
+          </tr>
+        )}
 
         {dayOpen && (
           <tr className="dw-person-detail">
@@ -1810,6 +2024,13 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
               </table>
             )}
 
+            {/* Below the days, above the projects. The question this answers
+                — "why is Monday red" — is one the reader has only after
+                looking at the day rows, and it belongs to the same window. */}
+            <LeavePanel userId={person.user_id}
+                        from={window_.from} to={window_.to}
+                        onChanged={onChanged} />
+
             <PersonProjectPanel userId={person.user_id} />
           </td>
         </tr>
@@ -1818,11 +2039,6 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
   );
 }
 
-/**
- * One square per working day. Holidays and approved leave are not in the list
- * at all, so an empty square always means a day someone was expected to log and
- * did not — never a weekend or a holiday being counted against them.
- */
 /**
  * The strip of working days for one person over the period.
  *
@@ -1834,9 +2050,27 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
  * total collapse when in fact almost nothing was yet due. The one question
  * this screen exists to answer — who is drifting — was drowned by it.
  *
- * Three states, not two: logged, missed (a working day in the past with
- * nothing on it), and not yet (today onwards). Today counts as still open —
- * somebody logging at 6pm has not missed anything at 10am.
+ * ── AND A DAY SOMEBODY WAS OFF IS NOT A MISSED DAY EITHER ────────────
+ *
+ * Approved leave drops out of the denominator, which was right, but it also
+ * dropped out of the STRIP — the square vanished, so a day off looked exactly
+ * like a Sunday and the row silently got shorter. A manager asking "why is
+ * Monday missing" had nowhere to find the answer.
+ *
+ * Five states now, and the two new ones say different things:
+ *
+ *   logged     green
+ *   missed     red — a working day in the past with nothing on it
+ *   future     white — today onwards. Somebody logging at 6pm has not missed
+ *              anything at 10am
+ *   leave      grey, approved. Out of the denominator; nothing is owed
+ *   requested  amber outline. Asked for, not granted, and STILL COUNTED —
+ *              which is why it must not look like leave. Nobody's rate moves
+ *              on a request nobody has acted on
+ *
+ * The reason rides in the tooltip. "Grey square" is barely better than a gap;
+ * "7 Sep — leave: family wedding" is the answer to the question the manager
+ * actually has.
  *
  * ── AND IT HAS TO WRAP ───────────────────────────────────────────────
  *
@@ -1864,16 +2098,32 @@ function DayStrip({ days }) {
         // the driver serialises a DATE column. Compare the calendar day only.
         const date   = String(d.date).slice(0, 10);
         const future = date > today;
-        const state  = d.logged ? 'logged' : future ? 'future' : 'missed';
+        // Leave BEATS logged, and that ordering is deliberate: somebody who
+        // logged an hour on a day they were off is still off, and painting it
+        // green would erase the leave from the only place it is visible. It
+        // does not beat the entry itself — the log below still shows the work.
+        const state  = d.leave === 'approved' ? 'leave'
+                     : d.leave === 'requested' ? 'requested'
+                     : d.logged ? 'logged'
+                     : future ? 'future' : 'missed';
         const skin = {
-          logged: { background: '#dcfce7', border: '#86efac' },
-          missed: { background: '#fee2e2', border: '#fca5a5' },
-          future: { background: '#fff',    border: '#e5e7eb' },
+          logged:    { background: '#dcfce7', border: '#86efac' },
+          missed:    { background: '#fee2e2', border: '#fca5a5' },
+          future:    { background: '#fff',    border: '#e5e7eb' },
+          leave:     { background: '#e5e7eb', border: '#9ca3af' },
+          requested: { background: '#fef3c7', border: '#f59e0b' },
+        }[state];
+        const words = {
+          logged:    'logged',
+          missed:    'not logged',
+          future:    'not yet',
+          leave:     `leave: ${d.leave_reason || 'no reason given'}`,
+          requested: `leave requested: ${d.leave_reason || 'no reason given'} — not approved, still counted`,
         }[state];
         return (
           <span
             key={d.date}
-            title={`${date} — ${d.logged ? 'logged' : future ? 'not yet' : 'not logged'}`}
+            title={`${date} — ${words}`}
             style={{
               width: 12, height: 12, borderRadius: 3, display: 'inline-block',
               flexShrink: 0,

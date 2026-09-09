@@ -264,20 +264,39 @@ async function loadCalendars(client, orgId, userIds, from, to) {
     });
   }
 
-  // Approved leave only. A pending request should not quietly shrink someone's
-  // denominator and flatter their rate before anyone has agreed to it.
+  // TWO SHAPES OF THE SAME ROWS, and the split is the whole point.
+  //
+  //   exceptions  APPROVED dates only, as a Set. This is the denominator's
+  //               input and nothing else may touch it. A pending request must
+  //               not quietly shrink someone's working days and flatter their
+  //               rate before anyone has agreed to it.
+  //   leave       EVERY row, approved or not, as date -> { reason, approved },
+  //               for the strip. A manager looking at a red square needs to
+  //               know it is a leave day someone has asked about, and the
+  //               reason is the answer to "why is Monday missing" that the
+  //               screen could not give at all before.
+  //
+  // Reading both from one query rather than two: they are the same rows read
+  // for different purposes, and a second query could return a different set
+  // the moment somebody approves a request between them.
   const { rows: exceptions } = await client.query(
-    `SELECT user_id, exception_date::text AS exception_date
+    `SELECT user_id, exception_date::text AS exception_date, reason,
+            (approved_at IS NOT NULL) AS approved
        FROM daily_work_exceptions
       WHERE org_id = $1 AND user_id = ANY($2)
-        AND exception_date BETWEEN $3 AND $4
-        AND approved_at IS NOT NULL`,
+        AND exception_date BETWEEN $3 AND $4`,
     [orgId, userIds, from, to]);
 
   const exceptionsByUser = new Map();
+  const leaveByUser = new Map();
   exceptions.forEach(e => {
-    if (!exceptionsByUser.has(e.user_id)) exceptionsByUser.set(e.user_id, new Set());
-    exceptionsByUser.get(e.user_id).add(e.exception_date);
+    if (e.approved) {
+      if (!exceptionsByUser.has(e.user_id)) exceptionsByUser.set(e.user_id, new Set());
+      exceptionsByUser.get(e.user_id).add(e.exception_date);
+    }
+    if (!leaveByUser.has(e.user_id)) leaveByUser.set(e.user_id, new Map());
+    leaveByUser.get(e.user_id).set(e.exception_date,
+      { reason: e.reason, approved: e.approved });
   });
 
   const out = new Map();
@@ -287,6 +306,10 @@ async function loadCalendars(client, orgId, userIds, from, to) {
       weekdayMask: sched ? sched.weekday_mask : 31,
       holidays: (sched && holidaysByCalendar.get(sched.holiday_calendar_id)) || new Set(),
       exceptions: exceptionsByUser.get(userId) || new Set(),
+      // Not read by workingDays — it destructures weekdayMask, holidays and
+      // exceptions and ignores the rest, so this rides along without changing
+      // any denominator anywhere.
+      leave: leaveByUser.get(userId) || new Map(),
       hasSchedule: !!sched,
     });
   }
@@ -366,6 +389,21 @@ async function getRollup(orgId, { userIds, from, to, filters = {}, slim = false 
       const row = byUser.get(userId) || {};
       const cal = calendars.get(userId);
       const workingDates = dwDate.workingDays(from, to, cal);
+      // THE STRIP IS A WIDER SET THAN THE DENOMINATOR, deliberately.
+      //
+      // An approved leave day is removed from workingDates, which is right —
+      // nobody should be marked down for a day they were off. But it was also
+      // removed from the strip, so the square simply vanished and a leave day
+      // became indistinguishable from a Sunday. The manager's question is "why
+      // is Monday missing", and the screen's answer was to hide Monday.
+      //
+      // Same calendar with the exception filter lifted, so the day keeps its
+      // square and gets its own state below. The rate is computed from
+      // workingDates and is untouched by this.
+      //
+      // Built AFTER the slim return, not here: slim exists to skip exactly
+      // this kind of per-day work for the trailing call, which reads four
+      // integers and throws the rest away.
       const logged = row.logged_dates || [];
       const rate = dwDate.loggingRate(logged, workingDates);
 
@@ -384,6 +422,7 @@ async function getRollup(orgId, { userIds, from, to, filters = {}, slim = false 
           has_schedule: cal.hasSchedule,
         };
       }
+      const stripDates = dwDate.workingDays(from, to, { ...cal, exceptions: new Set() });
       return {
         user_id: userId,
         first_name: who.first_name || null,
@@ -404,7 +443,21 @@ async function getRollup(orgId, { userIds, from, to, filters = {}, slim = false 
         // membership of the other array — so sending all three was the same
         // information three times, and nothing in the frontend read either of
         // the two that are gone.
-        days: workingDates.map(d => ({ date: d, logged: logged.includes(d) })),
+        //
+        // `leave` is 'approved' or 'requested' on the days that have one, and
+        // absent otherwise — an absent key rather than a null, so the common
+        // day stays the small object it was. `leave_reason` travels with it
+        // because the reason IS the information: "on leave" is barely better
+        // than a blank square, "Leave — family wedding" answers the question.
+        days: stripDates.map(d => {
+          const lv = cal.leave.get(d);
+          return {
+            date: d,
+            logged: logged.includes(d),
+            ...(lv ? { leave: lv.approved ? 'approved' : 'requested',
+                       leave_reason: lv.reason } : {}),
+          };
+        }),
         days_logged: rate.logged,
         working_days: rate.working,
         // null, never 0, when the whole period was holiday — see
@@ -498,6 +551,43 @@ async function getAccountSummary(orgId, { accountKey, userIds, from, to }) {
       byPerson,
       byActivity,
     };
+  });
+}
+
+/* ───────────────────────── leave ───────────────────────────────────── */
+
+/**
+ * The leave rows behind the strip, for the panel that manages them.
+ *
+ * SEPARATE FROM THE STRIP, on purpose. getRollup already carries enough to
+ * DRAW a leave day — the state and the reason — and that is all the list
+ * needs. What it cannot carry is the row's id, who asked and who approved,
+ * which only the panel needs and only when it is open. Putting those on every
+ * day of every person's strip would send them on every load of the People
+ * screen to serve the rare row that gets expanded.
+ *
+ * Pending rows come back too. A request nobody has acted on is precisely what
+ * a manager opening this panel needs to see, and it is invisible everywhere
+ * else — it does not move the rate, by design.
+ */
+async function listExceptions(orgId, { userIds, from, to }) {
+  if (!userIds || userIds.length === 0) return [];
+
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows } = await client.query(
+      `SELECT x.id, x.user_id, x.exception_date::text AS exception_date,
+              x.reason, x.approved_at IS NOT NULL AS approved,
+              x.approved_at, x.requested_by,
+              rq.first_name AS requested_by_first, rq.last_name AS requested_by_last,
+              ap.first_name AS approved_by_first,  ap.last_name  AS approved_by_last
+         FROM daily_work_exceptions x
+         LEFT JOIN users rq ON rq.id = x.requested_by
+         LEFT JOIN users ap ON ap.id = x.approved_by
+        WHERE x.org_id = $1 AND x.user_id = ANY($2)
+          AND x.exception_date BETWEEN $3 AND $4
+        ORDER BY x.exception_date DESC`,
+      [orgId, userIds, from, to]);
+    return rows;
   });
 }
 
@@ -774,6 +864,7 @@ module.exports = {
   getDepartmentsByUser,
   getDayDetail,
   getRollup,
+  listExceptions,
   getAccountSummary,
   getStalledAssigned,
   getCandidateActivityTypes,

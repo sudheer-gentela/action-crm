@@ -515,6 +515,44 @@
 
 .dw-logdate { font-size: 12.5px; color: var(--dw-ink-3); white-space: nowrap; }
 .dw-today-tag { color: var(--dw-accent); font-weight: 700; }
+/* ── leave and absences ─────────────────────────────────────────────────
+ * The panel inside an expanded person row, and the same one on the person
+ * page inside a .dw-card. Padding is set here rather than by the container so
+ * it reads the same in both.
+ */
+.dw-leave { padding: 12px 14px; }
+.dw-person-detail .dw-leave {
+  border-top: 1px solid var(--dw-line); margin-top: 8px; padding-left: 0; padding-right: 0;
+}
+.dw-leave-head {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;
+}
+.dw-leave-window { font-size: 12px; color: var(--dw-ink-3); }
+
+.dw-leave-list { list-style: none; margin: 0 0 10px; padding: 0; }
+.dw-leave-list li {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 6px 0; border-bottom: 1px solid var(--dw-line-2); font-size: 13.5px;
+}
+.dw-leave-list li:last-child { border-bottom: none; }
+.dw-leave-date { font-weight: 600; white-space: nowrap; }
+/* Takes the slack so the badges and buttons sit together at the right rather
+ * than drifting apart by however long the reason happens to be. */
+.dw-leave-reason { flex: 1 1 auto; min-width: 120px; overflow-wrap: anywhere; }
+
+.dw-leave-add { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.dw-leave-add input[type="date"] { flex: 0 0 auto; }
+.dw-leave-add input[type="text"] { flex: 1 1 200px; min-width: 160px; }
+
+/* The result line. Says what the write actually did — including the case
+ * where it correctly did nothing to any figure, which silence would misreport
+ * as success. */
+.dw-leave-note {
+  font-size: 12.5px; border-radius: 6px; padding: 6px 10px; margin-bottom: 8px;
+}
+.dw-leave-note.info { background: var(--dw-ok-wash, #f0fdf4); color: var(--dw-ok, #15803d); }
+.dw-leave-note.stop { background: var(--dw-stop-wash); color: var(--dw-stop); }
+
 .dw-logitem { font-weight: 600; }
 .dw-logitem.muted { font-weight: 400; color: var(--dw-ink-3); }
 

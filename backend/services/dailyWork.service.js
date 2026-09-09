@@ -36,6 +36,14 @@
 const { withOrgTransaction } = require('../config/database');
 const hierarchyService = require('./hierarchyService');
 const dwDate = require('./dailyWorkDate');
+// Read-side, for ONE thing: loadCalendars, so markLeave can answer "was that
+// even a working day for them" against the same effective-dated schedule and
+// per-person holiday list the rate uses. Re-deriving it here would be a second
+// definition of a working day, and the two would drift.
+//
+// Not a cycle: dailyWorkQuery requires database, hierarchyService and
+// dailyWorkDate, and never this file.
+const dailyQuery = require('./dailyWorkQuery.service');
 
 // ── Why every date column is cast to text ────────────────────────────
 //
@@ -168,6 +176,163 @@ async function assertActiveMember(client, orgId, userId) {
     throw new DailyWorkError('That person is not an active member of this organization',
       'INACTIVE_MEMBER', { userId });
   }
+}
+
+/* ───────────────────────── leave ───────────────────────────────────── */
+
+/**
+ * Record a day somebody was not working.
+ *
+ * ── WHY THIS IS NOT A HOLIDAY ────────────────────────────────────────
+ *
+ * A holiday belongs to a CALENDAR and blanks the day for everyone on it. Leave
+ * belongs to a PERSON and blanks one day for one of them. The two were already
+ * separate tables when this shipped; what was missing was any way to write the
+ * second one, so the only recourse for "Chandini was off on Monday" was a
+ * manual INSERT or letting the day count against her.
+ *
+ * ── APPROVAL IS NOT CEREMONY ─────────────────────────────────────────
+ *
+ * An approved row removes a working day from that person's denominator, which
+ * raises their logging rate. That is a figure their manager is judged on and
+ * one they can move for themselves, so requesting and granting are separate
+ * acts: `approve` is decided by the CALLER from the actor's position in the
+ * hierarchy, never sent by the browser. A row without approval is inert
+ * everywhere — the rate ignores it, the nudge ignores it — and is visible only
+ * in the panel that can grant it.
+ *
+ * ── RE-MARKING IS A CORRECTION, NOT A SECOND ROW ─────────────────────
+ *
+ * UNIQUE (org_id, user_id, exception_date) means the same day cannot be marked
+ * twice, and a failed unique constraint surfacing as a 500 for "I typed the
+ * reason wrong" is a bad way to learn that. ON CONFLICT updates the reason in
+ * place. It does NOT downgrade an approved row back to pending: re-stating the
+ * reason on a day already granted is a correction to the text, not a
+ * withdrawal of the decision, and withdrawing has its own path.
+ *
+ * `countsTowardRate` comes back so the caller can say something true about
+ * what just happened. Marking a Sunday, or a day already on the holiday
+ * calendar, is accepted and changes no figures — the honest report of that is
+ * a sentence in the UI, not a refusal of a statement that is perfectly correct
+ * about the world.
+ */
+async function markLeave(orgId, actorUserId, { userId, date, reason, approve = false }) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) {
+    throw new DailyWorkError('A leave date must be YYYY-MM-DD', 'BAD_DATE', { date });
+  }
+  const text = (reason || '').trim();
+  if (!text) {
+    throw new DailyWorkError('Say what the day was — "Leave" on its own is enough, but the field cannot be blank',
+      'NO_REASON');
+  }
+  if (text.length > 200) {
+    throw new DailyWorkError('Keep the reason under 200 characters', 'REASON_TOO_LONG',
+      { length: text.length });
+  }
+
+  return withOrgTransaction(orgId, async (client) => {
+    await assertActiveMember(client, orgId, userId);
+
+    const { rows } = await client.query(
+      `INSERT INTO daily_work_exceptions
+         (org_id, user_id, exception_date, reason, requested_by, approved_by, approved_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (org_id, user_id, exception_date) DO UPDATE
+          SET reason = EXCLUDED.reason,
+              -- COALESCE, not EXCLUDED: an approved day stays approved when
+              -- its reason is corrected. The pair moves together because of
+              -- chk_dwe_approval_shape, so both sides use the same rule.
+              approved_by = COALESCE(daily_work_exceptions.approved_by, EXCLUDED.approved_by),
+              approved_at = COALESCE(daily_work_exceptions.approved_at, EXCLUDED.approved_at)
+       RETURNING id, user_id, exception_date::text AS exception_date, reason,
+                 approved_at IS NOT NULL AS approved`,
+      [orgId, userId, date, text, actorUserId,
+       approve ? actorUserId : null, approve ? new Date() : null]);
+
+    // Read against the person's own calendar, not a weekday check here: the
+    // schedule is effective-dated and the holiday list is per person, and
+    // re-deriving either would be a second definition of "a working day" that
+    // could disagree with the one the rate uses.
+    const cal = await dailyQuery.loadCalendars(client, orgId, [userId], date, date);
+    const scheduled = dwDate.workingDays(date, date, {
+      ...cal.get(userId), exceptions: new Set() }).length > 0;
+
+    return { ...rows[0], countsTowardRate: scheduled && rows[0].approved };
+  });
+}
+
+/**
+ * Grant a request that was already made.
+ *
+ * Returns the row so the caller can re-render from what the database now says
+ * rather than from what it assumed the click did.
+ */
+async function approveLeave(orgId, actorUserId, exceptionId) {
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows } = await client.query(
+      `UPDATE daily_work_exceptions
+          SET approved_by = $3, approved_at = now()
+        WHERE id = $1 AND org_id = $2 AND approved_at IS NULL
+        RETURNING id, user_id, exception_date::text AS exception_date, reason,
+                  approved_at IS NOT NULL AS approved`,
+      [exceptionId, orgId, actorUserId]);
+
+    if (!rows[0]) {
+      // Already approved, or not there. Told apart so the UI can say which:
+      // a second click on Approve is not an error worth a red banner.
+      const { rows: found } = await client.query(
+        `SELECT id FROM daily_work_exceptions WHERE id = $1 AND org_id = $2`,
+        [exceptionId, orgId]);
+      if (found[0]) throw new DailyWorkError('That day is already approved', 'ALREADY_APPROVED');
+      throw new DailyWorkError('No such leave record', 'NO_SUCH_EXCEPTION', { exceptionId });
+    }
+    return rows[0];
+  });
+}
+
+/**
+ * Take a leave day back.
+ *
+ * DELETE rather than a withdrawn flag, unlike evidence. Evidence is a claim
+ * about work that was done and has to stay auditable once made; this is a
+ * statement about a calendar, and a day wrongly marked should stop affecting
+ * the denominator completely rather than linger as a tombstone the rate has to
+ * remember to ignore.
+ *
+ * Returns the row's user and date so the caller knows whose figures just
+ * changed without a second read.
+ */
+async function removeLeave(orgId, exceptionId) {
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows } = await client.query(
+      `DELETE FROM daily_work_exceptions
+        WHERE id = $1 AND org_id = $2
+        RETURNING id, user_id, exception_date::text AS exception_date`,
+      [exceptionId, orgId]);
+    if (!rows[0]) {
+      throw new DailyWorkError('No such leave record', 'NO_SUCH_EXCEPTION', { exceptionId });
+    }
+    return { deleted: rows[0].id, user_id: rows[0].user_id,
+             exception_date: rows[0].exception_date };
+  });
+}
+
+/**
+ * Who a leave row belongs to and whether it has been granted, for the route's
+ * permission check.
+ *
+ * The route cannot decide "may I approve this" or "may I withdraw this"
+ * without both facts, and it must not learn them by fetching the row through a
+ * path that would return it to someone outside the chain. Two fields, no join.
+ */
+async function leaveRow(orgId, exceptionId) {
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows } = await client.query(
+      `SELECT user_id, approved_at IS NOT NULL AS approved
+         FROM daily_work_exceptions WHERE id = $1 AND org_id = $2`,
+      [exceptionId, orgId]);
+    return rows[0] || null;
+  });
 }
 
 /* ───────────────────────── items ───────────────────────────────────── */
@@ -2287,6 +2452,11 @@ module.exports = {
   removeHoliday,
   listSchedules,
   setSchedule,
+  // Leave: one person, one day, removed from their denominator once approved.
+  markLeave,
+  approveLeave,
+  removeLeave,
+  leaveRow,
   listEvidence,
   revokeEvidence,
   replaceEvidence,

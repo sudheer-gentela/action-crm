@@ -256,6 +256,13 @@ async function run(f) {
   eq('and the descriptions are concatenated in item order',
     tuesday && tuesday.work_done,
     'Tuesday CT outreach. Tuesday research for the other customer.');
+  // The Item column names the work instead of counting it, so the titles have
+  // to come back with the row — and in the SAME order as the descriptions,
+  // or the second title would sit beside the first sentence.
+  eq('the titles come back in that same order',
+    tuesday && tuesday.item_titles, ['CT outreach', 'Other customer research']);
+  eq('one title per item, so the two can never disagree on screen',
+    tuesday && tuesday.item_titles.length, tuesday && tuesday.item_count);
   eq('entry_date is a string, not a Date the driver shifted',
     typeof (tuesday && tuesday.entry_date), 'string');
 
@@ -334,6 +341,38 @@ async function run(f) {
   check('and the holiday is not one of them',
     !rc.days.some(d => d.date === '2026-08-26'), 'the holiday appears in the strip');
   eq('every date in the strip is a string', typeof rc.days[0].date, 'string');
+
+  // THE STRIP IS WIDER THAN THE DENOMINATOR, and only for leave.
+  //
+  // A leave day used to be dropped from both, so the square vanished and a day
+  // off was indistinguishable from a Sunday — the manager's "why is Thursday
+  // missing" had no answer anywhere on the screen. It is back on the strip,
+  // marked, while Pranay's working_days stays at 3 above.
+  const pLeave = rp.days.find(d => d.date === '2026-08-27');
+  eq('the leave day keeps its square', rp.days.length, 4);
+  eq('marked approved', pLeave && pLeave.leave, 'approved');
+  eq('and carrying the reason, which is the whole point',
+    pLeave && pLeave.leave_reason, 'Fixture leave');
+
+  // A pending request is a different statement and must read as one: it is
+  // still counted, so painting it like leave would say the opposite.
+  const nPending = rn.days.find(d => d.date === '2026-08-28');
+  eq('a pending request is marked requested, not approved',
+    nPending && nPending.leave, 'requested');
+  check('and an ordinary day carries no leave key at all',
+    rc.days.every(d => !('leave' in d)),
+    JSON.stringify(rc.days));
+
+  console.log('\nLEAVE — the rows behind the squares');
+
+  const leaveRows = await qsvc.listExceptions(f.orgId,
+    { userIds: all, from: FROM, to: TO });
+  eq('both the approved day and the pending one come back', leaveRows.length, 2);
+  eq('ordered most recent first',
+    leaveRows.map(r => r.exception_date), ['2026-08-28', '2026-08-27']);
+  eq('the pending one is flagged', leaveRows[0].approved, false);
+  eq('and the approved one names who granted it',
+    leaveRows[1].approved_by_first, 'Saideep');
 
   console.log('\nACCOUNT — what was delivered, and by whom');
 

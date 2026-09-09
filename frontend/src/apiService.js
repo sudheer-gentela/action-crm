@@ -1271,6 +1271,28 @@ twilio: {
     teamRollup: ({ from, to, users, ...filters } = {}) =>
       api.get('/daily-work/team/rollup', { params: { from, to, users, ...filters } }),
 
+    // ── leave ────────────────────────────────────────────────────────────
+    //
+    // A day one person was not working, which drops out of THEIR denominator
+    // once approved — as against a holiday, which is org configuration and
+    // blanks the day for everyone on that calendar.
+    //
+    // Pending rows come back from listLeave and from nowhere else: an
+    // unapproved request deliberately moves no figure, so the panel that can
+    // grant it is the only place it is visible.
+    listLeave: ({ from, to, users } = {}) =>
+      api.get('/daily-work/exceptions', { params: { from, to, users } }),
+
+    // No approved flag in the body, and this is not an oversight. The server
+    // decides that from the caller's position in the hierarchy — a field the
+    // browser sets is a field the browser can set for itself, and an approved
+    // day raises the rate it would be setting it on.
+    markLeave: ({ userId, date, reason }) =>
+      api.post('/daily-work/exceptions', { userId, date, reason }),
+
+    approveLeave: (id) => api.post(`/daily-work/exceptions/${id}/approve`),
+    removeLeave:  (id) => api.delete(`/daily-work/exceptions/${id}`),
+
     // ── the People screen ────────────────────────────────────────────────
     // One row per person the viewer may see, carrying both the logging record
     // and the open project work owed. Replaced the separate team rollup call
