@@ -1,6 +1,10 @@
 // dailyWorkItemTitles.js
 //
-// The ITEM cell of a DAY ROLLUP ROW, shared by every screen that draws one.
+// The ITEM and WHAT-WAS-DONE cells of a DAY ROLLUP ROW, shared by every screen
+// that draws one. Both live here because they have to agree: they render the
+// same items, in the same order, capped at the same point. Split across two
+// files they would drift, and the drift would show as a description sitting
+// beside the wrong title — which is worse than either cell being wrong alone.
 //
 // ── What this replaces ───────────────────────────────────────────────
 //
@@ -96,12 +100,80 @@ export function DayItemTitles({ titles, count, limit = DEFAULT_LIMIT }) {
         // Index key: these are display strings, not records — two items on one
         // day can legitimately share a title, and the list is re-rendered whole
         // whenever the day changes.
-        <div className="dw-item-name" key={i} title={title}>{title}</div>
+        <div className="dw-item-name" key={i} title={title}>
+          {/* Numbered only when there is something to correspond to. See
+              DayItemWork for why correspondence is marked rather than
+              aligned. */}
+          {n > 1 && <span className="dw-item-index">{i + 1}</span>}
+          {title}
+        </div>
       ))}
       {rest > 0 && (
         // Its own class rather than .dw-meta: .dw-meta carries no rule outside
         // .dw-dayrow in DailyWork.css, so borrowing it here would look styled
         // in the markup and render as plain text.
+        <div className="dw-item-more">
+          +{rest} more {rest === 1 ? 'item' : 'items'}
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * The day's work, one block per item, in the same order as the titles.
+ *
+ * ── WHAT THIS REPLACES ───────────────────────────────────────────────
+ *
+ * A single string built server-side by string_agg(description, ' '). Two
+ * items' descriptions welded with a space read as one continuous account of
+ * one thing. The reader had no way to see the seam, so a day with two
+ * unrelated pieces of work looked like a day with one long one.
+ *
+ * ── ALIGNMENT IS NOT ATTEMPTED, IT IS MARKED ─────────────────────────
+ *
+ * The obvious goal is for the Nth title to sit level with the Nth
+ * description. It cannot, honestly: a title is one line and a description is
+ * one to three, so the pairs drift down the cell as soon as any description
+ * wraps. Forcing it would mean equal-height rows padded to the tallest, which
+ * wastes the vertical space this change was meant to save.
+ *
+ * So correspondence is stated rather than implied. With more than one item,
+ * both columns number their entries, and 2 beside 2 is unambiguous however far
+ * the heights have drifted. With one item there is nothing to correspond to,
+ * so no number appears — numbering a list of one is noise.
+ */
+export function DayItemWork({ titles, descriptions, count, limit = DEFAULT_LIMIT, expanded = false }) {
+  const texts = Array.isArray(descriptions)
+    ? descriptions.map(d => (typeof d === 'string' ? d.trim() : '')).filter(Boolean)
+    : [];
+
+  // Nothing to show per item — fall back to nothing rather than to an empty
+  // block, so a row from a backend that predates the array is simply blank
+  // here instead of structurally broken.
+  if (texts.length === 0) return null;
+
+  const n = Number.isFinite(count) ? count : texts.length;
+  // The SAME cap as the titles, so the two columns stop at the same item.
+  // Capping them independently would show three titles beside four
+  // descriptions, and the numbers would stop matching.
+  const shown = texts.slice(0, limit);
+  const rest = Math.max(n - shown.length, 0);
+  const numbered = n > 1;
+
+  return (
+    <>
+      {shown.map((text, i) => (
+        <div className="dw-item-work" key={i}>
+          {numbered && <span className="dw-item-index">{i + 1}</span>}
+          {/* Clamped per item while collapsed, not per cell. One clamp across
+              the whole cell used to cut off the second item entirely once the
+              first ran long — so the reader saw one item's work and no sign
+              that another existed. */}
+          <div className={expanded ? '' : 'dw-clamp-2'}>{text}</div>
+        </div>
+      ))}
+      {rest > 0 && (
         <div className="dw-item-more">
           +{rest} more {rest === 1 ? 'item' : 'items'}
         </div>

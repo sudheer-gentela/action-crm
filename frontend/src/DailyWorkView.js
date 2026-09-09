@@ -33,7 +33,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
 import { hashSegment, writeHash } from './hashNav';
 import { ProjectItemRow, daysBetween, dueText, useOpenProjectTask } from './dailyWorkProjectLink';
-import { DayItemTitles, itemTitleList } from './dailyWorkItemTitles';
+import { DayItemTitles, DayItemWork, itemTitleList } from './dailyWorkItemTitles';
 // Shared with the People screen, which renders the same panel in its manager
 // position. mode='own' is the difference: a day marked here is a REQUEST, and
 // the server decides that from who is asking — not from anything sent here.
@@ -1426,7 +1426,6 @@ function PastDayRow({ day, me, activityLabel }) {
   const [items, setItems] = useState(null);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
-  const long = day.work_done && day.work_done.length > 160;
 
   const toggle = async () => {
     if (open) { setOpen(false); return; }
@@ -1453,18 +1452,26 @@ function PastDayRow({ day, me, activityLabel }) {
             every day to find the one you were looking for. The evidence badge
             stays a day-level figure: it is summed across the day's entries by
             the rollup, and splitting it per item is what Details is for. */}
+        {/* Both cells go quiet while the day is open: the item rows below
+            restate them per item, with the activity and initiative this row
+            cannot carry. The evidence badge stays either way — it is a
+            day-level total the item rows never show. */}
         <td className={itemTitleList(day.item_titles).length
                          ? 'dw-logitem' : 'dw-logitem muted'}>
-          <DayItemTitles titles={day.item_titles} count={day.item_count} />
+          {!open && <DayItemTitles titles={day.item_titles} count={day.item_count} />}
           {day.evidence_count > 0 && (
             <span className="dw-badge">{day.evidence_count} evidence</span>
           )}
         </td>
-        {/* The clamp goes on an inner div, never the cell. .dw-clamp sets
-            display:-webkit-box, and a cell whose display is overridden drops
-            out of the table layout — the column widths stop applying. */}
+        {/* Clamping is per item now, inside DayItemWork. One clamp across the
+            whole cell cut off the second item entirely once the first ran
+            long, so the reader saw one item's work and no sign of the other. */}
         <td>
-          <div className={open || !long ? '' : 'dw-clamp'}>{day.work_done}</div>
+          {!open && (
+            <DayItemWork titles={day.item_titles}
+                         descriptions={day.item_descriptions}
+                         count={day.item_count} />
+          )}
         </td>
         {/* Empty on the DAY row, filled on the item rows below. A day rolls up
             several items that may carry different activities and different

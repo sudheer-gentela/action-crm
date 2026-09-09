@@ -112,15 +112,30 @@ function buildFilters(filters = {}, params) {
  * nothing else — "1 item" beside a paragraph of work, which names the number
  * of things done and none of them. The titles are the cheap half of the
  * detail: one short string per entry, already joined for the count, against
- * getDayDetail's per-item descriptions, next steps, labels and evidence
- * counts. Returning them here does NOT make getDayDetail redundant — the
- * expansion is still the only thing that carries the rest — it just stops the
- * summary row from being unreadable without it.
+ * getDayDetail's per-item next steps, labels and evidence counts. Returning
+ * them here does NOT make getDayDetail redundant — the expansion is still the
+ * only thing that carries the rest — it just stops the summary row from being
+ * unreadable without it.
  *
- * Same ORDER BY as the descriptions, so the Nth title is the Nth sentence in
- * work_done, and no DISTINCT: UNIQUE (org_id, item_id, entry_date) already
- * gives exactly one entry per item per day, so array_length(item_titles, 1)
- * always equals item_count and the two can never disagree on screen.
+ * ── WHY item_descriptions IS AN ARRAY AND NOT A JOINED STRING ────────
+ *
+ * This was string_agg(e.description, ' ') under the name work_done, and the
+ * join was the bug. Two entries welded with a space read as one paragraph
+ * telling one story: "Completed the full 30-epoch training run and tested the
+ * trained model on real circuits. Found the model wasn't producing usable
+ * output..." is two people-days of separate work with nothing marking the
+ * seam. Nobody could tell where one item stopped.
+ *
+ * The array costs the same to compute — same rows, same ordering, one less
+ * concatenation — and lets the caller pair the Nth description with the Nth
+ * title, or join them itself where a one-line summary really is what is
+ * wanted. A caller can always glue an array back together; it cannot split a
+ * string on a space and get its items back.
+ *
+ * Same ORDER BY across both arrays, so index N is the same entry in each, and
+ * no DISTINCT: UNIQUE (org_id, item_id, entry_date) already gives exactly one
+ * entry per item per day, so both arrays are item_count long and none of the
+ * three can disagree on screen.
  */
 async function getLog(orgId, { userIds, from, to, filters = {}, limit = 500 }) {
   if (!userIds || userIds.length === 0) return [];
@@ -135,7 +150,7 @@ async function getLog(orgId, { userIds, from, to, filters = {}, limit = 500 }) {
               e.entry_date::text AS entry_date,
               u.first_name, u.last_name,
               count(*)::int      AS item_count,
-              string_agg(e.description, ' ' ORDER BY i.created_at, i.id) AS work_done,
+              array_agg(e.description ORDER BY i.created_at, i.id)      AS item_descriptions,
               array_agg(i.title ORDER BY i.created_at, i.id)             AS item_titles,
               array_agg(DISTINCT e.day_stage)                            AS stages,
               array_remove(array_agg(DISTINCT e.account_id), NULL)       AS account_ids,

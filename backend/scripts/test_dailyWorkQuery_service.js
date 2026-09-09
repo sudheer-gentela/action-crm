@@ -253,14 +253,20 @@ async function run(f) {
 
   const tuesday = log.find(r => r.user_id === f.chandini && r.entry_date === '2026-08-25');
   eq("Tuesday's two items are one row", tuesday && tuesday.item_count, 2);
-  eq('and the descriptions are concatenated in item order',
-    tuesday && tuesday.work_done,
-    'Tuesday CT outreach. Tuesday research for the other customer.');
+  // Separate, not welded. string_agg used to hand back one paragraph here and
+  // the reader could not see where the first item stopped.
+  eq('the descriptions come back per item, in item order',
+    tuesday && tuesday.item_descriptions,
+    ['Tuesday CT outreach.', 'Tuesday research for the other customer.']);
   // The Item column names the work instead of counting it, so the titles have
   // to come back with the row — and in the SAME order as the descriptions,
   // or the second title would sit beside the first sentence.
   eq('the titles come back in that same order',
     tuesday && tuesday.item_titles, ['CT outreach', 'Other customer research']);
+  // The pairing the UI relies on: index N is the same entry in both arrays.
+  eq('titles and descriptions are the same length, so index N pairs',
+    tuesday && tuesday.item_titles.length,
+    tuesday && tuesday.item_descriptions.length);
   eq('one title per item, so the two can never disagree on screen',
     tuesday && tuesday.item_titles.length, tuesday && tuesday.item_count);
   eq('entry_date is a string, not a Date the driver shifted',
@@ -275,7 +281,8 @@ async function run(f) {
     { userIds: all, from: FROM, to: TO, filters: { accountKey: String(f.acctCT) } });
   eq('filtering to one account narrows to its days', ctOnly.length, 2);
   eq("and rewrites Tuesday's text to only that account's work",
-    ctOnly.find(r => r.entry_date === '2026-08-25').work_done, 'Tuesday CT outreach.');
+    ctOnly.find(r => r.entry_date === '2026-08-25').item_descriptions,
+    ['Tuesday CT outreach.']);
 
   const internalOnly = await qsvc.getLog(f.orgId,
     { userIds: all, from: FROM, to: TO, filters: { accountKey: 'internal' } });

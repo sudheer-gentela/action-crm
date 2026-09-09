@@ -587,6 +587,24 @@
  * content.
  */
 .dw-logitem .dw-item-name { font-weight: 500; }
+/* The correspondence marker, in both columns. Small, grey and fixed-width so
+ * the numbers form a column of their own and the text starts at the same x
+ * whether the day has 1 item or 9. */
+.dw-item-index {
+  display: inline-block; min-width: 14px;
+  font-size: 11px; font-weight: 600; color: var(--dw-ink-3);
+}
+/* One block per item in the What-was-done cell, with the gap doing the work a
+ * joining space used to fail at. */
+.dw-item-work + .dw-item-work { margin-top: 8px; }
+.dw-item-work { display: flex; gap: 4px; align-items: baseline; }
+.dw-item-work > div { flex: 1 1 auto; min-width: 0; }
+/* Two lines per item while collapsed, not three per cell: the old single clamp
+ * spent its whole budget on the first item and hid that a second one existed. */
+.dw-clamp-2 {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 .dw-logitem .dw-item-name + .dw-item-name { margin-top: 4px; }
 /* The remainder past the cap. Deliberately quiet — it is a pointer to the
  * Details control on the same row, not a fourth item. */

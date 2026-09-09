@@ -33,7 +33,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
 import { hashIdSegment, hashSegment, writeHash } from './hashNav';
 import { ProjectItemRow, dueText } from './dailyWorkProjectLink';
-import { DayItemTitles, itemTitleList } from './dailyWorkItemTitles';
+import { DayItemTitles, DayItemWork, itemTitleList } from './dailyWorkItemTitles';
 // Shared with My day. Both screens must agree on what a leave row looks like,
 // when Approve is offered, and what the result sentence claims — see the
 // module header for why that cannot be two copies.
@@ -1117,6 +1117,11 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
                     // is free to return more than one row for it.
                     const titles = d.entries.reduce(
                       (acc, x) => acc.concat(itemTitleList(x.item_titles)), []);
+                    // Flattened the same way and in the same order, so index N
+                    // is the same item in both arrays once they are paired.
+                    const works = d.entries.reduce(
+                      (acc, x) => acc.concat(
+                        Array.isArray(x.item_descriptions) ? x.item_descriptions : []), []);
                     const isOpen = openDayKey === d.date;
                     const rows = dayDetail[d.date];
                     return (
@@ -1129,14 +1134,17 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
                               'logged, and here is what', and the empty-day row
                               is the one this screen exists to surface. */}
                           <td className={e && titles.length ? 'dw-logitem' : 'dw-logitem muted'}>
-                            {e
-                              ? <DayItemTitles titles={titles} count={count} />
-                              : 'Not logged'}
+                            {!e ? 'Not logged'
+                              : isOpen ? null
+                              : <DayItemTitles titles={titles} count={count} />}
                           </td>
                           <td className="dw-logwork">
-                            {e
-                              ? d.entries.map(x => x.work_done).filter(Boolean).join(' ')
-                              : <span className="dw-none">—</span>}
+                            {/* Quiet while the day is open: the item rows in
+                                the panel below say all of this per item. */}
+                            {!e ? <span className="dw-none">—</span>
+                              : isOpen ? null
+                              : <DayItemWork titles={titles} descriptions={works}
+                                             count={count} />}
                           </td>
                           <td className="dw-logactions">
                             {/* Only on days that HAVE something. A day nobody
@@ -1591,11 +1599,14 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
           </td>
           <td>{today ? today.item_count : 0}</td>
           <td className="dw-col-work">
-            {/* The clamp goes on an inner div: .dw-clamp sets display:-webkit-box
-                and a cell whose display is overridden drops out of the table
-                layout entirely. */}
-            {today ? <div className={dayOpen ? '' : 'dw-clamp'}>{today.work_done}</div>
-                   : <span className="dw-none">Not logged yet.</span>}
+            {/* Quiet while expanded, for the same reason as the day rows in the
+                other periods: the item rows below restate this per item and
+                carry more. Collapsed, it is the whole account of the day. */}
+            {!today ? <span className="dw-none">Not logged yet.</span>
+              : dayOpen ? null
+              : <DayItemWork titles={today.item_titles}
+                             descriptions={today.item_descriptions}
+                             count={today.item_count} />}
           </td>
           <td className="dw-logactions">
             {hasProjects && person.overdueTasks > 0 && (
@@ -1813,12 +1824,29 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
                               column carrying no information about the item.
                               Muted only in the fallback case, where the cell
                               really is a summary again. */}
+                          {/* WHILE EXPANDED THIS ROW GOES QUIET, keeping only
+                              its date and the control that closes it.
+                              Everything it was saying — the titles, the work —
+                              is restated by the item rows directly beneath,
+                              per item, with the badges, activity and
+                              initiative this row cannot carry. Printing it
+                              twice made the reader compare two versions of the
+                              same day to find out whether they differed.
+
+                              Collapsed, it is the only account of the day and
+                              says everything it can. */}
                           <td className={itemTitleList(d.item_titles).length
                                            ? 'dw-logitem' : 'dw-logitem muted'}>
-                            <DayItemTitles titles={d.item_titles} count={d.item_count} />
+                            {!dayOpen && (
+                              <DayItemTitles titles={d.item_titles} count={d.item_count} />
+                            )}
                           </td>
                           <td>
-                            <div className={dayOpen ? '' : 'dw-clamp'}>{d.work_done}</div>
+                            {!dayOpen && (
+                              <DayItemWork titles={d.item_titles}
+                                           descriptions={d.item_descriptions}
+                                           count={d.item_count} />
+                            )}
                           </td>
                           {/* Empty on the day row: a day rolls up items that may
                               carry different activities and initiatives, so there

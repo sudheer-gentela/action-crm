@@ -7592,7 +7592,15 @@ function ProjectDailyWork({ handoverId, isStanding = false }) {
                           <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 2 }}>
                             {fmtDate(latest.entry_date)}
                           </div>
-                          <div style={{ color: '#374151' }}>{latest.work_done}</div>
+                          {/* Joined for display HERE, because this panel wants
+                              one line of "what they last did" rather than an
+                              itemised list. The rollup returns the items
+                              separately now — a caller can always glue an
+                              array together, but it cannot split a joined
+                              string back into its items. */}
+                          <div style={{ color: '#374151' }}>
+                            {(latest.item_descriptions || []).join(' ')}
+                          </div>
                         </>
                       ) : '—'}
                     </td>
