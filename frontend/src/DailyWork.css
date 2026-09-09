@@ -517,6 +517,26 @@
 .dw-today-tag { color: var(--dw-accent); font-weight: 700; }
 .dw-logitem { font-weight: 600; }
 .dw-logitem.muted { font-weight: 400; color: var(--dw-ink-3); }
+
+/* ── the named items in a day rollup row ────────────────────────────────
+ * The Item cell on a day row lists the day's item titles rather than their
+ * count. One title per line, because two titles run together with a comma
+ * read as one long title — and these are already short strings in a narrow
+ * column.
+ *
+ * 500 rather than the cell's 600: a day with three items would otherwise put
+ * three bold lines in every row of a fifteen-person table, and the emphasis
+ * that made a single title stand out stops meaning anything when everything
+ * has it. Still heavier than the muted fallback, which is a count and not
+ * content.
+ */
+.dw-logitem .dw-item-name { font-weight: 500; }
+.dw-logitem .dw-item-name + .dw-item-name { margin-top: 4px; }
+/* The remainder past the cap. Deliberately quiet — it is a pointer to the
+ * Details control on the same row, not a fourth item. */
+.dw-item-more {
+  font-size: 12px; font-weight: 400; color: var(--dw-ink-3); margin-top: 4px;
+}
 .dw-logactions { text-align: right; white-space: nowrap; }
 
 @media (max-width: 768px) {

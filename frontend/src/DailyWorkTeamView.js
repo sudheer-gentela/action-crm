@@ -33,6 +33,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
 import { hashIdSegment, hashSegment, writeHash } from './hashNav';
 import { ProjectItemRow, dueText } from './dailyWorkProjectLink';
+import { DayItemTitles, itemTitleList } from './dailyWorkItemTitles';
 import './DailyWork.css';
 
 const PERIODS = [
@@ -1068,10 +1069,13 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
               <div className="dw-empty"><p>Nothing in this period.</p></div>
             ) : (
               <table className="dw-logtable">
+                {/* 13% held a count. It now holds the item names, so it takes
+                    width from the run-together description beside it, which
+                    has the most to spare on this screen. */}
                 <colgroup>
-                  <col style={{ width: '16%' }} />
-                  <col style={{ width: '13%' }} />
-                  <col style={{ width: '61%' }} />
+                  <col style={{ width: '14%' }} />
+                  <col style={{ width: '26%' }} />
+                  <col style={{ width: '50%' }} />
                   <col style={{ width: '10%' }} />
                 </colgroup>
                 <thead>
@@ -1084,14 +1088,26 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
                   {days.map(d => {
                     const e = d.entries[0];
                     const count = d.entries.reduce((n, x) => n + (x.item_count || 0), 0);
+                    // Flattened across entries for the same reason count is
+                    // summed across them: this row is one DATE, and the rollup
+                    // is free to return more than one row for it.
+                    const titles = d.entries.reduce(
+                      (acc, x) => acc.concat(itemTitleList(x.item_titles)), []);
                     const isOpen = openDayKey === d.date;
                     const rows = dayDetail[d.date];
                     return (
                       <React.Fragment key={d.date}>
                         <tr>
                           <td className="dw-logdate">{formatDate(d.date)}</td>
-                          <td className="dw-logitem muted">
-                            {e ? `${count} ${count === 1 ? 'item' : 'items'}` : 'Not logged'}
+                          {/* Named, not counted — same change as the People
+                              list. A day with nothing logged still says so:
+                              'Not logged' is a different statement from
+                              'logged, and here is what', and the empty-day row
+                              is the one this screen exists to surface. */}
+                          <td className={e && titles.length ? 'dw-logitem' : 'dw-logitem muted'}>
+                            {e
+                              ? <DayItemTitles titles={titles} count={count} />
+                              : 'Not logged'}
                           </td>
                           <td className="dw-logwork">
                             {e
@@ -1566,13 +1582,19 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
                 <div className="dw-item-status">No items recorded for that day.</div>
               ) : (
                 <table className="dw-logtable dw-daytable">
+                  {/* Item widened, What-was-done narrowed to pay for it: the
+                      Item cell now names the day's items instead of counting
+                      them, and the description beside it is clamped to three
+                      lines anyway. Both day tables carry the same widths on
+                      purpose — the columns must not move when the period
+                      changes. */}
                   <colgroup>
-                    <col style={{ width: '15%' }} />
-                    <col style={{ width: '18%' }} />
-                    <col style={{ width: '31%' }} />
-                    <col style={{ width: '14%' }} />
-                    <col style={{ width: '14%' }} />
-                    <col style={{ width: '8%' }} />
+                    <col style={{ width: '13%' }} />
+                    <col style={{ width: '26%' }} />
+                    <col style={{ width: '28%' }} />
+                    <col style={{ width: '13%' }} />
+                    <col style={{ width: '13%' }} />
+                    <col style={{ width: '7%' }} />
                   </colgroup>
                   <thead>
                     <tr>
@@ -1700,13 +1722,19 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
                  for — openDay is a request, not something to fire for every
                  day of every person on screen. */
               <table className="dw-logtable dw-daytable">
+                {/* Item widened, What-was-done narrowed to pay for it: the
+                    Item cell now names the day's items instead of counting
+                    them, and the description beside it is clamped to three
+                    lines anyway. Both day tables carry the same widths on
+                    purpose — the columns must not move when the period
+                    changes. */}
                 <colgroup>
-                  <col style={{ width: '15%' }} />
-                  <col style={{ width: '18%' }} />
-                  <col style={{ width: '31%' }} />
-                  <col style={{ width: '14%' }} />
-                  <col style={{ width: '14%' }} />
-                  <col style={{ width: '8%' }} />
+                  <col style={{ width: '13%' }} />
+                  <col style={{ width: '26%' }} />
+                  <col style={{ width: '28%' }} />
+                  <col style={{ width: '13%' }} />
+                  <col style={{ width: '13%' }} />
+                  <col style={{ width: '7%' }} />
                 </colgroup>
                 <thead>
                   <tr>
@@ -1726,8 +1754,15 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
                       <React.Fragment key={d.entry_date}>
                         <tr>
                           <td className="dw-logdate">{formatDate(d.entry_date)}</td>
-                          <td className="dw-logitem muted">
-                            {d.item_count} {d.item_count === 1 ? 'item' : 'items'}
+                          {/* The items are NAMED here, not counted. "1 item"
+                              beside a paragraph of work said how many and not
+                              which, so the column headed Item was the one
+                              column carrying no information about the item.
+                              Muted only in the fallback case, where the cell
+                              really is a summary again. */}
+                          <td className={itemTitleList(d.item_titles).length
+                                           ? 'dw-logitem' : 'dw-logitem muted'}>
+                            <DayItemTitles titles={d.item_titles} count={d.item_count} />
                           </td>
                           <td>
                             <div className={dayOpen ? '' : 'dw-clamp'}>{d.work_done}</div>

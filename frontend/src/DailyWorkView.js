@@ -33,6 +33,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
 import { hashSegment, writeHash } from './hashNav';
 import { ProjectItemRow, daysBetween, dueText, useOpenProjectTask } from './dailyWorkProjectLink';
+import { DayItemTitles, itemTitleList } from './dailyWorkItemTitles';
 import TaskWorkComposer from './TaskWorkComposer';
 import DailyWorkTeamView from './DailyWorkTeamView';
 import DailyWorkSetupView from './DailyWorkSetupView';
@@ -1281,8 +1282,10 @@ function DayLog({ day, rows, written, drafts, saved, history, onEdit, me, activi
        * because the drafts are in hand; earlier days come from the history
        * rollup, which is per DAY with the descriptions already joined
        * server-side. Rather than pretend they are the same, each shape fills
-       * the columns it can: a past row names its item count where today names
-       * the item.
+       * the columns it can: a past row names the day's items and runs their
+       * descriptions together, where today gives each item its own row.
+       * Activity and initiative stay empty on a past row for the same reason
+       * they always did — one day can carry several of each.
        */}
       <div className="dw-logtable-wrap">
         <table className="dw-logtable">
@@ -1290,11 +1293,14 @@ function DayLog({ day, rows, written, drafts, saved, history, onEdit, me, activi
               what you wrote should not mean re-learning where things are —
               and the expanded per-item rows below now line up cell for cell
               with the day rows above them, which was the point. */}
+          {/* Item takes width from the description now that a past day names
+              its items rather than counting them. The description column is
+              still the widest and is clamped past three lines regardless. */}
           <colgroup>
             <col style={{ width: '11%' }} />
-            <col style={{ width: '18%' }} />
-            <col style={{ width: '33%' }} />
-            <col style={{ width: '14%' }} />
+            <col style={{ width: '24%' }} />
+            <col style={{ width: '28%' }} />
+            <col style={{ width: '13%' }} />
             <col style={{ width: '14%' }} />
             <col style={{ width: '10%' }} />
           </colgroup>
@@ -1413,8 +1419,14 @@ function PastDayRow({ day, me, activityLabel }) {
     <React.Fragment>
       <tr>
         <td className="dw-logdate">{formatDateShort(day.entry_date)}</td>
-        <td className="dw-logitem muted">
-          {day.item_count} {day.item_count === 1 ? 'item' : 'items'}
+        {/* NAMED, not counted. A past row used to say "2 items" where today's
+            rows name the item, so reading back your own week meant expanding
+            every day to find the one you were looking for. The evidence badge
+            stays a day-level figure: it is summed across the day's entries by
+            the rollup, and splitting it per item is what Details is for. */}
+        <td className={itemTitleList(day.item_titles).length
+                         ? 'dw-logitem' : 'dw-logitem muted'}>
+          <DayItemTitles titles={day.item_titles} count={day.item_count} />
           {day.evidence_count > 0 && (
             <span className="dw-badge">{day.evidence_count} evidence</span>
           )}

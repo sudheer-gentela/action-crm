@@ -107,6 +107,20 @@ function buildFilters(filters = {}, params) {
  * item_count and the arrays come back alongside the text so the caller can
  * render "3 items · 2 accounts" without a second query, and can expand to the
  * parts without re-deriving anything.
+ *
+ * item_titles is here for the ITEM column, which used to print the count and
+ * nothing else — "1 item" beside a paragraph of work, which names the number
+ * of things done and none of them. The titles are the cheap half of the
+ * detail: one short string per entry, already joined for the count, against
+ * getDayDetail's per-item descriptions, next steps, labels and evidence
+ * counts. Returning them here does NOT make getDayDetail redundant — the
+ * expansion is still the only thing that carries the rest — it just stops the
+ * summary row from being unreadable without it.
+ *
+ * Same ORDER BY as the descriptions, so the Nth title is the Nth sentence in
+ * work_done, and no DISTINCT: UNIQUE (org_id, item_id, entry_date) already
+ * gives exactly one entry per item per day, so array_length(item_titles, 1)
+ * always equals item_count and the two can never disagree on screen.
  */
 async function getLog(orgId, { userIds, from, to, filters = {}, limit = 500 }) {
   if (!userIds || userIds.length === 0) return [];
@@ -122,6 +136,7 @@ async function getLog(orgId, { userIds, from, to, filters = {}, limit = 500 }) {
               u.first_name, u.last_name,
               count(*)::int      AS item_count,
               string_agg(e.description, ' ' ORDER BY i.created_at, i.id) AS work_done,
+              array_agg(i.title ORDER BY i.created_at, i.id)             AS item_titles,
               array_agg(DISTINCT e.day_stage)                            AS stages,
               array_remove(array_agg(DISTINCT e.account_id), NULL)       AS account_ids,
               array_remove(array_agg(DISTINCT e.activity_type_key), NULL) AS activity_keys,
