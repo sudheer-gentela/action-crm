@@ -44,7 +44,7 @@ import TaskWorkComposer from './TaskWorkComposer';
 // 2026_141. The assignee chips and picker for a checklist row. Self-contained
 // with inline styles, like TaskWorkComposer, because this file loads no
 // daily-work stylesheet.
-import PlayAssigneeCell from './PlayAssigneeCell';
+import PlayAssigneeButton, { PlayAssigneeBadge } from './PlayAssigneeCell';
 // 2026_136. Bulk plan import — its own file because the paste/map/preview
 // flow is self-contained and this one is already 7,600 lines.
 import ProjectPlanImport from './ProjectPlanImport';
@@ -5011,20 +5011,12 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                                   canEdit={canEditPlan && !done}
                                   onSave={v => handleInlineSave(play.playInstanceId, 'ownerUserId', v)}
                                 />
-                                {/* 2026_141. Everyone working the task, owner
-                                    starred and first. canEdit here is only
-                                    about hiding a control that would be
-                                    refused — the server decides for real
-                                    (project manager, or the task's owner). */}
-                                <div style={{ marginTop: 3 }}>
-                                  <PlayAssigneeCell
-                                    handoverId={h.id}
-                                    instanceId={play.playInstanceId}
-                                    assignees={assigneeMap[play.playInstanceId] || []}
-                                    canEdit={canEditPlan && !done}
-                                    onChange={assigneesChanged}
-                                  />
-                                </div>
+                                {/* 2026_141. Renders NOTHING unless somebody
+                                    besides the owner is on the task, so the row
+                                    keeps its height in the common case. The
+                                    control that changes it lives with duplicate
+                                    and delete — see the actions cell below. */}
+                                <PlayAssigneeBadge assignees={assigneeMap[play.playInstanceId] || []} />
                               </td>
                               <td style={td}>
                                 {done && play.completedAt
@@ -5073,6 +5065,17 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                               <td style={td}>
                                 {canEditPlan && (
                                   <span style={{ display: 'inline-flex', gap: 4 }}>
+                                    {/* 2026_141. Assignment is occasional, so it
+                                        sits with the other occasional acts
+                                        rather than taking a line in the owner
+                                        column on every row. */}
+                                    <PlayAssigneeButton
+                                      handoverId={h.id}
+                                      instanceId={play.playInstanceId}
+                                      assignees={assigneeMap[play.playInstanceId] || []}
+                                      canEdit={canEditPlan && !done}
+                                      onChange={assigneesChanged}
+                                    />
                                     <button title="Duplicate this task"
                                       onClick={e => { e.stopPropagation(); handleDuplicatePlay(play); }}
                                       style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4,

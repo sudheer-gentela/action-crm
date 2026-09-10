@@ -38,69 +38,35 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { apiService } from './apiService';
 
-const MAX_CHIPS = 2;
-
 /**
- * The chips, collapsed.
+ * The compact marker beside the owner: "+2".
  *
- * Two names then "+N" rather than every name. A task with six people on it
- * would otherwise make its row three times the height of its neighbours, and
- * the checklist is read by scanning down the title column.
+ * ── WHY THIS IS NOT A CHIP GROUP ─────────────────────────────────────
+ *
+ * It was one, briefly, and it broke the checklist. Chips under the owner made
+ * every row two lines tall — including the great majority of rows that have
+ * nobody but the owner on them — so a dense table turned into a list and the
+ * eye lost the columns. A control for something used occasionally must not
+ * cost every row height permanently.
+ *
+ * So: NOTHING renders when the task has only its owner, which is the default
+ * state of every task in the system and the state most tasks stay in. The
+ * badge appears only once there is genuinely something extra to say.
+ *
+ * The count EXCLUDES the owner, who is already named in the cell. "+2" next to
+ * Manikanta means two people besides him.
  */
-function Chips({ assignees, onOpen, canEdit }) {
-  if (!assignees.length) {
-    return (
-      <button
-        type="button"
-        onClick={canEdit ? onOpen : undefined}
-        disabled={!canEdit}
-        style={{
-          background: 'none', border: 'none', padding: 0, font: 'inherit',
-          fontSize: 11, color: '#9ca3af',
-          cursor: canEdit ? 'pointer' : 'default',
-        }}>
-        {canEdit ? 'Assign' : 'Unassigned'}
-      </button>
-    );
-  }
-
-  const shown = assignees.slice(0, MAX_CHIPS);
-  const rest  = assignees.length - shown.length;
-
+export function PlayAssigneeBadge({ assignees = [] }) {
+  const others = assignees.filter(a => !a.isOwner);
+  if (!others.length) return null;
   return (
-    <button
-      type="button"
-      onClick={canEdit ? onOpen : undefined}
-      disabled={!canEdit}
-      title={assignees.map(a => a.name + (a.isOwner ? ' (owner)' : '')).join(', ')}
+    <span
+      title={`Also on this task: ${others.map(a => a.name || `#${a.userId}`).join(', ')}`}
       style={{
-        background: 'none', border: 'none', padding: 0, font: 'inherit',
-        display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center',
-        cursor: canEdit ? 'pointer' : 'default', textAlign: 'left',
-      }}>
-      {shown.map(a => (
-        <span key={a.userId}
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 3,
-            fontSize: 11, padding: '1px 7px', borderRadius: 10,
-            whiteSpace: 'nowrap',
-            background: a.isOwner ? '#eff6ff' : '#f3f4f6',
-            color:      a.isOwner ? '#1d4ed8' : '#4b5563',
-          }}>
-          {/* The owner is marked, not separated. A second column for "owner"
-              and "others" makes the row wider to say something one glyph
-              already says. */}
-          {a.isOwner && <span aria-label="owner" title="Owner">★</span>}
-          {a.name || `#${a.userId}`}
-        </span>
-      ))}
-      {rest > 0 && (
-        <span style={{
-          fontSize: 11, padding: '1px 7px', borderRadius: 10,
-          background: '#f3f4f6', color: '#6b7280',
-        }}>+{rest}</span>
-      )}
-    </button>
+        marginLeft: 6, fontSize: 10, padding: '1px 5px', borderRadius: 8,
+        background: '#eff6ff', color: '#1d4ed8', whiteSpace: 'nowrap',
+        verticalAlign: 'middle',
+      }}>+{others.length}</span>
   );
 }
 
@@ -182,7 +148,9 @@ function Picker({ handoverId, instanceId, assignees, onClose, onSaved }) {
       ref={boxRef}
       onClick={e => e.stopPropagation()}   // the checklist row toggles on click
       style={{
-        position: 'absolute', zIndex: 40, marginTop: 4, width: 260,
+        // right-aligned: this opens from the actions column at the right edge
+        // of the table, so a left-anchored popover would run off the page.
+        position: 'absolute', zIndex: 40, marginTop: 4, width: 260, right: 0,
         background: '#fff', border: '1px solid #d1d5db', borderRadius: 8,
         boxShadow: '0 4px 12px rgba(0,0,0,0.08)', padding: 12,
       }}>
@@ -251,27 +219,44 @@ function Picker({ handoverId, instanceId, assignees, onClose, onSaved }) {
 }
 
 /**
+ * The action button, for the row's button group beside duplicate and delete.
+ *
+ * Assignment is an occasional act — most tasks are done by the person they were
+ * given to — so it belongs with the other occasional acts rather than occupying
+ * space in the owner column on every row forever.
+ *
  * @param {object[]} assignees  from GET /play-assignees, keyed by instance id
  *                              in the caller. Passed in rather than fetched
  *                              here: the checklist draws many rows and one
- *                              request per row is the thing the bulk endpoint
- *                              exists to avoid.
- * @param {function} onChange   (instanceId, assignees) — so the caller can
- *                              update its map without refetching the project.
+ *                              request per row is what the bulk endpoint exists
+ *                              to avoid.
+ * @param {function} onChange   (instanceId, assignees) — lets the caller update
+ *                              its map without refetching the project.
  * @param {boolean}  canEdit    the caller's existing canEditPlan && !done. The
- *                              server decides for real (manager or the task's
- *                              owner); this only hides a control that would be
- *                              refused.
+ *                              server decides for real (project manager, or the
+ *                              task's owner); this only hides a control that
+ *                              would be refused.
  */
-export default function PlayAssigneeCell({
+export default function PlayAssigneeButton({
   handoverId, instanceId, assignees = [], canEdit = false, onChange,
 }) {
   const [open, setOpen] = useState(false);
+  if (!canEdit) return null;
+
+  const others = assignees.filter(a => !a.isOwner).length;
 
   return (
-    <div style={{ position: 'relative' }}>
-      <Chips assignees={assignees} canEdit={canEdit}
-        onOpen={() => setOpen(true)} />
+    // position: relative so the popover anchors to this button rather than to
+    // the table, which would put it at the top of the page.
+    <span style={{ position: 'relative', display: 'inline-block' }}>
+      <button
+        title={others ? `Assigned to ${others + 1} people — change` : 'Assign more people to this task'}
+        aria-label="Assign people to this task"
+        onClick={e => { e.stopPropagation(); setOpen(o => !o); }}
+        style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4,
+                 border: '1px solid #e5e7eb', background: '#fff',
+                 color: others ? '#1d4ed8' : '#6b7280',
+                 cursor: 'pointer', lineHeight: 1.4 }}>&#128101;</button>
       {open && (
         <Picker
           handoverId={handoverId}
@@ -281,6 +266,6 @@ export default function PlayAssigneeCell({
           onSaved={rows => onChange && onChange(instanceId, rows)}
         />
       )}
-    </div>
+    </span>
   );
 }
