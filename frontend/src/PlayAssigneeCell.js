@@ -168,7 +168,19 @@ function Picker({ handoverId, instanceId, assignees, onClose, onSaved }) {
         </div>
       )}
 
-      {members && members.map(m => {
+      {/* The owner is shown even when they are NOT an approved project member.
+          The owner picker in the checklist still offers the whole org, so this
+          is reachable — and a picker that silently omitted the owner would show
+          a list where nobody is marked "owner" and the ticked count is wrong.
+          The server exempts the owner from the membership check for the same
+          reason. */}
+      {members && [
+        ...(ownerId != null && !members.some(m => m.userId === ownerId)
+          ? [{ userId: ownerId,
+               name: assignees.find(a => a.isOwner)?.name || `#${ownerId}` }]
+          : []),
+        ...members,
+      ].map(m => {
         const isOwner = m.userId === ownerId;
         const on = picked.has(m.userId);
         return (

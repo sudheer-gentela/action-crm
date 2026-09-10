@@ -1655,7 +1655,7 @@ function PlaySection({ play, canEdit, canDelete = canEdit, onComplete, onRemove,
                        // 2026_140. isFollowed comes from ONE ids array fetched
                        // per project, not a call per row — a 49-task checklist
                        // would otherwise open with 49 requests.
-                       isFollowed = false, onToggleFollow }) {
+                       isFollowed = false, onToggleFollow, assignees = [] }) {
   // Done-state mirrors the backend gate, which treats a play as satisfied when
   // its status is 'completed' OR 'skipped' — not merely when completedAt is set.
   // (A skipped play has no completedAt but still clears the gate.)
@@ -1888,6 +1888,17 @@ function PlaySection({ play, canEdit, canDelete = canEdit, onComplete, onRemove,
                 </>
               ) : 'Unassigned'}
             </span>
+            {/* 2026_141. The row above the fold can only afford "+1"; here
+                there is room, so the expanded view NAMES them. Hovering a
+                badge to find out who is on a task is a poor answer when the
+                panel you just opened has space to say it outright. */}
+            {assignees.filter(a => !a.isOwner).length > 0 && (
+              <span style={{ fontSize: 11, color: '#374151' }}>
+                <span style={{ color: '#9ca3af' }}>with </span>
+                {assignees.filter(a => !a.isOwner)
+                  .map(a => a.name || `#${a.userId}`).join(', ')}
+              </span>
+            )}
             {play.channel && CH_LABEL[play.channel] && (
               <span style={{ fontSize: 10, color: '#9ca3af' }}>· {CH_LABEL[play.channel]}</span>
             )}
@@ -4905,6 +4916,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                                 canAct={canActOnPlay(play)}
                                 isFollowed={followedPlays.has(play.playInstanceId)}
                                 onToggleFollow={handleToggleFollow}
+                                assignees={assigneeMap[play.playInstanceId] || []}
                                 onNoteCountChange={noteCountChanged} />
                             </div>
                           )}
@@ -5110,6 +5122,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                                 canAct={canActOnPlay(play)}
                                 isFollowed={followedPlays.has(play.playInstanceId)}
                                 onToggleFollow={handleToggleFollow}
+                                assignees={assigneeMap[play.playInstanceId] || []}
                                 onNoteCountChange={noteCountChanged} />
                                 </td>
                               </tr>

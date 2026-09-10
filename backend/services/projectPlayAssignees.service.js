@@ -261,7 +261,25 @@ async function setAssignees(handoverId, orgId, instanceId, userIds, actorId) {
   // Membership, checked in ONE query rather than per user: the failure worth
   // reporting is "these three people are not on the project", and a loop that
   // throws on the first one makes the caller discover them one at a time.
-  const ids = [...wanted];
+  //
+  // ── THE OWNER IS EXEMPT FROM THIS CHECK ──────────────────────────────────
+  //
+  // DEFECT, found in review: the owner was validated along with everyone else,
+  // which made this function throw on any task whose owner is not an approved
+  // project member — and that is reachable, because the owner picker in
+  // HandoverView still offers the whole org while this picker offers only
+  // project members. The result was a task whose assignees could never be
+  // saved at all, reporting the OWNER as "not on this project".
+  //
+  // Refusing was pointless as well as wrong: trg_sync_play_owner_assignee has
+  // already written the owner's row by the time anyone calls this, so the check
+  // could not prevent the state it objected to — only stop the user changing
+  // anything else about it.
+  //
+  // The rule being enforced is "you may not ADD a non-member". The owner is not
+  // being added here; they are carried over from a decision made on a different
+  // field, under a different picker, with different rules.
+  const ids = [...wanted].filter(id => id !== play.owner_user_id);
   if (ids.length) {
     const { rows: ok } = await pool.query(
       `SELECT user_id FROM project_members
@@ -290,7 +308,10 @@ async function setAssignees(handoverId, orgId, instanceId, userIds, actorId) {
       [instanceId]);
     const current = new Set(before.map(r => r.user_id));
 
-    const toAdd    = ids.filter(id => !current.has(id));
+    // From `wanted`, not `ids`: ids drops the owner for the membership check
+    // above, but the owner must still be inserted if their row is somehow
+    // missing — belt and braces against a trigger that did not fire.
+    const toAdd    = [...wanted].filter(id => !current.has(id));
     const toRemove = [...current].filter(id => !wanted.has(id));
 
     if (toRemove.includes(play.owner_user_id)) {
