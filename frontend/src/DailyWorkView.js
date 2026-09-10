@@ -615,6 +615,7 @@ export default function DailyWorkView() {
         rows={rows}
         drafts={drafts}
         stalled={stalled}
+        today={day.today}
         candidates={candidates}
         onOpenItem={itemId => { setOpenItem(itemId); setMode('edit'); }}
         onOpenTeam={() => setTab('team')}
@@ -780,8 +781,14 @@ export default function DailyWorkView() {
  * It renders nothing when there is nothing waiting. An empty panel that says
  * "all clear" every day teaches people to stop reading the space.
  */
-function WaitingPanel({ me, hasReports, rows, drafts, stalled, candidates, onOpenItem, onOpenTeam }) {
+function WaitingPanel({ me, hasReports, rows, drafts, stalled, candidates, today,
+                       onOpenItem, onOpenTeam }) {
   const items = [];
+  // Governs the due-soon branch below and nothing else. Reviews, chases and
+  // proposed activity types are not due-dated and are always shown — hiding a
+  // review because it has no date would be a window doing the opposite of its
+  // job.
+  const [dueWindow, setDueWindow] = useState('7');
 
   // Assigned to me and untouched. For a member the stalled endpoint returns
   // only their own, so this is genuinely "yours to move".
@@ -795,6 +802,50 @@ function WaitingPanel({ me, hasReports, rows, drafts, stalled, candidates, onOpe
       : 'Assigned to you, never logged against',
     action: { label: 'Log against it', run: () => onOpenItem(s.item_id) },
   }));
+
+  // ── Assigned to me and DUE, but not yet stalled ────────────────────────────
+  //
+  // The stalled branch above only fires once an item has gone quiet long enough
+  // to count as stalled, so a one-off item assigned today and due tomorrow was
+  // invisible on My day until it was already late. The nudge arrived after the
+  // deadline instead of before it.
+  //
+  // Project tasks never had this gap — MyProjectWork lists them whether or not
+  // anything has been logged. This is the one-off equivalent, and it reuses
+  // DUE_WINDOWS and withinWindow so both panels mean the same thing by "due
+  // within 7 days", including the two rules that matter: overdue is never
+  // hidden, and an item with no due date is never hidden either.
+  //
+  // Excluded, deliberately:
+  //   - project tasks (play_instance_id) — MyProjectWork already has them, and
+  //     listing them twice on one screen is noise
+  //   - anything already in the stalled list — same item, stronger wording
+  //   - anything written against today — you have done it; it is not waiting
+  const stalledIds = new Set((stalled || []).map(s => s.item_id));
+  (rows || [])
+    .filter(r => r.kind === 'assigned'
+              && !r.play_instance_id
+              && !stalledIds.has(r.item_id)
+              && !(drafts[r.item_id]?.description || '').trim()
+              && withinWindow({ dueDate: r.target_date, isOverdue: false }, today,
+                              (DUE_WINDOWS.find(w => w.key === dueWindow) || DUE_WINDOWS[0]).days))
+    // No due date means no deadline to warn about. withinWindow keeps undated
+    // items for the project panel, where an undated task on a standing
+    // initiative still needs logging against — but here an undated one-off is
+    // simply not urgent, and every one of them would sit in this panel forever.
+    .filter(r => !!r.target_date)
+    .forEach(r => items.push({
+      key: `due:${r.item_id}`,
+      badge: 'due',
+      badgeClass: 'assigned',
+      title: r.title,
+      // Just the date. The row shape behind `rows` carries assigned_by as an
+      // id but no name — only getStalledAssigned joins users for that — and
+      // adding a join to the day-grid query to decorate a nudge is not worth
+      // what it costs on the hottest read on this screen.
+      why: `Due ${formatDate(r.target_date)}`,
+      action: { label: 'Log against it', run: () => onOpenItem(r.item_id) },
+    }));
 
   // Handed back and waiting on someone else. Nothing for them to do, and saying
   // so is the point.
@@ -846,6 +897,18 @@ function WaitingPanel({ me, hasReports, rows, drafts, stalled, candidates, onOpe
       <div className="dw-card-head">
         <h2>Waiting on you</h2>
         <span className="m">{items.length} {items.length === 1 ? 'thing' : 'things'}</span>
+        {/* Same options and the same component as My project work, so the two
+            panels cannot come to disagree about what "2 weeks" means. */}
+        <select aria-label="Show work due within" value={dueWindow}
+                onChange={e => setDueWindow(e.target.value)}
+                style={{ width: 'auto', marginLeft: 'auto', fontSize: 13,
+                         padding: '4px 8px', alignSelf: 'center' }}>
+          {DUE_WINDOWS.map(w => (
+            <option key={w.key} value={w.key}>
+              {w.days == null ? 'All open tasks' : `Due within ${w.label}`}
+            </option>
+          ))}
+        </select>
       </div>
       <div className="dw-daylog">
         {items.map(i => (
