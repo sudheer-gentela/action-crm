@@ -5,7 +5,6 @@
 // Proves the behaviour 2026_141 claims. Run against a LIVE database, after the
 // migration has committed and before the read-path change is trusted.
 //
-//   node scripts/verify_multi_assignee_141.js <orgId>
 //
 // ── WHAT THIS IS FOR ─────────────────────────────────────────────────
 //
@@ -26,13 +25,134 @@
 //
 // Nothing here mutates a row that existed before the script started.
 
-const { pool } = require('../config/database');
+// ── STANDALONE, run from your own folder ─────────────────────────────
+//
+// Same shape as verify_daily_work_schema.js: lives in its own folder with its
+// own node_modules and imports NOTHING from the application repo. Its only
+// dependency is pg.
+//
+//   cd C:\Projects\dw-verify
+//   node verify_multi_assignee_141.js <orgId>
+//
+// ── WHERE THE CONNECTION COMES FROM ──────────────────────────────────
+//
+// It reads the APP REPO's own backend\.env, so there is no second copy of the
+// credentials to keep in step — point it once and it always talks to whatever
+// database the app is talking to. Resolution order, first hit wins:
+//
+//   1. a URL passed as the second argument
+//   2. DATABASE_URL already in the environment
+//   3. this folder's .env            (if there is one)
+//   4. the app repo's backend\.env   (GOWARM_BACKEND, or the guesses below)
+//
+// If the repo is not beside this folder, name it once:
+//
+//   set GOWARM_BACKEND=C:\Projects\action-crm-clean\backend
+//
+// The .env is parsed here rather than through dotenv, so this works whether or
+// not dotenv happens to be installed in this folder, and so that loading the
+// app's file cannot overwrite variables already set in this shell.
+
+const fs   = require('fs');
+const path = require('path');
+
+let Pool;
+try {
+  ({ Pool } = require('pg'));
+} catch {
+  console.error('\nThe pg module is not installed in this folder.\n');
+  console.error('From the folder holding this script:');
+  console.error('  npm install pg\n');
+  console.error('It installs nothing into your app repo.\n');
+  process.exit(2);
+}
+
+/**
+ * Pull one key out of a .env without dotenv.
+ *
+ * Deliberately does NOT touch process.env. This reads the app's file to borrow
+ * a connection string, and a .env that quietly redefined NODE_ENV or PGSSLMODE
+ * underneath a script the operator is running by hand is a surprise nobody
+ * asked for.
+ *
+ * Handles `export ` prefixes, `KEY = value`, and surrounding quotes. A value
+ * containing '=' survives, because only the FIRST '=' splits.
+ */
+function readEnvKey(file, key) {
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch { return null; }
+  for (let line of text.split(/\r?\n/)) {
+    line = line.trim();
+    if (!line || line.startsWith('#')) continue;
+    if (line.startsWith('export ')) line = line.slice(7).trim();
+    const eq = line.indexOf('=');
+    if (eq === -1) continue;
+    if (line.slice(0, eq).trim() !== key) continue;
+    let v = line.slice(eq + 1).trim();
+    if ((v.startsWith('"') && v.endsWith('"')) ||
+        (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+    return v || null;
+  }
+  return null;
+}
 
 const orgId = parseInt(process.argv[2], 10);
-if (!Number.isInteger(orgId)) {
-  console.error('Usage: node scripts/verify_multi_assignee_141.js <orgId>');
+
+const candidates = [];
+if (process.env.GOWARM_BACKEND) {
+  candidates.push(path.join(process.env.GOWARM_BACKEND, '.env'));
+}
+// Sensible guesses, relative to this script rather than to the current
+// directory — so it behaves the same whichever folder you launch it from.
+for (const repo of ['action-crm-clean', 'gowarm', 'gowarmcrm', 'ActionCRM']) {
+  candidates.push(path.resolve(__dirname, '..', repo, 'backend', '.env'));
+}
+
+let url    = process.argv[3] || process.env.DATABASE_URL || null;
+let source = process.argv[3] ? 'command line'
+           : (process.env.DATABASE_URL ? 'environment' : null);
+
+if (!url) {
+  const own = path.resolve(__dirname, '.env');
+  url = readEnvKey(own, 'DATABASE_URL');
+  if (url) source = own;
+}
+if (!url) {
+  for (const file of candidates) {
+    const found = readEnvKey(file, 'DATABASE_URL');
+    if (found) { url = found; source = file; break; }
+  }
+}
+
+if (!Number.isInteger(orgId) || !url) {
+  console.error('\nUsage: node verify_multi_assignee_141.js <orgId> [databaseUrl]\n');
+  if (!url) {
+    console.error('No DATABASE_URL found. Looked in:');
+    console.error('  - the second argument');
+    console.error('  - the DATABASE_URL environment variable');
+    console.error('  - ' + path.resolve(__dirname, '.env'));
+    for (const f of candidates) console.error('  - ' + f);
+    console.error('\nPoint it at your repo once:');
+    console.error('  set GOWARM_BACKEND=C:\\Projects\\action-crm-clean\\backend\n');
+  }
   process.exit(1);
 }
+
+// Managed Postgres — Railway and the like — terminates TLS with a certificate
+// the local trust store does not know, and refuses plaintext. Same allowance
+// the app's own pool makes in production, and the same rule
+// verify_daily_work_schema.js uses.
+const needsSsl = !/\blocalhost\b|\b127\.0\.0\.1\b/.test(url);
+const pool = new Pool({
+  connectionString: url,
+  ssl: needsSsl ? { rejectUnauthorized: false } : false,
+});
+
+// Says WHICH database, without printing the password. Running a verification
+// against the wrong environment and believing the result is the failure this
+// line exists to prevent.
+console.log(`\nDATABASE_URL from: ${source}`);
+console.log(`Connecting to:     ${url.replace(/:\/\/([^:]+):[^@]*@/, '://$1:***@')}`);
 
 let passed = 0, failed = 0;
 function check(name, ok, detail) {
@@ -40,7 +160,21 @@ function check(name, ok, detail) {
   else    { failed++; console.log(`  FAIL  ${name}${detail ? ` — ${detail}` : ''}`); }
 }
 
+// PostgreSQL error CONDITION NAMES, as written in the migration's
+// `USING ERRCODE = ...`, mapped to the SQLSTATE that node-pg actually puts on
+// err.code. RAISE accepts the name; the client only ever sees the five
+// character code, so an assertion written against the name never matches — the
+// trigger fires correctly and the test reports a failure. That is exactly what
+// happened on the first real run of this script.
+const SQLSTATE = {
+  restrict_violation: '23001',
+  unique_violation:   '23505',
+  check_violation:    '23514',
+  foreign_key_violation: '23503',
+};
+
 async function expectReject(client, name, fn, wantCode) {
+  const want = SQLSTATE[wantCode] || wantCode;
   // Each attempt runs in a SAVEPOINT. A failed statement poisons the whole
   // transaction in Postgres, so without this the first expected rejection
   // would abort every test after it.
@@ -51,9 +185,8 @@ async function expectReject(client, name, fn, wantCode) {
     check(name, false, 'expected a rejection, got none');
   } catch (err) {
     await client.query('ROLLBACK TO SAVEPOINT s');
-    const ok = !wantCode || err.code === wantCode
-            || String(err.message).includes(wantCode);
-    check(name, ok, ok ? '' : `rejected with ${err.code}: ${err.message}`);
+    const ok = !want || err.code === want;
+    check(name, ok, ok ? '' : `rejected with ${err.code}, expected ${want}: ${err.message}`);
   }
 }
 
@@ -78,9 +211,23 @@ async function expectReject(client, name, fn, wantCode) {
     }
     const [owner, second, outsider] = users.map(u => u.id);
 
+    // project_kind 'internal', explicitly.
+    //
+    // The column DEFAULTS to 'customer', and sales_handovers_kind_shape_chk
+    // then requires account_id OR deal_id to be non-null — a fixture with
+    // neither is refused, which is exactly what the first run of this script
+    // hit. An internal project is the honest shape here anyway: this fixture
+    // has no customer, and the constraint guarantees internal projects carry
+    // no account, so there is nothing to invent and nothing to clean up.
+    //
+    // Nothing under test cares which kind it is. The triggers key on
+    // play_instance_id and on sales_handovers.status/retired_at, none of which
+    // consults project_kind.
     const { rows: [h] } = await client.query(
-      `INSERT INTO sales_handovers (org_id, name, status, created_by)
-       VALUES ($1, 'VERIFY 141 — rolled back', 'in_progress', $2)
+      `INSERT INTO sales_handovers
+         (org_id, name, status, created_by, project_kind, account_id, deal_id)
+       VALUES ($1, 'VERIFY 141 — rolled back', 'in_progress', $2,
+               'internal', NULL, NULL)
        RETURNING id`, [orgId, owner]);
 
     // owner and second are on the project; outsider deliberately is not.
