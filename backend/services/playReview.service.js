@@ -89,13 +89,21 @@ const EVIDENCE_MAX = 4000;
  *              the project creator, or (2026_137) an approved project_members
  *              row carrying can_manage. Delegates to canManageProject so there
  *              is one definition of project authority in the codebase.
- * 'assignee' — project_play_instances.owner_user_id, and only that. The
- *              project_play_assignees table looks like a second answer but is
- *              not one: its only writer, reassignPlayForProject(), is
- *              unreachable from any route, so it is empty in every live org.
- *              owner_user_id is what the checklist displays and what the
- *              inline owner chip writes — the visible assignment is the real
- *              one.
+ * 'assignee' — project_play_instances.owner_user_id, and only that. One
+ *              person: accountable for the task, closes it, submits it for
+ *              review, and is frozen out while that review is pending.
+ * 'contributor' (2026_141) — an approved project_play_assignees row that is
+ *              NOT the owner. Works the task and moves it along; does not
+ *              define it. May set in-flight status (Start, block, snooze) but
+ *              not title, dates, ownership, or completion.
+ *
+ *              project_play_assignees was dormant when this comment first
+ *              described it as "a second answer but not one" — empty in every
+ *              live org, its only writer unreachable from any route. 2026_141
+ *              backfilled it, made it authoritative, and added
+ *              trg_sync_play_owner_assignee so the owner always has a row.
+ *              That is why the owner is tested FIRST below: they match both
+ *              conditions now, and the more specific role has to win.
  * null       — no authority over this play.
  *
  * An UNASSIGNED play (owner_user_id NULL) therefore resolves to 'manager' or
@@ -121,21 +129,45 @@ async function resolveActorRole(handoverId, instanceId, orgId, userId) {
   if (await projectMembers.canManageProject(handoverId, orgId, userId)) {
     return { role: 'manager', ownerUserId: play.owner_user_id, play };
   }
-  // 2026_141. Several people may be assigned to one task. The owner still
-  // resolves here without a special case — trg_sync_play_owner_assignee
-  // guarantees they have a project_play_assignees row — so this single query
-  // covers them and everyone else on the task.
+  // The OWNER. Still 'assignee', still exactly one person, still holding every
+  // authority this role held before 2026_141.
+  if (play.owner_user_id != null && play.owner_user_id === userId) {
+    return { role: 'assignee', ownerUserId: play.owner_user_id, play };
+  }
+
+  // ── 'contributor' (2026_141, corrected) ───────────────────────────────────
   //
-  // ownerUserId keeps meaning the OWNER, never "the person asking". Callers use
-  // it to decide who submitted a review and who may not approve their own
-  // submission, and both of those are still exactly one person.
-  const { rows: [assigned] } = await pool.query(
+  // Everyone else on project_play_assignees.
+  //
+  // The first cut of 2026_141 returned 'assignee' for ALL assignees, and that
+  // was wrong in a way worth recording. 'assignee' is not a label — it is the
+  // gate updatePlay tests, so widening it silently handed every contributor the
+  // power to retitle the task, move its due date, change its status and REASSIGN
+  // ITS OWNER. Nobody asked for that.
+  //
+  // It also bought nothing, which is the part that makes the mistake instructive.
+  // None of what a contributor actually needs passes through this function:
+  //
+  //   seeing the task on My day  → the project_play_assignees read predicate
+  //   logging work against it    → _canLogAgainstTask → getNoteVisibility
+  //   reading everyone's updates → getTaskWork, scoped by play_instance_id
+  //   posting notes              → getNoteVisibility
+  //
+  // All three were already reachable through project membership. The widening
+  // granted only the authority that was never wanted.
+  //
+  // So contributors are a role of their own, and callers must decide about them
+  // explicitly rather than inheriting a decision made for the owner.
+  const { rows: [contributing] } = await pool.query(
     `SELECT 1 FROM project_play_assignees
       WHERE instance_id = $1 AND user_id = $2`,
     [instanceId, userId]
   );
-  if (assigned) {
-    return { role: 'assignee', ownerUserId: play.owner_user_id, play };
+  if (contributing) {
+    // ownerUserId stays the OWNER, never "the person asking". Callers use it to
+    // decide who submitted a review and who may not approve their own
+    // submission, and both are still exactly one person.
+    return { role: 'contributor', ownerUserId: play.owner_user_id, play };
   }
   return { role: null, ownerUserId: play.owner_user_id, play };
 }
@@ -152,6 +184,12 @@ async function canEditPlay(handoverId, instanceId, orgId, userId) {
   // submission. Notes stay open to everyone regardless; they are the channel
   // for "one more thing" while a review is pending.
   if (play.status === 'in_review' && role === 'assignee') return false;
+  // 2026_141. A contributor works the task; they do not own its definition.
+  // Title, dates and ownership stay with the owner and the manager. They can
+  // still move it along — see updatePlay, which admits contributors for
+  // in-flight status ONLY — and this returning false is what makes the UI show
+  // the row read-only rather than offer an Edit that would 403.
+  if (role === 'contributor') return false;
   return true;
 }
 

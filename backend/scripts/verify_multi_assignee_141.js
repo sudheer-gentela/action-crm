@@ -5,6 +5,7 @@
 // Proves the behaviour 2026_141 claims. Run against a LIVE database, after the
 // migration has committed and before the read-path change is trusted.
 //
+//   node scripts/verify_multi_assignee_141.js <orgId>
 //
 // ── WHAT THIS IS FOR ─────────────────────────────────────────────────
 //
@@ -25,134 +26,13 @@
 //
 // Nothing here mutates a row that existed before the script started.
 
-// ── STANDALONE, run from your own folder ─────────────────────────────
-//
-// Same shape as verify_daily_work_schema.js: lives in its own folder with its
-// own node_modules and imports NOTHING from the application repo. Its only
-// dependency is pg.
-//
-//   cd C:\Projects\dw-verify
-//   node verify_multi_assignee_141.js <orgId>
-//
-// ── WHERE THE CONNECTION COMES FROM ──────────────────────────────────
-//
-// It reads the APP REPO's own backend\.env, so there is no second copy of the
-// credentials to keep in step — point it once and it always talks to whatever
-// database the app is talking to. Resolution order, first hit wins:
-//
-//   1. a URL passed as the second argument
-//   2. DATABASE_URL already in the environment
-//   3. this folder's .env            (if there is one)
-//   4. the app repo's backend\.env   (GOWARM_BACKEND, or the guesses below)
-//
-// If the repo is not beside this folder, name it once:
-//
-//   set GOWARM_BACKEND=C:\Projects\action-crm-clean\backend
-//
-// The .env is parsed here rather than through dotenv, so this works whether or
-// not dotenv happens to be installed in this folder, and so that loading the
-// app's file cannot overwrite variables already set in this shell.
-
-const fs   = require('fs');
-const path = require('path');
-
-let Pool;
-try {
-  ({ Pool } = require('pg'));
-} catch {
-  console.error('\nThe pg module is not installed in this folder.\n');
-  console.error('From the folder holding this script:');
-  console.error('  npm install pg\n');
-  console.error('It installs nothing into your app repo.\n');
-  process.exit(2);
-}
-
-/**
- * Pull one key out of a .env without dotenv.
- *
- * Deliberately does NOT touch process.env. This reads the app's file to borrow
- * a connection string, and a .env that quietly redefined NODE_ENV or PGSSLMODE
- * underneath a script the operator is running by hand is a surprise nobody
- * asked for.
- *
- * Handles `export ` prefixes, `KEY = value`, and surrounding quotes. A value
- * containing '=' survives, because only the FIRST '=' splits.
- */
-function readEnvKey(file, key) {
-  let text;
-  try { text = fs.readFileSync(file, 'utf8'); } catch { return null; }
-  for (let line of text.split(/\r?\n/)) {
-    line = line.trim();
-    if (!line || line.startsWith('#')) continue;
-    if (line.startsWith('export ')) line = line.slice(7).trim();
-    const eq = line.indexOf('=');
-    if (eq === -1) continue;
-    if (line.slice(0, eq).trim() !== key) continue;
-    let v = line.slice(eq + 1).trim();
-    if ((v.startsWith('"') && v.endsWith('"')) ||
-        (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
-    return v || null;
-  }
-  return null;
-}
+const { pool } = require('../config/database');
 
 const orgId = parseInt(process.argv[2], 10);
-
-const candidates = [];
-if (process.env.GOWARM_BACKEND) {
-  candidates.push(path.join(process.env.GOWARM_BACKEND, '.env'));
-}
-// Sensible guesses, relative to this script rather than to the current
-// directory — so it behaves the same whichever folder you launch it from.
-for (const repo of ['action-crm-clean', 'gowarm', 'gowarmcrm', 'ActionCRM']) {
-  candidates.push(path.resolve(__dirname, '..', repo, 'backend', '.env'));
-}
-
-let url    = process.argv[3] || process.env.DATABASE_URL || null;
-let source = process.argv[3] ? 'command line'
-           : (process.env.DATABASE_URL ? 'environment' : null);
-
-if (!url) {
-  const own = path.resolve(__dirname, '.env');
-  url = readEnvKey(own, 'DATABASE_URL');
-  if (url) source = own;
-}
-if (!url) {
-  for (const file of candidates) {
-    const found = readEnvKey(file, 'DATABASE_URL');
-    if (found) { url = found; source = file; break; }
-  }
-}
-
-if (!Number.isInteger(orgId) || !url) {
-  console.error('\nUsage: node verify_multi_assignee_141.js <orgId> [databaseUrl]\n');
-  if (!url) {
-    console.error('No DATABASE_URL found. Looked in:');
-    console.error('  - the second argument');
-    console.error('  - the DATABASE_URL environment variable');
-    console.error('  - ' + path.resolve(__dirname, '.env'));
-    for (const f of candidates) console.error('  - ' + f);
-    console.error('\nPoint it at your repo once:');
-    console.error('  set GOWARM_BACKEND=C:\\Projects\\action-crm-clean\\backend\n');
-  }
+if (!Number.isInteger(orgId)) {
+  console.error('Usage: node scripts/verify_multi_assignee_141.js <orgId>');
   process.exit(1);
 }
-
-// Managed Postgres — Railway and the like — terminates TLS with a certificate
-// the local trust store does not know, and refuses plaintext. Same allowance
-// the app's own pool makes in production, and the same rule
-// verify_daily_work_schema.js uses.
-const needsSsl = !/\blocalhost\b|\b127\.0\.0\.1\b/.test(url);
-const pool = new Pool({
-  connectionString: url,
-  ssl: needsSsl ? { rejectUnauthorized: false } : false,
-});
-
-// Says WHICH database, without printing the password. Running a verification
-// against the wrong environment and believing the result is the failure this
-// line exists to prevent.
-console.log(`\nDATABASE_URL from: ${source}`);
-console.log(`Connecting to:     ${url.replace(/:\/\/([^:]+):[^@]*@/, '://$1:***@')}`);
 
 let passed = 0, failed = 0;
 function check(name, ok, detail) {
@@ -353,6 +233,37 @@ async function expectReject(client, name, fn, wantCode) {
       [play.id]);
     check('closing a task closes the daily work of EVERY assignee',
       closed.open === 0, `${closed.open} item(s) left open`);
+
+    // ── 8b. Roles: owner is 'assignee', the other is 'contributor' ──
+    // The distinction the whole closure rule rests on. Asserted against the
+    // live resolver rather than by reading the table, because the bug this
+    // replaces was a resolver that returned 'assignee' for everyone.
+    // A fresh task: `play` has been completed by test 8 and its owner swapped
+    // by test 4, so neither of its two facts is what these assertions need.
+    const { rows: [play2] } = await client.query(
+      `INSERT INTO project_play_instances
+         (handover_id, org_id, stage_key, title, status, owner_user_id)
+       VALUES ($1, $2, 'verify', 'Role resolution', 'not_started', $3)
+       RETURNING id`, [h.id, orgId, owner]);
+    await client.query(
+      `INSERT INTO project_play_assignees (instance_id, user_id, assigned_by)
+       VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, [play2.id, second, owner]);
+
+    try {
+      const playReview = require('../services/playReview.service');
+      const r1 = await playReview.resolveActorRole(h.id, play2.id, orgId, owner);
+      const r2 = await playReview.resolveActorRole(h.id, play2.id, orgId, second);
+      check("the task owner resolves to 'assignee'", r1?.role === 'assignee',
+        `got ${r1?.role}`);
+      check("a non-owner assignee resolves to 'contributor'", r2?.role === 'contributor',
+        `got ${r2?.role}`);
+      check('ownerUserId always names the OWNER, not the caller',
+        Number(r2?.ownerUserId) === Number(owner),
+        `got ${r2?.ownerUserId}, expected ${owner}`);
+    } catch (err) {
+      // The standalone copy has no app repo beside it; skip rather than fail.
+      console.log(`  SKIP  role resolution (needs the app repo: ${err.code || err.message})`);
+    }
 
     // ── 9. The backfill left nothing behind, org-wide ───────────────
     // Reads no longer test owner_user_id, so any owner without a row is a

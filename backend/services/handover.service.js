@@ -2550,6 +2550,60 @@ async function completePlay(handoverId, playInstanceId, userId, orgId, data = {}
     throw Object.assign(new Error('Play does not belong to this handover'), { status: 404 });
   }
 
+  // ── 2026_141: who may CLOSE a task ───────────────────────────────────────
+  //
+  // This endpoint had NO per-person authorisation. It enforced stage gates,
+  // prerequisites and evidence — everything about whether the task was READY
+  // to close — and never asked who was asking. Anyone who could reach the
+  // project could close anything on it. That was survivable while the task's
+  // only assignment was its owner; once several people are assigned and
+  // closure ends the task for ALL of them, it is not.
+  //
+  // Closure is the one act reserved to the owner. Contributors move the task
+  // along (updatePlay admits them for in-flight status); they do not end it.
+  //
+  // Permitted:
+  //   - the owner
+  //   - the project manager, creator, org admin  (canManageProject)
+  //   - anyone ABOVE the owner in the reporting line
+  //
+  // The third arm exists because a task whose owner is on leave must still be
+  // closable by their manager without a reassignment first. Resolved through
+  // hierarchyService.getSubordinates — the same call getNoteVisibility and
+  // getVisibleUserIds make, so all three agree about what "above" means and
+  // dotted lines are covered once rather than three times.
+  //
+  // FAILS CLOSED, matching getNoteVisibility: an error resolving the hierarchy
+  // denies. The owner and manager arms are already settled by then, so a
+  // hierarchy outage cannot lock out the two people who normally close things.
+  //
+  // An UNASSIGNED task (owner_user_id NULL) is closable by managers only —
+  // the same rule resolveActorRole applies. Nobody inherits a task by being
+  // nearby, and that must not become "anybody may close it".
+  if (userId) {
+    const { rows: [own] } = await pool.query(
+      `SELECT owner_user_id FROM project_play_instances
+        WHERE id = $1 AND org_id = $2`, [playInstanceId, orgId]);
+    const ownerId = own?.owner_user_id ?? null;
+
+    let mayClose = ownerId != null && Number(ownerId) === Number(userId);
+    if (!mayClose) mayClose = await projectMembers.canManageProject(handoverId, orgId, userId);
+    if (!mayClose && ownerId != null) {
+      try {
+        const subs = await hierarchyService.getSubordinates(orgId, userId);
+        mayClose = (subs || []).some(id => Number(id) === Number(ownerId));
+      } catch (err) {
+        console.warn('[handover] close hierarchy check failed:', err.message);
+        mayClose = false;
+      }
+    }
+    if (!mayClose) {
+      throw Object.assign(
+        new Error('Only the task owner, their manager, or the project manager can close this task.'),
+        { status: 403, code: 'NOT_PERMITTED_TO_CLOSE' });
+    }
+  }
+
   // 2026_117: the same prerequisite rule that blocks Start also blocks Done.
   // Guarding only the start would leave the rule trivially bypassable — a user
   // who cannot start a task could still mark it complete, which is the more
@@ -4216,6 +4270,38 @@ async function updatePlay(handoverId, orgId, playInstanceId, data = {}, userId =
       new Error('This task is with the project manager for review. '
               + 'Add a note if something needs to change.'),
       { status: 409, code: 'REVIEW_PENDING' });
+  }
+
+  // ── 2026_141: a contributor may move the task, not redefine it ───────────
+  //
+  // Contributors are the other people assigned to the task. They do the work,
+  // so they can push it along the board — Start it, mark it blocked, snooze it
+  // — because a person doing the work knowing it has begun is exactly who
+  // should record that.
+  //
+  // Everything else on this endpoint is the task's DEFINITION: its title, its
+  // description, its due date, whether it is a gate, and who owns it. Those
+  // belong to the owner and the project manager. In particular ownerUserId:
+  // without this check a contributor could make themselves the owner and
+  // acquire every authority the owner has, which would make the whole
+  // distinction decorative.
+  //
+  // Whitelist, not blacklist. A blacklist silently admits the next field
+  // somebody adds to this endpoint, and the failure mode is a permission hole
+  // nobody notices.
+  //
+  // Completion is not reachable here at all — see the has('status') block
+  // below, which refuses 'completed' and 'skipped' for everyone and routes
+  // them through completePlay(), where the closure rule now lives.
+  if (actorRole === 'contributor') {
+    const CONTRIBUTOR_FIELDS = new Set(['status']);
+    const attempted = Object.keys(data).filter(k => !CONTRIBUTOR_FIELDS.has(k));
+    if (attempted.length) {
+      throw Object.assign(
+        new Error('You are assigned to this task and can move it along, but only '
+                + 'the task owner or the project manager can change its details.'),
+        { status: 403, code: 'CONTRIBUTOR_LIMITED', fields: attempted });
+    }
   }
 
   const has = k => Object.prototype.hasOwnProperty.call(data, k);

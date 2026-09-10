@@ -1648,6 +1648,13 @@ function NoteCountBadge({ count }) {
 
 // ── PlaySection ───────────────────────────────────────────────────────────────
 
+// 2026_141. canAct and canMove are deliberately two things.
+//   canAct  — may END this task: Mark done, or Send for review, which starts
+//             the closure loop. Owner and project manager only.
+//   canMove — may push it along the board: Start, Pause. Contributors too,
+//             because the person doing the work is who knows it began.
+// canMove defaults to canAct so any caller that never learned about
+// contributors keeps its old behaviour instead of silently widening.
 function PlaySection({ play, canEdit, canDelete = canEdit, onComplete, onRemove, onEdit, onSetStatus, onSetDeps, siblings, users, stages, evidencePolicy,
                        handoverId, canAddNotes, canMarkNotesInternal, onNoteCountChange,
                        onReview, isManager = false, canAct = false,
@@ -1655,7 +1662,7 @@ function PlaySection({ play, canEdit, canDelete = canEdit, onComplete, onRemove,
                        // 2026_140. isFollowed comes from ONE ids array fetched
                        // per project, not a call per row — a 49-task checklist
                        // would otherwise open with 49 requests.
-                       isFollowed = false, onToggleFollow, assignees = [] }) {
+                       isFollowed = false, onToggleFollow, assignees = [], canMove = canAct }) {
   // Done-state mirrors the backend gate, which treats a play as satisfied when
   // its status is 'completed' OR 'skipped' — not merely when completedAt is set.
   // (A skipped play has no completedAt but still clears the gate.)
@@ -1987,7 +1994,7 @@ function PlaySection({ play, canEdit, canDelete = canEdit, onComplete, onRemove,
               needs "Send back" on a task that is already done, which is
               exactly the case the old !isDone gate removed. */}
           {!capturing && (onSetStatus || onReview) && (
-            <StatusAction play={play} canAct={canAct} onSetStatus={onSetStatus}
+            <StatusAction play={play} canAct={canMove} onSetStatus={onSetStatus}
               onReview={onReview} isManager={isManager} />
           )}
           {/* 2026_130: submission replaces "Mark done" for everyone who is not
@@ -4012,9 +4019,21 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
   // viewerUserId is derived above the guard now — the owner filter's "Just
   // mine" entry needs it inside a memo, and a memo cannot sit below a
   // conditional return. It reads detail optionally, so it is safe up there.
+  // Ending the task: owner or project manager. Unchanged by 2026_141.
+  // The server ALSO allows anyone above the owner in the reporting line, which
+  // the client cannot resolve. That is fine — this only decides whether to
+  // OFFER the control, and a manager closing on someone's behalf does not come
+  // through this row.
   const canActOnPlay   = (play) =>
     canReviewPlays
     || (play?.ownerUserId != null && Number(play.ownerUserId) === Number(viewerUserId));
+
+  // Moving it along: the above, plus contributors. Read from assigneeMap, which
+  // the checklist already fetched for the badge, so this costs no request.
+  const canMovePlay    = (play) =>
+    canActOnPlay(play)
+    || (assigneeMap[play?.playInstanceId] || [])
+         .some(a => Number(a.userId) === Number(viewerUserId));
 
   const isSalesView    = viewMode !== 'dashboard';
   const isServiceView  = viewMode === 'assigned';
@@ -4913,7 +4932,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                                 handoverId={h.id} canAddNotes={detail.canAddNotes}
                                 canMarkNotesInternal={detail.canMarkNotesInternal}
                                 onReview={openReview} isManager={canReviewPlays}
-                                canAct={canActOnPlay(play)}
+                                canAct={canActOnPlay(play)} canMove={canMovePlay(play)}
                                 isFollowed={followedPlays.has(play.playInstanceId)}
                                 onToggleFollow={handleToggleFollow}
                                 assignees={assigneeMap[play.playInstanceId] || []}
@@ -5067,7 +5086,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                               <td style={td}>
                                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                                   <PlayStatusPill status={play.status} />
-                                  <StatusAction play={play} canAct={canActOnPlay(play)}
+                                  <StatusAction play={play} canAct={canMovePlay(play)}
                                     onSetStatus={handleSetPlayStatus}
                                     onReview={openReview}
                                     isManager={detail.canReviewPlays === true}
@@ -5119,7 +5138,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                                 handoverId={h.id} canAddNotes={detail.canAddNotes}
                                 canMarkNotesInternal={detail.canMarkNotesInternal}
                                 onReview={openReview} isManager={canReviewPlays}
-                                canAct={canActOnPlay(play)}
+                                canAct={canActOnPlay(play)} canMove={canMovePlay(play)}
                                 isFollowed={followedPlays.has(play.playInstanceId)}
                                 onToggleFollow={handleToggleFollow}
                                 assignees={assigneeMap[play.playInstanceId] || []}
@@ -5201,7 +5220,7 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                         onNoteCountChange={noteCountChanged}
                         onReview={openReview}
                         isManager={canReviewPlays}
-                        canAct={canActOnPlay(play)}
+                        canAct={canActOnPlay(play)} canMove={canMovePlay(play)}
                       />
                       {canEditPlan && (
                         <div style={{ display: 'flex', gap: 10, margin: '-4px 0 10px 2px' }}>
