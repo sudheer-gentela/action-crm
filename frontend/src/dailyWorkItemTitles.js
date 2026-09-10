@@ -183,3 +183,62 @@ export function DayItemWork({ titles, descriptions, count, limit = DEFAULT_LIMIT
 }
 
 export default DayItemTitles;
+
+/* ───────────────────── stage labels on a day row ────────────────────── */
+
+/**
+ * How a day's stage should READ, given what kind of item it belongs to.
+ *
+ * ── WHY THIS EXISTS ──────────────────────────────────────────────────
+ *
+ * DAY_STAGES is one vocabulary shared by daily_work_entries.day_stage and, for
+ * assigned work, daily_work_items.status. 2026_132 aligned them on purpose and
+ * the service carries a comment warning against reintroducing a translation
+ * layer. That alignment is right for storage and it leaves one word doing two
+ * jobs on screen:
+ *
+ *   assigned  — 'completed' means THE TASK is finished. saveDay writes the
+ *               stage through to the item, sets closed_at, and the item is gone
+ *               tomorrow.
+ *   recurring — 'completed' means TODAY's instalment is finished. saveDay
+ *               deliberately leaves the item alone; it returns tomorrow, which
+ *               is the whole point of it being recurring.
+ *
+ * A manager reading a week of somebody's log saw the same word on both and had
+ * no way to tell which was meant — the row rendered the stage and never said
+ * the item was recurring. Two entries a day apart, both 'completed', looked
+ * like a task that had been closed twice.
+ *
+ * This is PRESENTATION ONLY. Nothing here changes what is stored: day_stage is
+ * still one of DAY_STAGES and still the thing of record. Same rule the
+ * activity and anchor labels already follow — resolve for reading, leave the
+ * key alone.
+ *
+ * @param {string} dayStage  the entry's day_stage
+ * @param {string} kind      the ITEM's kind ('recurring' | 'assigned' | ...)
+ */
+export function stageLabel(dayStage, kind) {
+  const raw = String(dayStage || '').replace(/_/g, ' ');
+  if (kind !== 'recurring') return raw;
+  // Only the closing stages are ambiguous. 'in progress' and 'yet to start'
+  // mean the same thing on both kinds, and rewording them would invent a
+  // difference that is not there.
+  if (dayStage === 'completed') return 'done today';
+  if (dayStage === 'dropped')   return 'skipped today';
+  return raw;
+}
+
+/**
+ * The badge that says an item recurs, or null.
+ *
+ * Returned as a value rather than a component so callers can drop it straight
+ * into the badge run they already render, in whatever order suits that table.
+ *
+ * Deliberately NOT merged into stageLabel: the label answers "what happened
+ * today", this answers "what kind of thing is this". Collapsing them into one
+ * string ('done today (recurring)') makes a badge run into a sentence.
+ */
+export function RecurringBadge({ kind }) {
+  if (kind !== 'recurring') return null;
+  return <span className="dw-badge">recurring</span>;
+}

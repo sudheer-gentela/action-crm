@@ -33,7 +33,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
 import { hashIdSegment, hashSegment, writeHash } from './hashNav';
 import { ProjectItemRow, dueText } from './dailyWorkProjectLink';
-import { DayItemTitles, DayItemWork, itemTitleList } from './dailyWorkItemTitles';
+import { DayItemTitles, DayItemWork, itemTitleList, stageLabel, RecurringBadge } from './dailyWorkItemTitles';
 // Shared with My day. Both screens must agree on what a leave row looks like,
 // when Approve is offered, and what the result sentence claims — see the
 // module header for why that cannot be two copies.
@@ -1228,7 +1228,7 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
                                           {r.anchor_label || <span className="dw-none">—</span>}
                                         </td>
                                         <td className="dw-logitem muted">
-                                          {String(r.day_stage || '').replace(/_/g, ' ')
+                                          {stageLabel(r.day_stage, r.kind)
                                             || <span className="dw-none">—</span>}
                                         </td>
                                       </tr>
@@ -1710,7 +1710,8 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
                         <td className="dw-logdate">{formatDate(today.entry_date)}</td>
                         <td className="dw-logitem">
                           {item.title}
-                          <span className="dw-badge">{item.day_stage.replace(/_/g, ' ')}</span>
+                          <span className="dw-badge">{stageLabel(item.day_stage, item.kind)}</span>
+                          <RecurringBadge kind={item.kind} />
                           {item.evidence_count > 0
                             ? <span className="dw-badge">{item.evidence_count} evidence</span>
                             : ['completed', 'dropped'].includes(item.day_stage)
@@ -1894,7 +1895,8 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
                             <td />
                             <td className="dw-logitem">
                               {item.title}
-                              <span className="dw-badge">{item.day_stage.replace(/_/g, ' ')}</span>
+                              <span className="dw-badge">{stageLabel(item.day_stage, item.kind)}</span>
+                              <RecurringBadge kind={item.kind} />
                               {item.evidence_count > 0
                                 ? <span className="dw-badge">{item.evidence_count} evidence</span>
                                 : ['completed', 'dropped'].includes(item.day_stage)

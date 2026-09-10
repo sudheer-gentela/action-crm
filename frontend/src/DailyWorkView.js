@@ -33,7 +33,8 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
 import { hashSegment, writeHash } from './hashNav';
 import { ProjectItemRow, daysBetween, dueText, useOpenProjectTask } from './dailyWorkProjectLink';
-import { DayItemTitles, DayItemWork, itemTitleList } from './dailyWorkItemTitles';
+import { DayItemTitles, DayItemWork, itemTitleList,
+         stageLabel as dayStageLabel, RecurringBadge } from './dailyWorkItemTitles';
 // Shared with the People screen, which renders the same panel in its manager
 // position. mode='own' is the difference: a day marked here is a REQUEST, and
 // the server decides that from who is asking — not from anything sent here.
@@ -1573,7 +1574,8 @@ function PastDayRow({ day, me, activityLabel }) {
           <td />
           <td className="dw-logitem">
             {item.title}
-            <span className="dw-badge">{item.day_stage.replace(/_/g, ' ')}</span>
+            <span className="dw-badge">{dayStageLabel(item.day_stage, item.kind)}</span>
+            <RecurringBadge kind={item.kind} />
             {item.evidence_count > 0 && (
               <span className="dw-badge">{item.evidence_count} evidence</span>
             )}
