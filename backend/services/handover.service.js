@@ -26,6 +26,10 @@ const PlaybookPlayService          = require('./PlaybookPlayService');
 const ActionPersister              = require('./ActionPersister');
 const HandoverRulesEngine          = require('./HandoverRulesEngine');
 const projectMembers               = require('./projectMembers.service');
+// 2026_141. Owns project_play_assignees and the one definition of "is this
+// person on this task". Requires nothing from this file, so it cannot close a
+// cycle the way playReview.service would.
+const playAssignees                = require('./projectPlayAssignees.service');
 const playReview      = require('./playReview.service');   // 2026_130 review loop
 
 async function _isOrgAdmin(orgId, userId) {
@@ -5874,7 +5878,7 @@ async function getPersonOpenWork(targetId, orgId, visibility) {
        FROM project_play_instances ppi
        JOIN sales_handovers h ON h.id = ppi.handover_id AND h.org_id = ppi.org_id
        LEFT JOIN deals d ON d.id = h.deal_id
-      WHERE ppi.org_id = $2 AND ppi.owner_user_id = $1
+      WHERE ppi.org_id = $2 AND ${playAssignees.assignedToSql('ppi', '$1')}
         AND ${OPEN_PLAY_PREDICATES}
         AND ($3::boolean IS FALSE OR h.id = ANY($4::int[]))
       ORDER BY ppi.due_date NULLS LAST, ppi.id`,
@@ -6109,7 +6113,7 @@ async function getProjectWorkloadByUser(orgId, userIds) {
   const today = toDateStr(new Date());
 
   const { rows: plays } = await pool.query(
-    `SELECT ppi.owner_user_id AS user_id,
+    `SELECT ppa.user_id AS user_id,
             count(*)::int AS open_count,
             count(*) FILTER (
               WHERE ppi.due_date IS NOT NULL
@@ -6118,12 +6122,19 @@ async function getProjectWorkloadByUser(orgId, userIds) {
             )::int AS overdue_count
        FROM project_play_instances ppi
        JOIN sales_handovers h ON h.id = ppi.handover_id AND h.org_id = ppi.org_id
+       -- 2026_141. JOIN rather than the assignedToSql EXISTS used everywhere
+       -- else in this file, because this query is grouped BY the person rather
+       -- than filtered by one. An EXISTS here would compile, run, and quietly
+       -- keep counting every task once against its owner and never against
+       -- anyone else. One row per (task, person) is what the count should see:
+       -- a task with three people on it is open work for all three.
+       JOIN project_play_assignees ppa ON ppa.instance_id = ppi.id
       WHERE ppi.org_id = $1
-        AND ppi.owner_user_id = ANY($2)
+        AND ppa.user_id = ANY($2)
         AND ppi.status NOT IN ('completed', 'skipped', 'cancelled')
         AND h.status NOT IN ('completed', 'cancelled')
         AND h.retired_at IS NULL
-      GROUP BY ppi.owner_user_id`,
+      GROUP BY ppa.user_id`,
     [orgId, userIds, today]);
 
   const { rows: commitments } = await pool.query(
@@ -6179,13 +6190,18 @@ async function getOverdueProjectItemsByUsers(orgId, userIds) {
 
   const { rows } = await pool.query(
     `SELECT 'task'::text AS kind, ppi.id AS id, ppi.title AS title,
-            ppi.due_date::text AS due_date, ppi.owner_user_id AS user_id,
+            ppi.due_date::text AS due_date, ppa.user_id AS user_id,
             h.id AS handover_id, COALESCE(h.name, d.name) AS project
        FROM project_play_instances ppi
        JOIN sales_handovers h ON h.id = ppi.handover_id AND h.org_id = ppi.org_id
+       -- 2026_141. See getProjectWorkloadByUser: keyed by person, so an overdue
+       -- task with three assignees is overdue for three people and must produce
+       -- three rows. The commitment half below is unchanged — a commitment
+       -- still has exactly one owner.
+       JOIN project_play_assignees ppa ON ppa.instance_id = ppi.id
        LEFT JOIN deals d ON d.id = h.deal_id
       WHERE ppi.org_id = $1
-        AND ppi.owner_user_id = ANY($2)
+        AND ppa.user_id = ANY($2)
         AND ppi.status NOT IN ('completed', 'skipped', 'cancelled')
         AND h.status NOT IN ('completed', 'cancelled')
         AND h.retired_at IS NULL
@@ -6314,7 +6330,7 @@ async function getPersonProjectItems(userId, orgId, opts = {}) {
        FROM project_play_instances ppi
        JOIN sales_handovers h ON h.id = ppi.handover_id AND h.org_id = ppi.org_id
        LEFT JOIN deals d ON d.id = h.deal_id
-      WHERE ppi.org_id = $2 AND ppi.owner_user_id = $1
+      WHERE ppi.org_id = $2 AND ${playAssignees.assignedToSql('ppi', '$1')}
         AND ${playPredicates}
         -- THE WINDOW IS A FORWARD HORIZON, NOT A BAND (2026_140, revised).
         --
@@ -6378,7 +6394,7 @@ async function countPersonProjectItemsOutside(userId, orgId, { from, to } = {}) 
     `SELECT count(*)::int AS n
        FROM project_play_instances ppi
        JOIN sales_handovers h ON h.id = ppi.handover_id AND h.org_id = ppi.org_id
-      WHERE ppi.org_id = $2 AND ppi.owner_user_id = $1
+      WHERE ppi.org_id = $2 AND ${playAssignees.assignedToSql('ppi', '$1')}
         AND ${OPEN_PLAY_PREDICATES}
         AND ppi.due_date IS NOT NULL
         -- Only work due AFTER the window. Overdue work is no longer hidden by
@@ -6431,7 +6447,7 @@ async function getPersonProjectLink(userId, orgId, handoverId) {
        FROM project_play_instances ppi
        JOIN sales_handovers h ON h.id = ppi.handover_id AND h.org_id = ppi.org_id
        LEFT JOIN deals d ON d.id = h.deal_id
-      WHERE ppi.org_id = $2 AND ppi.owner_user_id = $1 AND h.id = $3
+      WHERE ppi.org_id = $2 AND ${playAssignees.assignedToSql('ppi', '$1')} AND h.id = $3
         AND ${OPEN_PLAY_PREDICATES}
 
       UNION ALL
@@ -6842,6 +6858,13 @@ module.exports = {
   deletePlayNote,          // notes — soft delete by author or project manager
   canNoteOnProject,        // permission probe for the UI
   getNoteVisibility,       // note posture, for callers outside this service
+  // 2026_141. Re-exported so routes have one import for "the project service"
+  // rather than reaching into a second module for four calls. The logic lives
+  // in projectPlayAssignees.service.js.
+  listPlayAssignees:     playAssignees.listForPlay,
+  listPlayAssigneesBulk: playAssignees.listForPlays,
+  listAssignableMembers: playAssignees.listAssignableMembers,
+  setPlayAssignees:      playAssignees.setAssignees,
   listPlayRevisions,       // date history for one play
   canRebaseline,           // permission probe for the UI
   // Nightly sweep — Phase 2

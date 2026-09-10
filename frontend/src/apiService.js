@@ -912,6 +912,14 @@ twilio: {
     // the scope switcher can render without a second round trip.
     projectAccess:    ()      => api.get('/handovers/admin/project-access'),
     setProjectAccess: (patch) => api.put('/handovers/admin/project-access', patch),
+    // 2026_141. Task assignees. listAssignableMembers is the project's approved
+    // members — NOT the org-wide `users` list the owner picker used, which
+    // offered people who would then be refused at the daily-work composer.
+    listAssignableMembers: (id) => api.get(`/handovers/sales/${id}/assignable-members`),
+    listPlayAssignees: (id, instanceIds) =>
+      api.get(`/handovers/sales/${id}/play-assignees?instanceIds=${(instanceIds || []).join(',')}`),
+    setPlayAssignees: (id, instanceId, userIds) =>
+      api.put(`/handovers/sales/${id}/plays/${instanceId}/assignees`, { userIds }),
     healthRollup: (groupBy = 'account') => api.get(`/reporting/health?groupBy=${groupBy}`),
     dealsHealth:   (groupBy = 'owner') => api.get(`/reporting/deals/health?groupBy=${groupBy}`),
     dealsFunnel:   () => api.get('/reporting/deals/funnel'),

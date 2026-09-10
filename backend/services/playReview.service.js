@@ -121,7 +121,20 @@ async function resolveActorRole(handoverId, instanceId, orgId, userId) {
   if (await projectMembers.canManageProject(handoverId, orgId, userId)) {
     return { role: 'manager', ownerUserId: play.owner_user_id, play };
   }
-  if (play.owner_user_id != null && play.owner_user_id === userId) {
+  // 2026_141. Several people may be assigned to one task. The owner still
+  // resolves here without a special case — trg_sync_play_owner_assignee
+  // guarantees they have a project_play_assignees row — so this single query
+  // covers them and everyone else on the task.
+  //
+  // ownerUserId keeps meaning the OWNER, never "the person asking". Callers use
+  // it to decide who submitted a review and who may not approve their own
+  // submission, and both of those are still exactly one person.
+  const { rows: [assigned] } = await pool.query(
+    `SELECT 1 FROM project_play_assignees
+      WHERE instance_id = $1 AND user_id = $2`,
+    [instanceId, userId]
+  );
+  if (assigned) {
     return { role: 'assignee', ownerUserId: play.owner_user_id, play };
   }
   return { role: null, ownerUserId: play.owner_user_id, play };

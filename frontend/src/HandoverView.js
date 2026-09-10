@@ -41,6 +41,10 @@ import ProjectAttachments from './ProjectAttachments';
 // 2026_136. The same composer the My project work card uses — see its header
 // for why there is one of these and not two.
 import TaskWorkComposer from './TaskWorkComposer';
+// 2026_141. The assignee chips and picker for a checklist row. Self-contained
+// with inline styles, like TaskWorkComposer, because this file loads no
+// daily-work stylesheet.
+import PlayAssigneeCell from './PlayAssigneeCell';
 // 2026_136. Bulk plan import — its own file because the paste/map/preview
 // flow is self-contained and this one is already 7,600 lines.
 import ProjectPlanImport from './ProjectPlanImport';
@@ -3896,6 +3900,49 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
         : p))
   ), [detail, noteCounts]);
 
+  // ── Task assignees (2026_141) ──────────────────────────────────────────────
+  //
+  // { [playInstanceId]: [{ userId, name, isOwner }] }, fetched ONCE per project
+  // rather than once per row — the same shape and the same reasoning as
+  // followedPlays above. Fifty rows asking individually is fifty requests to
+  // draw one column.
+  //
+  // Assignees are NOT part of detail.plays on purpose. Adding them to the
+  // detail builder means touching a shaper every screen in this file shares;
+  // one extra call that only the checklist makes is the smaller change.
+  const [assigneeMap, setAssigneeMap] = useState({});
+
+  // The ids as a stable string. Depending on the array itself would refetch on
+  // every render, because `plays` is a new array whenever a note count lands.
+  const playIdKey = useMemo(
+    () => (detail?.plays || []).map(p => p.playInstanceId).filter(Boolean).sort((a, b) => a - b).join(','),
+    [detail]);
+
+  useEffect(() => {
+    if (!h?.id || !playIdKey) { setAssigneeMap({}); return; }
+    // Guarded like loadFollowed: a missing method on a stale bundle throws
+    // synchronously, before any promise exists, so a trailing .catch() would
+    // not catch it and the whole checklist would go down rather than one
+    // column.
+    if (typeof apiService.handovers?.listPlayAssignees !== 'function') return;
+    let live = true;
+    const ids = playIdKey.split(',').map(Number);
+    apiService.handovers.listPlayAssignees(h.id, ids)
+      .then(r => { if (live) setAssigneeMap(r?.data || {}); })
+      // Silent, for the same reason as loadFollowed: not knowing who is on a
+      // task is a cosmetic loss — the cell reads "Assign" — and it must not
+      // block the checklist.
+      .catch(() => { if (live) setAssigneeMap({}); });
+    return () => { live = false; };
+  }, [h?.id, playIdKey]);
+
+  // Applied from the PUT's own response rather than by refetching the project:
+  // setAssignees returns the list it just wrote, so this is the authoritative
+  // answer and one round trip instead of two.
+  const assigneesChanged = useCallback((instanceId, rows) => {
+    setAssigneeMap(m => ({ ...m, [instanceId]: rows }));
+  }, []);
+
   // Whose view this is. Same expression the task-permission check below uses;
   // hoisted for the same reason as `plays`.
   const viewerUserId = detail?.viewerUserId ?? readCurrentUserId();
@@ -4964,6 +5011,20 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                                   canEdit={canEditPlan && !done}
                                   onSave={v => handleInlineSave(play.playInstanceId, 'ownerUserId', v)}
                                 />
+                                {/* 2026_141. Everyone working the task, owner
+                                    starred and first. canEdit here is only
+                                    about hiding a control that would be
+                                    refused — the server decides for real
+                                    (project manager, or the task's owner). */}
+                                <div style={{ marginTop: 3 }}>
+                                  <PlayAssigneeCell
+                                    handoverId={h.id}
+                                    instanceId={play.playInstanceId}
+                                    assignees={assigneeMap[play.playInstanceId] || []}
+                                    canEdit={canEditPlan && !done}
+                                    onChange={assigneesChanged}
+                                  />
+                                </div>
                               </td>
                               <td style={td}>
                                 {done && play.completedAt

@@ -936,6 +936,63 @@ router.put('/sales/:id/plays/:instanceId/dependencies', async (req, res) => {
   }
 });
 
+// ── Task assignees (2026_141) ────────────────────────────────────────────────
+//
+// Several people may be assigned to one task. The task keeps ONE owner
+// (project_play_instances.owner_user_id) — accountable, submits for review,
+// single recipient of dependency and review notifications.
+//
+// Assignees are fetched SEPARATELY rather than threaded through the checklist
+// payload. Adding them to the detail builder means touching a shaper every
+// screen shares; one extra call per project is the smaller change, and callers
+// that do not draw the chips skip it entirely.
+//
+// Declared BEFORE /plays/:instanceId for the same reason /plays/reorder is:
+// Express matches in declaration order.
+
+router.get('/sales/:id/assignable-members', async (req, res) => {
+  try {
+    res.json(await handoverService.listAssignableMembers(
+      parseInt(req.params.id, 10), req.orgId));
+  } catch (err) {
+    console.error('List assignable members error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+router.get('/sales/:id/play-assignees', async (req, res) => {
+  try {
+    // The checklist already holds the ids it is about to draw, so it sends
+    // them rather than making the server re-derive them from handover_id — a
+    // filtered or paged checklist then asks about exactly what it renders.
+    //
+    // Not trusted: listForPlays keeps only integers and scopes every row to
+    // req.orgId through its join, so an id from another org returns nothing
+    // rather than somebody else's assignment.
+    const ids = String(req.query.instanceIds || '')
+      .split(',').map(s => parseInt(s, 10)).filter(Number.isInteger);
+    res.json(await handoverService.listPlayAssigneesBulk(ids, req.orgId));
+  } catch (err) {
+    console.error('List play assignees error:', err);
+    res.status(err.status || 500).json({ error: { message: err.message } });
+  }
+});
+
+router.put('/sales/:id/plays/:instanceId/assignees', async (req, res) => {
+  try {
+    res.json(await handoverService.setPlayAssignees(
+      parseInt(req.params.id, 10), req.orgId,
+      parseInt(req.params.instanceId, 10),
+      req.body?.userIds || [], req.user.userId));
+  } catch (err) {
+    console.error('Set play assignees error:', err);
+    // userIds carries WHICH people were refused, so the popover can mark them
+    // individually instead of showing a sentence that names nobody.
+    res.status(err.status || 500).json({
+      error: { message: err.message, code: err.code, userIds: err.userIds } });
+  }
+});
+
 // ── PATCH /sales/:id/plays/reorder  — reposition plays within one stage ───────
 //
 // Body: { stageKey: 'mobilise', orderedIds: [12, 9, 30] }
