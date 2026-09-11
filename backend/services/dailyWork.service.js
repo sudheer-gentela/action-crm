@@ -702,18 +702,40 @@ async function setOrgSettings(orgId, patch = {}) {
       'BAD_BACKFILL_DAYS', { backfillDays: patch.backfillDays });
   }
 
-  return withOrgTransaction(orgId, async (client) => {
+  await withOrgTransaction(orgId, async (client) => {
+    // TWO jsonb_set calls, nested, and the inner one is the fix.
+    //
+    // jsonb_set's create_missing only creates the LAST key in the path. With a
+    // single call on '{dailywork,backfill_days}', an org whose settings had no
+    // `dailywork` object yet — which is every org until something writes one —
+    // got its settings back unchanged. The UPDATE matched the row, raised no
+    // error, and getOrgSettings below then reported the default, so the setup
+    // screen saved and silently showed "Not set" again. Verified on Postgres:
+    //   jsonb_set('{}', '{dailywork,backfill_days}', '9', true)  ->  {}
+    //
+    // The inner call makes sure `dailywork` exists, keeping whatever it already
+    // holds (reminder_hour, rollup_hour); the outer call sets the one key.
     await client.query(
       `UPDATE organizations
           SET settings = jsonb_set(
-                COALESCE(settings, '{}'::jsonb),
+                jsonb_set(
+                  COALESCE(settings, '{}'::jsonb),
+                  '{dailywork}',
+                  COALESCE(settings->'dailywork', '{}'::jsonb),
+                  TRUE),
                 '{dailywork,backfill_days}',
                 to_jsonb($2::int),
                 TRUE)
         WHERE id = $1`,
       [orgId, n]);
-    return getOrgSettings(orgId);
   });
+
+  // Read back AFTER the transaction commits, not inside it. getOrgSettings
+  // opens its own transaction on a different pooled connection, so called from
+  // inside the callback it ran before this UPDATE was committed and returned
+  // the value from before the save — the screen showed the old number even on
+  // the rare occasion the write had worked.
+  return getOrgSettings(orgId);
 }
 
 /**
