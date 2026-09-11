@@ -123,7 +123,36 @@ async function grantAllEnabledToAdmins(orgId) {
   for (const r of rows) await grant(orgId, r.user_id, enabled, null);
 }
 
+// Why each of a user's grants exists (2026_142), for Org Admin to show. Only
+// grants that carry a source are returned; everything else was an admin's
+// decision and needs no label. Not cached — read only when an admin opens a
+// member's module panel.
+async function userModuleSources(orgId, userId) {
+  const { rows } = await pool.query(
+    `SELECT g.module_key, g.source, g.source_move_request_id, g.created_at,
+            i.title AS item_title,
+            COALESCE(NULLIF(btrim(h.name), ''), 'a project') AS project_name
+       FROM user_module_access g
+       LEFT JOIN daily_work_move_requests r ON r.id = g.source_move_request_id
+       LEFT JOIN daily_work_items i ON i.id = r.item_id
+       LEFT JOIN sales_handovers h ON h.id = r.target_handover_id
+      WHERE g.org_id = $1 AND g.user_id = $2 AND g.source IS NOT NULL`,
+    [orgId, userId]);
+  const out = {};
+  for (const r of rows) {
+    out[r.module_key] = {
+      source: r.source,
+      moveRequestId: r.source_move_request_id,
+      grantedAt: r.created_at,
+      itemTitle: r.item_title,
+      projectName: r.source_move_request_id ? r.project_name : null,
+    };
+  }
+  return out;
+}
+
 module.exports = {
   MODULE_KEYS, orgEnabledModules, userModules, hasModule, effectiveModules,
   setUserModules, grant, grantAllEnabledToUser, grantAllEnabledToAdmins, invalidate,
+  userModuleSources,
 };

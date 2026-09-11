@@ -22,6 +22,10 @@
 //   • When any baseline is 'inferred' the header says so. Those were
 //     back-filled from the then-current due date, so the slip shown is a
 //     floor, not the real figure.
+//   • Added scope (2026_142) is badged and counted. Those tasks joined the
+//     plan after it was frozen, through an approved daily work move. They are
+//     INCLUDED in every figure above the table, as agreed; the tile and badge
+//     make them visible so the figures can be read with that in mind.
 // ─────────────────────────────────────────────────────────────────────────────
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
@@ -193,6 +197,11 @@ export default function ProjectPlanVsActual({ handoverId }) {
         <Metric label="Date revisions" value={summary.totalRevisions} />
         <Metric label="Re-baselined" value={summary.rebaselined}
                 tone={summary.rebaselined > 0 ? C.warn : undefined} />
+        {/* 2026_142. Only when there is some: a permanent zero on every
+            project that never had work moved onto it would say nothing. */}
+        {summary.addedScope > 0 && (
+          <Metric label="Added scope" value={summary.addedScope} tone={C.warn} />
+        )}
         {/* 2026_120. Shown only once something has actually slipped —
             "0/0 explained" on a project running to plan is a number that
             invites worry about nothing. The gap between the two figures is
@@ -212,6 +221,14 @@ export default function ProjectPlanVsActual({ handoverId }) {
           {summary.inferredBaselines} of {summary.measurable} baselines were reconstructed from the
           due date at migration time, not from the original commitment. Slip shown against those is a
           minimum — the real figure is likely higher.
+        </div>
+      )}
+
+      {summary.addedScope > 0 && (
+        <div style={{ fontSize: 12, color: C.neutral, marginBottom: 12, lineHeight: 1.5 }}>
+          {summary.addedScope} {summary.addedScope === 1 ? 'task was' : 'tasks were'} added after the plan was
+          frozen, when daily work was moved onto this project. {summary.addedScope === 1 ? 'It counts' : 'They count'} in
+          the figures above.
         </div>
       )}
 
@@ -262,6 +279,11 @@ export default function ProjectPlanVsActual({ handoverId }) {
                       {p.rebaselineCount > 0 && (
                         <span style={{ marginLeft: 6, fontSize: 10, padding: '1px 5px', borderRadius: 4,
                                        background: C.warnBg, color: C.warn }}>re-baselined</span>
+                      )}
+                      {p.scopeAddedAt && (
+                        <span title="Added after the plan was frozen, when daily work was moved onto this project"
+                              style={{ marginLeft: 6, fontSize: 10, padding: '1px 5px', borderRadius: 4,
+                                       background: C.warnBg, color: C.warn }}>added scope</span>
                       )}
                       <div style={{ fontSize: 11, color: C.neutral, marginTop: 2 }}>
                         {p.stageName}{p.ownerName ? ` · ${p.ownerName}` : ''}

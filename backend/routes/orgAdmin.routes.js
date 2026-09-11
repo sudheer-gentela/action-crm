@@ -105,11 +105,16 @@ router.get('/members', adminOnly, async (req, res) => {
 router.get('/members/:userId/modules', adminOnly, async (req, res) => {
   try {
     const moduleAccess = require('../services/moduleAccess.service');
-    const [orgEnabled, granted] = await Promise.all([
+    const userId = parseInt(req.params.userId, 10);
+    const [orgEnabled, granted, sources] = await Promise.all([
       moduleAccess.orgEnabledModules(req.orgId),
-      moduleAccess.userModules(req.orgId, parseInt(req.params.userId, 10)),
+      moduleAccess.userModules(req.orgId, userId),
+      // 2026_142. Why a grant exists, when it was not an admin's decision —
+      // today only "given Daily Work to approve a move request". Additive:
+      // a panel that does not read it behaves exactly as before.
+      moduleAccess.userModuleSources(req.orgId, userId),
     ]);
-    res.json({ orgEnabled, granted: [...granted], allKeys: moduleAccess.MODULE_KEYS });
+    res.json({ orgEnabled, granted: [...granted], allKeys: moduleAccess.MODULE_KEYS, sources });
   } catch (err) {
     res.status(500).json({ error: { message: err.message } });
   }

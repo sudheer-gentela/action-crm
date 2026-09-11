@@ -1841,6 +1841,13 @@ function PlaySection({ play, canEdit, canDelete = canEdit, onComplete, onRemove,
             {play.isCustom && (
               <span style={{ fontSize: 10, color: '#7c3aed', fontWeight: 700, background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 4, padding: '0 5px' }}>added here</span>
             )}
+            {/* 2026_142. Added after the plan was frozen, through an approved
+                daily work move. Distinct from "added here", which is any task
+                created on the project rather than from its playbook. */}
+            {play.scopeAddedAt && (
+              <span title="Added after the plan was frozen, when daily work was moved onto this project"
+                    style={{ fontSize: 10, color: '#b45309', fontWeight: 700, background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 4, padding: '0 5px' }}>added scope</span>
+            )}
           </div>
           {descEditing ? (
             <textarea
@@ -5023,6 +5030,12 @@ function HandoverDetail({ handover: h, onRefresh, viewMode, users, onOpenProject
                                 {play.isGate && !done && (
                                   <span style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, padding: '1px 6px',
                                                  borderRadius: 4, background: '#eff6ff', color: '#1d4ed8' }}>GATE</span>
+                                )}
+                                {/* 2026_142 — see the same badge on the card layout. */}
+                                {play.scopeAddedAt && (
+                                  <span title="Added after the plan was frozen, when daily work was moved onto this project"
+                                        style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, padding: '1px 6px',
+                                                 borderRadius: 4, background: '#fef3c7', color: '#b45309' }}>ADDED SCOPE</span>
                                 )}
                                 {play.noteCount > 0 && (
                                   <span style={{ marginLeft: 6 }}><NoteCountBadge count={play.noteCount} /></span>

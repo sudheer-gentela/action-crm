@@ -339,6 +339,12 @@ function fmtPlay(row) {
     // the dialog cannot show what was originally committed.
     baselineDueDate: row.baseline_due_date ?? null,
     baselineSource:  row.baseline_source ?? null,
+    // 2026_142. Set when an approved daily work move added this task to a plan
+    // that was already frozen. Its own column, not a baseline_source value —
+    // a rebaseline overwrites baseline_source. ?? null for callers that build a
+    // play row without selecting it.
+    scopeAddedAt:         row.scope_added_at ?? null,
+    addedByMoveRequestId: row.added_by_move_request_id ?? null,
     completionNote:  row.completion_note ?? null,
     completionEvidence: row.completion_evidence ?? null,
     isGate:          row.is_gate,
@@ -4666,6 +4672,8 @@ async function _getPlays(handoverId, orgId, hideInternalNotes = false) {
        dpi.status AS play_status, dpi.completed_by,
        dpi.due_date, dpi.due_anchor,
        dpi.baseline_due_date, dpi.baseline_source,
+       -- 2026_142. Added to a frozen plan by an approved daily work move.
+       dpi.scope_added_at, dpi.added_by_move_request_id,
        dpi.completion_note, dpi.completion_evidence,
        dpi.play_id, dpi.playbook_id, dpi.owner_user_id,
        -- 2026_130 review state. Sent on every play so the checklist can render
