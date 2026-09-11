@@ -270,9 +270,12 @@ export default function DailyWorkTeamView() {
 
   const toggle = key => setExpanded(e => ({ ...e, [key]: !e[key] }));
 
-  const openDay = async (userId, date) => {
+  const openDay = async (userId, date, want) => {
     const key = `${userId}:${date}`;
-    toggle(key);
+    // `want` undefined keeps the old toggle behaviour for the per-day link.
+    // openAllDays passes true, because a bulk open that flipped the days
+    // already showing would close half of them.
+    setExpanded(e => ({ ...e, [key]: want === undefined ? !e[key] : want }));
     if (details[key]) return;
     // Fetched only when opened. Most rows never are, and pulling every item for
     // every day to serve the few that get opened is what makes a screen that is
@@ -282,6 +285,36 @@ export default function DailyWorkTeamView() {
         user: userId, date, ...apiFilters() });
       setDetails(d => ({ ...d, [key]: data || [] }));
     } catch { /* the row still shows its summary */ }
+  };
+
+  /**
+   * Expand a person and every day in their log at once.
+   *
+   * Three clicks to read one person's week — open the person, then open each
+   * day — was three clicks to answer a question a manager asks about everyone
+   * on the screen.
+   *
+   * The day table's own note says openDay "is a request, not something to fire
+   * for every day of every person on screen", and that still holds: this fires
+   * for ONE person, only when a manager explicitly opens them, and only for
+   * days that are already in `log` — days with something on them. It is not a
+   * prefetch, and collapsing the person makes no requests at all.
+   *
+   * Bounded by the period: at most 7 in a week, and a month only reaches the
+   * low twenties for someone who logged every working day. Already-fetched days
+   * short-circuit inside openDay, so reopening a person costs nothing.
+   *
+   * The per-day Details links stay exactly as they were — a manager who wants
+   * one day out of twenty should not have to open all twenty first.
+   */
+  const openAllDays = (person, log) => {
+    const key = `p:${person.user_id}`;
+    const willOpen = !expanded[key];
+    toggle(key);
+    if (!willOpen) return;   // collapsing: leave the days as the manager left them
+    for (const d of (log || [])) {
+      if (d.entry_date) openDay(person.user_id, d.entry_date, true);
+    }
   };
 
   /* ── vocabulary queue ─────────────────────────────────────────────── */
@@ -724,6 +757,7 @@ export default function DailyWorkTeamView() {
                     details={details}
                     onToggle={toggle}
                     onOpenDay={openDay}
+                    onOpenAllDays={openAllDays}
                     onOpenPerson={setOpenPerson}
                     // The window the strip was drawn for, so the leave panel
                     // inside the expansion asks about the same days the
@@ -1571,7 +1605,7 @@ function PersonIdentity({ person }) {
 // Left unused it would be a no-unused-vars warning, and CRA builds with CI=true
 // where a warning fails the build.
 function PersonRow({ person, period, hasProjects = false, log, expanded, details,
-                     onToggle, onOpenDay, onOpenPerson, window_ = {}, onChanged }) {
+                     onToggle, onOpenDay, onOpenAllDays, onOpenPerson, window_ = {}, onChanged }) {
   const key = `p:${person.user_id}`;
   const isOpen = !!expanded[key];
 
@@ -1647,9 +1681,21 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
                 {dayOpen ? 'Hide' : 'Details'}
               </button>
             )}
-            <button type="button" className="dw-btn-link" aria-expanded={leaveOpen}
+            {/* An ICON, not a word. Rendered next to Details in the same
+                cell, the two words ran together as "DetailsLeave" and read as
+                one control — and the wrong one was the prominent one. Details
+                is what a manager comes for; marking leave is occasional.
+
+                Still a SEPARATE control, and it still has to be: the person
+                who most needs a leave day marked is the one with nothing
+                logged, and Details is not rendered for them at all. Hanging
+                leave off the day expansion would put the fix behind the very
+                condition it fixes. Shrinking it does not change that. */}
+            <button type="button" className="dw-btn-icon" aria-expanded={leaveOpen}
+                    aria-label="Mark leave or absence"
+                    title="Mark leave or absence"
                     onClick={() => onToggle(leaveKey)}>
-              Leave
+              <span aria-hidden="true">&#127958;</span>
             </button>
           </td>
         </tr>
@@ -1801,7 +1847,8 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
               that the name expands a region when it now navigates instead —
               which is worse than having no state at all. */}
           <button type="button" className="dw-btn-link" aria-expanded={isOpen}
-                  onClick={() => onToggle(key)}>
+                  title={isOpen ? 'Collapse' : 'Show every logged day and its items'}
+                  onClick={() => onOpenAllDays(person, log)}>
             {isOpen ? 'Hide' : 'Days'}
           </button>
         </td>

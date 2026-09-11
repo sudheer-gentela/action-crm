@@ -613,6 +613,28 @@
 }
 .dw-logactions { text-align: right; white-space: nowrap; }
 
+/* Two controls in this cell rendered with NOTHING between them, so "Details"
+ * and "Leave" read as one word — "DetailsLeave" — and neither looked clickable
+ * on its own.
+ *
+ * Sibling margin rather than flex: this class is on a <td> in several tables,
+ * and switching it to display:flex would change how every one of them lays out
+ * to fix spacing in one. (.dw-tasktable .dw-logactions below does use flex —
+ * that override is scoped to a single table and can afford it.) */
+.dw-logactions > * + * { margin-left: 10px; }
+
+/* An action reduced to its glyph: same hit area as a link button, no
+ * underline, and a muted colour so it sits BEHIND the text link beside it
+ * rather than competing with it. Always paired with an aria-label — the glyph
+ * is decorative and a screen reader gets the words. */
+.dw-btn-icon {
+  border: none; background: none; padding: 4px; min-height: 0;
+  cursor: pointer; font-size: 15px; line-height: 1;
+  color: var(--dw-ink-3); vertical-align: middle;
+}
+.dw-btn-icon:hover  { color: var(--dw-accent); }
+.dw-btn-icon:focus-visible { outline: 2px solid var(--dw-accent); border-radius: 4px; }
+
 @media (max-width: 768px) {
   /* Stage is the most droppable column: the badge repeats a state the
    * description usually makes obvious, and dropping it buys the description
