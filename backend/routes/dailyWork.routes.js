@@ -101,6 +101,8 @@ const handoverService = require('../services/handover.service');
 // Role resolver, for the vocabulary gate below. Same one handovers.routes uses
 // for canManageStanding, so "manager and above" means one thing across both.
 const projectSettings = require('../services/projectSettings.service');
+// 2026_142 — moving daily work onto a project task, with approval.
+const dailyWorkMove = require('../services/dailyWorkMove.service');
 
 router.use(authenticateToken, orgContext, requireModule('dailywork'));
 
@@ -922,6 +924,137 @@ router.get('/team/day-detail', async (req, res) => {
 
     res.json(await dailyQuery.getDayDetail(req.orgId, userId, date, readFilters(req.query)));
   } catch (err) { handle(res, err, 'GET /team/day-detail'); }
+});
+
+/* ───────────────────────── moving work onto a project (2026_142) ───── */
+//
+// Every rule lives in dailyWorkMove.service: who may raise, who may decide,
+// what an approver may leave out, what a move does. These routes only parse,
+// call, and clear the module caches when a request granted someone access.
+//
+// Behind requireModule('dailywork') like the rest of this file. An approver
+// without Daily Work access is GRANTED it when a request needs them
+// (dailyWorkMove.grantApprovers), which is what lets them reach these routes at
+// all. Both caches — moduleAccess's and requireModule's — hold an answer for
+// 60 seconds, so without clearing them the approver's first click would say
+// "Module not enabled" for up to a minute after being given access.
+//
+// Refusals are DailyWorkError, which handle() turns into a 400 carrying the
+// code and the sentence. The sentence is written for the person and is the UI
+// copy, the same convention as every other route here.
+
+function clearGrantCaches(req, result) {
+  if (result && Array.isArray(result.grantedUserIds) && result.grantedUserIds.length) {
+    requireModule.invalidate(req.orgId, 'dailywork');
+  }
+}
+
+// ── raise ─────────────────────────────────────────────────────────────────
+router.post('/move-requests', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const result = await dailyWorkMove.createRequest(req.orgId, req.userId, {
+      itemId: b.itemId,
+      targetHandoverId: b.targetHandoverId,
+      entryIds: b.entryIds,
+      note: b.note,
+    });
+    clearGrantCaches(req, result);
+    res.status(201).json(result.request);
+  } catch (err) { handle(res, err, 'POST /move-requests'); }
+});
+
+// ── reads ─────────────────────────────────────────────────────────────────
+// Declared before /move-requests/:id so these two words are never read as ids.
+
+// What is waiting on the viewer as an approver.
+router.get('/move-requests/review-queue', async (req, res) => {
+  try {
+    res.json({ items: await dailyWorkMove.listReviewQueue(req.orgId, req.userId) });
+  } catch (err) { handle(res, err, 'GET /move-requests/review-queue'); }
+});
+
+// The viewer's own requests, retire-or-keep questions and flagged entries.
+router.get('/move-requests/mine', async (req, res) => {
+  try {
+    res.json(await dailyWorkMove.listMine(req.orgId, req.userId));
+  } catch (err) { handle(res, err, 'GET /move-requests/mine'); }
+});
+
+router.get('/move-requests/:id', async (req, res) => {
+  try {
+    const id = asId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'bad request id' });
+    res.json(await dailyWorkMove.getRequest(req.orgId, req.userId, id));
+  } catch (err) { handle(res, err, 'GET /move-requests/:id'); }
+});
+
+// ── the requester ─────────────────────────────────────────────────────────
+router.post('/move-requests/:id/entries', async (req, res) => {
+  try {
+    const id = asId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'bad request id' });
+    const result = await dailyWorkMove.addEntries(req.orgId, req.userId, id, (req.body || {}).entryIds);
+    clearGrantCaches(req, result);
+    res.json(result.request);
+  } catch (err) { handle(res, err, 'POST /move-requests/:id/entries'); }
+});
+
+router.post('/move-requests/:id/withdraw', async (req, res) => {
+  try {
+    const id = asId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'bad request id' });
+    res.json(await dailyWorkMove.withdraw(req.orgId, req.userId, id));
+  } catch (err) { handle(res, err, 'POST /move-requests/:id/withdraw'); }
+});
+
+// ── the approvers ─────────────────────────────────────────────────────────
+// Body: { handoverId, decision: 'approve'|'reject', reason, untickEntryIds,
+//         placement: { existingPlayInstanceId }, batchId }
+router.post('/move-requests/:id/decide', async (req, res) => {
+  try {
+    const id = asId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'bad request id' });
+    const b = req.body || {};
+    res.json(await dailyWorkMove.decide(req.orgId, req.userId, id, {
+      handoverId: b.handoverId,
+      decision: b.decision,
+      reason: b.reason,
+      untickEntryIds: b.untickEntryIds,
+      placement: b.placement,
+      batchId: b.batchId,
+    }));
+  } catch (err) { handle(res, err, 'POST /move-requests/:id/decide'); }
+});
+
+// ── the owner, afterwards ─────────────────────────────────────────────────
+router.post('/move-requests/:id/recurring-decision', async (req, res) => {
+  try {
+    const id = asId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'bad request id' });
+    res.json(await dailyWorkMove.setRecurringDecision(
+      req.orgId, req.userId, id, (req.body || {}).decision));
+  } catch (err) { handle(res, err, 'POST /move-requests/:id/recurring-decision'); }
+});
+
+// Body: { which: 'task'|'original', description, nextSteps }
+router.patch('/move-entries/:id', async (req, res) => {
+  try {
+    const id = asId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'bad entry id' });
+    const b = req.body || {};
+    res.json(await dailyWorkMove.editFlaggedEntry(req.orgId, req.userId, id, {
+      which: b.which, description: b.description, nextSteps: b.nextSteps,
+    }));
+  } catch (err) { handle(res, err, 'PATCH /move-entries/:id'); }
+});
+
+router.post('/move-entries/:id/done', async (req, res) => {
+  try {
+    const id = asId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'bad entry id' });
+    res.json(await dailyWorkMove.markEntryDone(req.orgId, req.userId, id));
+  } catch (err) { handle(res, err, 'POST /move-entries/:id/done'); }
 });
 
 /* ───────────────────────── leave ───────────────────────────────────── */

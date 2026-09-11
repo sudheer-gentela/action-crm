@@ -1,0 +1,1459 @@
+// dailyWorkMove.service.js
+//
+// Moving daily work onto a project plan, with approval. Schema: 2026_142.
+//
+// Someone logs work against an item that is on no project task. It does not
+// appear anywhere on the plan, because a project only shows work linked to its
+// own tasks (2026_136). This service lets the person — or their line manager —
+// ask for that work to join a task, lets the project's manager decide, and
+// moves it.
+//
+// ── THE FLOW ─────────────────────────────────────────────────────────
+//
+//   createRequest   the requester picks the item, the target project and the
+//                   entries. Batch 1 is created, with an approval row for the
+//                   target and for every other open TIMEBOXED project the item
+//                   or a selected entry is tagged to. Approvers who lack Daily
+//                   Work access are granted it.
+//   addEntries      the requester adds entries logged since. Into the waiting
+//                   batch if nobody has decided on it yet, otherwise a new
+//                   batch with its own approvals. Refused once batch 1 moved.
+//   decide          an approver approves or rejects their project's row, and
+//                   may untick entries (the target: any; a source: only
+//                   entries tagged to that source). The target chooses the
+//                   task on batch 1. When every row of a batch is approved the
+//                   batch moves, in the same transaction.
+//   withdraw        the requester withdraws what is still waiting.
+//
+// ── WHAT A MOVE DOES ─────────────────────────────────────────────────
+//
+//   1. puts the owner on the project and on the task, if they are not already
+//   2. finds or creates the owner's linked item for the task — the same item
+//      postTaskUpdate would create (dailyWork.findOrCreateLinkedItem)
+//   3. for each selected entry, in date order:
+//        no entry on the task that day  re-point it and re-tag it to the target
+//        an entry on the task that day  merge the text into it and flag it
+//                                       "needs edit"; copy evidence and notes
+//                                       across; delete the source entry
+//        merged text over the limit     leave it where it is, pending, and
+//                                       merge automatically once it fits
+//   4. batch 1 only: an assigned item becomes 'moved'; a recurring item's owner
+//      is asked on My day whether to retire it or keep it
+//
+// ── WHAT IS NOT HERE YET ─────────────────────────────────────────────
+//
+// Placement on a NEW task, the conflict checks and the added-scope marker are
+// the next build step; decide() refuses a new-task placement with a sentence
+// until then. Notifications and the daily reminders are the step after the UI.
+//
+// ── TRANSACTIONS AND LOCKS ───────────────────────────────────────────
+//
+// Every write locks the request row first (SELECT … FOR UPDATE). Two approvers
+// completing the last two approvals at the same moment would otherwise both
+// see "all approved" and both execute the batch. With the lock, the second
+// waits, then sees the batch already approved.
+//
+// Nothing here creates its own transaction inside another one. The functions
+// taking a `client` run inside the caller's transaction, and tryPendingMerges
+// in particular runs inside dailyWork._saveDayIn so a save and the merge it
+// enables commit together.
+
+const { pool, withOrgTransaction } = require('../config/database');
+const dw = require('./dailyWork.service');
+const dailyQuery = require('./dailyWorkQuery.service');
+const dwDate = require('./dailyWorkDate');
+const projectMembers = require('./projectMembers.service');
+const moduleAccess = require('./moduleAccess.service');
+
+const { DailyWorkError, ITEM_COLUMNS, ENTRY_COLUMNS, MAX_DESCRIPTION, MAX_NEXT_STEPS } = dw;
+
+const OPEN_ASSIGNED_STATUSES = ['yet_to_start', 'in_progress', 'in_review'];
+const CLOSED_TASK_STATUSES = ['completed', 'skipped', 'cancelled'];
+const CLOSED_PROJECT_STATUSES = ['completed', 'cancelled'];
+const MAX_NOTE = 2000;
+
+/* ───────────────────────── small helpers ───────────────────────────── */
+
+function asIds(list) {
+  return [...new Set((Array.isArray(list) ? list : [])
+    .map(n => Number(n)).filter(n => Number.isInteger(n) && n > 0))];
+}
+
+function isItemOpen(item) {
+  return item.kind === 'assigned'
+    ? OPEN_ASSIGNED_STATUSES.includes(item.status)
+    : item.status === 'active';
+}
+
+function isProjectOpen(p) {
+  return !!p && !CLOSED_PROJECT_STATUSES.includes(p.status) && p.retired_at == null;
+}
+
+async function localToday(client, orgId, userId) {
+  const tz = await dwDate.resolveTimezone((sql, params) => client.query(sql, params), orgId, userId);
+  return dwDate.localDate(tz);
+}
+
+/**
+ * Who may raise or add to a request for this owner: the owner, or someone whose
+ * chain contains them. The same boundary every /people read uses, so "whose
+ * work may I move" and "whose work may I see" cannot come apart.
+ */
+async function canActFor(orgId, actorId, ownerId) {
+  if (actorId === ownerId) return true;
+  const visible = await dailyQuery.getVisibleUserIds(orgId, actorId);
+  return visible.includes(ownerId);
+}
+
+async function lockRequest(client, orgId, requestId) {
+  const { rows } = await client.query(
+    `SELECT * FROM daily_work_move_requests WHERE id = $1 AND org_id = $2 FOR UPDATE`,
+    [requestId, orgId]);
+  if (!rows[0]) throw new DailyWorkError('No such move request', 'NO_SUCH_REQUEST', { requestId });
+  return rows[0];
+}
+
+async function lockItem(client, orgId, itemId) {
+  const { rows } = await client.query(
+    `SELECT ${ITEM_COLUMNS} FROM daily_work_items WHERE id = $1 AND org_id = $2 FOR UPDATE`,
+    [itemId, orgId]);
+  return rows[0] || null;
+}
+
+async function loadProject(client, orgId, handoverId) {
+  const { rows } = await client.query(
+    `SELECT h.id, COALESCE(NULLIF(btrim(h.name), ''), d.name, 'Untitled project') AS name,
+            h.status, h.retired_at, COALESCE(h.tracking_mode, 'timeboxed') AS tracking_mode,
+            h.baseline_frozen_at
+       FROM sales_handovers h
+       LEFT JOIN deals d ON d.id = h.deal_id AND d.org_id = h.org_id
+      WHERE h.id = $1 AND h.org_id = $2`,
+    [handoverId, orgId]);
+  return rows[0] || null;
+}
+
+/**
+ * Refuse an item this feature does not move, with the reason.
+ *
+ * Three rules, all agreed in the design:
+ *   - open items only (a completed, dropped or retired item's work is done)
+ *   - not already on a task — that work already shows on the plan, and its link
+ *     is never repointed (2026_136)
+ *   - not tagged to a DIFFERENT standing initiative. Work that belongs to
+ *     another initiative stays there for now; moving it into the initiative it
+ *     is already tagged to is allowed.
+ */
+async function assertItemMovable(client, orgId, item, targetHandoverId) {
+  if (item.play_instance_id) {
+    throw new DailyWorkError(
+      'This item is already logged against a project task, so it is on the plan already.',
+      'ITEM_ALREADY_ON_TASK', { itemId: item.id });
+  }
+  if (!isItemOpen(item)) {
+    throw new DailyWorkError(
+      'Only open items can be moved. This one is closed.',
+      'ITEM_CLOSED', { itemId: item.id, status: item.status });
+  }
+  if (item.anchor_kind === 'handover' && item.anchor_id !== targetHandoverId) {
+    const tagged = await loadProject(client, orgId, item.anchor_id);
+    if (tagged && tagged.tracking_mode === 'standing') {
+      throw new DailyWorkError(
+        `This item belongs to the ${tagged.name} initiative, so it cannot be moved to another project.`,
+        'ITEM_ON_OTHER_INITIATIVE', { itemId: item.id, handoverId: tagged.id });
+    }
+  }
+}
+
+/**
+ * The entries a requester picked, locked, checked and in date order.
+ *
+ * Refuses rather than silently dropping. An entry quietly left out would
+ * reach the approver as a smaller request than the one that was raised.
+ */
+async function loadSelectableEntries(client, orgId, item, entryIds, targetHandoverId) {
+  const ids = asIds(entryIds);
+  if (!ids.length) return [];
+
+  const { rows } = await client.query(
+    `SELECT ${ENTRY_COLUMNS} FROM daily_work_entries
+      WHERE org_id = $1 AND item_id = $2 AND id = ANY($3::int[])
+      ORDER BY entry_date, id
+      FOR UPDATE`,
+    [orgId, item.id, ids]);
+  if (rows.length !== ids.length) {
+    const found = new Set(rows.map(r => r.id));
+    throw new DailyWorkError(
+      'Some of the chosen entries are not on this item.',
+      'ENTRY_NOT_ON_ITEM', { entryIds: ids.filter(id => !found.has(id)) });
+  }
+
+  const handoverIds = [...new Set(rows
+    .filter(r => r.anchor_kind === 'handover' && r.anchor_id !== targetHandoverId)
+    .map(r => r.anchor_id))];
+  if (handoverIds.length) {
+    const { rows: standing } = await client.query(
+      `SELECT id, name FROM sales_handovers
+        WHERE org_id = $1 AND id = ANY($2::int[])
+          AND COALESCE(tracking_mode, 'timeboxed') = 'standing'`,
+      [orgId, handoverIds]);
+    if (standing.length) {
+      const bad = rows.filter(r => standing.some(s => s.id === r.anchor_id)).map(r => r.id);
+      throw new DailyWorkError(
+        `Entries tagged to the ${standing.map(s => s.name).join(', ')} initiative cannot be moved to another project.`,
+        'ENTRY_ON_OTHER_INITIATIVE', { entryIds: bad });
+    }
+  }
+
+  // uq_dwme_entry_outstanding refuses this too. Checked first for the sentence.
+  const { rows: outstanding } = await client.query(
+    `SELECT entry_id FROM daily_work_move_entries
+      WHERE org_id = $1 AND entry_id = ANY($2::int[])
+        AND outcome IN ('pending', 'left_out_too_long')`,
+    [orgId, ids]);
+  if (outstanding.length) {
+    throw new DailyWorkError(
+      'Some of the chosen entries are already part of another move request.',
+      'ENTRY_ALREADY_IN_REQUEST', { entryIds: outstanding.map(r => r.entry_id) });
+  }
+  return rows;
+}
+
+/**
+ * The other projects that must approve: every OPEN, TIMEBOXED project the item
+ * or a selected entry is tagged to, other than the target.
+ *
+ * Open only. A completed, cancelled or retired project has no live plan for
+ * this move to disturb, and often nobody left to ask. Standing initiatives
+ * never appear: work tagged to another one has already been refused.
+ */
+async function sourceProjectIds(client, orgId, targetHandoverId, item, entries) {
+  const tagged = new Set();
+  if (item.anchor_kind === 'handover') tagged.add(item.anchor_id);
+  for (const e of entries) if (e.anchor_kind === 'handover') tagged.add(e.anchor_id);
+  tagged.delete(targetHandoverId);
+  if (!tagged.size) return [];
+
+  const { rows } = await client.query(
+    `SELECT id FROM sales_handovers
+      WHERE org_id = $1 AND id = ANY($2::int[])
+        AND COALESCE(tracking_mode, 'timeboxed') = 'timeboxed'
+        AND status NOT IN ('completed', 'cancelled')
+        AND retired_at IS NULL
+      ORDER BY id`,
+    [orgId, [...tagged]]);
+  return rows.map(r => r.id);
+}
+
+async function ensureApprovalRows(client, orgId, requestId, batchId, targetHandoverId, sourceIds) {
+  await client.query(
+    `INSERT INTO daily_work_move_approvals (org_id, request_id, batch_id, handover_id, role)
+     VALUES ($1, $2, $3, $4, 'target')
+     ON CONFLICT (batch_id, handover_id) DO NOTHING`,
+    [orgId, requestId, batchId, targetHandoverId]);
+  for (const id of sourceIds) {
+    await client.query(
+      `INSERT INTO daily_work_move_approvals (org_id, request_id, batch_id, handover_id, role)
+       VALUES ($1, $2, $3, $4, 'source')
+       ON CONFLICT (batch_id, handover_id) DO NOTHING`,
+      [orgId, requestId, batchId, id]);
+  }
+}
+
+/** The snapshot is taken here and never updated — see 2026_142 section 4. */
+async function insertMoveEntries(client, orgId, requestId, batchId, entries) {
+  for (const e of entries) {
+    await client.query(
+      `INSERT INTO daily_work_move_entries
+         (org_id, request_id, batch_id, entry_id,
+          snap_item_id, snap_entry_date, snap_description, snap_next_steps, snap_day_stage,
+          snap_activity_type_key, snap_anchor_kind, snap_anchor_id, snap_account_id)
+       VALUES ($1,$2,$3,$4,$5,$6::date,$7,$8,$9,$10,$11,$12,$13)`,
+      [orgId, requestId, batchId, e.id,
+       e.item_id, e.entry_date, e.description, e.next_steps, e.day_stage,
+       e.activity_type_key, e.anchor_kind, e.anchor_id, e.account_id]);
+  }
+}
+
+/**
+ * The people who may approve for a project, for granting access and — later —
+ * for notifying.
+ *
+ * canManageProject is true for four groups. Org admins and owners are only the
+ * FALLBACK here, used when a project has none of the other three: they already
+ * hold every enabled module (grantAllEnabledToAdmins), and notifying every
+ * admin about every request would be noise. 2026_133 records that initiatives
+ * are often created with no owner, which is the case the fallback covers.
+ */
+async function approverUserIds(client, orgId, handoverId) {
+  const { rows } = await client.query(
+    `SELECT DISTINCT x.user_id
+       FROM (
+         SELECT h.assigned_service_owner_id AS user_id FROM sales_handovers h
+          WHERE h.id = $2 AND h.org_id = $1
+         UNION ALL
+         SELECT h.created_by FROM sales_handovers h
+          WHERE h.id = $2 AND h.org_id = $1
+         UNION ALL
+         SELECT pm.user_id FROM project_members pm
+          WHERE pm.org_id = $1 AND pm.context_type = 'handover' AND pm.context_id = $2
+            AND pm.status = 'approved' AND pm.exited_at IS NULL AND pm.can_manage = TRUE
+       ) x
+       JOIN org_users ou ON ou.org_id = $1 AND ou.user_id = x.user_id AND ou.is_active = TRUE
+      WHERE x.user_id IS NOT NULL`,
+    [orgId, handoverId]);
+  if (rows.length) return rows.map(r => r.user_id);
+
+  const { rows: admins } = await client.query(
+    `SELECT user_id FROM org_users
+      WHERE org_id = $1 AND is_active = TRUE AND role IN ('admin', 'owner')`,
+    [orgId]);
+  return admins.map(r => r.user_id);
+}
+
+/**
+ * Give Daily Work to every approver of these projects who lacks it.
+ *
+ * Recorded with source = 'move_request_approver' so Org Admin can say why the
+ * person has the module. ON CONFLICT DO NOTHING leaves an existing grant — and
+ * its existing source, usually none — exactly as it was.
+ *
+ * Skipped entirely if the org does not have Daily Work enabled, which cannot
+ * happen for a request raised through the module but is cheap to be sure of.
+ *
+ * @returns {Promise<number[]>} the users newly granted, for cache invalidation
+ */
+async function grantApprovers(client, orgId, requestId, handoverIds) {
+  const enabled = await moduleAccess.orgEnabledModules(orgId);
+  if (!enabled.includes('dailywork')) return [];
+
+  const users = new Set();
+  for (const hid of handoverIds) {
+    for (const u of await approverUserIds(client, orgId, hid)) users.add(u);
+  }
+  const granted = [];
+  for (const userId of users) {
+    const { rows } = await client.query(
+      `INSERT INTO user_module_access
+         (org_id, user_id, module_key, source, source_move_request_id)
+       VALUES ($1, $2, 'dailywork', 'move_request_approver', $3)
+       ON CONFLICT (org_id, user_id, module_key) DO NOTHING
+       RETURNING user_id`,
+      [orgId, userId, requestId]);
+    if (rows[0]) granted.push(rows[0].user_id);
+  }
+  return granted;
+}
+
+function invalidateGrants(orgId, userIds) {
+  for (const u of userIds || []) moduleAccess.invalidate(orgId, u);
+}
+
+/* ───────────────────────── raising a request ───────────────────────── */
+
+/**
+ * @param input { itemId, targetHandoverId, entryIds = [], note = null }
+ * @returns {Promise<{ request: object, grantedUserIds: number[] }>}
+ */
+async function createRequest(orgId, actorId, input = {}) {
+  const itemId = Number(input.itemId);
+  const targetHandoverId = Number(input.targetHandoverId);
+  if (!Number.isInteger(itemId) || itemId <= 0) {
+    throw new DailyWorkError('Which item?', 'MISSING_ITEM');
+  }
+  if (!Number.isInteger(targetHandoverId) || targetHandoverId <= 0) {
+    throw new DailyWorkError('Which project should this move to?', 'MISSING_PROJECT');
+  }
+  const note = input.note == null ? null : String(input.note).trim() || null;
+  if (note && note.length > MAX_NOTE) {
+    throw new DailyWorkError(`The note is ${note.length - MAX_NOTE} characters too long.`, 'NOTE_TOO_LONG');
+  }
+
+  const out = await withOrgTransaction(orgId, async (client) => {
+    const item = await lockItem(client, orgId, itemId);
+    if (!item) throw new DailyWorkError('No such work item', 'NO_SUCH_ITEM', { itemId });
+
+    if (!(await canActFor(orgId, actorId, item.owner_user_id))) {
+      throw new DailyWorkError(
+        'You can only ask to move your own work or the work of people in your team.',
+        'NOT_YOUR_ITEM', { itemId });
+    }
+    await dw.assertActiveMember(client, orgId, item.owner_user_id);
+
+    const target = await loadProject(client, orgId, targetHandoverId);
+    if (!target) throw new DailyWorkError('No such project', 'NO_SUCH_PROJECT', { targetHandoverId });
+    if (!isProjectOpen(target)) {
+      throw new DailyWorkError(
+        `${target.name} is closed, so there is no plan to move this work onto.`,
+        'PROJECT_CLOSED', { targetHandoverId });
+    }
+
+    await assertItemMovable(client, orgId, item, targetHandoverId);
+
+    // uq_dwmr_one_open_per_item refuses this too. Checked first for the sentence.
+    const { rows: open } = await client.query(
+      `SELECT id FROM daily_work_move_requests WHERE org_id = $1 AND item_id = $2 AND is_open`,
+      [orgId, itemId]);
+    if (open[0]) {
+      throw new DailyWorkError(
+        'There is already an open move request for this item.',
+        'REQUEST_ALREADY_OPEN', { requestId: open[0].id });
+    }
+
+    const entries = await loadSelectableEntries(client, orgId, item, input.entryIds, targetHandoverId);
+
+    const { rows: [req] } = await client.query(
+      `INSERT INTO daily_work_move_requests
+         (org_id, item_id, owner_user_id, requested_by, target_handover_id, note)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      [orgId, itemId, item.owner_user_id, actorId, targetHandoverId, note]);
+    const { rows: [batch] } = await client.query(
+      `INSERT INTO daily_work_move_batches (org_id, request_id, batch_no, added_by)
+       VALUES ($1, $2, 1, $3) RETURNING id`,
+      [orgId, req.id, actorId]);
+
+    const sources = await sourceProjectIds(client, orgId, targetHandoverId, item, entries);
+    await ensureApprovalRows(client, orgId, req.id, batch.id, targetHandoverId, sources);
+    await insertMoveEntries(client, orgId, req.id, batch.id, entries);
+    const granted = await grantApprovers(client, orgId, req.id, [targetHandoverId, ...sources]);
+
+    return { requestId: req.id, granted };
+  });
+
+  invalidateGrants(orgId, out.granted);
+  return { request: await getRequestDetail(orgId, out.requestId), grantedUserIds: out.granted };
+}
+
+/**
+ * The requester, or the owner if the requester's account is gone.
+ *
+ * "The requester adds entries" and "the requester withdraws" were both agreed.
+ * requested_by is SET NULL when a user is deleted, and without the fallback a
+ * request raised by someone who then left could never be withdrawn by anyone.
+ */
+function isRequester(req, actorId) {
+  return req.requested_by != null ? req.requested_by === actorId : req.owner_user_id === actorId;
+}
+
+/**
+ * Add entries logged after the request was raised.
+ *
+ * Goes into the latest waiting batch if NOBODY has decided anything on it yet —
+ * nobody has approved a set that this would change. Otherwise a new batch, with
+ * its own approval rows, so an approval already given is never silently
+ * widened. Refused once batch 1 has moved: from then on, an assigned item is
+ * closed and a kept recurring item's later work goes through the task.
+ */
+async function addEntries(orgId, actorId, requestId, entryIds) {
+  const out = await withOrgTransaction(orgId, async (client) => {
+    const req = await lockRequest(client, orgId, requestId);
+    if (!isRequester(req, actorId)) {
+      throw new DailyWorkError('Only the person who raised this request can add to it.',
+        'NOT_REQUESTER', { requestId });
+    }
+    if (req.status !== 'pending') {
+      throw new DailyWorkError(
+        req.status === 'approved'
+          ? 'The first part of this move has already happened, so entries can no longer be added to it.'
+          : 'This request is closed.',
+        'REQUEST_NOT_ADDABLE', { requestId, status: req.status });
+    }
+
+    const item = await lockItem(client, orgId, req.item_id);
+    await assertItemMovable(client, orgId, item, req.target_handover_id);
+    const entries = await loadSelectableEntries(client, orgId, item, entryIds, req.target_handover_id);
+    if (!entries.length) throw new DailyWorkError('Choose at least one entry to add.', 'NO_ENTRIES');
+
+    const { rows: [latest] } = await client.query(
+      `SELECT b.id, b.batch_no, b.status,
+              EXISTS (SELECT 1 FROM daily_work_move_approvals a
+                       WHERE a.batch_id = b.id AND a.decision <> 'pending') AS any_decided
+         FROM daily_work_move_batches b
+        WHERE b.request_id = $1
+        ORDER BY b.batch_no DESC LIMIT 1`,
+      [requestId]);
+
+    let batchId = latest.id;
+    if (latest.status !== 'pending' || latest.any_decided) {
+      const { rows: [b] } = await client.query(
+        `INSERT INTO daily_work_move_batches (org_id, request_id, batch_no, added_by)
+         VALUES ($1, $2, $3, $4) RETURNING id`,
+        [orgId, requestId, latest.batch_no + 1, actorId]);
+      batchId = b.id;
+    }
+
+    const sources = await sourceProjectIds(client, orgId, req.target_handover_id, item, entries);
+    await ensureApprovalRows(client, orgId, requestId, batchId, req.target_handover_id, sources);
+    await insertMoveEntries(client, orgId, requestId, batchId, entries);
+    const granted = await grantApprovers(client, orgId, requestId, [req.target_handover_id, ...sources]);
+    return { granted };
+  });
+
+  invalidateGrants(orgId, out.granted);
+  return { request: await getRequestDetail(orgId, requestId), grantedUserIds: out.granted };
+}
+
+/**
+ * Withdraw whatever is still waiting.
+ *
+ * Before batch 1 moves, that is the whole request. After, it is any later batch
+ * still waiting; what has moved stays moved.
+ */
+async function withdraw(orgId, actorId, requestId) {
+  await withOrgTransaction(orgId, async (client) => {
+    const req = await lockRequest(client, orgId, requestId);
+    if (!isRequester(req, actorId)) {
+      throw new DailyWorkError('Only the person who raised this request can withdraw it.',
+        'NOT_REQUESTER', { requestId });
+    }
+    if (!req.is_open) {
+      throw new DailyWorkError('There is nothing waiting on this request to withdraw.',
+        'REQUEST_NOT_OPEN', { requestId });
+    }
+
+    await closePendingBatches(client, requestId, 'withdrawn');
+
+    if (req.status === 'pending') {
+      await client.query(
+        `UPDATE daily_work_move_requests
+            SET status = 'withdrawn', is_open = false, withdrawn_by = $2, withdrawn_at = now(),
+                updated_at = now()
+          WHERE id = $1`,
+        [requestId, actorId]);
+    } else {
+      await client.query(
+        `UPDATE daily_work_move_requests SET is_open = false, updated_at = now() WHERE id = $1`,
+        [requestId]);
+    }
+  });
+  return getRequestDetail(orgId, requestId);
+}
+
+/** Close every waiting batch of a request and exclude its waiting entries. */
+async function closePendingBatches(client, requestId, status, onlyBatchId = null) {
+  const { rows: batches } = await client.query(
+    `UPDATE daily_work_move_batches
+        SET status = $2, decided_at = now()
+      WHERE request_id = $1 AND status = 'pending'
+        AND ($3::int IS NULL OR id = $3)
+      RETURNING id`,
+    [requestId, status, onlyBatchId]);
+  if (!batches.length) return;
+  await client.query(
+    `UPDATE daily_work_move_entries
+        SET outcome = 'excluded'
+      WHERE batch_id = ANY($1::int[]) AND outcome = 'pending'`,
+    [batches.map(b => b.id)]);
+}
+
+/* ───────────────────────── deciding ────────────────────────────────── */
+
+/**
+ * An approver's decision for one project on one batch.
+ *
+ * @param input {
+ *   handoverId        which project the actor is deciding for (required — an
+ *                     approver may manage more than one project in a request)
+ *   decision          'approve' | 'reject'
+ *   reason            required to reject; optional otherwise
+ *   untickEntryIds    daily_work_move_entries ids to leave out
+ *   placement         target, batch 1, when approving:
+ *                       { existingPlayInstanceId }  (new tasks: next step)
+ *   batchId           optional; defaults to the earliest batch whose row for
+ *                     this project is still undecided. Pass it to re-choose
+ *                     the task on batch 1 while a later batch also waits.
+ * }
+ */
+async function decide(orgId, actorId, requestId, input = {}) {
+  const handoverId = Number(input.handoverId);
+  if (!Number.isInteger(handoverId) || handoverId <= 0) {
+    throw new DailyWorkError('Which project are you deciding for?', 'MISSING_PROJECT');
+  }
+  if (!['approve', 'reject'].includes(input.decision)) {
+    throw new DailyWorkError("The decision is either 'approve' or 'reject'.", 'BAD_DECISION');
+  }
+  const reason = input.reason == null ? null : String(input.reason).trim() || null;
+  if (input.decision === 'reject' && !reason) {
+    throw new DailyWorkError('Say why, so the person knows what to do next.', 'REASON_REQUIRED');
+  }
+  if (reason && reason.length > MAX_NOTE) {
+    throw new DailyWorkError(`The reason is ${reason.length - MAX_NOTE} characters too long.`, 'REASON_TOO_LONG');
+  }
+
+  // Outside the transaction: a read against other tables, and the answer does
+  // not depend on anything this transaction writes.
+  if (!(await projectMembers.canManageProject(handoverId, orgId, actorId))) {
+    throw new DailyWorkError('Only a manager of that project can decide for it.',
+      'NOT_PROJECT_MANAGER', { handoverId });
+  }
+
+  await withOrgTransaction(orgId, async (client) => {
+    const req = await lockRequest(client, orgId, requestId);
+    if (!req.is_open) {
+      throw new DailyWorkError('This request has nothing waiting for a decision.',
+        'REQUEST_NOT_OPEN', { requestId });
+    }
+
+    const batchId = input.batchId == null ? null : Number(input.batchId);
+    const { rows: [appr] } = await client.query(
+      `SELECT a.*, b.batch_no
+         FROM daily_work_move_approvals a
+         JOIN daily_work_move_batches b ON b.id = a.batch_id
+        WHERE a.request_id = $1 AND a.handover_id = $2 AND b.status = 'pending'
+          AND ($3::int IS NULL OR a.batch_id = $3)
+        -- A row still waiting on this project comes before one it has already
+        -- decided. Ordering by batch alone picked batch 1 for an approver who
+        -- had approved it and was now deciding batch 2, and refused them with
+        -- ALREADY_DECIDED. Re-choosing the task on an approved batch 1 while a
+        -- later batch also waits on the same project needs batchId.
+        ORDER BY (a.decision <> 'pending'), b.batch_no
+        LIMIT 1
+        FOR UPDATE OF a`,
+      [requestId, handoverId, batchId]);
+    if (!appr) {
+      throw new DailyWorkError('There is nothing on this request waiting for that project.',
+        'NOTHING_TO_DECIDE', { requestId, handoverId });
+    }
+
+    const placement = input.placement || null;
+    const rechoosingTask = appr.decision === 'approved' && appr.role === 'target'
+      && appr.batch_no === 1 && input.decision === 'approve' && placement;
+    if (appr.decision !== 'pending' && !rechoosingTask) {
+      throw new DailyWorkError('That decision has already been made.', 'ALREADY_DECIDED',
+        { approvalId: appr.id, decision: appr.decision });
+    }
+    if (placement && !(appr.role === 'target' && appr.batch_no === 1)) {
+      throw new DailyWorkError(
+        'The task is chosen by the manager of the project the work is moving to, on the first batch.',
+        'PLACEMENT_NOT_YOURS');
+    }
+
+    await untick(client, appr, asIds(input.untickEntryIds), actorId);
+
+    if (input.decision === 'reject') {
+      await client.query(
+        `UPDATE daily_work_move_approvals
+            SET decision = 'rejected', decided_by = $2, decided_at = now(), reason = $3
+          WHERE id = $1`,
+        [appr.id, actorId, reason]);
+
+      if (appr.batch_no === 1) {
+        // A rejection on the first batch ends the request — every waiting
+        // batch with it.
+        await closePendingBatches(client, requestId, 'rejected');
+        await client.query(
+          `UPDATE daily_work_move_requests
+              SET status = 'rejected', is_open = false, decided_at = now(), updated_at = now()
+            WHERE id = $1`,
+          [requestId]);
+      } else {
+        // A later batch: only that batch's entries are dropped.
+        await closePendingBatches(client, requestId, 'rejected', appr.batch_id);
+        await refreshIsOpen(client, requestId);
+      }
+      return;
+    }
+
+    // ── approve ────────────────────────────────────────────────────
+    if (appr.role === 'target' && appr.batch_no === 1) {
+      const chosen = await validatePlacement(client, orgId, req, placement);
+      await client.query(
+        `UPDATE daily_work_move_approvals
+            SET decision = 'approved', decided_by = $2, decided_at = now(), reason = $3,
+                placement = 'existing_task', existing_play_instance_id = $4, new_task = NULL
+          WHERE id = $1`,
+        [appr.id, actorId, reason, chosen.id]);
+    } else {
+      await client.query(
+        `UPDATE daily_work_move_approvals
+            SET decision = 'approved', decided_by = $2, decided_at = now(), reason = $3
+          WHERE id = $1`,
+        [appr.id, actorId, reason]);
+    }
+
+    await executeReadyBatches(client, orgId, actorId, requestId);
+  });
+
+  return getRequestDetail(orgId, requestId);
+}
+
+/**
+ * Leave entries out of a batch.
+ *
+ * The target may untick any entry. A source project may untick only entries
+ * whose SAVED tag is that project — its authority is over its own work, and an
+ * entry tagged elsewhere is not its call. The tag read is the snapshot taken
+ * when the entry joined the request.
+ */
+async function untick(client, appr, moveEntryIds, actorId) {
+  if (!moveEntryIds.length) return;
+  const { rows } = await client.query(
+    `SELECT id, selected, outcome, snap_anchor_kind, snap_anchor_id
+       FROM daily_work_move_entries
+      WHERE batch_id = $1 AND id = ANY($2::int[])
+      FOR UPDATE`,
+    [appr.batch_id, moveEntryIds]);
+  if (rows.length !== moveEntryIds.length) {
+    throw new DailyWorkError('Some of those entries are not part of this batch.',
+      'ENTRY_NOT_IN_BATCH', { moveEntryIds });
+  }
+  for (const r of rows) {
+    if (r.outcome !== 'pending') {
+      throw new DailyWorkError('That entry has already been dealt with.', 'ENTRY_NOT_PENDING', { moveEntryId: r.id });
+    }
+    if (appr.role === 'source'
+        && !(r.snap_anchor_kind === 'handover' && r.snap_anchor_id === appr.handover_id)) {
+      throw new DailyWorkError(
+        'You can only leave out entries tagged to your own project.',
+        'NOT_YOUR_ENTRY_TO_UNTICK', { moveEntryId: r.id });
+    }
+  }
+  await client.query(
+    `UPDATE daily_work_move_entries
+        SET selected = false, unticked_at = now(), unticked_by = $2, unticked_for_handover_id = $3
+      WHERE id = ANY($1::int[]) AND selected`,
+    [moveEntryIds, actorId, appr.handover_id]);
+}
+
+/** The task a target approver chose, checked. */
+async function validatePlacement(client, orgId, req, placement) {
+  if (!placement) {
+    throw new DailyWorkError('Choose the task this work should go to.', 'PLACEMENT_REQUIRED');
+  }
+  if (placement.newTask) {
+    throw new DailyWorkError(
+      'Adding this as a new task is not available yet. Choose an existing task for now.',
+      'NEW_TASK_NOT_AVAILABLE');
+  }
+  const taskId = Number(placement.existingPlayInstanceId);
+  if (!Number.isInteger(taskId) || taskId <= 0) {
+    throw new DailyWorkError('Choose the task this work should go to.', 'PLACEMENT_REQUIRED');
+  }
+  const task = await loadTask(client, orgId, taskId);
+  assertTaskUsable(task, req);
+  return task;
+}
+
+async function loadTask(client, orgId, taskId) {
+  const { rows } = await client.query(
+    `SELECT id, title, status, handover_id FROM project_play_instances
+      WHERE id = $1 AND org_id = $2`,
+    [taskId, orgId]);
+  return rows[0] || null;
+}
+
+function assertTaskUsable(task, req) {
+  if (!task || task.handover_id !== req.target_handover_id) {
+    throw new DailyWorkError('That task is not on the project this work is moving to.',
+      'TASK_NOT_ON_PROJECT', { playInstanceId: task ? task.id : null });
+  }
+  if (CLOSED_TASK_STATUSES.includes(task.status)) {
+    throw new DailyWorkError(
+      'That task is closed. The manager of the project this work is moving to needs to choose another task.',
+      'TASK_CLOSED', { playInstanceId: task.id, status: task.status });
+  }
+}
+
+async function refreshIsOpen(client, requestId) {
+  // Only 'approved' is left to this; chk_dwmr_open_shape pins the rest.
+  await client.query(
+    `UPDATE daily_work_move_requests r
+        SET is_open = EXISTS (SELECT 1 FROM daily_work_move_batches b
+                               WHERE b.request_id = r.id AND b.status = 'pending'),
+            updated_at = now()
+      WHERE r.id = $1 AND r.status = 'approved'`,
+    [requestId]);
+}
+
+/**
+ * Move every batch that is fully approved and allowed to move.
+ *
+ * Batch 1 first, always. A later batch can be fully approved before batch 1 is
+ * — batch 1 may still be waiting on a source project — and it cannot move
+ * before there is a task, so it waits and moves the moment batch 1 does.
+ */
+async function executeReadyBatches(client, orgId, actorId, requestId) {
+  const { rows: batches } = await client.query(
+    `SELECT b.id, b.batch_no,
+            NOT EXISTS (SELECT 1 FROM daily_work_move_approvals a
+                         WHERE a.batch_id = b.id AND a.decision <> 'approved') AS all_approved
+       FROM daily_work_move_batches b
+      WHERE b.request_id = $1 AND b.status = 'pending'
+      ORDER BY b.batch_no`,
+    [requestId]);
+
+  for (const b of batches) {
+    if (!b.all_approved) {
+      if (b.batch_no === 1) break;
+      continue;
+    }
+    const { rows: [req] } = await client.query(
+      `SELECT * FROM daily_work_move_requests WHERE id = $1`, [requestId]);
+    if (b.batch_no !== 1 && req.status !== 'approved') break;
+    await executeBatch(client, orgId, actorId, req, b);
+  }
+  await refreshIsOpen(client, requestId);
+}
+
+/* ───────────────────────── the move itself ─────────────────────────── */
+
+async function executeBatch(client, orgId, actorId, req, batch) {
+  const target = await loadProject(client, orgId, req.target_handover_id);
+  if (!isProjectOpen(target)) {
+    throw new DailyWorkError(
+      `${target ? target.name : 'That project'} has closed, so this work cannot be moved onto it.`,
+      'PROJECT_CLOSED', { handoverId: req.target_handover_id });
+  }
+
+  const item = await lockItem(client, orgId, req.item_id);
+  let taskId;
+  if (batch.batch_no === 1) {
+    const { rows: [targetAppr] } = await client.query(
+      `SELECT placement, existing_play_instance_id FROM daily_work_move_approvals
+        WHERE batch_id = $1 AND role = 'target'`,
+      [batch.id]);
+    if (!targetAppr || targetAppr.placement !== 'existing_task') {
+      throw new DailyWorkError('The task has not been chosen yet.', 'PLACEMENT_REQUIRED');
+    }
+    if (!targetAppr.existing_play_instance_id) {
+      throw new DailyWorkError(
+        'The task that was chosen has since been deleted. The project manager needs to choose another.',
+        'TASK_GONE');
+    }
+    // Re-checked here, not just when the request was raised: the owner may
+    // have closed the item, or logged against a task, in the meantime.
+    await assertItemMovable(client, orgId, item, req.target_handover_id);
+    taskId = targetAppr.existing_play_instance_id;
+  } else {
+    taskId = req.play_instance_id;
+  }
+
+  const task = await loadTask(client, orgId, taskId);
+  assertTaskUsable(task, req);
+  await dw.assertActiveMember(client, orgId, req.owner_user_id);
+
+  await ensureProjectMember(client, orgId, target.id, req.owner_user_id, actorId);
+  await ensureAssignee(client, task.id, req.owner_user_id, actorId);
+
+  const { rows: moveRows } = await client.query(
+    `SELECT * FROM daily_work_move_entries
+      WHERE batch_id = $1 AND outcome = 'pending'
+      ORDER BY snap_entry_date, id
+      FOR UPDATE`,
+    [batch.id]);
+  const selected = moveRows.filter(r => r.selected);
+
+  const excludedIds = moveRows.filter(r => !r.selected).map(r => r.id);
+  if (excludedIds.length) {
+    await client.query(
+      `UPDATE daily_work_move_entries SET outcome = 'excluded' WHERE id = ANY($1::int[])`,
+      [excludedIds]);
+  }
+
+  const openedOn = selected.length
+    ? selected.map(r => dateText(r.snap_entry_date)).sort()[0]
+    : await localToday(client, orgId, req.owner_user_id);
+  const { item: linked } = await dw.findOrCreateLinkedItem(
+    client, orgId, req.owner_user_id, { id: task.id, title: task.title, handover_id: target.id },
+    openedOn, actorId);
+  const accountId = await dw.resolveAccountId(client, orgId, 'handover', target.id);
+
+  for (const row of selected) {
+    await moveOne(client, { orgId, actorId, row, req, item, linked, target, accountId });
+  }
+
+  if (batch.batch_no === 1) {
+    if (item.kind === 'assigned') {
+      await client.query(
+        `UPDATE daily_work_items SET status = 'moved', closed_at = now(), updated_at = now()
+          WHERE id = $1 AND org_id = $2`,
+        [item.id, orgId]);
+    }
+  }
+
+  await client.query(
+    `UPDATE daily_work_move_batches
+        SET status = 'approved', decided_at = now(), executed_at = now()
+      WHERE id = $1`,
+    [batch.id]);
+
+  if (batch.batch_no === 1) {
+    await client.query(
+      `UPDATE daily_work_move_requests
+          SET status = 'approved', placement = 'existing_task', play_instance_id = $2,
+              decided_at = now(), executed_at = now(),
+              recurring_decision = CASE WHEN $3 THEN 'pending' ELSE recurring_decision END,
+              updated_at = now()
+        WHERE id = $1`,
+      [req.id, task.id, item.kind === 'recurring']);
+  }
+}
+
+/** node-postgres may return a DATE as a Date; everything here compares text. */
+function dateText(d) {
+  if (typeof d === 'string') return d.slice(0, 10);
+  // A Date built at LOCAL midnight by the driver — read back in local parts,
+  // which is the date that was stored.
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
+ * Put the owner on the project.
+ *
+ * Logging against a task needs an approved membership (getNoteVisibility), and
+ * setAssignees refuses to add a non-member to a task. Approving a move is the
+ * project manager staffing their project, which is exactly the case
+ * requestMember approves automatically (byManager), so the row is approved
+ * here directly. Side 'delivery': an internal-customer seat is the acceptor,
+ * and requestMember never self-approves those.
+ *
+ * An existing DELIVERY row that is pending or rejected is approved. A row the
+ * person left or declined is re-approved and its exit cleared — the move
+ * request is the record of why they are back.
+ *
+ * An unapproved INTERNAL-CUSTOMER row is not touched. That seat is the one who
+ * accepts the work as done, requestMember sends it to an org admin even when a
+ * project manager adds it, and approving a move must not be a way around that.
+ * The move is refused with the reason instead.
+ */
+async function ensureProjectMember(client, orgId, handoverId, userId, actorId) {
+  await client.query(
+    `INSERT INTO project_members
+       (org_id, context_type, context_id, user_id, status, requested_by, reviewed_by,
+        reviewed_at, review_reason, side)
+     VALUES ($1, 'handover', $2, $3, 'approved', $4, $4, now(),
+             'Added when daily work was moved onto this project', 'delivery')
+     ON CONFLICT (context_type, context_id, user_id) DO UPDATE
+        SET status        = 'approved',
+            reviewed_by   = EXCLUDED.reviewed_by,
+            reviewed_at   = now(),
+            review_reason = EXCLUDED.review_reason,
+            exited_at     = NULL,
+            exit_reason   = NULL
+      WHERE project_members.status <> 'approved'
+        AND project_members.side = 'delivery'`,
+    [orgId, handoverId, userId, actorId]);
+
+  const { rows } = await client.query(
+    `SELECT 1 FROM project_members
+      WHERE org_id = $1 AND context_type = 'handover' AND context_id = $2 AND user_id = $3
+        AND status = 'approved'`,
+    [orgId, handoverId, userId]);
+  if (!rows[0]) {
+    throw new DailyWorkError(
+      'This person has a request to join the project as its internal customer, which only an org admin '
+      + 'can approve. Once that is settled, this work can be moved.',
+      'MEMBERSHIP_NEEDS_ADMIN', { handoverId, userId });
+  }
+}
+
+/** Put the owner on the task. assignedToSql is how every read finds a person's tasks. */
+async function ensureAssignee(client, taskId, userId, actorId) {
+  await client.query(
+    `INSERT INTO project_play_assignees (instance_id, user_id, assigned_by)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (instance_id, user_id) DO NOTHING`,
+    [taskId, userId, actorId]);
+}
+
+async function moveOne(client, { orgId, actorId, row, req, item, linked, target, accountId }) {
+  const { rows: [entry] } = await client.query(
+    `SELECT ${ENTRY_COLUMNS} FROM daily_work_entries
+      WHERE id = $1 AND org_id = $2 FOR UPDATE`,
+    [row.entry_id, orgId]);
+
+  if (!entry || entry.item_id !== req.item_id) {
+    await client.query(
+      `UPDATE daily_work_move_entries
+          SET outcome = 'excluded', left_out_reason = 'The entry was no longer on the item when the move ran.'
+        WHERE id = $1`,
+      [row.id]);
+    return;
+  }
+
+  const { rows: [onTask] } = await client.query(
+    `SELECT ${ENTRY_COLUMNS} FROM daily_work_entries
+      WHERE org_id = $1 AND item_id = $2 AND entry_date = $3::date FOR UPDATE`,
+    [orgId, linked.id, entry.entry_date]);
+
+  if (!onTask) {
+    // Re-point and re-tag. updated_at is deliberately not touched: the task
+    // feed marks an entry "edited" when updated_at > created_at, and moving
+    // someone's words is not editing them.
+    await client.query(
+      `UPDATE daily_work_entries
+          SET item_id = $3, anchor_kind = 'handover', anchor_id = $4, account_id = $5
+        WHERE id = $1 AND org_id = $2`,
+      [entry.id, orgId, linked.id, target.id, accountId]);
+    await client.query(
+      `UPDATE daily_work_move_entries SET outcome = 'moved', moved_at = now() WHERE id = $1`,
+      [row.id]);
+    return;
+  }
+
+  await mergePair(client, orgId, actorId, row, entry, onTask, item.title);
+}
+
+/**
+ * Merge a source entry into the task's entry for the same date, or leave it
+ * out if the result would be too long.
+ *
+ * THE TEXT. The source is appended under a line naming where it came from, so
+ * the person editing it later can see the seam. The separator counts toward the
+ * limit. The task entry's stage is kept — it is what the project already shows.
+ *
+ * NEVER TRUNCATED. The design's rule since 2026_131: nothing is cut for anyone.
+ * Too long means the entry stays where it is with the reason, and merges the
+ * moment either side is short enough (tryPendingMerges).
+ *
+ * EVIDENCE AND NOTES are copied as NEW rows, not re-pointed.
+ * play_evidence_immutable and play_notes_append_only refuse any UPDATE that
+ * changes daily_work_entry_id. They are BEFORE UPDATE triggers only, so an
+ * INSERT may carry the original accepted_by / accepted_at, author_id /
+ * created_at and revocation or deletion state — the copy says exactly what the
+ * original said. The originals then go with the source entry (ON DELETE
+ * CASCADE), and copied_evidence / copied_notes map each copy to its original.
+ */
+async function mergePair(client, orgId, actorId, row, source, onTask, sourceTitle) {
+  const sep = `\n\n— moved from "${sourceTitle}" —\n`;
+  const description = `${onTask.description}${sep}${source.description}`;
+  const nextSteps = onTask.next_steps && source.next_steps
+    ? `${onTask.next_steps}${sep}${source.next_steps}`
+    : (onTask.next_steps || source.next_steps || null);
+
+  const overDesc = description.length - MAX_DESCRIPTION;
+  const overNext = nextSteps ? nextSteps.length - MAX_NEXT_STEPS : 0;
+  if (overDesc > 0 || overNext > 0) {
+    const parts = [];
+    if (overDesc > 0) parts.push(`the work would be ${description.length} characters`);
+    if (overNext > 0) parts.push(`the next steps would be ${nextSteps.length} characters`);
+    await client.query(
+      `UPDATE daily_work_move_entries
+          SET outcome = 'left_out_too_long', target_entry_id = $2, left_out_reason = $3
+        WHERE id = $1`,
+      [row.id, onTask.id,
+       `There is already work logged on the task for this day, and together ${parts.join(' and ')} `
+       + `— the limit is ${MAX_DESCRIPTION}. Shorten either one and it moves automatically.`]);
+    return 'left_out_too_long';
+  }
+
+  await client.query(
+    `UPDATE daily_work_entries
+        SET description = $3, next_steps = $4, updated_at = now(), last_edited_by = $5
+      WHERE id = $1 AND org_id = $2`,
+    [onTask.id, orgId, description, nextSteps, actorId]);
+
+  const copiedEvidence = [];
+  const { rows: evidence } = await client.query(
+    `SELECT * FROM play_evidence WHERE daily_work_entry_id = $1 ORDER BY id`, [source.id]);
+  for (const ev of evidence) {
+    const { rows: [c] } = await client.query(
+      `INSERT INTO play_evidence
+         (org_id, project_play_instance_id, daily_work_entry_id, channel, whatsapp_message_id,
+          snapshot_body, snapshot_sender, snapshot_sent_at, snapshot_thread_id, note,
+          accepted_by, accepted_at, revoked_at, revoked_by, revoke_reason, storage_file_id,
+          snapshot_file_name, snapshot_mime_type, snapshot_file_size, snapshot_web_url,
+          msteams_message_id)
+       VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+               $16, $17, $18, $19, $20)
+       RETURNING id`,
+      [ev.org_id, onTask.id, ev.channel, ev.whatsapp_message_id,
+       ev.snapshot_body, ev.snapshot_sender, ev.snapshot_sent_at, ev.snapshot_thread_id, ev.note,
+       ev.accepted_by, ev.accepted_at, ev.revoked_at, ev.revoked_by, ev.revoke_reason,
+       ev.storage_file_id, ev.snapshot_file_name, ev.snapshot_mime_type, ev.snapshot_file_size,
+       ev.snapshot_web_url, ev.msteams_message_id]);
+    copiedEvidence.push({ from: ev.id, to: c.id });
+  }
+
+  const copiedNotes = [];
+  const { rows: notes } = await client.query(
+    `SELECT * FROM play_notes WHERE daily_work_entry_id = $1 ORDER BY id`, [source.id]);
+  for (const n of notes) {
+    const { rows: [c] } = await client.query(
+      `INSERT INTO play_notes
+         (org_id, project_play_instance_id, daily_work_entry_id, author_id, body, note_type,
+          is_internal, created_at, deleted_at, deleted_by)
+       VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING id`,
+      [n.org_id, onTask.id, n.author_id, n.body, n.note_type, n.is_internal,
+       n.created_at, n.deleted_at, n.deleted_by]);
+    await client.query(
+      `INSERT INTO play_note_attachments
+         (org_id, play_note_id, storage_file_id, file_name, mime_type, file_size, web_url,
+          uploaded_by, created_at)
+       SELECT org_id, $2, storage_file_id, file_name, mime_type, file_size, web_url,
+              uploaded_by, created_at
+         FROM play_note_attachments WHERE play_note_id = $1`,
+      [n.id, c.id]);
+    copiedNotes.push({ from: n.id, to: c.id });
+  }
+
+  await client.query(
+    `UPDATE daily_work_move_entries
+        SET outcome = 'merged', moved_at = now(), needs_edit = true, target_entry_id = $2,
+            left_out_reason = NULL,
+            copied_evidence = $3::jsonb, copied_notes = $4::jsonb
+      WHERE id = $1`,
+    [row.id, onTask.id, JSON.stringify(copiedEvidence), JSON.stringify(copiedNotes)]);
+
+  await client.query(`DELETE FROM daily_work_entries WHERE id = $1 AND org_id = $2`, [source.id, orgId]);
+  return 'merged';
+}
+
+/**
+ * Merge anything left out for length that fits now.
+ *
+ * Called with the id of an entry that was just saved, inside the transaction
+ * that saved it: dailyWork._saveDayIn (My day and the task composer both reach
+ * it) and editFlaggedEntry below. Looks for left-out rows where that entry is
+ * either side of the pair.
+ *
+ * Attributed to the entry's owner. They made the edit that let it fit.
+ */
+async function tryPendingMerges(client, orgId, entryId) {
+  const { rows } = await client.query(
+    `SELECT * FROM daily_work_move_entries
+      WHERE org_id = $1 AND outcome = 'left_out_too_long'
+        AND (entry_id = $2 OR target_entry_id = $2)
+      FOR UPDATE`,
+    [orgId, entryId]);
+
+  for (const row of rows) {
+    const { rows: [source] } = await client.query(
+      `SELECT ${ENTRY_COLUMNS} FROM daily_work_entries WHERE id = $1 AND org_id = $2 FOR UPDATE`,
+      [row.entry_id, orgId]);
+    const { rows: [onTask] } = await client.query(
+      `SELECT ${ENTRY_COLUMNS} FROM daily_work_entries WHERE id = $1 AND org_id = $2 FOR UPDATE`,
+      [row.target_entry_id, orgId]);
+    if (!source || !onTask || source.entry_date !== onTask.entry_date) continue;
+
+    const { rows: [item] } = await client.query(
+      `SELECT title FROM daily_work_items WHERE id = $1`, [row.snap_item_id]);
+    await mergePair(client, orgId, source.user_id, row, source, onTask, item ? item.title : 'another item');
+  }
+}
+
+/* ───────────────────────── the owner's follow-ups ──────────────────── */
+
+async function lockMoveEntryForOwner(client, orgId, userId, moveEntryId) {
+  const { rows: [row] } = await client.query(
+    `SELECT m.*, r.owner_user_id
+       FROM daily_work_move_entries m
+       JOIN daily_work_move_requests r ON r.id = m.request_id
+      WHERE m.id = $1 AND m.org_id = $2
+      FOR UPDATE OF m`,
+    [moveEntryId, orgId]);
+  if (!row) throw new DailyWorkError('No such entry on a move request', 'NO_SUCH_MOVE_ENTRY', { moveEntryId });
+  if (row.owner_user_id !== userId) {
+    throw new DailyWorkError('Only the person whose work this is can change it.',
+      'NOT_YOUR_ENTRY', { moveEntryId });
+  }
+  return row;
+}
+
+/**
+ * Edit an entry flagged by a move — the one place an entry may be edited
+ * outside the backfill window.
+ *
+ * @param which  'task'     the task's entry: a merge that needs editing, or
+ *                          the other side of a left-out pair
+ *               'original' the left-out entry itself, still on its old item
+ *
+ * Bypasses dailyWork._saveDayIn on purpose, for two reasons: that path applies
+ * the backfill window, and it refuses a moved item — which is exactly where a
+ * left-out entry on an assigned item lives. The same blank and length rules
+ * apply here.
+ */
+async function editFlaggedEntry(orgId, userId, moveEntryId, input = {}) {
+  const which = input.which || 'task';
+  const description = String(input.description || '');
+  const nextSteps = input.nextSteps == null ? null : String(input.nextSteps);
+
+  if (!description.trim()) {
+    throw new DailyWorkError('Say what you did — this cannot be left empty.', 'BLANK_DESCRIPTION');
+  }
+  if (description.length > MAX_DESCRIPTION) {
+    throw new DailyWorkError(
+      `${description.length - MAX_DESCRIPTION} characters too long — trim it, nothing is cut for you`,
+      'DESCRIPTION_TOO_LONG', { length: description.length, limit: MAX_DESCRIPTION });
+  }
+  if (nextSteps && nextSteps.length > MAX_NEXT_STEPS) {
+    throw new DailyWorkError(
+      `Next steps is ${nextSteps.length - MAX_NEXT_STEPS} characters too long`, 'NEXT_STEPS_TOO_LONG');
+  }
+
+  await withOrgTransaction(orgId, async (client) => {
+    const row = await lockMoveEntryForOwner(client, orgId, userId, moveEntryId);
+
+    let entryId;
+    if (row.needs_edit) {
+      if (which !== 'task') {
+        throw new DailyWorkError('This merge is edited on the task\'s entry.', 'BAD_WHICH');
+      }
+      entryId = row.target_entry_id;
+    } else if (row.outcome === 'left_out_too_long') {
+      if (!['task', 'original'].includes(which)) {
+        throw new DailyWorkError("Choose 'task' or 'original'.", 'BAD_WHICH');
+      }
+      entryId = which === 'task' ? row.target_entry_id : row.entry_id;
+    } else {
+      throw new DailyWorkError('That entry has nothing waiting to be edited.', 'NOT_FLAGGED', { moveEntryId });
+    }
+    if (!entryId) {
+      throw new DailyWorkError('That entry no longer exists.', 'NO_SUCH_ENTRY', { moveEntryId });
+    }
+
+    const { rowCount } = await client.query(
+      `UPDATE daily_work_entries
+          SET description = $3, next_steps = $4, updated_at = now(), last_edited_by = $5
+        WHERE id = $1 AND org_id = $2 AND user_id = $5`,
+      [entryId, orgId, description.trim(), nextSteps && nextSteps.trim() ? nextSteps.trim() : null, userId]);
+    if (!rowCount) {
+      throw new DailyWorkError('That entry no longer exists.', 'NO_SUCH_ENTRY', { moveEntryId });
+    }
+
+    await tryPendingMerges(client, orgId, entryId);
+  });
+
+  return getMoveEntry(orgId, moveEntryId);
+}
+
+/** The explicit Done that clears "needs edit". */
+async function markEntryDone(orgId, userId, moveEntryId) {
+  await withOrgTransaction(orgId, async (client) => {
+    const row = await lockMoveEntryForOwner(client, orgId, userId, moveEntryId);
+    if (!row.needs_edit) {
+      throw new DailyWorkError('That entry has nothing waiting to be edited.', 'NOT_FLAGGED', { moveEntryId });
+    }
+    await client.query(
+      `UPDATE daily_work_move_entries
+          SET needs_edit = false, needs_edit_cleared_at = now(), needs_edit_cleared_by = $2
+        WHERE id = $1`,
+      [moveEntryId, userId]);
+  });
+  return getMoveEntry(orgId, moveEntryId);
+}
+
+/**
+ * The owner's answer, on My day, for a recurring item whose work moved.
+ * @param decision 'retire' | 'keep'
+ */
+async function setRecurringDecision(orgId, userId, requestId, decision) {
+  if (!['retire', 'keep'].includes(decision)) {
+    throw new DailyWorkError("Choose 'retire' or 'keep'.", 'BAD_DECISION');
+  }
+  await withOrgTransaction(orgId, async (client) => {
+    const req = await lockRequest(client, orgId, requestId);
+    if (req.owner_user_id !== userId) {
+      throw new DailyWorkError('Only the person whose item this is can decide.', 'NOT_YOUR_ITEM', { requestId });
+    }
+    if (req.recurring_decision !== 'pending') {
+      throw new DailyWorkError('There is no decision waiting on this item.', 'NOTHING_TO_DECIDE', { requestId });
+    }
+    if (decision === 'retire') {
+      await client.query(
+        `UPDATE daily_work_items
+            SET status = 'retired', closed_at = now(), updated_at = now()
+          WHERE id = $1 AND org_id = $2 AND kind = 'recurring' AND status = 'active'`,
+        [req.item_id, orgId]);
+    }
+    await client.query(
+      `UPDATE daily_work_move_requests
+          SET recurring_decision = $2, recurring_decided_by = $3, recurring_decided_at = now(),
+              updated_at = now()
+        WHERE id = $1`,
+      [requestId, decision === 'retire' ? 'retired' : 'kept', userId]);
+  });
+  return getRequestDetail(orgId, requestId);
+}
+
+/* ───────────────────────── reads ───────────────────────────────────── */
+
+/**
+ * A request with everything a screen needs: the item, the target, every batch,
+ * every approval with who decided, and every entry with its outcome.
+ *
+ * No permission check — callers are this file, after a write the actor was
+ * allowed to make, and getRequest, which checks first.
+ */
+async function getRequestDetail(orgId, requestId) {
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows: [r] } = await client.query(
+      `SELECT r.id, r.item_id, r.owner_user_id, r.requested_by, r.target_handover_id, r.note,
+              r.status, r.is_open, r.placement, r.play_instance_id, r.recurring_decision,
+              r.decided_at, r.executed_at, r.withdrawn_at, r.created_at,
+              i.title AS item_title, i.kind AS item_kind, i.status AS item_status,
+              COALESCE(NULLIF(btrim(h.name), ''), 'Untitled project') AS target_name,
+              COALESCE(h.tracking_mode, 'timeboxed') AS target_tracking_mode,
+              p.title AS task_title,
+              ou.first_name || ' ' || ou.last_name AS owner_name,
+              ru.first_name || ' ' || ru.last_name AS requested_by_name
+         FROM daily_work_move_requests r
+         JOIN daily_work_items i ON i.id = r.item_id
+         JOIN sales_handovers h  ON h.id = r.target_handover_id
+         LEFT JOIN project_play_instances p ON p.id = r.play_instance_id
+         LEFT JOIN users ou ON ou.id = r.owner_user_id
+         LEFT JOIN users ru ON ru.id = r.requested_by
+        WHERE r.id = $1 AND r.org_id = $2`,
+      [requestId, orgId]);
+    if (!r) throw new DailyWorkError('No such move request', 'NO_SUCH_REQUEST', { requestId });
+
+    const { rows: batches } = await client.query(
+      `SELECT id, batch_no, status, created_at, decided_at, executed_at
+         FROM daily_work_move_batches WHERE request_id = $1 ORDER BY batch_no`,
+      [requestId]);
+
+    const { rows: approvals } = await client.query(
+      `SELECT a.id, a.batch_id, a.handover_id, a.role, a.decision, a.decided_at, a.reason,
+              a.placement, a.existing_play_instance_id,
+              COALESCE(NULLIF(btrim(h.name), ''), 'Untitled project') AS project_name,
+              du.first_name || ' ' || du.last_name AS decided_by_name,
+              p.title AS existing_task_title
+         FROM daily_work_move_approvals a
+         JOIN sales_handovers h ON h.id = a.handover_id
+         LEFT JOIN users du ON du.id = a.decided_by
+         LEFT JOIN project_play_instances p ON p.id = a.existing_play_instance_id
+        WHERE a.request_id = $1
+        ORDER BY a.batch_id, (a.role = 'target') DESC, a.id`,
+      [requestId]);
+
+    const { rows: entries } = await client.query(
+      `SELECT m.id, m.batch_id, m.entry_id, m.selected, m.unticked_at, m.unticked_for_handover_id,
+              m.outcome, m.target_entry_id, m.left_out_reason, m.moved_at,
+              m.needs_edit, m.needs_edit_cleared_at,
+              m.snap_entry_date::text AS entry_date, m.snap_description, m.snap_next_steps,
+              m.snap_day_stage, m.snap_anchor_kind, m.snap_anchor_id,
+              CASE m.snap_anchor_kind WHEN 'handover' THEN sh.name END AS snap_anchor_label,
+              e.description AS current_description,
+              te.description AS task_entry_description
+         FROM daily_work_move_entries m
+         LEFT JOIN sales_handovers sh
+                ON m.snap_anchor_kind = 'handover' AND sh.id = m.snap_anchor_id
+         LEFT JOIN daily_work_entries e  ON e.id = m.entry_id
+         LEFT JOIN daily_work_entries te ON te.id = m.target_entry_id
+        WHERE m.request_id = $1
+        ORDER BY m.snap_entry_date, m.id`,
+      [requestId]);
+
+    return { ...r, batches, approvals, entries };
+  });
+}
+
+/**
+ * A request, for someone allowed to see it: the owner, the requester, anyone
+ * whose chain contains the owner, or a manager of any project involved. The
+ * last group sees everything — the work is moving onto or out of their plan.
+ *
+ * Anyone else gets NO_SUCH_REQUEST rather than a refusal, so the answer does
+ * not confirm the request exists.
+ */
+async function getRequest(orgId, viewerId, requestId) {
+  const detail = await getRequestDetail(orgId, requestId);
+  if (detail.owner_user_id === viewerId || detail.requested_by === viewerId) return detail;
+  if (await canActFor(orgId, viewerId, detail.owner_user_id)) return detail;
+  const projects = [...new Set(detail.approvals.map(a => a.handover_id))];
+  for (const hid of projects) {
+    if (await projectMembers.canManageProject(hid, orgId, viewerId)) return detail;
+  }
+  throw new DailyWorkError('No such move request', 'NO_SUCH_REQUEST', { requestId });
+}
+
+async function getMoveEntry(orgId, moveEntryId) {
+  const { rows: [m] } = await pool.query(
+    `SELECT m.id, m.request_id, m.outcome, m.needs_edit, m.needs_edit_cleared_at,
+            m.left_out_reason, m.entry_id, m.target_entry_id,
+            m.snap_entry_date::text AS entry_date,
+            e.description AS original_description, e.next_steps AS original_next_steps,
+            te.description AS task_description, te.next_steps AS task_next_steps
+       FROM daily_work_move_entries m
+       LEFT JOIN daily_work_entries e  ON e.id = m.entry_id
+       LEFT JOIN daily_work_entries te ON te.id = m.target_entry_id
+      WHERE m.id = $1 AND m.org_id = $2`,
+    [moveEntryId, orgId]);
+  return m || null;
+}
+
+/**
+ * Everything waiting on the viewer as an approver: pending approval rows, on
+ * waiting batches of open requests, for projects the viewer manages. Org
+ * admins see every project, the same way myReviewQueue treats them.
+ */
+async function listReviewQueue(orgId, viewerId) {
+  const { rows: [me] } = await pool.query(
+    `SELECT role FROM org_users WHERE org_id = $1 AND user_id = $2 AND is_active = TRUE`,
+    [orgId, viewerId]);
+  if (!me) return [];
+  const isOrgAdmin = ['admin', 'owner'].includes(me.role);
+
+  const { rows } = await pool.query(
+    `SELECT a.id AS approval_id, a.request_id, a.batch_id, b.batch_no, a.handover_id, a.role,
+            COALESCE(NULLIF(btrim(h.name), ''), 'Untitled project') AS project_name,
+            r.item_id, i.title AS item_title, i.kind AS item_kind,
+            r.owner_user_id, ou.first_name || ' ' || ou.last_name AS owner_name,
+            ru.first_name || ' ' || ru.last_name AS requested_by_name,
+            COALESCE(NULLIF(btrim(t.name), ''), 'Untitled project') AS target_name,
+            b.created_at AS waiting_since,
+            (SELECT count(*)::int FROM daily_work_move_entries m
+              WHERE m.batch_id = b.id AND m.selected) AS entry_count
+       FROM daily_work_move_approvals a
+       JOIN daily_work_move_batches b  ON b.id = a.batch_id AND b.status = 'pending'
+       JOIN daily_work_move_requests r ON r.id = a.request_id AND r.is_open
+       JOIN sales_handovers h ON h.id = a.handover_id
+       JOIN sales_handovers t ON t.id = r.target_handover_id
+       JOIN daily_work_items i ON i.id = r.item_id
+       LEFT JOIN users ou ON ou.id = r.owner_user_id
+       LEFT JOIN users ru ON ru.id = r.requested_by
+      WHERE a.org_id = $1 AND a.decision = 'pending'
+        AND ($3::boolean OR ${projectMembers.manageableProjectSql('h', '$2', '$1')})
+      ORDER BY b.created_at, a.id`,
+    [orgId, viewerId, isOrgAdmin]);
+  return rows;
+}
+
+/**
+ * The owner's side, for My day: their open requests, the retire-or-keep
+ * questions waiting, and the entries a move flagged for them.
+ */
+async function listMine(orgId, userId) {
+  const { rows: requests } = await pool.query(
+    `SELECT r.id, r.item_id, r.status, r.is_open, r.recurring_decision, r.created_at,
+            i.title AS item_title, i.kind AS item_kind,
+            COALESCE(NULLIF(btrim(h.name), ''), 'Untitled project') AS target_name
+       FROM daily_work_move_requests r
+       JOIN daily_work_items i ON i.id = r.item_id
+       JOIN sales_handovers h ON h.id = r.target_handover_id
+      WHERE r.org_id = $1 AND r.owner_user_id = $2
+        AND (r.is_open OR r.recurring_decision = 'pending')
+      ORDER BY r.created_at DESC`,
+    [orgId, userId]);
+
+  const { rows: flagged } = await pool.query(
+    `SELECT m.id, m.request_id, m.outcome, m.needs_edit, m.left_out_reason,
+            m.snap_entry_date::text AS entry_date,
+            e.description AS original_description,
+            te.description AS task_description
+       FROM daily_work_move_entries m
+       JOIN daily_work_move_requests r ON r.id = m.request_id
+       LEFT JOIN daily_work_entries e  ON e.id = m.entry_id
+       LEFT JOIN daily_work_entries te ON te.id = m.target_entry_id
+      WHERE m.org_id = $1 AND r.owner_user_id = $2
+        AND (m.needs_edit OR m.outcome = 'left_out_too_long')
+      ORDER BY m.snap_entry_date, m.id`,
+    [orgId, userId]);
+
+  return { requests, flagged };
+}
+
+module.exports = {
+  createRequest,
+  addEntries,
+  withdraw,
+  decide,
+  setRecurringDecision,
+  editFlaggedEntry,
+  markEntryDone,
+  tryPendingMerges,
+  getRequest,
+  listReviewQueue,
+  listMine,
+};

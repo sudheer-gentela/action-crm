@@ -203,10 +203,13 @@ async function runReminders({ now = new Date() } = {}) {
           skip('already_reminded'); continue;
         }
 
+        // 'moved' (2026_142) is closed: its work continues on a project task,
+        // and counting it would tell someone they have an item open that no
+        // screen lets them log against.
         const { rows: open } = await pool.query(
           `SELECT count(*)::int AS n FROM daily_work_items
             WHERE org_id = $1 AND owner_user_id = $2
-              AND status NOT IN ('completed','dropped','retired')`,
+              AND status NOT IN ('completed','dropped','retired','moved')`,
           [orgId, p.user_id]);
 
         await notificationService.createNotification(

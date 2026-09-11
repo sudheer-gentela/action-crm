@@ -57,16 +57,36 @@ async function effectiveModules(orgId, userId) {
 }
 
 // Replace a user's grant set (admin action). Only accepts known keys.
+//
+// 2026_142: a grant can carry a SOURCE — today only 'move_request_approver',
+// written when a daily work move request needs someone to approve it. This
+// function deletes and reinserts, so it reads the sources first and writes them
+// back for every key that stays granted. Without that, the first save of the
+// Org Admin panel erased the "granted for a move request" label on every
+// module the admin did not touch. A key the admin removes loses its source with
+// it, and a key the admin adds is an admin grant, so it has none.
 async function setUserModules(orgId, userId, moduleKeys, grantedBy) {
   const keys = [...new Set((moduleKeys || []).filter(k => MODULE_KEYS.includes(k)))];
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const { rows: before } = await client.query(
+      `SELECT module_key, source, source_move_request_id
+         FROM user_module_access WHERE org_id = $1 AND user_id = $2`, [orgId, userId]);
+    const kept = new Map(before.map(r => [r.module_key, r]));
     await client.query(`DELETE FROM user_module_access WHERE org_id = $1 AND user_id = $2`, [orgId, userId]);
     for (const k of keys) {
+      // Only the source is carried over. granted_by and created_at are
+      // rewritten on every save, exactly as before 2026_142 — nothing reads
+      // them, and changing that is not what this edit is for.
+      const prior = kept.get(k);
       await client.query(
-        `INSERT INTO user_module_access (org_id, user_id, module_key, granted_by)
-         VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, [orgId, userId, k, grantedBy]);
+        `INSERT INTO user_module_access
+           (org_id, user_id, module_key, granted_by, source, source_move_request_id)
+         VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+        [orgId, userId, k, grantedBy,
+         prior ? prior.source : null,
+         prior ? prior.source_move_request_id : null]);
     }
     await client.query('COMMIT');
   } catch (e) { await client.query('ROLLBACK'); throw e; }

@@ -460,7 +460,7 @@ async function updateItem(orgId, userId, itemId, patch) {
 
   return withOrgTransaction(orgId, async (client) => {
     const { rows: found } = await client.query(
-      `SELECT id, kind, owner_user_id, play_instance_id
+      `SELECT id, kind, status, owner_user_id, play_instance_id
          FROM daily_work_items WHERE id = $1 AND org_id = $2`,
       [itemId, orgId]);
 
@@ -468,6 +468,13 @@ async function updateItem(orgId, userId, itemId, patch) {
     if (!item) throw new DailyWorkError('No such work item', 'NO_SUCH_ITEM', { itemId });
     if (item.owner_user_id !== userId) {
       throw new DailyWorkError('That item belongs to someone else', 'NOT_YOUR_ITEM', { itemId });
+    }
+    // 2026_142. A moved item is history; renaming or re-tagging it now would
+    // rewrite what the move request recorded about where the work came from.
+    if (item.status === 'moved') {
+      throw new DailyWorkError(
+        'This item was moved to a project task and can no longer be changed.',
+        'ITEM_MOVED', { itemId });
     }
 
     // ── A TASK-LINKED ITEM IS NOT EDITABLE HERE (2026_136) ────────────
@@ -831,6 +838,26 @@ async function _saveDayIn(client, orgId, userId, entries, { asOf = new Date(), d
           'NOT_YOUR_ITEM', { itemId: entry.itemId });
       }
 
+      // ── A MOVED ITEM IS HISTORY (2026_142) ──────────────────────────
+      //
+      // Its work went to a project task through an approved move request, and
+      // the task is where it continues. Refused here rather than in the UI
+      // alone, for a reason specific to this function: Rule 4 below writes an
+      // assigned item's status straight from the day's stage, so one save on a
+      // moved item would silently turn 'moved' back into 'in_progress' and
+      // reopen it on My day. getDay still returns a moved item on any date it
+      // has entries, so the row is reachable.
+      //
+      // An entry left out of a move because it was too long to merge is edited
+      // through the move request's own editor, which bypasses this path on
+      // purpose — see dailyWorkMove.editFlaggedEntry.
+      if (item.status === 'moved') {
+        throw new DailyWorkError(
+          'This item was moved to a project task, so its work continues there. '
+          + 'Log against the task instead.',
+          'ITEM_MOVED', { itemId: entry.itemId });
+      }
+
       // ── STATUS IS ALWAYS AN EXPLICIT ACT (2026_136) ─────────────────
       //
       // On a task-linked item the day's stage may say the work is under way
@@ -940,6 +967,20 @@ async function _saveDayIn(client, orgId, userId, entries, { asOf = new Date(), d
       // work is done for TODAY. The item returns tomorrow, which is the whole
       // point of it being recurring.
 
+      // ── A pending merge may fit now (2026_142) ──────────────────────
+      //
+      // An entry left out of a move because the merged text would have been
+      // over the limit merges automatically once either side is short enough.
+      // This save may have been that shortening — on the task's entry through
+      // the composer, which lands here via postTaskUpdate. Checked in the same
+      // transaction so the save and the merge commit or fail together.
+      //
+      // Required lazily: dailyWorkMove.service requires this file at load, and
+      // requiring it back at the top would hand one of the two a half-built
+      // module.
+      await require('./dailyWorkMove.service')
+        .tryPendingMerges(client, orgId, entryRows[0].id);
+
       saved.push(entryRows[0]);
     }
 
@@ -1018,6 +1059,65 @@ async function getTaskForUpdate(orgId, playInstanceId, client = null) {
       'PROJECT_CLOSED', { playInstanceId, handoverId: task.handover_id });
   }
   return task;
+}
+
+/**
+ * The one item a person has for a project task, created if they have none.
+ *
+ * EXTRACTED from postTaskUpdate (2026_142) so that moving daily work onto a
+ * task creates the item in exactly the way posting an update does. Two copies
+ * of this insert would be two definitions of what a task-linked item looks
+ * like — which anchor, which account, which department — and the first
+ * difference would be a moved item that the composer then fails to find or
+ * duplicates against uq_dwi_owner_play.
+ *
+ * Runs on the caller's client, inside the caller's transaction.
+ *
+ * anchor = the PROJECT, not the task. anchor_kind stays 'handover' and its
+ * CHECK is untouched, so "daily work is not anchored to a task" holds literally
+ * and the anchor picker is unchanged. The task link is the separate column.
+ *
+ * opened_on is only ever LOWERED on an existing item, never raised — see the
+ * note on postTaskUpdate below.
+ *
+ * @param task  { id, title, handover_id } — as getTaskForUpdate returns it
+ * @param openedOn  YYYY-MM-DD, the earliest day being recorded
+ * @param createdBy  who is creating it; the owner when they post, the approver
+ *                   when a move creates it on their behalf
+ * @returns {Promise<{ item: object, created: boolean }>}
+ */
+async function findOrCreateLinkedItem(client, orgId, userId, task, openedOn, createdBy = userId) {
+  const { rows: existing } = await client.query(
+    `SELECT ${ITEM_COLUMNS} FROM daily_work_items
+      WHERE org_id = $1 AND owner_user_id = $2 AND play_instance_id = $3`,
+    [orgId, userId, task.id]);
+
+  if (!existing[0]) {
+    const accountId = await resolveAccountId(client, orgId, 'handover', task.handover_id);
+    const teamId = await resolvePrimaryTeamId(client, orgId, userId);
+
+    const { rows } = await client.query(
+      `INSERT INTO daily_work_items
+         (org_id, owner_user_id, kind, title, anchor_kind, anchor_id, account_id,
+          status, department_team_id, created_by, play_instance_id, opened_on)
+       VALUES ($1,$2,'assigned',$3,'handover',$4,$5,
+               'yet_to_start',$6,$7,$8,$9)
+       RETURNING ${ITEM_COLUMNS}`,
+      [orgId, userId, task.title, task.handover_id, accountId,
+       teamId, createdBy, task.id, openedOn]);
+    return { item: rows[0], created: true };
+  }
+
+  const item = existing[0];
+  if (item.opened_on && openedOn < item.opened_on) {
+    const { rows } = await client.query(
+      `UPDATE daily_work_items SET opened_on = $3, updated_at = now()
+        WHERE id = $1 AND org_id = $2
+        RETURNING ${ITEM_COLUMNS}`,
+      [item.id, orgId, openedOn]);
+    return { item: rows[0], created: false };
+  }
+  return { item, created: false };
 }
 
 /**
@@ -1112,41 +1212,7 @@ async function postTaskUpdate(orgId, userId, input = {}) {
       entryDate = date;
     }
 
-    const { rows: existing } = await client.query(
-      `SELECT ${ITEM_COLUMNS} FROM daily_work_items
-        WHERE org_id = $1 AND owner_user_id = $2 AND play_instance_id = $3`,
-      [orgId, userId, playInstanceId]);
-
-    let item = existing[0];
-    let created = false;
-
-    if (!item) {
-      // anchor = the PROJECT, not the task. anchor_kind stays 'handover' and
-      // its CHECK is untouched, so "daily work is not anchored to a task"
-      // holds literally and the anchor picker is unchanged. The task link is
-      // the separate column.
-      const accountId = await resolveAccountId(client, orgId, 'handover', task.handover_id);
-      const teamId = await resolvePrimaryTeamId(client, orgId, userId);
-
-      const { rows } = await client.query(
-        `INSERT INTO daily_work_items
-           (org_id, owner_user_id, kind, title, anchor_kind, anchor_id, account_id,
-            status, department_team_id, created_by, play_instance_id, opened_on)
-         VALUES ($1,$2,'assigned',$3,'handover',$4,$5,
-                 'yet_to_start',$6,$2,$7,$8)
-         RETURNING ${ITEM_COLUMNS}`,
-        [orgId, userId, task.title, task.handover_id, accountId,
-         teamId, playInstanceId, entryDate]);
-      item = rows[0];
-      created = true;
-    } else if (item.opened_on && entryDate < item.opened_on) {
-      const { rows } = await client.query(
-        `UPDATE daily_work_items SET opened_on = $3, updated_at = now()
-          WHERE id = $1 AND org_id = $2
-          RETURNING ${ITEM_COLUMNS}`,
-        [item.id, orgId, entryDate]);
-      item = rows[0];
-    }
+    const { item, created } = await findOrCreateLinkedItem(client, orgId, userId, task, entryDate);
 
     const saved = await _saveDayIn(client, orgId, userId,
       [{ itemId: item.id, description, nextSteps, dayStage }],
@@ -1343,7 +1409,9 @@ async function getDay(orgId, userId, { date = null, asOf = new Date() } = {}) {
               ) prior ON TRUE
         WHERE i.org_id = $1
           AND i.owner_user_id = $2
-          AND (i.status NOT IN ('completed','dropped','retired') OR e.id IS NOT NULL)
+          -- 'moved' (2026_142) is closed like the other three. Without it a
+          -- moved item reappeared on My day every morning.
+          AND (i.status NOT IN ('completed','dropped','retired','moved') OR e.id IS NOT NULL)
         ORDER BY i.created_at, i.id`,
       [orgId, userId, entryDate]);
 
@@ -2525,4 +2593,11 @@ module.exports = {
   DAY_STAGES,
   LINKED_DAY_STAGES,
   MAX_DESCRIPTION,
+  // 2026_142 — shared with dailyWorkMove.service so a move writes items and
+  // entries by the same rules as the rest of this module.
+  MAX_NEXT_STEPS,
+  ITEM_COLUMNS,
+  ENTRY_COLUMNS,
+  assertActiveMember,
+  findOrCreateLinkedItem,
 };
