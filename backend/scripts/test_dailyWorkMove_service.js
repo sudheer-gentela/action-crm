@@ -509,10 +509,13 @@ async function merging(f) {
   // ── auto-merge through the flagged editor ────────────────────────
   await expectCode('someone else cannot edit the flagged entry', 'NOT_YOUR_ENTRY',
     () => move.editFlaggedEntry(f.orgId, f.mo, long.id, { which: 'original', description: 'short now' }));
+  await q(`UPDATE daily_work_entries SET next_steps = 'label the rest' WHERE id = $1`, [sLong]);
   const afterEdit = await expectOk('shortening the left-out entry through the editor',
     () => move.editFlaggedEntry(f.orgId, f.ana, long.id, { which: 'original', description: 'short now' }));
   eq('it merged automatically, and now needs editing', afterEdit && [afterEdit.outcome, afterEdit.needs_edit], ['merged', true]);
   check('the merged text ends with the shortened words', (await onTask(dLong)).description.endsWith('short now'));
+  eq('editing only the description kept its next steps, and they merged too',
+    (await onTask(dLong)).next_steps, 'label the rest');
 
   // ── auto-merge through the task composer (dailyWork._saveDayIn) ──
   const comp = byDate(dComposer);
@@ -829,6 +832,52 @@ async function newTask(f) {
     `SELECT stage_key FROM project_play_instances WHERE id = $1`, [done4.play_instance_id])).stage_key, 'test');
 }
 
+/* ── H. reads for the screens ──────────────────────────────────────── */
+
+async function screenReads(f) {
+  console.log('\nREADS FOR THE SCREENS');
+
+  const tagged = await mkItem(f, { anchorKind: 'handover', anchorId: f.source });
+  const eA = await mkEntry(f, tagged, day(0), { anchorKind: 'handover', anchorId: f.source });
+  const eB = await mkEntry(f, tagged, day(-1), { anchorKind: 'handover', anchorId: f.init });
+
+  await expectCode('someone outside the chain cannot see the options', 'NO_SUCH_ITEM',
+    () => move.getMoveOptions(f.orgId, f.zed, tagged));
+  const opt = await expectOk("Ana's manager gets the options", () => move.getMoveOptions(f.orgId, f.mo, tagged));
+  eq('the item can move, with no locked target', opt && [opt.item.movable, opt.item.lockedTargetId], [true, null]);
+  eq('entries newest first, with the initiative tag flagged',
+    opt && opt.entries.map(e => [e.id, e.anchor_is_standing]), [[eA, false], [eB, true]]);
+  check('closed projects are not offered as targets', opt && !opt.targets.some(t => t.id === f.closed));
+  check('open projects and initiatives are', opt && [f.target, f.source, f.init].every(id => opt.targets.some(t => t.id === id)));
+
+  const onInit = await mkItem(f, { anchorKind: 'handover', anchorId: f.init });
+  const optInit = await move.getMoveOptions(f.orgId, f.ana, onInit);
+  eq('an item on an initiative can only go to that initiative',
+    [optInit.item.lockedTargetId, optInit.targets.map(t => t.id)], [f.init, [f.init]]);
+
+  // My day: the prompt condition and the open request.
+  let dayRows = (await dw.getDay(f.orgId, f.ana, { asOf: AS_OF })).rows;
+  const row = dayRows.find(r => r.item_id === tagged);
+  eq('the tagged item is flagged for the prompt, with no request yet',
+    row && [row.on_project_not_plan, row.open_move_request_id], [true, null]);
+  eq('an item on an initiative is not prompted', dayRows.find(r => r.item_id === onInit).on_project_not_plan, false);
+
+  const { request } = await move.createRequest(f.orgId, f.ana, { itemId: tagged, targetHandoverId: f.source, entryIds: [eA] });
+  dayRows = (await dw.getDay(f.orgId, f.ana, { asOf: AS_OF })).rows;
+  eq('once asked, the row carries the open request', dayRows.find(r => r.item_id === tagged).open_move_request_id, request.id);
+  const optAfter = await move.getMoveOptions(f.orgId, f.ana, tagged);
+  eq('and the options say why it cannot be asked again',
+    [optAfter.item.movable, optAfter.entries.find(e => e.id === eA).in_other_request], [false, true]);
+
+  await expectCode('placement options are for the target manager only', 'NOT_PROJECT_MANAGER',
+    () => move.getPlacementOptions(f.orgId, f.pat, request.id));
+  const place = await expectOk('the target manager gets tasks and stages',
+    () => move.getPlacementOptions(f.orgId, f.sam, request.id));
+  check('the project\'s task is listed with its status', place && place.tasks.some(t => t.id === f.s1 && t.status));
+  eq('the item title is offered for a new task', place && place.itemTitle,
+    (await one(`SELECT title FROM daily_work_items WHERE id = $1`, [tagged])).title);
+}
+
 /* ── run ───────────────────────────────────────────────────────────── */
 
 (async () => {
@@ -842,6 +891,7 @@ async function newTask(f) {
     await readsAndEdges(f);
     await concurrency(f);
     await newTask(f);
+    await screenReads(f);
   } catch (err) {
     fail('harness aborted', err.stack || err.message);
   } finally {

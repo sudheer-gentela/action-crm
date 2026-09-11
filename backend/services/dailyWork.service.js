@@ -1385,7 +1385,24 @@ async function getDay(orgId, userId, { date = null, asOf = new Date() } = {}) {
                 WHEN 'handover' THEN h.name
                 WHEN 'account'  THEN aa.name
                 WHEN 'campaign' THEN pc.name
-              END AS anchor_label
+              END AS anchor_label,
+              -- 2026_142. Two facts for the move-to-project controls.
+              --
+              -- open_move_request_id: the item already has a request waiting,
+              -- so My day shows its status instead of offering another.
+              --
+              -- on_project_not_plan: tagged to an open TIMEBOXED project and not
+              -- on any of its tasks — the item the daily prompt is for. Standing
+              -- initiatives are left out on purpose: that is where ongoing work
+              -- is meant to live, and prompting on it every day would be noise.
+              (SELECT r.id FROM daily_work_move_requests r
+                WHERE r.item_id = i.id AND r.org_id = i.org_id AND r.is_open
+                LIMIT 1) AS open_move_request_id,
+              COALESCE(i.anchor_kind = 'handover'
+                       AND i.play_instance_id IS NULL
+                       AND COALESCE(h.tracking_mode, 'timeboxed') = 'timeboxed'
+                       AND h.status NOT IN ('completed', 'cancelled')
+                       AND h.retired_at IS NULL, FALSE) AS on_project_not_plan
          FROM daily_work_items i
          LEFT JOIN accounts a
                 ON a.id = i.account_id AND a.org_id = i.org_id

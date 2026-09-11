@@ -1550,6 +1550,10 @@ async function lockMoveEntryForOwner(client, orgId, userId, moveEntryId) {
 async function editFlaggedEntry(orgId, userId, moveEntryId, input = {}) {
   const which = input.which || 'task';
   const description = String(input.description || '');
+  // Absent means "leave next steps as they are". The editor on My day edits the
+  // description only; treating a missing field as "clear it" would silently
+  // erase the next steps of every entry someone tidied up.
+  const changeNextSteps = input.nextSteps !== undefined;
   const nextSteps = input.nextSteps == null ? null : String(input.nextSteps);
 
   if (!description.trim()) {
@@ -1588,9 +1592,12 @@ async function editFlaggedEntry(orgId, userId, moveEntryId, input = {}) {
 
     const { rowCount } = await client.query(
       `UPDATE daily_work_entries
-          SET description = $3, next_steps = $4, updated_at = now(), last_edited_by = $5
+          SET description = $3,
+              next_steps = CASE WHEN $6 THEN $4 ELSE next_steps END,
+              updated_at = now(), last_edited_by = $5
         WHERE id = $1 AND org_id = $2 AND user_id = $5`,
-      [entryId, orgId, description.trim(), nextSteps && nextSteps.trim() ? nextSteps.trim() : null, userId]);
+      [entryId, orgId, description.trim(),
+       nextSteps && nextSteps.trim() ? nextSteps.trim() : null, userId, changeNextSteps]);
     if (!rowCount) {
       throw new DailyWorkError('That entry no longer exists.', 'NO_SUCH_ENTRY', { moveEntryId });
     }
@@ -1810,13 +1817,19 @@ async function listMine(orgId, userId) {
       ORDER BY r.created_at DESC`,
     [orgId, userId]);
 
+  // item_title is the ORIGINAL item's, because mergePair names it in the
+  // separator — the editor needs it to count the merged length exactly.
   const { rows: flagged } = await pool.query(
     `SELECT m.id, m.request_id, m.outcome, m.needs_edit, m.left_out_reason,
             m.snap_entry_date::text AS entry_date,
+            si.title AS item_title,
+            COALESCE(NULLIF(btrim(h.name), ''), 'Untitled project') AS target_name,
             e.description AS original_description,
             te.description AS task_description
        FROM daily_work_move_entries m
        JOIN daily_work_move_requests r ON r.id = m.request_id
+       JOIN sales_handovers h ON h.id = r.target_handover_id
+       LEFT JOIN daily_work_items si   ON si.id = m.snap_item_id
        LEFT JOIN daily_work_entries e  ON e.id = m.entry_id
        LEFT JOIN daily_work_entries te ON te.id = m.target_entry_id
       WHERE m.org_id = $1 AND r.owner_user_id = $2
@@ -1827,7 +1840,139 @@ async function listMine(orgId, userId) {
   return { requests, flagged };
 }
 
+/**
+ * Everything the "Move to a project" form needs for one item: whether it can
+ * move and why not, the entries to choose from, and the projects it can go to.
+ *
+ * For the owner or anyone whose chain contains them — the same people who may
+ * raise the request. Anyone else gets NO_SUCH_ITEM.
+ *
+ * ENTRIES: the most recent ENTRY_LIMIT, newest first, with the total. Each
+ * carries what the form needs to disable it rather than let the server refuse
+ * it: already part of another request, or tagged to a standing initiative (the
+ * form allows those only when that initiative is the target).
+ *
+ * TARGETS: open projects and initiatives, named. If the item itself belongs to
+ * a standing initiative, that initiative is the only target — see
+ * assertItemMovable.
+ */
+const ENTRY_LIMIT = 200;
+
+async function getMoveOptions(orgId, viewerId, itemId) {
+  const id = Number(itemId);
+  if (!Number.isInteger(id) || id <= 0) throw new DailyWorkError('Which item?', 'MISSING_ITEM');
+
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows: [item] } = await client.query(
+      `SELECT i.id, i.owner_user_id, i.kind, i.title, i.status, i.anchor_kind, i.anchor_id,
+              i.play_instance_id,
+              CASE WHEN i.anchor_kind = 'handover' THEN h.name END AS anchor_label,
+              CASE WHEN i.anchor_kind = 'handover' THEN COALESCE(h.tracking_mode, 'timeboxed') END
+                AS anchor_tracking_mode,
+              u.first_name || ' ' || u.last_name AS owner_name,
+              (SELECT r.id FROM daily_work_move_requests r
+                WHERE r.item_id = i.id AND r.is_open LIMIT 1) AS open_request_id
+         FROM daily_work_items i
+         LEFT JOIN sales_handovers h
+                ON i.anchor_kind = 'handover' AND h.id = i.anchor_id AND h.org_id = i.org_id
+         LEFT JOIN users u ON u.id = i.owner_user_id
+        WHERE i.id = $1 AND i.org_id = $2`,
+      [id, orgId]);
+    if (!item || !(await canActFor(orgId, viewerId, item.owner_user_id))) {
+      throw new DailyWorkError('No such work item', 'NO_SUCH_ITEM', { itemId: id });
+    }
+
+    let reason = null;
+    if (item.play_instance_id) reason = 'This item is already logged against a project task.';
+    else if (!isItemOpen(item)) reason = 'Only open items can be moved. This one is closed.';
+    else if (item.open_request_id) reason = 'There is already an open move request for this item.';
+    const lockedTargetId = item.anchor_tracking_mode === 'standing' ? item.anchor_id : null;
+
+    const { rows: entries } = await client.query(
+      `SELECT e.id, e.entry_date::text AS entry_date, e.description, e.day_stage,
+              e.anchor_kind, e.anchor_id,
+              CASE WHEN e.anchor_kind = 'handover' THEN h.name END AS anchor_label,
+              (e.anchor_kind = 'handover' AND COALESCE(h.tracking_mode, 'timeboxed') = 'standing')
+                AS anchor_is_standing,
+              EXISTS (SELECT 1 FROM daily_work_move_entries m
+                       WHERE m.entry_id = e.id AND m.outcome IN ('pending', 'left_out_too_long'))
+                AS in_other_request
+         FROM daily_work_entries e
+         LEFT JOIN sales_handovers h
+                ON e.anchor_kind = 'handover' AND h.id = e.anchor_id AND h.org_id = e.org_id
+        WHERE e.item_id = $1 AND e.org_id = $2
+        ORDER BY e.entry_date DESC, e.id DESC
+        LIMIT $3`,
+      [id, orgId, ENTRY_LIMIT]);
+    const { rows: [{ n: totalEntries }] } = await client.query(
+      `SELECT count(*)::int AS n FROM daily_work_entries WHERE item_id = $1 AND org_id = $2`, [id, orgId]);
+
+    const { rows: targets } = await client.query(
+      `SELECT h.id, COALESCE(NULLIF(btrim(h.name), ''), d.name, 'Untitled project') AS name,
+              COALESCE(h.tracking_mode, 'timeboxed') AS tracking_mode,
+              h.go_live_date::text AS go_live_date
+         FROM sales_handovers h
+         LEFT JOIN deals d ON d.id = h.deal_id AND d.org_id = h.org_id
+        WHERE h.org_id = $1
+          AND h.status NOT IN ('completed', 'cancelled')
+          AND h.retired_at IS NULL
+          AND ($2::int IS NULL OR h.id = $2)
+        ORDER BY COALESCE(h.tracking_mode, 'timeboxed') DESC, name`,
+      [orgId, lockedTargetId]);
+
+    return {
+      item: { ...item, movable: !reason, reason, lockedTargetId },
+      entries,
+      totalEntries,
+      targets,
+    };
+  });
+}
+
+/**
+ * What the target approver chooses from: the project's tasks and its stages,
+ * plus the item's title as the default for a new task.
+ *
+ * Every task comes back with its status. An existing-task placement must pick
+ * an open one; a new task may wait for any task, open or closed.
+ */
+async function getPlacementOptions(orgId, viewerId, requestId) {
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows: [req] } = await client.query(
+      `SELECT r.id, r.target_handover_id, i.title AS item_title
+         FROM daily_work_move_requests r
+         JOIN daily_work_items i ON i.id = r.item_id
+        WHERE r.id = $1 AND r.org_id = $2`,
+      [requestId, orgId]);
+    if (!req) throw new DailyWorkError('No such move request', 'NO_SUCH_REQUEST', { requestId });
+    if (!(await projectMembers.canManageProject(req.target_handover_id, orgId, viewerId))) {
+      throw new DailyWorkError('Only a manager of the project this work is moving to can choose the task.',
+        'NOT_PROJECT_MANAGER', { handoverId: req.target_handover_id });
+    }
+
+    const { rows: tasks } = await client.query(
+      `SELECT p.id, p.title, p.stage_key, COALESCE(ps.name, p.stage_key) AS stage_name,
+              p.status, p.due_date::text AS due_date, p.is_gate
+         FROM project_play_instances p
+         LEFT JOIN project_stages ps
+                ON ps.handover_id = p.handover_id AND ps.key = p.stage_key AND ps.is_active = TRUE
+        WHERE p.handover_id = $1 AND p.org_id = $2
+        ORDER BY ps.sort_order NULLS LAST, p.stage_key, p.sort_order, p.id`,
+      [req.target_handover_id, orgId]);
+
+    const { rows: stages } = await client.query(
+      `SELECT key, name, gating FROM project_stages
+        WHERE handover_id = $1 AND org_id = $2 AND is_active = TRUE
+        ORDER BY sort_order, key`,
+      [req.target_handover_id, orgId]);
+
+    return { itemTitle: req.item_title, tasks, stages };
+  });
+}
+
 module.exports = {
+  getMoveOptions,
+  getPlacementOptions,
   createRequest,
   addEntries,
   withdraw,

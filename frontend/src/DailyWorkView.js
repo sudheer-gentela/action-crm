@@ -40,6 +40,9 @@ import { DayItemTitles, DayItemWork, itemTitleList,
 // the server decides that from who is asking — not from anything sent here.
 import { LeavePanel } from './dailyWorkLeave';
 import TaskWorkComposer from './TaskWorkComposer';
+// 2026_142 — moving daily work onto a project plan. Shared with People.
+import { MoveRequestForm, MovePromptCard, MoveReviewSection, MyMoveRequestsCard,
+         isMovableRow } from './dailyWorkMove';
 import DailyWorkTeamView from './DailyWorkTeamView';
 import DailyWorkSetupView from './DailyWorkSetupView';
 import useIsMobile from './useIsMobile';
@@ -164,8 +167,13 @@ export default function DailyWorkView() {
   // a different timezone would disagree with the day its work actually lands on.
   const [viewDate, setViewDate] = useState(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  // `quiet` re-reads without the full-screen spinner (2026_142). Move actions
+  // happen part-way down the page — editing a merged entry, answering the
+  // retire question — and swapping the whole screen for "Loading your day…"
+  // threw the person back to the top after every save.
+  const load = useCallback(async (opts) => {
+    const quiet = !!(opts && opts.quiet === true);
+    if (!quiet) setLoading(true);
     setError(null);
     try {
       const { data } = await apiService.dailyWork.getDay(viewDate || undefined);
@@ -189,7 +197,7 @@ export default function DailyWorkView() {
     } catch (err) {
       setError(readError(err, 'Could not load your day'));
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, [viewDate]);
 
@@ -392,7 +400,11 @@ export default function DailyWorkView() {
   };
 
   const save = async () => {
-    const rows = day.rows || [];
+    // A moved item's entries are history (2026_142): the server refuses a save
+    // on it with ITEM_MOVED, and one refused row fails the whole day. Its text
+    // is still in `drafts`, seeded from what was saved, so it has to be left out
+    // here explicitly rather than by being empty.
+    const rows = (day.rows || []).filter(r => r.status !== 'moved');
     const entries = rows
       .map(r => ({ itemId: r.item_id, ...(drafts[r.item_id] || {}) }))
       .filter(e => (e.description || '').trim());
@@ -443,6 +455,15 @@ export default function DailyWorkView() {
     } finally {
       setSaving(false);
     }
+  };
+
+  // After any move-to-project action. The day is re-read because a request
+  // changes what the rows say (open_move_request_id, and a move can close an
+  // item), and the sentence goes to the screen-level notice so it survives the
+  // reload that unmounts the card which raised it.
+  const onMoveChanged = (text) => {
+    if (text) setNotice({ kind: 'info', text });
+    load({ quiet: true });
   };
 
   const addItem = async () => {
@@ -506,7 +527,11 @@ export default function DailyWorkView() {
   const earliestDay  = day?.today ? addDaysStr(day.today, -backfillDays) : null;
   const canGoBack    = !!day && !!earliestDay && day.entryDate > earliestDay;
 
-  const openRows = rows.filter(r => !['completed', 'dropped', 'retired'].includes(r.status));
+  // 'moved' is closed (2026_142). getDay still returns a moved item on a date
+  // it has an entry, so it shows in the log for that day — but not as open work,
+  // and not in Edit rows, where every control on it would be refused.
+  const openRows = rows.filter(r => !['completed', 'dropped', 'retired', 'moved'].includes(r.status));
+  const editableRows = rows.filter(r => r.status !== 'moved');
 
   return (
     <div className="dw">
@@ -613,7 +638,7 @@ export default function DailyWorkView() {
       <WaitingPanel
         me={me}
         hasReports={hasReports}
-        rows={rows}
+        rows={editableRows}
         drafts={drafts}
         stalled={stalled}
         today={day.today}
@@ -626,6 +651,13 @@ export default function DailyWorkView() {
           waiting on you — it has a person attached and it goes stale in a way
           your own task list does not. */}
       <ReviewQueueCard />
+
+      {/* 2026_142. The person's own requests and the entries a move flagged,
+          then the daily prompt. Both render nothing when there is nothing. */}
+      <MyMoveRequestsCard viewerId={me} onChanged={() => onMoveChanged(null)} />
+      <MovePromptCard rows={editableRows}
+                      onChanged={(req) => onMoveChanged(
+                        req ? `Asked. ${req.target_name}’s manager will decide.` : null)} />
 
       {/* onPosted reloads the day. Logging against a project task from here
           creates a daily work item, and the log underneath has to pick it up —
@@ -641,7 +673,7 @@ export default function DailyWorkView() {
                   onEdit={itemId => { setOpenItem(itemId); setMode('edit'); }} />
         : (
           <>
-            {rows.length === 0 ? (
+            {editableRows.length === 0 ? (
               <div className="dw-card">
                 <div className="dw-empty">
                   <p>
@@ -661,7 +693,7 @@ export default function DailyWorkView() {
                  wide monitor. ItemCard stays because five columns of inputs
                  genuinely do not fit 380px. */
               <div className="dw-items">
-                {rows.map(row => (
+                {editableRows.map(row => (
                   <ItemCard
                     key={row.item_id}
                     row={row}
@@ -675,12 +707,13 @@ export default function DailyWorkView() {
                     activityTypes={activityTypes}
                     onActivity={(value, freeText) => setItemActivity(row.item_id, value, freeText)}
                     onRetire={retireItem}
+                    onMoveChanged={onMoveChanged}
                   />
                 ))}
               </div>
             ) : (
               <ItemTable
-                rows={rows}
+                rows={editableRows}
                 drafts={drafts}
                 rowErrors={rowErrors}
                 activityTypes={activityTypes}
@@ -693,6 +726,7 @@ export default function DailyWorkView() {
                 entryDate={day.entryDate}
                 anchors={anchors}
                 onPatchItem={patchItem}
+                onMoveChanged={onMoveChanged}
               />
             )}
 
@@ -1117,13 +1151,16 @@ function ProjectWorkTable({ items, person, today, onRefuse, onPosted }) {
  */
 function ReviewQueueCard() {
   const [rows, setRows] = useState(null);   // null = loading or unavailable
+  // 2026_142. Move requests waiting on a project the viewer manages. Same card,
+  // as agreed: both are somebody waiting on this person's decision.
+  const [moves, setMoves] = useState([]);
 
   useEffect(() => {
     // Guarded like the other cross-module reads: a missing method throws
     // synchronously, before a promise exists, so a trailing .catch() would not
     // catch it and a stale bundle would take My day down rather than hiding a
     // card.
-    if (typeof apiService.handovers?.myReviewQueue !== 'function') return;
+    if (typeof apiService.handovers?.myReviewQueue !== 'function') { setRows([]); return; }
     let alive = true;
     apiService.handovers.myReviewQueue()
       .then(r => { if (alive) setRows(r.data?.items || r.data || []); })
@@ -1133,27 +1170,40 @@ function ReviewQueueCard() {
     return () => { alive = false; };
   }, []);
 
-  if (!rows || rows.length === 0) return null;
+  const loadMoves = useCallback(() => {
+    if (typeof apiService.dailyWork?.moveReviewQueue !== 'function') return;
+    apiService.dailyWork.moveReviewQueue()
+      .then(r => setMoves(r.data?.items || []))
+      .catch(() => setMoves([]));
+  }, []);
+  useEffect(() => { loadMoves(); }, [loadMoves]);
+
+  const taskRows = rows || [];
+  if (taskRows.length === 0 && moves.length === 0) return null;
 
   // Grouped by project, matching the Projects banner. A flat list of six task
   // titles from two projects reads as six unrelated things.
   const byProject = new Map();
-  for (const r of rows) {
+  for (const r of taskRows) {
     const key = r.handoverId;
     if (!byProject.has(key)) byProject.set(key, { name: r.projectName, items: [] });
     byProject.get(key).items.push(r);
   }
 
+  const summary = [
+    taskRows.length ? `${taskRows.length} ${taskRows.length === 1 ? 'task' : 'tasks'} across `
+      + `${byProject.size} ${byProject.size === 1 ? 'project' : 'projects'}` : null,
+    moves.length ? `${moves.length} move ${moves.length === 1 ? 'request' : 'requests'}` : null,
+  ].filter(Boolean).join(' · ');
+
   return (
     <div className="dw-card" style={{ borderLeft: '3px solid #f59e0b' }}>
       <div className="dw-card-head">
         <h2>🔔 Awaiting your review</h2>
-        <span className="m">
-          {rows.length} {rows.length === 1 ? 'task' : 'tasks'} across{' '}
-          {byProject.size} {byProject.size === 1 ? 'project' : 'projects'}
-        </span>
+        <span className="m">{summary}</span>
       </div>
       <div className="dw-item-body" style={{ paddingTop: 8 }}>
+        <MoveReviewSection items={moves} onChanged={loadMoves} />
         {[...byProject.entries()].map(([hid, grp]) => (
           <div key={hid} style={{ marginBottom: 10 }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: '#374151', marginBottom: 3 }}>
@@ -1401,6 +1451,7 @@ function DayLog({ day, rows, written, drafts, saved, history, onEdit, me, activi
                   {r.evidence_count > 0 && (
                     <span className="dw-badge">{r.evidence_count} evidence</span>
                   )}
+                  {r.status === 'moved' && <span className="dw-badge">moved to a project task</span>}
                 </td>
                 <td>
                   {drafts[r.item_id]?.description}
@@ -1411,7 +1462,11 @@ function DayLog({ day, rows, written, drafts, saved, history, onEdit, me, activi
                 <td className="dw-col-activity dw-meta">{activityLabel(r.activity_type_key) || '—'}</td>
                 <td className="dw-col-initiative dw-meta">{r.anchor_label || r.account_name || '—'}</td>
                 <td className="dw-logactions">
-                  <button className="dw-btn-link" onClick={() => onEdit(r.item_id)}>Edit</button>
+                  {/* A moved item cannot be edited here — its work continues on
+                      the task — so the control is not offered. */}
+                  {r.status !== 'moved' && (
+                    <button className="dw-btn-link" onClick={() => onEdit(r.item_id)}>Edit</button>
+                  )}
                 </td>
               </tr>
             )) : (
@@ -1682,7 +1737,9 @@ function InlineTitle({ title, onSave }) {
 
 function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
                      setDraft, setItemActivity, retireItem, onEvidence, entryDate,
-                     anchors, onPatchItem }) {
+                     anchors, onPatchItem, onMoveChanged }) {
+  // Which row's details panel has the move-to-project form open (2026_142).
+  const [movingFor, setMovingFor] = useState(null);
   // Which row has had "+ Next steps" clicked. A row whose draft already has
   // next steps shows the field regardless, so this only tracks the empty ones
   // someone has opened.
@@ -1764,6 +1821,7 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
                     {row.target_date && <span className="dw-badge">by {formatDateShort(row.target_date)}</span>}
                     {row.account_name && <span className="dw-badge">{row.account_name}</span>}
                     {stage === 'in_review' && <span className="dw-badge review">in review</span>}
+                    {row.open_move_request_id && <span className="dw-badge review">move requested</span>}
                   </td>
 
                   <td>
@@ -1925,6 +1983,27 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
                                          onRetire={() => retireItem(row.item_id)} />
                         </div>
                       )}
+
+                      {/* 2026_142. Any open item not already on a task can be
+                          asked about — tagged or not. The prompt card above
+                          covers the tagged ones every day; this is the way in
+                          for everything else. */}
+                      {isMovableRow(row) && !row.open_move_request_id && (
+                        <div className="dw-field">
+                          {movingFor === row.item_id ? (
+                            <MoveRequestForm itemId={row.item_id}
+                                             onCancel={() => setMovingFor(null)}
+                                             onDone={(req) => {
+                                               setMovingFor(null);
+                                               onMoveChanged(`Asked. ${req.target_name}’s manager will decide.`);
+                                             }} />
+                          ) : (
+                            <button className="dw-btn dw-btn-sm" onClick={() => setMovingFor(row.item_id)}>
+                              Move to a project
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </td>
                   </tr>
                 )}
@@ -1938,7 +2017,9 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
 }
 
 function ItemCard({ row, draft, error, isOpen, onToggle, onChange, onEvidence, collapsible,
-                   activityTypes, onActivity, onRetire }) {
+                   activityTypes, onActivity, onRetire, onMoveChanged }) {
+  // Same control as the table's details panel (2026_142), for the phone layout.
+  const [moving, setMoving] = useState(false);
 
   const description = draft.description || '';
   const length = description.length;
@@ -2034,6 +2115,26 @@ function ItemCard({ row, draft, error, isOpen, onToggle, onChange, onEvidence, c
             {row.kind === 'recurring' && (
               <div className="dw-field" style={{ gridColumn: '1 / -1' }}>
                 <RetireControl title={row.title} onRetire={() => onRetire(row.item_id)} />
+              </div>
+            )}
+
+            {isMovableRow(row) && !row.open_move_request_id && (
+              <div className="dw-field" style={{ gridColumn: '1 / -1' }}>
+                {moving ? (
+                  <MoveRequestForm itemId={row.item_id}
+                                   onCancel={() => setMoving(false)}
+                                   onDone={(req) => {
+                                     setMoving(false);
+                                     onMoveChanged?.(`Asked. ${req.target_name}’s manager will decide.`);
+                                   }} />
+                ) : (
+                  <button className="dw-btn dw-btn-sm" onClick={() => setMoving(true)}>Move to a project</button>
+                )}
+              </div>
+            )}
+            {row.open_move_request_id && (
+              <div className="dw-item-status" style={{ gridColumn: '1 / -1' }}>
+                A move to a project is waiting for a decision.
               </div>
             )}
 

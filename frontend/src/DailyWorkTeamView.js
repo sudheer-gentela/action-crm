@@ -29,7 +29,7 @@
 // drift out of step with the entries, which is the failure this codebase has
 // already had twice.
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { apiService } from './apiService';
 import { hashIdSegment, hashSegment, writeHash } from './hashNav';
 import { ProjectItemRow, dueText } from './dailyWorkProjectLink';
@@ -38,6 +38,9 @@ import { DayItemTitles, DayItemWork, itemTitleList, stageLabel, RecurringBadge }
 // when Approve is offered, and what the result sentence claims — see the
 // module header for why that cannot be two copies.
 import { LeavePanel } from './dailyWorkLeave';
+// 2026_142 — a manager asking for a report's work to move onto a project. The
+// same form the person uses on My day.
+import { MoveRequestForm, isMovableRow } from './dailyWorkMove';
 import './DailyWork.css';
 
 // The day table's columns, in one place. The leave panel renders under this
@@ -906,6 +909,20 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack,
   // numbers is worse than one that re-reads.
   const [reloadKey, bumpReload] = useState(0);
 
+  // ── Move to a project (2026_142) ──────────────────────────────────────────
+  //
+  // One form for the page, above the tables, rather than one inline per row:
+  // the form carries an entry list and a project picker, and opening it inside
+  // a table cell squeezed it into a column a fifth of the page wide. The row
+  // control scrolls the form into view.
+  const [moveFor, setMoveFor] = useState(null);       // { itemId, title }
+  const [moveNotice, setMoveNotice] = useState(null);
+  const moveRef = useRef(null);
+  useEffect(() => {
+    if (moveFor && moveRef.current) moveRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [moveFor]);
+  const askToMove = (itemId, title) => { setMoveNotice(null); setMoveFor({ itemId, title }); };
+
   const pRange = personRange(rangeKey);
 
   useEffect(() => {
@@ -1099,6 +1116,14 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack,
         </div>
       )}
 
+      {moveNotice && (
+        <div className="dw-banner info" style={{ marginBottom: 12 }}>
+          {moveNotice}
+          <button className="dw-btn dw-btn-sm" style={{ marginLeft: 10 }}
+                  onClick={() => setMoveNotice(null)}>Dismiss</button>
+        </div>
+      )}
+
       {/* ── The two controls (2026_140) ────────────────────────────────────
           Separate rather than one combined dropdown: "when" and "what state"
           are independent questions, and folding them together produces eight
@@ -1155,6 +1180,23 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack,
         <div className="dw-spinner">Loading…</div>
       ) : (
         <>
+          {moveFor && (
+            <div className="dw-card" ref={moveRef} style={{ marginBottom: 14 }}>
+              <div className="dw-item-body" style={{ paddingTop: 4 }}>
+                <MoveRequestForm
+                  key={moveFor.itemId}
+                  itemId={moveFor.itemId}
+                  forName={name}
+                  onCancel={() => setMoveFor(null)}
+                  onDone={(req) => {
+                    setMoveFor(null);
+                    setMoveNotice(`Asked for “${req.item_title}” to move to ${req.target_name}. Its manager will decide.`);
+                    bumpReload(n => n + 1);
+                  }} />
+              </div>
+            </div>
+          )}
+
           <div className="dw-card">
             <div className="dw-card-head">
               <h2>Their daily log</h2>
@@ -1295,6 +1337,15 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack,
                                                           crumbFilters={crumbFilters}
                                                           onRefuse={onRefuse}
                                                           hasProjects={hasProjects} />
+                                          {/* Not on a task yet, and still open:
+                                              the manager can ask for it to move
+                                              (2026_142). */}
+                                          {hasProjects && isMovableRow(r) && (
+                                            <button type="button" className="dw-btn-link"
+                                                    onClick={() => askToMove(r.item_id, r.title)}>
+                                              Move
+                                            </button>
+                                          )}
                                         </td>
                                       </tr>
                                     ))}
@@ -1370,6 +1421,13 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack,
                         ) : (
                           <span className="dw-badge" style={{ marginLeft: 6 }}>on a project task</span>
                         ))}
+                        {/* Open and not on a task: offer the move (2026_142). */}
+                        {hasProjects && !a.playInstanceId && a.isOpen && (
+                          <button type="button" className="dw-btn-link" style={{ marginLeft: 8 }}
+                                  onClick={() => askToMove(a.itemId, a.title)}>
+                            Move to a project
+                          </button>
+                        )}
                       </td>
                       <td className="dw-logitem muted">{a.assignedByName || '—'}</td>
                       <td>

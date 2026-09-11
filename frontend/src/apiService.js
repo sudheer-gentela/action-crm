@@ -1231,6 +1231,39 @@ twilio: {
     taskLink: (userId, playInstanceId) =>
       api.get(`/daily-work/people/${userId}/task-link/${playInstanceId}`),
 
+    // ── moving daily work onto a project (2026_142) ─────────────────
+    //
+    // Every rule is server-side (dailyWorkMove.service). Refusals come back as
+    // 400 { error, code } where `error` is the sentence to show.
+
+    // The raise form: can this item move, its entries, and the targets.
+    moveOptions: (itemId) =>
+      api.get('/daily-work/move-requests/options', { params: { itemId } }),
+    createMoveRequest: ({ itemId, targetHandoverId, entryIds, note }) =>
+      api.post('/daily-work/move-requests', { itemId, targetHandoverId, entryIds, note }),
+    moveRequest: (id) => api.get(`/daily-work/move-requests/${id}`),
+    addMoveEntries: (id, entryIds) =>
+      api.post(`/daily-work/move-requests/${id}/entries`, { entryIds }),
+    withdrawMoveRequest: (id) => api.post(`/daily-work/move-requests/${id}/withdraw`),
+
+    // The approver.
+    moveReviewQueue: () => api.get('/daily-work/move-requests/review-queue'),
+    movePlacementOptions: (id) => api.get(`/daily-work/move-requests/${id}/placement-options`),
+    // Read-only, POST only because the proposal is a structured body.
+    moveConflicts: (id, newTask) =>
+      api.post(`/daily-work/move-requests/${id}/conflicts`, { newTask }),
+    // { handoverId, decision, reason, untickEntryIds, placement, batchId }
+    decideMoveRequest: (id, body) => api.post(`/daily-work/move-requests/${id}/decide`, body),
+
+    // The owner, afterwards.
+    myMoveRequests: () => api.get('/daily-work/move-requests/mine'),
+    moveRecurringDecision: (id, decision) =>
+      api.post(`/daily-work/move-requests/${id}/recurring-decision`, { decision }),
+    // `which` is 'task' or 'original'. Leave nextSteps out to keep them as they are.
+    editMoveEntry: (id, { which, description }) =>
+      api.patch(`/daily-work/move-entries/${id}`, { which, description }),
+    markMoveEntryDone: (id) => api.post(`/daily-work/move-entries/${id}/done`),
+
     // ── setup, owner and admin only ──────────────────────────────────
     listCalendars:      () => api.get('/daily-work/calendars'),
     createCalendar:     ({ name, isDefault }) => api.post('/daily-work/calendars', { name, isDefault }),

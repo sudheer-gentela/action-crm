@@ -974,6 +974,15 @@ router.get('/move-requests/review-queue', async (req, res) => {
   } catch (err) { handle(res, err, 'GET /move-requests/review-queue'); }
 });
 
+// What the "Move to a project" form needs for one item: ?itemId=
+router.get('/move-requests/options', async (req, res) => {
+  try {
+    const itemId = asId(req.query.itemId);
+    if (!itemId) return res.status(400).json({ error: 'itemId must be a positive integer' });
+    res.json(await dailyWorkMove.getMoveOptions(req.orgId, req.userId, itemId));
+  } catch (err) { handle(res, err, 'GET /move-requests/options'); }
+});
+
 // The viewer's own requests, retire-or-keep questions and flagged entries.
 router.get('/move-requests/mine', async (req, res) => {
   try {
@@ -1009,6 +1018,15 @@ router.post('/move-requests/:id/withdraw', async (req, res) => {
 });
 
 // ── the approvers ─────────────────────────────────────────────────────────
+
+// The target project's tasks and stages, for the approver choosing placement.
+router.get('/move-requests/:id/placement-options', async (req, res) => {
+  try {
+    const id = asId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'bad request id' });
+    res.json(await dailyWorkMove.getPlacementOptions(req.orgId, req.userId, id));
+  } catch (err) { handle(res, err, 'GET /move-requests/:id/placement-options'); }
+});
 
 // What a proposed new task would do to the plan, before deciding. POST because
 // the proposal is a structured body, but it writes nothing.
