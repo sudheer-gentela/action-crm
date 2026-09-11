@@ -471,6 +471,9 @@ const DEFAULT_PREFS = {
     slack_categories: {
       immediate: true, escalation: true, revisit: true,
       digest: false, review: false, unblocked: true,
+      // 2026_142. On: a move request is someone waiting on a decision, and
+      // it arrives at most once per request plus one reminder a day.
+      move_request: true,
     },
     // Email defaults OFF, mirroring slack_enabled. Email is the only
     // channel that reaches someone who is not in the app, which is exactly
@@ -494,6 +497,9 @@ const DEFAULT_PREFS = {
       // in-app bell still shows everything; this is only the email channel.
       review:    false,
       unblocked: true,
+      // 2026_142. Same reasoning as Slack above; email itself stays off until
+      // the person turns it on.
+      move_request: true,
     },
     // 'immediate' sends on every review event; 'digest' batches them into
     // one mail per sweep. On a large project immediate is a lot of mail,

@@ -116,6 +116,7 @@ require.cache[dbPath] = {
 
 const move = require(path.resolve(REPO, 'services', 'dailyWorkMove.service.js'));
 const planVariance = require(path.resolve(REPO, 'services', 'planVariance.service.js'));
+const moveNotify = require(path.resolve(REPO, 'services', 'dailyWorkMoveNotify.service.js'));
 const dw = require(path.resolve(REPO, 'services', 'dailyWork.service.js'));
 const moduleAccess = require(path.resolve(REPO, 'services', 'moduleAccess.service.js'));
 console.log(`\ntesting: ${path.resolve(REPO, 'services', 'dailyWorkMove.service.js')}`);
@@ -167,6 +168,7 @@ const FIXTURE_ORG = 'DWMOVE_TEST_FIXTURE';
 
 async function teardown() {
   const org = `(SELECT id FROM organizations WHERE name = '${FIXTURE_ORG}')`;
+  await q(`DELETE FROM notifications            WHERE org_id = ${org}`);
   await q(`DELETE FROM daily_work_move_requests WHERE org_id = ${org}`);
   await q(`DELETE FROM daily_work_entries       WHERE org_id = ${org}`);
   await q(`DELETE FROM daily_work_items         WHERE org_id = ${org}`);
@@ -878,6 +880,97 @@ async function screenReads(f) {
     (await one(`SELECT title FROM daily_work_items WHERE id = $1`, [tagged])).title);
 }
 
+/* ── I. notifications and the daily reminder ───────────────────────── */
+
+async function notifications(f) {
+  console.log('\nNOTIFICATIONS');
+  const notes = async (requestId, type) => (await q(
+    `SELECT user_id, title, body, metadata FROM notifications
+      WHERE org_id = $1 AND type = $2 AND metadata->>'requestId' = $3
+      ORDER BY user_id`, [f.orgId, type, String(requestId)])).rows;
+  const users = (rows) => rows.map(r => r.user_id).sort((a, b) => a - b);
+  const T = moveNotify.TYPES;
+
+  // Raised by Mo for Ana, with work tagged to Source: Pat and Sam are asked.
+  const item = await mkItem(f);
+  const e1 = await mkEntry(f, item, day(-20), { anchorKind: 'handover', anchorId: f.source });
+  const { request } = await move.createRequest(f.orgId, f.mo, { itemId: item, targetHandoverId: f.target, entryIds: [e1] });
+  let asked = await notes(request.id, T.requested);
+  eq('both approvers are asked, the requester is not', users(asked), [f.pat, f.sam].sort((a, b) => a - b));
+  const samNote = asked.find(r => r.user_id === f.sam);
+  check("the source approver is told it is tagged to their project",
+    samNote && samNote.body.includes('tagged to Move Source') && samNote.metadata.role === 'source', samNote && samNote.body);
+  check('each links to My day', asked.every(r => String(r.metadata.url).endsWith('/#/dailywork')));
+
+  // Entries added after Pat approved form batch 2; its approver is asked again.
+  await move.decide(f.orgId, f.pat, request.id, { handoverId: f.target, decision: 'approve', placement: { existingPlayInstanceId: f.t1 } });
+  const e2 = await mkEntry(f, item, day(-19));
+  await move.addEntries(f.orgId, f.mo, request.id, [e2]);
+  asked = await notes(request.id, T.requested);
+  check('adding entries asks the batch 2 approver, as more work',
+    asked.some(r => r.user_id === f.pat && r.metadata.batchNo === 2 && r.title.startsWith('More work')));
+  eq('nothing has moved, so nobody has been told it moved', (await notes(request.id, T.approved)).length, 0);
+
+  // ── the daily reminder, before anyone decides further ──────────────
+  const tomorrowAt10 = new Date(Date.now() + 24 * 3600 * 1000);
+  tomorrowAt10.setUTCHours(10, 5, 0, 0);
+  const nineOClock = new Date(tomorrowAt10); nineOClock.setUTCHours(9, 5, 0, 0);
+  let run = await moveNotify.runMoveReminders({ now: nineOClock });
+  check('at the wrong hour, nobody in this org is reminded',
+    !(await q(`SELECT 1 FROM notifications WHERE org_id = $1 AND type = $2`, [f.orgId, T.reminder])).rows.length);
+  run = await moveNotify.runMoveReminders({ now: tomorrowAt10 });
+  const reminders = (await q(
+    `SELECT user_id, title, body, metadata FROM notifications WHERE org_id = $1 AND type = $2`, [f.orgId, T.reminder])).rows;
+  const samR = reminders.find(r => r.user_id === f.sam);
+  check('the next morning, a waiting approver gets one reminder listing it',
+    samR && samR.metadata.requestIds.includes(request.id) && samR.body.includes('Open My day'), JSON.stringify(reminders.map(r => r.user_id)));
+  check('someone with nothing waiting is not reminded', !reminders.some(r => r.user_id === f.zed || r.user_id === f.ana));
+  await moveNotify.runMoveReminders({ now: tomorrowAt10 });
+  eq('running again the same day sends nothing more',
+    (await q(`SELECT count(*)::int AS n FROM notifications WHERE org_id = $1 AND type = $2 AND user_id = $3`,
+      [f.orgId, T.reminder, f.sam])).rows[0].n, 1);
+  const sameDay = new Date(); sameDay.setUTCHours(10, 5, 0, 0);
+  const freshItem = await mkItem(f);
+  const { request: fresh } = await move.createRequest(f.orgId, f.ana, { itemId: freshItem, targetHandoverId: f.target });
+  await q(`DELETE FROM notifications WHERE org_id = $1 AND type = $2`, [f.orgId, T.reminder]);
+  await moveNotify.runMoveReminders({ now: sameDay });
+  const todays = (await q(`SELECT metadata FROM notifications WHERE org_id = $1 AND type = $2`, [f.orgId, T.reminder])).rows;
+  check('a request raised today is not in today’s reminder', todays.every(r => !r.metadata.requestIds.includes(fresh.id)));
+  if (run) pass('the reminder run reports what it did');
+
+  // ── moved: requester and owner are told, the approver who finished it is not
+  await move.decide(f.orgId, f.sam, request.id, { handoverId: f.source, decision: 'approve' });
+  const moved = await notes(request.id, T.approved);
+  eq('Mo and Ana are told it moved, Sam is not', users(moved), [f.ana, f.mo].sort((a, b) => a - b));
+  check('the message names the task and what happened to the entries',
+    moved[0] && moved[0].body.includes('Move task') && moved[0].body.includes('moved'), moved[0] && moved[0].body);
+
+  // ── rejected, with the reason
+  const item2 = await mkItem(f);
+  const { request: r2 } = await move.createRequest(f.orgId, f.mo, { itemId: item2, targetHandoverId: f.target });
+  await move.decide(f.orgId, f.pat, r2.id, { handoverId: f.target, decision: 'reject', reason: 'not on this plan' });
+  const rejected = await notes(r2.id, T.rejected);
+  eq('requester and owner are told it was rejected', users(rejected), [f.ana, f.mo].sort((a, b) => a - b));
+  check('with the reason', rejected.every(r => r.body.includes('not on this plan')));
+
+  // ── withdrawn
+  const item3 = await mkItem(f);
+  const { request: r3 } = await move.createRequest(f.orgId, f.mo, { itemId: item3, targetHandoverId: f.target });
+  await move.withdraw(f.orgId, f.mo, r3.id);
+  const withdrawn = await notes(r3.id, T.withdrawn);
+  check('the approver who had it waiting is told it was withdrawn', users(withdrawn).includes(f.pat) && !users(withdrawn).includes(f.mo));
+
+  // ── a notification failure never breaks the action
+  const orig = require(path.resolve(REPO, 'services', 'notificationService.js')).createNotification;
+  const svcMod = require(path.resolve(REPO, 'services', 'notificationService.js'));
+  svcMod.createNotification = async () => { throw new Error('delivery is down'); };
+  const item4 = await mkItem(f);
+  const r4 = await expectOk('raising a request still works when notifications fail',
+    () => move.createRequest(f.orgId, f.ana, { itemId: item4, targetHandoverId: f.target }));
+  svcMod.createNotification = orig;
+  check('and the request exists', !!(r4 && r4.request.id));
+}
+
 /* ── run ───────────────────────────────────────────────────────────── */
 
 (async () => {
@@ -892,6 +985,7 @@ async function screenReads(f) {
     await concurrency(f);
     await newTask(f);
     await screenReads(f);
+    await notifications(f);
   } catch (err) {
     fail('harness aborted', err.stack || err.message);
   } finally {

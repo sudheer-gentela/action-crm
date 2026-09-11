@@ -219,6 +219,8 @@ async function enqueueRevisitAlerts() {
 
 const ProspectingEscalationService = require('../services/prospectingEscalation.service');
 const dailyWorkNotify = require('../services/dailyWorkNotify.service');
+// 2026_142 — the daily reminder to approvers of waiting move requests.
+const dailyWorkMoveNotify = require('../services/dailyWorkMoveNotify.service');
 
 /**
  * Scan all orgs for prospecting actions eligible for an immediate alert.
@@ -523,7 +525,18 @@ function startScheduler() {
     );
   }, { timezone: 'UTC' });
 
-  console.log('✅ Notification scheduler started (deal: immediate 2h, digest 09:00 UTC, revisit 08:00 UTC | prospecting: immediate 2h+30m, digest hourly+org-filtered, escalation 4h+15m | review digest hourly+45m | daily work: reminder hourly+25m, rollup hourly+35m, both per-user local hour)');
+  // Move request reminders (2026_142): hourly at :50, clear of every sweep
+  // above. Self-filters to each approver's local hour like the two daily work
+  // jobs, and sends at most one reminder per approver per local day.
+  cron.schedule('50 * * * *', () => {
+    dailyWorkMoveNotify.runMoveReminders()
+      .then(s => {
+        if (s.sent) console.log(`[dailywork] move reminders sent: ${s.sent} of ${s.considered} considered`);
+      })
+      .catch(err => console.error('[dailywork] move reminder cron error:', err.message));
+  }, { timezone: 'UTC' });
+
+  console.log('✅ Notification scheduler started (deal: immediate 2h, digest 09:00 UTC, revisit 08:00 UTC | prospecting: immediate 2h+30m, digest hourly+org-filtered, escalation 4h+15m | review digest hourly+45m | daily work: reminder hourly+25m, rollup hourly+35m, move reminders hourly+50m, all per-user local hour)');
 }
 
 module.exports = {

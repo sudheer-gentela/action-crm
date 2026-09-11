@@ -264,6 +264,19 @@ export default function DailyWorkView() {
     return () => window.removeEventListener('dailywork-restore', onRestore);
   }, []);
 
+  // A link to bare #/dailywork means My day (2026_142). Move notifications open
+  // that link, and App switches to this module on the hash change — but if the
+  // module was already showing People or Setup, its own tab state would stay
+  // put and the notification would land somewhere that does not show the
+  // request. Only the bare path does this; #/dailywork/people is left alone.
+  useEffect(() => {
+    const onHash = () => {
+      if (hashSegment(0) === 'dailywork' && !hashSegment(1)) setTab('day');
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
   // Mirror the open tab into segment 1, leaving segment 2 alone.
   //
   // The guard is load-bearing: writeHash truncates at the first empty part, so

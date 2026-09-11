@@ -63,6 +63,16 @@ const TYPE_TO_CATEGORY = {
   // the one alert whose whole value is arriving before the reader picks up
   // something else.
   play_unblocked:                  'unblocked',
+  // 2026_142. Daily work asking to move onto a project, and what came of it.
+  // One category for all five, so someone can quieten this traffic on a
+  // channel without touching task reviews. Not 'review': that category is
+  // digest-deferred and scope-filtered by rules written for task reviews, and
+  // a move request is neither.
+  dailywork_move_requested:        'move_request',
+  dailywork_move_approved:         'move_request',
+  dailywork_move_rejected:         'move_request',
+  dailywork_move_withdrawn:        'move_request',
+  dailywork_move_reminder:         'move_request',
 };
 
 // 2026_138. The review events that mean a task FINISHED, by notification type.

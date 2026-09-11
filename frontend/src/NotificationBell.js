@@ -207,6 +207,12 @@ export default function NotificationBell({ onNavigateToAction }) {
       goHash('#/prospecting/calls');
     } else if (notif.entity_type === 'network') {
       goHash('#/prospecting/network');
+    } else if (notif.entity_type === 'dailywork_move_request') {
+      // 2026_142. Every move screen is on My day — the review card, the
+      // person's own requests, the flagged entries — so every move notification
+      // opens it. Assigning the hash fires 'hashchange', which App uses to switch
+      // tabs whether or not Daily Work is mounted.
+      goHash('#/dailywork');
     } else if (notif.entity_type === 'sequence_enrollment') {
       // 2026_71 — thread-blocked enrollment: open the resolution modal
       // (switch sender / reconnect / stop) instead of navigating.

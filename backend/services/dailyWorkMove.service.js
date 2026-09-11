@@ -57,9 +57,12 @@
 // behind on someone's plan. On a plan whose baseline is already frozen it is
 // marked as added scope (project_play_instances.scope_added_at).
 //
-// ── WHAT IS NOT HERE YET ─────────────────────────────────────────────
+// ── NOTIFICATIONS ────────────────────────────────────────────────────
 //
-// Notifications and the daily reminders are the step after the UI.
+// Each write collects what happened — raised, moved, rejected, withdrawn — and
+// hands it to dailyWorkMoveNotify.dispatch AFTER its transaction commits. The
+// notifications are a consequence of the action, never part of it: a failure to
+// notify is logged and the action stands.
 //
 // ── TRANSACTIONS AND LOCKS ───────────────────────────────────────────
 //
@@ -81,6 +84,9 @@ const projectMembers = require('./projectMembers.service');
 const moduleAccess = require('./moduleAccess.service');
 // The one definition of a stage key, shared with addPlay and planImport.
 const { stageKeyFrom } = require('./stageKey');
+// Notifications (who is told what) and the one definition of who approves.
+const moveNotify = require('./dailyWorkMoveNotify.service');
+const { approverUserIds } = moveNotify;
 
 const { DailyWorkError, ITEM_COLUMNS, ENTRY_COLUMNS, MAX_DESCRIPTION, MAX_NEXT_STEPS } = dw;
 
@@ -292,42 +298,6 @@ async function insertMoveEntries(client, orgId, requestId, batchId, entries) {
 }
 
 /**
- * The people who may approve for a project, for granting access and — later —
- * for notifying.
- *
- * canManageProject is true for four groups. Org admins and owners are only the
- * FALLBACK here, used when a project has none of the other three: they already
- * hold every enabled module (grantAllEnabledToAdmins), and notifying every
- * admin about every request would be noise. 2026_133 records that initiatives
- * are often created with no owner, which is the case the fallback covers.
- */
-async function approverUserIds(client, orgId, handoverId) {
-  const { rows } = await client.query(
-    `SELECT DISTINCT x.user_id
-       FROM (
-         SELECT h.assigned_service_owner_id AS user_id FROM sales_handovers h
-          WHERE h.id = $2 AND h.org_id = $1
-         UNION ALL
-         SELECT h.created_by FROM sales_handovers h
-          WHERE h.id = $2 AND h.org_id = $1
-         UNION ALL
-         SELECT pm.user_id FROM project_members pm
-          WHERE pm.org_id = $1 AND pm.context_type = 'handover' AND pm.context_id = $2
-            AND pm.status = 'approved' AND pm.exited_at IS NULL AND pm.can_manage = TRUE
-       ) x
-       JOIN org_users ou ON ou.org_id = $1 AND ou.user_id = x.user_id AND ou.is_active = TRUE
-      WHERE x.user_id IS NOT NULL`,
-    [orgId, handoverId]);
-  if (rows.length) return rows.map(r => r.user_id);
-
-  const { rows: admins } = await client.query(
-    `SELECT user_id FROM org_users
-      WHERE org_id = $1 AND is_active = TRUE AND role IN ('admin', 'owner')`,
-    [orgId]);
-  return admins.map(r => r.user_id);
-}
-
-/**
  * Give Daily Work to every approver of these projects who lacks it.
  *
  * Recorded with source = 'move_request_approver' so Org Admin can say why the
@@ -433,10 +403,11 @@ async function createRequest(orgId, actorId, input = {}) {
     await insertMoveEntries(client, orgId, req.id, batch.id, entries);
     const granted = await grantApprovers(client, orgId, req.id, [targetHandoverId, ...sources]);
 
-    return { requestId: req.id, granted };
+    return { requestId: req.id, batchId: batch.id, granted };
   });
 
   invalidateGrants(orgId, out.granted);
+  await moveNotify.dispatch(orgId, actorId, out.requestId, [{ kind: 'requested', batchId: out.batchId }]);
   return { request: await getRequestDetail(orgId, out.requestId), grantedUserIds: out.granted };
 }
 
@@ -502,10 +473,13 @@ async function addEntries(orgId, actorId, requestId, entryIds) {
     await ensureApprovalRows(client, orgId, requestId, batchId, req.target_handover_id, sources);
     await insertMoveEntries(client, orgId, requestId, batchId, entries);
     const granted = await grantApprovers(client, orgId, requestId, [req.target_handover_id, ...sources]);
-    return { granted };
+    return { granted, batchId };
   });
 
   invalidateGrants(orgId, out.granted);
+  // Approvers of that batch hear about it whether it is a new batch or the
+  // waiting one — either way there is more for them to look at.
+  await moveNotify.dispatch(orgId, actorId, requestId, [{ kind: 'requested', batchId: out.batchId }]);
   return { request: await getRequestDetail(orgId, requestId), grantedUserIds: out.granted };
 }
 
@@ -516,7 +490,7 @@ async function addEntries(orgId, actorId, requestId, entryIds) {
  * still waiting; what has moved stays moved.
  */
 async function withdraw(orgId, actorId, requestId) {
-  await withOrgTransaction(orgId, async (client) => {
+  const closed = await withOrgTransaction(orgId, async (client) => {
     const req = await lockRequest(client, orgId, requestId);
     if (!isRequester(req, actorId)) {
       throw new DailyWorkError('Only the person who raised this request can withdraw it.',
@@ -527,7 +501,7 @@ async function withdraw(orgId, actorId, requestId) {
         'REQUEST_NOT_OPEN', { requestId });
     }
 
-    await closePendingBatches(client, requestId, 'withdrawn');
+    const batchIds = await closePendingBatches(client, requestId, 'withdrawn');
 
     if (req.status === 'pending') {
       await client.query(
@@ -541,7 +515,9 @@ async function withdraw(orgId, actorId, requestId) {
         `UPDATE daily_work_move_requests SET is_open = false, updated_at = now() WHERE id = $1`,
         [requestId]);
     }
+    return batchIds;
   });
+  await moveNotify.dispatch(orgId, actorId, requestId, [{ kind: 'withdrawn', batchIds: closed }]);
   return getRequestDetail(orgId, requestId);
 }
 
@@ -554,12 +530,13 @@ async function closePendingBatches(client, requestId, status, onlyBatchId = null
         AND ($3::int IS NULL OR id = $3)
       RETURNING id`,
     [requestId, status, onlyBatchId]);
-  if (!batches.length) return;
+  if (!batches.length) return [];
   await client.query(
     `UPDATE daily_work_move_entries
         SET outcome = 'excluded'
       WHERE batch_id = ANY($1::int[]) AND outcome = 'pending'`,
     [batches.map(b => b.id)]);
+  return batches.map(b => b.id);
 }
 
 /* ───────────────────────── deciding ────────────────────────────────── */
@@ -602,6 +579,9 @@ async function decide(orgId, actorId, requestId, input = {}) {
     throw new DailyWorkError('Only a manager of that project can decide for it.',
       'NOT_PROJECT_MANAGER', { handoverId });
   }
+
+  // What this decision caused, told to people once it has committed.
+  const events = [];
 
   await withOrgTransaction(orgId, async (client) => {
     const req = await lockRequest(client, orgId, requestId);
@@ -652,6 +632,7 @@ async function decide(orgId, actorId, requestId, input = {}) {
             SET decision = 'rejected', decided_by = $2, decided_at = now(), reason = $3
           WHERE id = $1`,
         [appr.id, actorId, reason]);
+      events.push({ kind: 'rejected', batchId: appr.batch_id, handoverId, reason });
 
       if (appr.batch_no === 1) {
         // A rejection on the first batch ends the request — every waiting
@@ -701,9 +682,10 @@ async function decide(orgId, actorId, requestId, input = {}) {
         [appr.id, actorId, reason]);
     }
 
-    await executeReadyBatches(client, orgId, actorId, requestId);
+    await executeReadyBatches(client, orgId, actorId, requestId, events);
   });
 
+  await moveNotify.dispatch(orgId, actorId, requestId, events);
   return getRequestDetail(orgId, requestId);
 }
 
@@ -1144,7 +1126,7 @@ async function refreshIsOpen(client, requestId) {
  * — batch 1 may still be waiting on a source project — and it cannot move
  * before there is a task, so it waits and moves the moment batch 1 does.
  */
-async function executeReadyBatches(client, orgId, actorId, requestId) {
+async function executeReadyBatches(client, orgId, actorId, requestId, events = []) {
   const { rows: batches } = await client.query(
     `SELECT b.id, b.batch_no,
             NOT EXISTS (SELECT 1 FROM daily_work_move_approvals a
@@ -1163,6 +1145,7 @@ async function executeReadyBatches(client, orgId, actorId, requestId) {
       `SELECT * FROM daily_work_move_requests WHERE id = $1`, [requestId]);
     if (b.batch_no !== 1 && req.status !== 'approved') break;
     await executeBatch(client, orgId, actorId, req, b);
+    events.push({ kind: 'moved', batchId: b.id });
   }
   await refreshIsOpen(client, requestId);
 }

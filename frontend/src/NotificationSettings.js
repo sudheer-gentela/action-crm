@@ -430,6 +430,8 @@ export default function NotificationSettings() {
           // triggers it — "a task you can start" is the thing the reader cares
           // about; "a prerequisite reached a terminal status" is not.
           ['unblocked',  'Ready to start',        'When a task of yours stops being blocked.'],
+          // 2026_142. Beside the other "someone is waiting on you" rows.
+          ['move_request', 'Daily work moving to projects', 'Requests to approve, their outcome, and a daily reminder while one waits.'],
           ['immediate',  'Immediate alerts',      'Time-sensitive updates as they happen.'],
           ['escalation', 'Escalations',           'When something has been ignored too long.'],
           ['revisit',    'Revisit reminders',     'When a prospect or account is due a look.'],
@@ -591,6 +593,12 @@ export default function NotificationSettings() {
                   <div className="ns-toggle-row">
                     <div className="ns-card-desc">Ready to start (a task of yours is unblocked)</div>
                     <Toggle checked={cat.unblocked !== false} onChange={v => setSlackCategory('unblocked', v)} />
+                  </div>
+                  {/* 2026_142. `!== false`, like unblocked: DEFAULT_PREFS turns it
+                      on, and an older prefs row with no key must read the same. */}
+                  <div className="ns-toggle-row">
+                    <div className="ns-card-desc">Daily work moving to projects</div>
+                    <Toggle checked={cat.move_request !== false} onChange={v => setSlackCategory('move_request', v)} />
                   </div>
                   <div className="ns-toggle-row">
                     <div className="ns-card-desc">Daily digests</div>
