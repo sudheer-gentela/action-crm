@@ -414,6 +414,17 @@ export default function DailyWorkTeamView() {
            the choice, not a derived pair of dates. */
         period={period}
         anchorDate={anchorDate}
+        // The filters as the SCREEN holds them ({ account, anchor, ... }), for
+        // the return crumb. `filters` above is the API shape, with the anchor
+        // split into anchorKind/anchorId — and the restore handler writes the
+        // crumb straight back into filter state, so an API-shaped crumb came
+        // back with no `anchor` key: the initiative filter was dropped and its
+        // select was left bound to undefined.
+        crumbFilters={filters}
+        // Without it the person page offers task links in an org with no
+        // Projects module, where App.js ignores the event and the click does
+        // nothing at all.
+        hasProjects={hasProjects}
         onBack={() => setOpenPerson(null)}
       />
     );
@@ -671,7 +682,8 @@ export default function DailyWorkTeamView() {
               <ProjectItemRow
                 key={o.id} item={o}
                 person={{ user_id: o.userId, first_name: nameOf(o.userId), last_name: '' }}
-                period={period} anchorDate={anchorDate} filters={apiFilters()}
+                // UI-shaped, for the return crumb — see crumbFilters on PersonPage.
+                period={period} anchorDate={anchorDate} filters={filters}
                 who={nameOf(o.userId)}
                 onRefuse={(text) => setNotice({ kind: 'warn', text })} />
             ))}
@@ -759,6 +771,12 @@ export default function DailyWorkTeamView() {
                     onOpenDay={openDay}
                     onOpenAllDays={openAllDays}
                     onOpenPerson={setOpenPerson}
+                    // For the task links on Details rows: the crumb that brings
+                    // the manager back here needs the period, date and filters
+                    // exactly as the screen holds them.
+                    anchorDate={anchorDate}
+                    crumbFilters={filters}
+                    onRefuse={(text) => setNotice({ kind: 'warn', text })}
                     // The window the strip was drawn for, so the leave panel
                     // inside the expansion asks about the same days the
                     // squares above it represent.
@@ -867,7 +885,8 @@ function personRange(key) {
   return { from: iso(shift(-r.back)), to: iso(shift(r.fwd)) };
 }
 
-function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
+function PersonPage({ person, range, filters, period, anchorDate, onBack,
+                      crumbFilters = null, hasProjects = false }) {
   const [state, setState] = useState({
     loading: true, log: [], projectItems: [], projects: [],
     assigned: [], assignedOutside: 0, projectItemsOutside: 0, rate: null,
@@ -1231,17 +1250,22 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
                                 <div className="dw-meta">No items to show for this day.</div>
                               ) : (
                                 <table className="dw-logtable dw-daytable">
+                                  {/* Actions column added for the task link.
+                                      Its width comes out of What was done,
+                                      which has the most slack on this row. */}
                                   <colgroup>
-                                    <col style={{ width: '26%' }} />
-                                    <col style={{ width: '32%' }} />
-                                    <col style={{ width: '14%' }} />
-                                    <col style={{ width: '16%' }} />
-                                    <col style={{ width: '12%' }} />
+                                    <col style={{ width: '24%' }} />
+                                    <col style={{ width: '28%' }} />
+                                    <col style={{ width: '13%' }} />
+                                    <col style={{ width: '15%' }} />
+                                    <col style={{ width: '11%' }} />
+                                    <col style={{ width: '9%' }} />
                                   </colgroup>
                                   <thead>
                                     <tr>
                                       <th>Item</th><th>What was done</th>
                                       <th>Activity</th><th>Initiative</th><th>Stage</th>
+                                      <th><span className="dw-sr-only">Actions</span></th>
                                     </tr>
                                   </thead>
                                   <tbody>
@@ -1264,6 +1288,13 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
                                         <td className="dw-logitem muted">
                                           {stageLabel(r.day_stage, r.kind)
                                             || <span className="dw-none">—</span>}
+                                        </td>
+                                        <td className="dw-logactions">
+                                          <LoggedTaskLink row={r} person={person}
+                                                          period={period} anchorDate={anchorDate}
+                                                          crumbFilters={crumbFilters}
+                                                          onRefuse={onRefuse}
+                                                          hasProjects={hasProjects} />
                                         </td>
                                       </tr>
                                     ))}
@@ -1323,9 +1354,22 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
                             to assigned items, so this is the only place the
                             project link can surface. Marked rather than
                             duplicated as a row in the project table below. */}
-                        {a.playInstanceId && (
+                        {/* A link when the task can be opened from here; the
+                            old badge otherwise. The badge still says something
+                            true in an org with no Projects module, where a link
+                            would be a control that does nothing. */}
+                        {a.playInstanceId && (hasProjects && a.handoverId ? (
+                          <span style={{ marginLeft: 6 }}>
+                            <ProjectItemRow
+                              item={{ kind: 'task', playInstanceId: a.playInstanceId,
+                                      handoverId: a.handoverId }}
+                              person={person} period={period} anchorDate={anchorDate}
+                              filters={crumbFilters} onRefuse={onRefuse}
+                              variant="link" check="history" linkLabel="Open project task" />
+                          </span>
+                        ) : (
                           <span className="dw-badge" style={{ marginLeft: 6 }}>on a project task</span>
-                        )}
+                        ))}
                       </td>
                       <td className="dw-logitem muted">{a.assignedByName || '—'}</td>
                       <td>
@@ -1406,7 +1450,7 @@ function PersonPage({ person, range, filters, period, anchorDate, onBack }) {
                           </td>
                           <td className="dw-logactions">
                             <ProjectItemRow item={i} person={person} period={period}
-                                            anchorDate={anchorDate} filters={filters}
+                                            anchorDate={anchorDate} filters={crumbFilters}
                                             onRefuse={onRefuse} variant="link" />
                             {i.kind === 'task' && i.playInstanceId && (
                               <button type="button" className="dw-btn-link"
@@ -1599,13 +1643,45 @@ function PersonIdentity({ person }) {
   );
 }
 
+/**
+ * "Open task" on one logged entry, or nothing.
+ *
+ * ONE COMPONENT FOR THE THREE DAY TABLES that render per-item rows — the Day
+ * period expansion and the Days expansion on the People list, and the day
+ * detail on the person page. Each builds the same item from the same four
+ * getDayDetail columns and must hide the link under the same conditions; three
+ * inline copies would agree today and drift on the first fix to one of them.
+ *
+ * check="history", not the default. These rows record work already done, and
+ * the task behind a row from last month has usually been completed since. The
+ * default check asks whether the person still has OPEN work there and would
+ * refuse exactly those rows. See useOpenProjectTask.
+ *
+ * Renders nothing when:
+ *   - the entry's item is not filed against a task (most rows), or
+ *   - the org has no Projects module, where App.js drops the open event and a
+ *     link would be a button that does nothing.
+ */
+function LoggedTaskLink({ row, person, period, anchorDate, crumbFilters, onRefuse, hasProjects }) {
+  if (!hasProjects || !row || !row.play_instance_id || !row.task_handover_id) return null;
+  return (
+    <ProjectItemRow
+      item={{ kind: 'task', playInstanceId: row.play_instance_id,
+              handoverId: row.task_handover_id }}
+      person={person} period={period} anchorDate={anchorDate}
+      filters={crumbFilters} onRefuse={onRefuse}
+      variant="link" check="history" linkLabel="Open task" />
+  );
+}
+
 // onOpenPerson is gone with the "Open full view" button it drove. The person
 // page itself is not dead — setOpenPerson still runs from the hash route, which
 // is what Copy link produces — but it is no longer reachable by clicking a row.
 // Left unused it would be a no-unused-vars warning, and CRA builds with CI=true
 // where a warning fails the build.
 function PersonRow({ person, period, hasProjects = false, log, expanded, details,
-                     onToggle, onOpenDay, onOpenAllDays, onOpenPerson, window_ = {}, onChanged }) {
+                     onToggle, onOpenDay, onOpenAllDays, onOpenPerson, window_ = {}, onChanged,
+                     anchorDate = null, crumbFilters = null, onRefuse = null }) {
   const key = `p:${person.user_id}`;
   const isOpen = !!expanded[key];
 
@@ -1773,7 +1849,12 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
                         <td className="dw-col-initiative dw-meta">
                           {item.anchor_label || item.account_name || '—'}
                         </td>
-                        <td className="dw-logactions" />
+                        <td className="dw-logactions">
+                          <LoggedTaskLink row={item} person={person}
+                                          period={period} anchorDate={anchorDate}
+                                          crumbFilters={crumbFilters} onRefuse={onRefuse}
+                                          hasProjects={hasProjects} />
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -1959,7 +2040,12 @@ function PersonRow({ person, period, hasProjects = false, log, expanded, details
                             <td className="dw-col-initiative dw-meta">
                               {item.anchor_label || item.account_name || '—'}
                             </td>
-                            <td className="dw-logactions" />
+                            <td className="dw-logactions">
+                              <LoggedTaskLink row={item} person={person}
+                                              period={period} anchorDate={anchorDate}
+                                              crumbFilters={crumbFilters} onRefuse={onRefuse}
+                                              hasProjects={hasProjects} />
+                            </td>
                           </tr>
                         ))}
                       </React.Fragment>

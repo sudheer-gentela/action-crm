@@ -167,12 +167,20 @@ router.get('/day', async (req, res) => {
   try {
     const date = asDate(req.query.date);
     if (date === undefined) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
-    const day = await dailyWork.getDay(req.orgId, req.userId, { date });
+    // backfillDays now arrives on `day`, resolved from the org's setting.
+    //
+    // It used to be overwritten here with dailyWork.BACKFILL_DAYS — the
+    // constant, not the setting. 2026_140 made the window per-org and _saveDayIn
+    // honours it, but this line kept telling My Day the default. In an org set
+    // to ten days, My Day stopped its date navigation at day five while the
+    // save would have accepted day nine.
+    //
     // Told to the client rather than hardcoded there, so the window is defined
     // in one place. The UI uses it to bound its date navigation; the service
     // still enforces it on save, because a bound the client is told is a bound
     // the client can ignore.
-    res.json({ ...day, backfillDays: dailyWork.BACKFILL_DAYS });
+    const day = await dailyWork.getDay(req.orgId, req.userId, { date });
+    res.json(day);
   } catch (err) { handle(res, err, 'GET /day'); }
 });
 
@@ -683,6 +691,73 @@ router.get('/people/:userId/project/:handoverId', async (req, res) => {
       title: match.title,
     });
   } catch (err) { handle(res, err, 'GET /people/:userId/project/:handoverId'); }
+});
+
+// ── GET /people/:userId/task-link/:playInstanceId — open a task from history ──
+//
+// Called when a manager clicks a task on a Details row of the daily log, or on
+// an "Assigned to them" row, before navigating to Projects.
+//
+// A SEPARATE CHECK from /people/:userId/project/:handoverId above, not a
+// looser version of it. That route answers "does this person still have OPEN
+// work here" and the overdue queue and "Their project work" depend on it
+// meaning exactly that. These rows are history: a Details row from three weeks
+// ago usually points at a task that has since been completed, and asking the
+// open-work question would refuse the common case with a sentence that reads
+// like a broken link. See dailyQuery.getLinkedTaskForOwner.
+//
+// The same two halves as the route above, adjusted to the question:
+//
+//   1. getVisibleUserIds — unchanged. You are only handed this link because
+//      you may read this person's log.
+//   2. this person has an item linked to this task. That link is set once and
+//      never severed (2026_136), so unlike an assignment it does not lapse.
+//
+// Returns the scope for the same reason the route above does: only
+// tracking_mode decides which board tab the project lives on.
+router.get('/people/:userId/task-link/:playInstanceId', async (req, res) => {
+  try {
+    const target = asId(req.params.userId);
+    const playInstanceId = asId(req.params.playInstanceId);
+    if (!target || !playInstanceId) {
+      return res.status(400).json({ error: 'userId and playInstanceId must be positive integers' });
+    }
+
+    const visible = await dailyQuery.getVisibleUserIds(req.orgId, req.userId);
+    if (!visible.includes(target)) {
+      // Same body shape as every other refusal the link handles: the client
+      // renders `reason` verbatim.
+      return res.status(403).json({
+        ok: false,
+        reason: 'They are not in your team any more, so this link no longer applies.',
+      });
+    }
+
+    // NOT wrapped in _projectSideOrEmpty. That helper turns a failure into the
+    // fallback, which here would be null — and null means "not linked", so a
+    // database error would reach the manager as a confident refusal. Let it
+    // fall through to handle() as a 500; the client then shows its own
+    // "could not be opened just now", which is the truth.
+    const task = await dailyQuery.getLinkedTaskForOwner(req.orgId, target, playInstanceId);
+    if (!task) {
+      // Not reachable from a row this screen drew — the link is never
+      // severed — so this is a hand-built URL or a row from a stale page.
+      return res.status(403).json({
+        ok: false,
+        reason: 'That task is not linked to their work, so there is nothing to open.',
+      });
+    }
+
+    res.json({
+      ok: true,
+      handoverId: task.handoverId,
+      playInstanceId: task.playInstanceId,
+      // The hash words HandoverView parses — see the route above.
+      scope: task.isStanding ? 'initiatives' : 'assigned',
+      project: task.project,
+      title: task.title,
+    });
+  } catch (err) { handle(res, err, 'GET /people/:userId/task-link/:playInstanceId'); }
 });
 
 // ── GET /people/:userId — one person, both halves ────────────────────────────

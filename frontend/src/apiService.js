@@ -1223,6 +1223,14 @@ twilio: {
     checkProjectLink: (userId, handoverId) =>
       api.get(`/daily-work/people/${userId}/project/${handoverId}`),
 
+    // The same shape of answer for a row of HISTORY — a Details row or an
+    // "Assigned to them" row. checkProjectLink refuses once the task closes,
+    // which is right for open work and wrong for a record of work already
+    // done. Resolves with { ok, handoverId, playInstanceId, scope } or rejects
+    // with a 403 carrying `reason`.
+    taskLink: (userId, playInstanceId) =>
+      api.get(`/daily-work/people/${userId}/task-link/${playInstanceId}`),
+
     // ── setup, owner and admin only ──────────────────────────────────
     listCalendars:      () => api.get('/daily-work/calendars'),
     createCalendar:     ({ name, isDefault }) => api.post('/daily-work/calendars', { name, isDefault }),

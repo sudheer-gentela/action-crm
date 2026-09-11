@@ -1071,11 +1071,21 @@ async function postTaskUpdate(orgId, userId, input = {}) {
         throw new DailyWorkError('You cannot log work for a future day',
           'FUTURE_DATE', { date });
       }
-      const earliest = dwDate.addDays(today, -BACKFILL_DAYS);
+      // The ORG's window, not the constant. This read BACKFILL_DAYS directly
+      // after 2026_140 made the window a setting, so in an org set to ten days
+      // My day accepted day nine and the task composer refused it — the same
+      // work, the same person, two answers depending on which screen they used.
+      // Same resolution and same sentences as _saveDayIn, which runs next and
+      // would refuse anyway; checked here first so no item is created for a
+      // date that is about to be refused.
+      const backfillDays = await resolveBackfillDays(client, orgId);
+      const earliest = dwDate.addDays(today, -backfillDays);
       if (date < earliest) {
         throw new DailyWorkError(
-          `You can only log work for the last ${BACKFILL_DAYS} days. ${date} is further back than that.`,
-          'OUTSIDE_BACKFILL_WINDOW', { date, earliest });
+          backfillDays === 0
+            ? `Work can only be logged for the current day. ${date} is earlier than that.`
+            : `You can only log work for the last ${backfillDays} days. ${date} is further back than that.`,
+          'OUTSIDE_BACKFILL_WINDOW', { date, earliest, backfillDays });
       }
       entryDate = date;
     }
@@ -1223,7 +1233,10 @@ async function getTaskWork(orgId, userId, playInstanceId, { asOf = new Date() } 
       feed,
       today,
       timezone: tz,
-      earliest: dwDate.addDays(today, -BACKFILL_DAYS),
+      // The org's window (see postTaskUpdate). TaskWorkComposer builds its day
+      // picker from this value, so while it read the constant the composer
+      // offered five days in an org that allows ten.
+      earliest: dwDate.addDays(today, -(await resolveBackfillDays(client, orgId))),
       stages: LINKED_DAY_STAGES,
     };
   });
@@ -1312,7 +1325,13 @@ async function getDay(orgId, userId, { date = null, asOf = new Date() } = {}) {
         ORDER BY i.created_at, i.id`,
       [orgId, userId, entryDate]);
 
-    return { entryDate, today, timezone: tz, rows };
+    // backfillDays travels with the day, resolved from the org's setting in
+    // this same transaction. GET /day used to stamp the BACKFILL_DAYS constant
+    // over the top, so My day bounded its date navigation by the default while
+    // _saveDayIn enforced the org's value.
+    const backfillDays = await resolveBackfillDays(client, orgId);
+
+    return { entryDate, today, timezone: tz, rows, backfillDays };
   });
 }
 

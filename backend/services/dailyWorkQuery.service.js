@@ -215,9 +215,38 @@ async function getDayDetail(orgId, userId, entryDate, filters = {}) {
                 WHEN 'campaign' THEN pc.name
               END AS anchor_label,
               (SELECT count(*)::int FROM play_evidence pv
-                WHERE pv.daily_work_entry_id = e.id) AS evidence_count
+                WHERE pv.daily_work_entry_id = e.id) AS evidence_count,
+              -- The project task this entry's item is filed against, so the
+              -- Details row can open that exact task.
+              --
+              -- Read from the ITEM's link, not from the entry's anchor. The
+              -- anchor names a project and is shared by every item tagged to
+              -- it; only play_instance_id names a task. Two rows can both read
+              -- "SchematicIQ" in the Initiative column and only one of them is
+              -- on the plan — the column alone cannot tell a manager which.
+              --
+              -- The task's project is taken from the TASK, not from
+              -- e.anchor_id. 2026_136 anchors a linked item to its task's
+              -- project at creation, but the entry carries its own snapshot of
+              -- the anchor, and the link has to land on the project the task
+              -- actually lives in.
+              --
+              -- LEFT JOINs: most items are not linked, and those rows must come
+              -- back unchanged with these four columns NULL.
+              i.play_instance_id,
+              ppi.handover_id AS task_handover_id,
+              ppi.status      AS task_status,
+              -- CASE rather than a bare COALESCE: the COALESCE would stamp
+              -- 'timeboxed' on every unlinked row, a claim about a task that
+              -- does not exist.
+              CASE WHEN ppi.id IS NULL THEN NULL
+                   ELSE COALESCE(th.tracking_mode, 'timeboxed') END AS task_tracking_mode
          FROM daily_work_entries e
          JOIN daily_work_items i ON i.id = e.item_id AND i.org_id = e.org_id
+         LEFT JOIN project_play_instances ppi
+                ON ppi.id = i.play_instance_id AND ppi.org_id = i.org_id
+         LEFT JOIN sales_handovers th
+                ON th.id = ppi.handover_id AND th.org_id = ppi.org_id
          LEFT JOIN accounts a    ON a.id = e.account_id AND a.org_id = e.org_id
          -- Each join is guarded by anchor_kind as well as the id, so an id that
          -- happens to exist in another table cannot supply a name for the wrong
@@ -782,6 +811,13 @@ async function getAssignedItems(orgId, userId, { from, to, includeClosed = false
               i.target_date::text AS target_date,
               i.opened_on::text   AS opened_on,
               i.play_instance_id,
+              -- The linked task's project, so the "Assigned to them" row can
+              -- open the task rather than only saying it is on one. From the
+              -- TASK, for the same reason getDayDetail gives: the item's own
+              -- anchor is a snapshot, the task is where the work now lives.
+              ppi.handover_id AS task_handover_id,
+              CASE WHEN ppi.id IS NULL THEN NULL
+                   ELSE COALESCE(th.tracking_mode, 'timeboxed') END AS task_tracking_mode,
               i.activity_type_key,
               i.account_id,
               a.name AS account_name,
@@ -791,6 +827,10 @@ async function getAssignedItems(orgId, userId, { from, to, includeClosed = false
          FROM daily_work_items i
          LEFT JOIN accounts a  ON a.id = i.account_id AND a.org_id = i.org_id
          LEFT JOIN users    ab ON ab.id = i.assigned_by
+         LEFT JOIN project_play_instances ppi
+                ON ppi.id = i.play_instance_id AND ppi.org_id = i.org_id
+         LEFT JOIN sales_handovers th
+                ON th.id = ppi.handover_id AND th.org_id = ppi.org_id
          LEFT JOIN LATERAL (
                 SELECT max(e.entry_date) AS entry_date
                   FROM daily_work_entries e
@@ -828,6 +868,10 @@ async function getAssignedItems(orgId, userId, { from, to, includeClosed = false
       // restricts play_instance_id to kind='assigned', so this is the ONLY
       // place the link can appear. The two are not separate kinds of work.
       playInstanceId: r.play_instance_id,
+      // Both null on an unlinked item. isStanding is null there too rather
+      // than false, so nothing can read "not standing" as "a timeboxed task".
+      handoverId: r.task_handover_id,
+      isStanding: r.task_tracking_mode == null ? null : r.task_tracking_mode === 'standing',
       account: r.account_name,
       assignedByName: r.assigned_by_name,
       lastEntryDate: r.last_entry_date,
@@ -870,8 +914,74 @@ async function countAssignedOutside(orgId, userId, { from, to } = {}) {
   });
 }
 
+/**
+ * The project task one person's logged work is filed against, for opening it
+ * from a row of HISTORY on the People screen.
+ *
+ * ── WHY THIS IS NOT getPersonProjectLink ─────────────────────────────
+ *
+ * getPersonProjectLink (handover.service) answers "does this person have OPEN
+ * work on this project", and refuses the moment the task completes, the
+ * project closes, or the task is reassigned. That is the right question for the
+ * overdue queue and "Their project work", which list open work.
+ *
+ * It is the wrong question for the daily log and "Assigned to them". Those rows
+ * are records of work already done, and most of them will point at a task that
+ * has since finished. Asking the open-work question there would refuse the
+ * common case, with a sentence that reads as if the link were broken.
+ *
+ * So this asks the question a history row can honestly answer: this person
+ * has an item linked to this task. That link is set once and never severed
+ * (2026_136, and removePlay refuses to delete a task with linked work), so the
+ * fact does not lapse the way an assignment does.
+ *
+ * ── NOT A WIDENING ───────────────────────────────────────────────────
+ *
+ * The caller must already have passed getVisibleUserIds for this person, and
+ * the project opens through GET /sales/:id, which is org-scoped with no
+ * membership check. This reveals nothing the viewer could not already fetch.
+ *
+ * @returns {Promise<{playInstanceId, title, handoverId, project, isStanding}|null>}
+ */
+async function getLinkedTaskForOwner(orgId, ownerUserId, playInstanceId) {
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows } = await client.query(
+      `SELECT p.id AS play_instance_id,
+              p.title,
+              p.handover_id,
+              -- Same project name rule as getPersonProjectLink, so the two
+              -- links name a project the same way.
+              COALESCE(h.name, d.name) AS project,
+              COALESCE(h.tracking_mode, 'timeboxed') AS tracking_mode
+         FROM daily_work_items i
+         JOIN project_play_instances p
+           ON p.id = i.play_instance_id AND p.org_id = i.org_id
+         JOIN sales_handovers h
+           ON h.id = p.handover_id AND h.org_id = p.org_id
+         LEFT JOIN deals d
+           ON d.id = h.deal_id AND d.org_id = h.org_id
+        WHERE i.org_id = $1
+          AND i.owner_user_id = $2
+          AND i.play_instance_id = $3
+        -- uq_dwi_owner_play allows at most one row; LIMIT states it.
+        LIMIT 1`,
+      [orgId, ownerUserId, playInstanceId]);
+
+    if (!rows.length) return null;
+    const r = rows[0];
+    return {
+      playInstanceId: r.play_instance_id,
+      title:          r.title,
+      handoverId:     r.handover_id,
+      project:        r.project || `Project #${r.handover_id}`,
+      isStanding:     r.tracking_mode === 'standing',
+    };
+  });
+}
+
 module.exports = {
   getVisibleUserIds,
+  getLinkedTaskForOwner,
   getTaskUpdates,
   getAssignedItems,
   countAssignedOutside,

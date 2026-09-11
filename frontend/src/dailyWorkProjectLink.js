@@ -77,8 +77,21 @@ export function writeReturnCrumb(person, period, anchorDate, filters) {
  * the page loading and the click. Navigating first and discovering it there
  * would dump the reader on a project with no explanation of why they are
  * looking at it.
+ *
+ * @param check  which question to ask the server before navigating.
+ *   'open'    (default) — does this person still have OPEN work on the
+ *             project? For rows that list open work: the overdue queue and
+ *             "Their project work". Refuses once the task closes, which is
+ *             what those rows mean.
+ *   'history' — is this person's logged work linked to this task? For rows
+ *             that record work already done: the daily log's Details rows and
+ *             "Assigned to them". Most of those point at a task that has since
+ *             finished, and the open-work question would refuse them.
+ *   One hook with a switch rather than a second hook, so the crumb, the event
+ *   and the refusal handling stay a single copy — the reason this file exists.
  */
-export function useOpenProjectTask({ item, person, period, anchorDate, filters, onRefuse }) {
+export function useOpenProjectTask({ item, person, period, anchorDate, filters, onRefuse,
+                                    check = 'open' }) {
   const [busy, setBusy] = useState(false);
 
   // Both required. handoverId says which project; playInstanceId says which
@@ -91,11 +104,16 @@ export function useOpenProjectTask({ item, person, period, anchorDate, filters, 
     if (busy) return;
     setBusy(true);
     try {
-      const { data } = await apiService.dailyWork.checkProjectLink(person.user_id, item.handoverId);
+      const { data } = check === 'history'
+        ? await apiService.dailyWork.taskLink(person.user_id, item.playInstanceId)
+        : await apiService.dailyWork.checkProjectLink(person.user_id, item.handoverId);
       writeReturnCrumb(person, period, anchorDate, filters);
       window.dispatchEvent(new CustomEvent('open-project-task', {
         detail: {
-          handoverId: item.handoverId,
+          // The history check returns the project the TASK lives in. Preferred
+          // over the row's value when present, since the server read it from
+          // the task a moment ago and the row may have been drawn a while back.
+          handoverId: data.handoverId || item.handoverId,
           playInstanceId: item.playInstanceId,
           scope: data.scope,
           sub: 'details',
@@ -180,10 +198,17 @@ export function ProjectItemRow({ item, person, period, anchorDate, filters, onRe
                                 // 'card' (default) keeps My Day and the overdue
                                 // queue exactly as they are; 'link' is the bare
                                 // control for a table cell.
-                                variant = 'card' }) {
+                                variant = 'card',
+                                // Passed straight to useOpenProjectTask. See
+                                // there for 'open' versus 'history'.
+                                check = 'open',
+                                // variant="link" only. The rows this was built
+                                // for ARE tasks, so "Open" was enough; on a
+                                // row of logged work it has to say what opens.
+                                linkLabel = 'Open' }) {
   const [logging, setLogging] = useState(false);
   const { open, busy, linkable } = useOpenProjectTask({
-    item, person, period, anchorDate, filters, onRefuse });
+    item, person, period, anchorDate, filters, onRefuse, check });
   // Commitments carry no playInstanceId and have no link column behind them,
   // so there is nothing for an update to attach to. Left as a plain row, the
   // same way they are left unlinked above.
@@ -229,7 +254,7 @@ export function ProjectItemRow({ item, person, period, anchorDate, filters, onRe
     if (!linkable) return null;
     return (
       <button type="button" className="dw-btn-link" onClick={open} disabled={busy}>
-        {busy ? 'opening…' : 'Open'}
+        {busy ? 'opening…' : linkLabel}
       </button>
     );
   }

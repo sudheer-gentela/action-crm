@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict uDdNZtmsmL7KFKPUeYuiMIYlqySabGFJxap3boCjXxa33JvFD5a3oF7nw7zqFMR
+\restrict 1WoEg4NlUL3InCRdIxJH61t3aUElBUN5ZMQflcagJyvaMMTgzmRmUsTxIKh7Uah
 
 -- Dumped from database version 17.11 (Debian 17.11-1.pgdg13+2)
 -- Dumped by pg_dump version 18.1
@@ -323,6 +323,27 @@ $$;
 
 
 --
+-- Name: protect_play_owner_assignee(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.protect_play_owner_assignee() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM public.project_play_instances p
+     WHERE p.id = OLD.instance_id
+       AND p.owner_user_id = OLD.user_id
+  ) THEN
+    RAISE EXCEPTION
+      'Cannot unassign the owner of a task. Change the owner first.'
+      USING ERRCODE = 'restrict_violation';
+  END IF;
+  RETURN OLD;
+END $$;
+
+
+--
 -- Name: reject_frozen_mutation(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -487,6 +508,33 @@ $$;
 --
 
 COMMENT ON FUNCTION public.sync_action_completed() IS 'Keeps actions.completed / completed_at in step with actions.status. status is authoritative on UPDATE; on INSERT an explicit completed = true promotes status to completed so imported finished work survives. completed_at is preserved if supplied, stamped if absent, cleared on reopen. As of 2026_70c.';
+
+
+--
+-- Name: sync_play_owner_assignee(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.sync_play_owner_assignee() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.owner_user_id IS NULL THEN
+    RETURN NULL;
+  END IF;
+
+  -- UPDATE fires on any statement naming owner_user_id in its SET list,
+  -- including the many that rewrite it to the value it already held.
+  -- The comparison, not the trigger event, is what decides.
+  IF TG_OP = 'UPDATE' AND NEW.owner_user_id IS NOT DISTINCT FROM OLD.owner_user_id THEN
+    RETURN NULL;
+  END IF;
+
+  INSERT INTO public.project_play_assignees (instance_id, user_id, assigned_by)
+  VALUES (NEW.id, NEW.owner_user_id, NEW.owner_user_id)
+  ON CONFLICT (instance_id, user_id) DO NOTHING;
+
+  RETURN NULL;
+END $$;
 
 
 --
@@ -8342,6 +8390,13 @@ CREATE TABLE public.project_play_assignees (
     assigned_by integer,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+
+
+--
+-- Name: TABLE project_play_assignees; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.project_play_assignees IS 'Everyone assigned to a task: who works on it and may log daily work against it. Created empty by 2026_109 and unreachable from any route until 2026_141, which backfilled it and made it authoritative. The task''s owner_user_id ALWAYS has a row here (trg_sync_play_owner_assignee), so reads test this table alone and never owner_user_id. Removing someone is always explicit; changing the owner does not unassign the previous one.';
 
 
 --
@@ -21091,6 +21146,13 @@ CREATE TRIGGER trg_prospects_inherit_campaign_client BEFORE INSERT OR UPDATE OF 
 
 
 --
+-- Name: project_play_assignees trg_protect_play_owner_assignee; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_protect_play_owner_assignee BEFORE DELETE ON public.project_play_assignees FOR EACH ROW EXECUTE FUNCTION public.protect_play_owner_assignee();
+
+
+--
 -- Name: sales_handovers trg_reschedule_go_live; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -21116,6 +21178,13 @@ CREATE TRIGGER trg_sync_action_completed BEFORE INSERT OR UPDATE OF status ON pu
 --
 
 CREATE TRIGGER trg_sync_deal_stage_type BEFORE INSERT OR UPDATE OF stage ON public.deals FOR EACH ROW EXECUTE FUNCTION public.fn_sync_deal_stage_type();
+
+
+--
+-- Name: project_play_instances trg_sync_play_owner_assignee; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER trg_sync_play_owner_assignee AFTER INSERT OR UPDATE OF owner_user_id ON public.project_play_instances FOR EACH ROW EXECUTE FUNCTION public.sync_play_owner_assignee();
 
 
 --
@@ -26704,5 +26773,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict uDdNZtmsmL7KFKPUeYuiMIYlqySabGFJxap3boCjXxa33JvFD5a3oF7nw7zqFMR
+\unrestrict 1WoEg4NlUL3InCRdIxJH61t3aUElBUN5ZMQflcagJyvaMMTgzmRmUsTxIKh7Uah
 
