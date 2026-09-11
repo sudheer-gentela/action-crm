@@ -12,6 +12,12 @@
 //
 // What it covers:
 //
+//   new task         placement on a task created for the move: validation,
+//                    dependency loops, every conflict kind, added scope on a
+//                    frozen plan and none on a draft one, nothing created when
+//                    the request is rejected, re-validation when batch 1 moves,
+//                    and the added-scope count in plan vs actual
+//
 //   createRequest    who may raise, the item and entry refusals, approval rows
 //                    for target and source projects, access granted to approvers
 //   decide           who may decide, placement rules, what each approver may
@@ -109,6 +115,7 @@ require.cache[dbPath] = {
 };
 
 const move = require(path.resolve(REPO, 'services', 'dailyWorkMove.service.js'));
+const planVariance = require(path.resolve(REPO, 'services', 'planVariance.service.js'));
 const dw = require(path.resolve(REPO, 'services', 'dailyWork.service.js'));
 const moduleAccess = require(path.resolve(REPO, 'services', 'moduleAccess.service.js'));
 console.log(`\ntesting: ${path.resolve(REPO, 'services', 'dailyWorkMove.service.js')}`);
@@ -328,9 +335,9 @@ async function decidingAndMoving(f, a) {
     () => move.decide(f.orgId, f.zed, requestId, { handoverId: f.target, decision: 'approve' }));
   await expectCode('the target must choose a task', 'PLACEMENT_REQUIRED',
     () => move.decide(f.orgId, f.pat, requestId, { handoverId: f.target, decision: 'approve' }));
-  await expectCode('a new task is not offered yet', 'NEW_TASK_NOT_AVAILABLE',
+  await expectCode('a new task needs a title', 'BLANK_TASK_TITLE',
     () => move.decide(f.orgId, f.pat, requestId, {
-      handoverId: f.target, decision: 'approve', placement: { newTask: { title: 'x' } } }));
+      handoverId: f.target, decision: 'approve', placement: { newTask: { title: '  ' } } }));
   await expectCode('a closed task is refused', 'TASK_CLOSED',
     () => move.decide(f.orgId, f.pat, requestId, {
       handoverId: f.target, decision: 'approve', placement: { existingPlayInstanceId: f.tDone } }));
@@ -649,6 +656,179 @@ async function concurrency(f) {
     () => move.decide(f.orgId, f.sam, request.id, { handoverId: f.source, decision: 'approve' }));
 }
 
+/* ── G. a new task ─────────────────────────────────────────────────── */
+
+async function newTask(f) {
+  console.log('\nPLACEMENT ON A NEW TASK');
+
+  // A frozen, timeboxed plan with a go-live and three gated stages.
+  const { id: plan } = await one(
+    `INSERT INTO sales_handovers (org_id, name, project_kind, tracking_mode, status, created_by,
+                                  go_live_date, baseline_frozen_at)
+     VALUES ($1, 'Frozen Plan', 'internal', 'timeboxed', 'in_progress', $2, '2026-07-31', now())
+     RETURNING id`, [f.orgId, f.pat]);
+  const { id: draft } = await one(
+    `INSERT INTO sales_handovers (org_id, name, project_kind, tracking_mode, status, created_by)
+     VALUES ($1, 'Draft Plan', 'internal', 'timeboxed', 'draft', $2) RETURNING id`, [f.orgId, f.pat]);
+  for (const [key, name, order, gating] of [
+      ['build', 'Build', 10, 'none'], ['test', 'Test', 20, 'strict'], ['launch', 'Launch', 30, 'gates']]) {
+    await q(`INSERT INTO project_stages (handover_id, org_id, key, name, sort_order, gating)
+             VALUES ($1, $2, $3, $4, $5, $6)`, [plan, f.orgId, key, name, order, gating]);
+  }
+  const mkTask = async (handoverId, stage, title, { status = 'not_started', due = null, dependsOn = null } = {}) =>
+    (await one(
+      `INSERT INTO project_play_instances
+         (handover_id, org_id, stage_key, title, status, sort_order, due_date, depends_on)
+       VALUES ($1, $2, $3, $4, $5, 10, $6, $7) RETURNING id`,
+      [handoverId, f.orgId, stage, title, status, due, dependsOn])).id;
+
+  const tPre  = await mkTask(plan, 'build', 'Prerequisite', { due: '2026-08-20' });
+  const tDep  = await mkTask(plan, 'build', 'Dependent', { status: 'in_progress', due: '2026-07-01' });
+  const tTest = await mkTask(plan, 'test', 'Test run');
+  await mkTask(plan, 'launch', 'Launch prep');
+  const tOther = await mkTask(f.source, 'custom', 'Elsewhere');
+
+  // Ana already has an overdue task somewhere, for the load check.
+  const late = await mkTask(f.source, 'custom', 'Late one', { due: '2026-06-01' });
+  await q(`INSERT INTO project_play_assignees (instance_id, user_id) VALUES ($1, $2)`, [late, f.ana]);
+
+  const item = await mkItem(f);
+  const e = await mkEntry(f, item, day(-13));
+  const { request } = await move.createRequest(f.orgId, f.ana, { itemId: item, targetHandoverId: plan, entryIds: [e] });
+
+  const spec = {
+    title: 'Annotate the circuit set', stageKey: 'Build', dueDate: '2026-08-10', isGate: false,
+    dependsOn: [tPre], dependents: [tDep],
+  };
+
+  // ── validation ───────────────────────────────────────────────────
+  await expectCode('only a manager of the target can check a new task', 'NOT_PROJECT_MANAGER',
+    () => move.getConflicts(f.orgId, f.zed, request.id, spec));
+  await expectCode('a stage the project does not have is refused', 'STAGE_NOT_ON_PROJECT',
+    () => move.getConflicts(f.orgId, f.pat, request.id, { ...spec, stageKey: 'Deploy' }));
+  await expectCode('an impossible date is refused', 'BAD_DATE',
+    () => move.getConflicts(f.orgId, f.pat, request.id, { ...spec, dueDate: '2026-02-30' }));
+  await expectCode('a task from another project is refused', 'TASK_NOT_ON_PROJECT',
+    () => move.getConflicts(f.orgId, f.pat, request.id, { ...spec, dependents: [tOther] }));
+  await expectCode('the same task before and after is refused', 'DEPENDENCY_CYCLE',
+    () => move.getConflicts(f.orgId, f.pat, request.id, { ...spec, dependsOn: [tPre], dependents: [tPre] }));
+
+  // tPre waits for tTest. New task waits for tPre, and tTest would wait for the
+  // new task: tTest -> new -> tPre -> tTest.
+  await q(`UPDATE project_play_instances SET depends_on = ARRAY[$2::int] WHERE id = $1`, [tPre, tTest]);
+  await expectCode('a loop through existing dependencies is refused', 'DEPENDENCY_CYCLE',
+    () => move.getConflicts(f.orgId, f.pat, request.id, { ...spec, dependents: [tTest] }));
+  await q(`UPDATE project_play_instances SET depends_on = NULL WHERE id = $1`, [tPre]);
+
+  // ── conflicts ────────────────────────────────────────────────────
+  const c = await expectOk('the conflicts for a proposed task',
+    () => move.getConflicts(f.orgId, f.pat, request.id, spec));
+  const kinds = (c ? c.conflicts : []).map(x => `${x.kind}:${x.severity}`).sort();
+  eq('each collision and note is reported, with its severity', kinds, [
+    'added_scope:info', 'after_go_live:conflict', 'dependent_due_earlier:conflict',
+    'dependent_started:info', 'locks_later_stage:info', 'owner_load:info', 'prerequisite_due_later:conflict',
+  ].sort());
+  // 'test' is ALREADY locked by the open prerequisite and dependent in Build,
+  // so the new task adds to a lock rather than creating one.
+  const lock = c && c.conflicts.find(x => x.kind === 'locks_later_stage');
+  eq('the strict later stage is named, and already locked', lock && [lock.stageName, lock.alreadyLocked], ['Test', true]);
+  check('a gates stage is not affected by a task that is not a gate',
+    !c.conflicts.some(x => x.kind === 'locks_later_stage' && x.stageName === 'Launch'));
+  const loadRow = c && c.conflicts.find(x => x.kind === 'owner_load');
+  eq("Ana's overdue task is counted", loadRow && loadRow.overdue, 1);
+  eq('the plan is frozen, so it is added scope', c && c.addedScope, true);
+
+  const asGate = await move.getConflicts(f.orgId, f.pat, request.id, { ...spec, isGate: true });
+  check('as a gate, the gates stage is affected too',
+    asGate.conflicts.some(x => x.kind === 'locks_later_stage' && x.stageName === 'Launch'));
+
+  // With Build otherwise clear, the lock on Test is new — a conflict.
+  await q(`UPDATE project_play_instances SET status = 'completed', completed_at = now()
+            WHERE id = ANY($1::int[])`, [[tPre, tDep]]);
+  const fresh = await move.getConflicts(f.orgId, f.pat, request.id, { ...spec, dependsOn: [], dependents: [] });
+  const freshLock = fresh.conflicts.find(x => x.kind === 'locks_later_stage');
+  eq('a lock on a stage that was free is a conflict', freshLock && [freshLock.severity, freshLock.notStarted], ['conflict', 1]);
+  await q(`UPDATE project_play_instances SET status = 'not_started', completed_at = NULL WHERE id = $1`, [tPre]);
+  await q(`UPDATE project_play_instances SET status = 'in_progress', completed_at = NULL WHERE id = $1`, [tDep]);
+
+  // ── approving onto a new task ────────────────────────────────────
+  const r = await expectOk('the target approves onto a new task',
+    () => move.decide(f.orgId, f.pat, request.id, { handoverId: plan, decision: 'approve', placement: { newTask: spec } }));
+  const appr = r && r.approvals.find(x => x.role === 'target');
+  check('what the approver was shown is stored with the decision',
+    appr && appr.placement === 'new_task' && Array.isArray(appr.new_task.conflictsAtDecision)
+      && appr.new_task.conflictsAtDecision.some(x => x.kind === 'after_go_live'));
+  eq('the move ran: approved onto a new task', r && [r.status, r.placement], ['approved', 'new_task']);
+
+  const task = r && await one(
+    `SELECT *, due_date::text AS d, baseline_due_date::text AS bd FROM project_play_instances WHERE id = $1`,
+    [r.play_instance_id]);
+  eq('the task has the title, stage, date and owner asked for',
+    task && [task.title, task.stage_key, task.d, task.owner_user_id, task.status],
+    ['Annotate the circuit set', 'build', '2026-08-10', f.ana, 'not_started']);
+  eq('it is marked as added scope by this request',
+    task && [task.added_by_move_request_id, task.scope_added_at != null], [request.id, true]);
+  eq('on the frozen plan it is born with its baseline, as addPlay does',
+    task && [task.bd, task.baseline_source], ['2026-08-10', 'original']);
+  eq('it waits for the prerequisite', task && task.depends_on, [tPre]);
+  const dep = await one(`SELECT depends_on FROM project_play_instances WHERE id = $1`, [tDep]);
+  check('the dependent now waits for it', dep.depends_on.includes(task.id));
+  check('Ana is its assignee', !!(await one(
+    `SELECT 1 AS ok FROM project_play_assignees WHERE instance_id = $1 AND user_id = $2`, [task.id, f.ana])));
+  const moved = await entryRow(e);
+  const linked = await one(`SELECT id FROM daily_work_items WHERE owner_user_id = $1 AND play_instance_id = $2`, [f.ana, task.id]);
+  eq('the entry moved onto it', [moved.item_id, moved.anchor_id], [linked && linked.id, plan]);
+
+  const variance = await planVariance.getProjectVariance(plan, f.orgId);
+  eq('plan vs actual counts one added task', variance.summary.addedScope, 1);
+  check('and marks it on the row',
+    variance.plays.some(p => p.id === task.id && p.scopeAddedAt != null && p.addedByMoveRequestId === request.id));
+
+  // ── a draft plan: part of the plan, not added to it ───────────────
+  const item2 = await mkItem(f);
+  const { request: r2 } = await move.createRequest(f.orgId, f.ana, { itemId: item2, targetHandoverId: draft });
+  const d2 = await expectOk('approving onto a new task on a draft plan',
+    () => move.decide(f.orgId, f.pat, r2.id, { handoverId: draft, decision: 'approve',
+      placement: { newTask: { title: 'Draft work', dueDate: '2026-09-01' } } }));
+  const t2 = d2 && await one(`SELECT stage_key, scope_added_at, baseline_due_date, baseline_source
+                                FROM project_play_instances WHERE id = $1`, [d2.play_instance_id]);
+  eq('no added-scope marker and no baseline yet, in the ad-hoc stage',
+    t2 && [t2.stage_key, t2.scope_added_at, t2.baseline_due_date, t2.baseline_source],
+    ['custom', null, null, null]);
+
+  // ── nothing is created when the request is rejected ───────────────
+  const item3 = await mkItem(f);
+  const e3 = await mkEntry(f, item3, day(-14), { anchorKind: 'handover', anchorId: f.source });
+  const { request: r3 } = await move.createRequest(f.orgId, f.ana, { itemId: item3, targetHandoverId: plan, entryIds: [e3] });
+  await move.decide(f.orgId, f.pat, r3.id, { handoverId: plan, decision: 'approve',
+    placement: { newTask: { title: 'Never made', stageKey: 'build' } } });
+  check('while the source has not decided, no task exists',
+    !(await one(`SELECT 1 AS x FROM project_play_instances WHERE added_by_move_request_id = $1`, [r3.id])));
+  await move.decide(f.orgId, f.sam, r3.id, { handoverId: f.source, decision: 'reject', reason: 'keep it with us' });
+  check('after a rejection, still no task',
+    !(await one(`SELECT 1 AS x FROM project_play_instances WHERE added_by_move_request_id = $1`, [r3.id])));
+
+  // ── re-validated when batch 1 moves ───────────────────────────────
+  const item4 = await mkItem(f);
+  const e4 = await mkEntry(f, item4, day(-15), { anchorKind: 'handover', anchorId: f.source });
+  const { request: r4 } = await move.createRequest(f.orgId, f.ana, { itemId: item4, targetHandoverId: plan, entryIds: [e4] });
+  await move.decide(f.orgId, f.pat, r4.id, { handoverId: plan, decision: 'approve',
+    placement: { newTask: { title: 'Late stage', stageKey: 'launch' } } });
+  await q(`UPDATE project_stages SET is_active = FALSE WHERE handover_id = $1 AND key = 'launch'`, [plan]);
+  await expectCode('a stage removed since the approval stops the move, with the reason', 'STAGE_NOT_ON_PROJECT',
+    () => move.decide(f.orgId, f.sam, r4.id, { handoverId: f.source, decision: 'approve' }));
+  eq('and nothing was written', [
+    (await one(`SELECT status FROM daily_work_move_requests WHERE id = $1`, [r4.id])).status,
+    (await entryRow(e4)).item_id], ['pending', item4]);
+  const rechosen = await expectOk('the target re-chooses the task on batch 1',
+    () => move.decide(f.orgId, f.pat, r4.id, { handoverId: plan, decision: 'approve', batchId: r4.batches[0].id,
+      placement: { newTask: { title: 'Late stage', stageKey: 'test' } } }));
+  eq('still waiting on the source', rechosen && rechosen.status, 'pending');
+  const done4 = await expectOk('the source approves', () => move.decide(f.orgId, f.sam, r4.id, { handoverId: f.source, decision: 'approve' }));
+  eq('it moved onto a task in the re-chosen stage', done4 && (await one(
+    `SELECT stage_key FROM project_play_instances WHERE id = $1`, [done4.play_instance_id])).stage_key, 'test');
+}
+
 /* ── run ───────────────────────────────────────────────────────────── */
 
 (async () => {
@@ -661,6 +841,7 @@ async function concurrency(f) {
     await rejectingAndWithdrawing(f);
     await readsAndEdges(f);
     await concurrency(f);
+    await newTask(f);
   } catch (err) {
     fail('harness aborted', err.stack || err.message);
   } finally {

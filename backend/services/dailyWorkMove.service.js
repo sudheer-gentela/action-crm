@@ -40,11 +40,26 @@
 //   4. batch 1 only: an assigned item becomes 'moved'; a recurring item's owner
 //      is asked on My day whether to retire it or keep it
 //
+// ── PLACEMENT ────────────────────────────────────────────────────────
+//
+// The target approver chooses, on batch 1:
+//
+//   existing task  the work joins a task already on the plan
+//   new task       a task is created for it — title, stage, due date, gate,
+//                  prerequisites, and existing tasks that should wait on it.
+//                  getConflicts shows what that would do to the plan first;
+//                  the approver decides, and what they were shown is stored on
+//                  their approval row. There is no rescheduler: nothing moves
+//                  any other task's dates.
+//
+// A new task is created when batch 1 MOVES, not when the target approves. Other
+// approvals may still be outstanding, and a rejection must not leave a task
+// behind on someone's plan. On a plan whose baseline is already frozen it is
+// marked as added scope (project_play_instances.scope_added_at).
+//
 // ── WHAT IS NOT HERE YET ─────────────────────────────────────────────
 //
-// Placement on a NEW task, the conflict checks and the added-scope marker are
-// the next build step; decide() refuses a new-task placement with a sentence
-// until then. Notifications and the daily reminders are the step after the UI.
+// Notifications and the daily reminders are the step after the UI.
 //
 // ── TRANSACTIONS AND LOCKS ───────────────────────────────────────────
 //
@@ -64,6 +79,8 @@ const dailyQuery = require('./dailyWorkQuery.service');
 const dwDate = require('./dailyWorkDate');
 const projectMembers = require('./projectMembers.service');
 const moduleAccess = require('./moduleAccess.service');
+// The one definition of a stage key, shared with addPlay and planImport.
+const { stageKeyFrom } = require('./stageKey');
 
 const { DailyWorkError, ITEM_COLUMNS, ENTRY_COLUMNS, MAX_DESCRIPTION, MAX_NEXT_STEPS } = dw;
 
@@ -124,7 +141,7 @@ async function loadProject(client, orgId, handoverId) {
   const { rows } = await client.query(
     `SELECT h.id, COALESCE(NULLIF(btrim(h.name), ''), d.name, 'Untitled project') AS name,
             h.status, h.retired_at, COALESCE(h.tracking_mode, 'timeboxed') AS tracking_mode,
-            h.baseline_frozen_at
+            h.baseline_frozen_at, h.go_live_date::text AS go_live_date
        FROM sales_handovers h
        LEFT JOIN deals d ON d.id = h.deal_id AND d.org_id = h.org_id
       WHERE h.id = $1 AND h.org_id = $2`,
@@ -656,12 +673,26 @@ async function decide(orgId, actorId, requestId, input = {}) {
     // ── approve ────────────────────────────────────────────────────
     if (appr.role === 'target' && appr.batch_no === 1) {
       const chosen = await validatePlacement(client, orgId, req, placement);
-      await client.query(
-        `UPDATE daily_work_move_approvals
-            SET decision = 'approved', decided_by = $2, decided_at = now(), reason = $3,
-                placement = 'existing_task', existing_play_instance_id = $4, new_task = NULL
-          WHERE id = $1`,
-        [appr.id, actorId, reason, chosen.id]);
+      if (chosen.placement === 'existing_task') {
+        await client.query(
+          `UPDATE daily_work_move_approvals
+              SET decision = 'approved', decided_by = $2, decided_at = now(), reason = $3,
+                  placement = 'existing_task', existing_play_instance_id = $4, new_task = NULL
+            WHERE id = $1`,
+          [appr.id, actorId, reason, chosen.task.id]);
+      } else {
+        // What the approver was shown is stored beside what they chose. The
+        // plan can change before batch 1 moves, and "who approved what" has to
+        // include what they knew when they did.
+        const conflicts = await computeConflicts(client, orgId, req, chosen.spec);
+        await client.query(
+          `UPDATE daily_work_move_approvals
+              SET decision = 'approved', decided_by = $2, decided_at = now(), reason = $3,
+                  placement = 'new_task', existing_play_instance_id = NULL, new_task = $4::jsonb
+            WHERE id = $1`,
+          [appr.id, actorId, reason,
+           JSON.stringify({ ...chosen.spec, conflictsAtDecision: conflicts })]);
+      }
     } else {
       await client.query(
         `UPDATE daily_work_move_approvals
@@ -714,15 +745,17 @@ async function untick(client, appr, moveEntryIds, actorId) {
     [moveEntryIds, actorId, appr.handover_id]);
 }
 
-/** The task a target approver chose, checked. */
+/**
+ * What a target approver chose, checked.
+ *
+ * @returns {Promise<{ placement: 'existing_task', task } | { placement: 'new_task', spec }>}
+ */
 async function validatePlacement(client, orgId, req, placement) {
   if (!placement) {
     throw new DailyWorkError('Choose the task this work should go to.', 'PLACEMENT_REQUIRED');
   }
   if (placement.newTask) {
-    throw new DailyWorkError(
-      'Adding this as a new task is not available yet. Choose an existing task for now.',
-      'NEW_TASK_NOT_AVAILABLE');
+    return { placement: 'new_task', spec: await validateNewTask(client, orgId, req, placement.newTask) };
   }
   const taskId = Number(placement.existingPlayInstanceId);
   if (!Number.isInteger(taskId) || taskId <= 0) {
@@ -730,6 +763,346 @@ async function validatePlacement(client, orgId, req, placement) {
   }
   const task = await loadTask(client, orgId, taskId);
   assertTaskUsable(task, req);
+  return { placement: 'existing_task', task };
+}
+
+/**
+ * A new task as the approver described it, normalised and checked.
+ *
+ * STAGE: an existing active stage on the project, or 'custom' — the ad-hoc
+ * bucket addPlay uses when no stage is named. Creating a stage from here was
+ * left out on purpose: addPlay registers unknown stages through
+ * _ensureStageExists, which writes on its own connection, so a stage made for a
+ * move that then rolled back would stay on the project with nothing in it.
+ *
+ * DEPENDENCIES, in both directions:
+ *   dependsOn   tasks the new one waits for
+ *   dependents  existing tasks that should wait for the new one
+ * All must be on the target project. A loop is refused the way
+ * setPlayDependencies refuses one: walk upward from the prerequisites, and if a
+ * dependent is reachable, adding the new task between them closes a circle.
+ */
+async function validateNewTask(client, orgId, req, raw = {}) {
+  const title = String(raw.title || '').trim();
+  if (!title) throw new DailyWorkError('The new task needs a title.', 'BLANK_TASK_TITLE');
+
+  const description = raw.description == null ? null : String(raw.description).trim() || null;
+
+  const stageKey = stageKeyFrom(raw.stageKey) || 'custom';
+  let stageName = 'Added on this project';
+  if (stageKey !== 'custom') {
+    const { rows: [st] } = await client.query(
+      `SELECT name FROM project_stages
+        WHERE handover_id = $1 AND org_id = $2 AND key = $3 AND is_active = TRUE`,
+      [req.target_handover_id, orgId, stageKey]);
+    if (!st) {
+      throw new DailyWorkError('Choose one of the stages this project already has.',
+        'STAGE_NOT_ON_PROJECT', { stageKey });
+    }
+    stageName = st.name;
+  }
+
+  let dueDate = null;
+  if (raw.dueDate != null && raw.dueDate !== '') {
+    const d = String(raw.dueDate);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || Number.isNaN(Date.parse(`${d}T00:00:00Z`))
+        || new Date(`${d}T00:00:00Z`).toISOString().slice(0, 10) !== d) {
+      throw new DailyWorkError('The due date must be a real date, YYYY-MM-DD.', 'BAD_DATE', { dueDate: d });
+    }
+    dueDate = d;
+  }
+
+  const isGate = raw.isGate === true;
+  const dependsOn = asIds(raw.dependsOn);
+  const dependents = asIds(raw.dependents);
+
+  const all = [...new Set([...dependsOn, ...dependents])];
+  if (all.length) {
+    const { rows } = await client.query(
+      `SELECT id FROM project_play_instances
+        WHERE org_id = $1 AND handover_id = $2 AND id = ANY($3::int[])`,
+      [orgId, req.target_handover_id, all]);
+    if (rows.length !== all.length) {
+      const found = new Set(rows.map(r => r.id));
+      throw new DailyWorkError('Some of those tasks are not on this project.',
+        'TASK_NOT_ON_PROJECT', { playInstanceIds: all.filter(id => !found.has(id)) });
+    }
+  }
+  if (dependsOn.some(id => dependents.includes(id))) {
+    throw new DailyWorkError('A task cannot both come before and after the new task.', 'DEPENDENCY_CYCLE');
+  }
+  if (dependsOn.length && dependents.length) {
+    const { rows: cyc } = await client.query(
+      `WITH RECURSIVE up(id) AS (
+         SELECT unnest($1::int[])
+         UNION
+         SELECT unnest(p.depends_on)
+           FROM project_play_instances p
+           JOIN up ON up.id = p.id
+          WHERE p.depends_on IS NOT NULL
+       )
+       SELECT id FROM up WHERE id = ANY($2::int[]) LIMIT 1`,
+      [dependsOn, dependents]);
+    if (cyc.length) {
+      throw new DailyWorkError(
+        'That would create a circular dependency: one of the tasks waiting for the new task is already '
+        + 'something the new task would wait for.',
+        'DEPENDENCY_CYCLE', { playInstanceId: cyc[0].id });
+    }
+  }
+
+  return { title, description, stageKey, stageName, dueDate, isGate, dependsOn, dependents };
+}
+
+/**
+ * What adding this task would do to the plan — shown before the approver
+ * decides, and never enforced. There is no rescheduler; nothing here moves a
+ * date.
+ *
+ * Each item is { kind, severity, message, ...details }:
+ *   severity 'conflict'  a date or lock that collides with the plan as it is
+ *   severity 'info'      worth knowing, not a collision
+ *
+ * THE CHECKS, and where each rule comes from:
+ *
+ *   after_go_live           due date later than the project's go-live.
+ *                           Timeboxed only: a standing initiative cannot have a
+ *                           go-live (chk_sh_standing_no_go_live).
+ *   locks_later_stage       a later stage with gating 'strict', or 'gates' when
+ *                           the new task is a gate, cannot start tasks while an
+ *                           earlier-stage task is open — the rule in
+ *                           handover._stageBlockers. Reported per stage, with how
+ *                           many of its tasks have not started; 'info' instead
+ *                           of 'conflict' when that stage is already locked.
+ *   waits_on_earlier_stage  the new task's own stage is locked by open work in
+ *                           earlier stages, so it cannot start yet.
+ *   prerequisite_due_later  a task the new one waits for is due after it.
+ *   prerequisite_open       ... is still open, so the new task cannot start
+ *                           until it closes (2026_117: eligibility, not a block).
+ *   dependent_due_earlier   a task that would wait for the new one is due
+ *                           before it.
+ *   dependent_started       ... is already under way; it keeps going, but it
+ *                           now waits on something unfinished.
+ *   owner_load              the owner's open tasks due by the new due date, and
+ *                           their overdue tasks, across every open project.
+ *   no_due_date             the date checks were skipped.
+ *   added_scope             the plan is frozen, so this is recorded as added.
+ */
+async function computeConflicts(client, orgId, req, spec) {
+  const out = [];
+  const project = await loadProject(client, orgId, req.target_handover_id);
+  const { dueDate } = spec;
+
+  if (!dueDate) {
+    out.push({ kind: 'no_due_date', severity: 'info',
+      message: 'No due date, so the date checks were skipped.' });
+  }
+
+  if (dueDate && project.tracking_mode === 'timeboxed' && project.go_live_date
+      && dueDate > project.go_live_date) {
+    out.push({ kind: 'after_go_live', severity: 'conflict', goLiveDate: project.go_live_date,
+      message: `Due ${dueDate}, after the project's go-live on ${project.go_live_date}.` });
+  }
+
+  // ── stage gating ──────────────────────────────────────────────────
+  const { rows: [stage] } = await client.query(
+    `SELECT key, name, sort_order, gating FROM project_stages
+      WHERE handover_id = $1 AND org_id = $2 AND key = $3 AND is_active = TRUE`,
+    [project.id, orgId, spec.stageKey]);
+
+  if (stage) {
+    const { rows: later } = await client.query(
+      `SELECT ls.key, ls.name, ls.gating,
+              (SELECT count(*)::int FROM project_play_instances t
+                WHERE t.handover_id = ls.handover_id AND t.stage_key = ls.key
+                  AND t.status NOT IN ('completed', 'skipped', 'cancelled', 'in_progress', 'in_review'))
+                AS not_started,
+              EXISTS (
+                SELECT 1 FROM project_play_instances e
+                  JOIN project_stages es
+                    ON es.handover_id = e.handover_id AND es.key = e.stage_key AND es.is_active = TRUE
+                 WHERE e.handover_id = ls.handover_id
+                   AND e.status NOT IN ('completed', 'skipped', 'cancelled')
+                   AND es.sort_order < ls.sort_order
+                   AND (ls.gating = 'strict' OR (ls.gating = 'gates' AND e.is_gate = TRUE))
+              ) AS already_locked
+         FROM project_stages ls
+        WHERE ls.handover_id = $1 AND ls.org_id = $2 AND ls.is_active = TRUE
+          AND ls.sort_order > $3
+          AND (ls.gating = 'strict' OR (ls.gating = 'gates' AND $4::boolean))
+        ORDER BY ls.sort_order`,
+      [project.id, orgId, stage.sort_order, spec.isGate]);
+    for (const l of later) {
+      out.push({
+        kind: 'locks_later_stage', severity: l.already_locked ? 'info' : 'conflict',
+        stageKey: l.key, stageName: l.name, notStarted: l.not_started, alreadyLocked: l.already_locked,
+        message: l.already_locked
+          ? `${l.name} is already waiting on earlier work; this adds one more thing it waits for.`
+          : `${l.name} could not start any of its ${l.not_started} unstarted `
+            + `${l.not_started === 1 ? 'task' : 'tasks'} until this task is done.`,
+      });
+    }
+
+    if (stage.gating !== 'none') {
+      const { rows: blockers } = await client.query(
+        `SELECT DISTINCT es.name
+           FROM project_play_instances e
+           JOIN project_stages es
+             ON es.handover_id = e.handover_id AND es.key = e.stage_key AND es.is_active = TRUE
+          WHERE e.handover_id = $1
+            AND e.status NOT IN ('completed', 'skipped', 'cancelled')
+            AND es.sort_order < $2
+            AND ($3 = 'strict' OR ($3 = 'gates' AND e.is_gate = TRUE))`,
+        [project.id, stage.sort_order, stage.gating]);
+      if (blockers.length) {
+        out.push({ kind: 'waits_on_earlier_stage', severity: 'info',
+          stages: blockers.map(b => b.name),
+          message: `It cannot start until ${blockers.map(b => b.name).join(', ')} clears its gates.` });
+      }
+    }
+  }
+
+  // ── dependencies ──────────────────────────────────────────────────
+  const taskRows = async (ids) => ids.length ? (await client.query(
+    `SELECT id, title, status, due_date::text AS due_date FROM project_play_instances
+      WHERE org_id = $1 AND id = ANY($2::int[]) ORDER BY due_date NULLS LAST, id`,
+    [orgId, ids])).rows : [];
+
+  for (const t of await taskRows(spec.dependsOn)) {
+    const open = !CLOSED_TASK_STATUSES.includes(t.status);
+    if (dueDate && open && t.due_date && t.due_date > dueDate) {
+      out.push({ kind: 'prerequisite_due_later', severity: 'conflict', playInstanceId: t.id,
+        message: `It waits for "${t.title}", which is due ${t.due_date} — after this task's ${dueDate}.` });
+    } else if (open) {
+      out.push({ kind: 'prerequisite_open', severity: 'info', playInstanceId: t.id,
+        message: `It cannot start until "${t.title}" is done.` });
+    }
+  }
+  for (const t of await taskRows(spec.dependents)) {
+    const open = !CLOSED_TASK_STATUSES.includes(t.status);
+    if (dueDate && open && t.due_date && t.due_date < dueDate) {
+      out.push({ kind: 'dependent_due_earlier', severity: 'conflict', playInstanceId: t.id,
+        message: `"${t.title}" would wait for it, but is due ${t.due_date} — before this task's ${dueDate}.` });
+    }
+    if (['in_progress', 'in_review'].includes(t.status)) {
+      out.push({ kind: 'dependent_started', severity: 'info', playInstanceId: t.id,
+        message: `"${t.title}" is already under way and would now wait on an unfinished task.` });
+    }
+  }
+
+  // ── the owner's load ──────────────────────────────────────────────
+  // The same OPEN predicates as the People screen: task not closed, project
+  // not closed or retired, and the owner assigned through project_play_assignees.
+  const today = await localToday(client, orgId, req.owner_user_id);
+  const { rows: [load] } = await client.query(
+    `SELECT
+       count(*) FILTER (WHERE p.due_date < $3::date)::int AS overdue,
+       count(*) FILTER (WHERE $4::date IS NOT NULL
+                          AND p.due_date >= $3::date AND p.due_date <= $4::date)::int AS due_by
+       FROM project_play_instances p
+       JOIN sales_handovers h ON h.id = p.handover_id AND h.org_id = p.org_id
+      WHERE p.org_id = $1
+        AND EXISTS (SELECT 1 FROM project_play_assignees ppa
+                     WHERE ppa.instance_id = p.id AND ppa.user_id = $2)
+        AND p.status NOT IN ('completed', 'skipped', 'cancelled')
+        AND h.status NOT IN ('completed', 'cancelled') AND h.retired_at IS NULL
+        AND p.due_date IS NOT NULL`,
+    [orgId, req.owner_user_id, today, dueDate]);
+  if (load.overdue > 0 || load.due_by > 0) {
+    const parts = [];
+    if (dueDate) parts.push(`${load.due_by} open ${load.due_by === 1 ? 'task' : 'tasks'} due by ${dueDate}`);
+    if (load.overdue > 0) parts.push(`${load.overdue} overdue`);
+    out.push({ kind: 'owner_load', severity: 'info', dueBy: load.due_by, overdue: load.overdue,
+      message: `The person this is for already has ${parts.join(' and ')}.` });
+  }
+
+  if (project.baseline_frozen_at) {
+    out.push({ kind: 'added_scope', severity: 'info',
+      message: 'The plan is already frozen, so this is recorded as added scope in plan vs actual.' });
+  }
+
+  return out;
+}
+
+/**
+ * The conflicts for a proposed new task, for the target approver to look at
+ * before deciding. Read-only.
+ */
+async function getConflicts(orgId, viewerId, requestId, newTask) {
+  return withOrgTransaction(orgId, async (client) => {
+    const { rows: [req] } = await client.query(
+      `SELECT * FROM daily_work_move_requests WHERE id = $1 AND org_id = $2`, [requestId, orgId]);
+    if (!req) throw new DailyWorkError('No such move request', 'NO_SUCH_REQUEST', { requestId });
+    if (!(await projectMembers.canManageProject(req.target_handover_id, orgId, viewerId))) {
+      throw new DailyWorkError('Only a manager of the project this work is moving to can plan the task.',
+        'NOT_PROJECT_MANAGER', { handoverId: req.target_handover_id });
+    }
+    if (req.status !== 'pending') {
+      throw new DailyWorkError('The task for this request has already been decided.', 'REQUEST_NOT_OPEN', { requestId });
+    }
+    const spec = await validateNewTask(client, orgId, req, newTask);
+    const project = await loadProject(client, orgId, req.target_handover_id);
+    return {
+      spec,
+      addedScope: !!project.baseline_frozen_at,
+      conflicts: await computeConflicts(client, orgId, req, spec),
+    };
+  });
+}
+
+/**
+ * Create the task a target approver described, as batch 1 moves.
+ *
+ * The same row addPlay writes for an ad-hoc item — no playbook, no template,
+ * channel 'internal_task', anchored to creation, at the end of its stage on the
+ * 10-step scale — so the checklist treats it exactly like one.
+ *
+ * BASELINE, also as addPlay: on a frozen plan a task with a due date is born
+ * with that date as its committed baseline, because nothing runs later to give
+ * it one; on a draft plan it has none, and freezing the plan gives it one.
+ *
+ * ADDED SCOPE: scope_added_at is set only on a frozen plan. On a draft plan
+ * the task is part of the plan, not an addition to it.
+ *
+ * Re-validated here, not trusted from the approval row: stages and tasks can
+ * change between the approval and the moment batch 1 moves.
+ */
+async function createTaskForMove(client, orgId, req, project, rawSpec) {
+  const spec = await validateNewTask(client, orgId, req, rawSpec);
+  const frozen = !!project.baseline_frozen_at;
+
+  const { rows: [{ next_order: nextOrder }] } = await client.query(
+    `SELECT COALESCE(MAX(sort_order), 0) + 10 AS next_order
+       FROM project_play_instances
+      WHERE handover_id = $1 AND org_id = $2 AND stage_key = $3`,
+    [project.id, orgId, spec.stageKey]);
+
+  const baselineDue = frozen && spec.dueDate ? spec.dueDate : null;
+
+  const { rows: [task] } = await client.query(
+    `INSERT INTO project_play_instances
+       (handover_id, org_id, playbook_id, play_id, stage_key, title, description,
+        channel, priority, execution_type, is_gate, due_date, due_anchor,
+        sort_order, status, owner_user_id, baseline_due_date, baseline_source,
+        depends_on, added_by_move_request_id, scope_added_at)
+     VALUES ($1, $2, NULL, NULL, $3, $4, $5,
+             'internal_task', 'medium', 'parallel', $6, $7::date, 'created',
+             $8, 'not_started', $9, $10::date, $11::text,
+             $12::int[], $13, CASE WHEN $14 THEN now() END)
+     RETURNING id, title, status, handover_id`,
+    [project.id, orgId, spec.stageKey, spec.title, spec.description,
+     spec.isGate, spec.dueDate, nextOrder, req.owner_user_id,
+     baselineDue, baselineDue ? 'original' : null,
+     spec.dependsOn.length ? spec.dependsOn : null, req.id, frozen]);
+
+  if (spec.dependents.length) {
+    await client.query(
+      `UPDATE project_play_instances
+          SET depends_on = array_append(COALESCE(depends_on, '{}'::int[]), $1), updated_at = now()
+        WHERE org_id = $2 AND handover_id = $3 AND id = ANY($4::int[])
+          AND NOT ($1 = ANY(COALESCE(depends_on, '{}'::int[])))`,
+      [task.id, orgId, project.id, spec.dependents]);
+  }
   return task;
 }
 
@@ -805,29 +1178,39 @@ async function executeBatch(client, orgId, actorId, req, batch) {
   }
 
   const item = await lockItem(client, orgId, req.item_id);
-  let taskId;
+  let task;
+  let placement = req.placement;
   if (batch.batch_no === 1) {
     const { rows: [targetAppr] } = await client.query(
-      `SELECT placement, existing_play_instance_id FROM daily_work_move_approvals
+      `SELECT placement, existing_play_instance_id, new_task FROM daily_work_move_approvals
         WHERE batch_id = $1 AND role = 'target'`,
       [batch.id]);
-    if (!targetAppr || targetAppr.placement !== 'existing_task') {
+    if (!targetAppr || !targetAppr.placement) {
       throw new DailyWorkError('The task has not been chosen yet.', 'PLACEMENT_REQUIRED');
-    }
-    if (!targetAppr.existing_play_instance_id) {
-      throw new DailyWorkError(
-        'The task that was chosen has since been deleted. The project manager needs to choose another.',
-        'TASK_GONE');
     }
     // Re-checked here, not just when the request was raised: the owner may
     // have closed the item, or logged against a task, in the meantime.
     await assertItemMovable(client, orgId, item, req.target_handover_id);
-    taskId = targetAppr.existing_play_instance_id;
+    placement = targetAppr.placement;
+
+    if (placement === 'existing_task') {
+      if (!targetAppr.existing_play_instance_id) {
+        throw new DailyWorkError(
+          'The task that was chosen has since been deleted. The project manager needs to choose another.',
+          'TASK_GONE');
+      }
+      task = await loadTask(client, orgId, targetAppr.existing_play_instance_id);
+    } else {
+      // Only now, when the move is certain. conflictsAtDecision is the record
+      // of what the approver saw and is not part of the task.
+      const spec = { ...(targetAppr.new_task || {}) };
+      delete spec.conflictsAtDecision;
+      task = await createTaskForMove(client, orgId, req, target, spec);
+    }
   } else {
-    taskId = req.play_instance_id;
+    task = await loadTask(client, orgId, req.play_instance_id);
   }
 
-  const task = await loadTask(client, orgId, taskId);
   assertTaskUsable(task, req);
   await dw.assertActiveMember(client, orgId, req.owner_user_id);
 
@@ -879,12 +1262,12 @@ async function executeBatch(client, orgId, actorId, req, batch) {
   if (batch.batch_no === 1) {
     await client.query(
       `UPDATE daily_work_move_requests
-          SET status = 'approved', placement = 'existing_task', play_instance_id = $2,
+          SET status = 'approved', placement = $4, play_instance_id = $2,
               decided_at = now(), executed_at = now(),
               recurring_decision = CASE WHEN $3 THEN 'pending' ELSE recurring_decision END,
               updated_at = now()
         WHERE id = $1`,
-      [req.id, task.id, item.kind === 'recurring']);
+      [req.id, task.id, item.kind === 'recurring', placement]);
   }
 }
 
@@ -1305,7 +1688,7 @@ async function getRequestDetail(orgId, requestId) {
 
     const { rows: approvals } = await client.query(
       `SELECT a.id, a.batch_id, a.handover_id, a.role, a.decision, a.decided_at, a.reason,
-              a.placement, a.existing_play_instance_id,
+              a.placement, a.existing_play_instance_id, a.new_task,
               COALESCE(NULLIF(btrim(h.name), ''), 'Untitled project') AS project_name,
               du.first_name || ' ' || du.last_name AS decided_by_name,
               p.title AS existing_task_title
@@ -1453,6 +1836,7 @@ module.exports = {
   editFlaggedEntry,
   markEntryDone,
   tryPendingMerges,
+  getConflicts,
   getRequest,
   listReviewQueue,
   listMine,

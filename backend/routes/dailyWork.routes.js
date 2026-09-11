@@ -1009,8 +1009,20 @@ router.post('/move-requests/:id/withdraw', async (req, res) => {
 });
 
 // ── the approvers ─────────────────────────────────────────────────────────
+
+// What a proposed new task would do to the plan, before deciding. POST because
+// the proposal is a structured body, but it writes nothing.
+// Body: { newTask: { title, description, stageKey, dueDate, isGate, dependsOn, dependents } }
+router.post('/move-requests/:id/conflicts', async (req, res) => {
+  try {
+    const id = asId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'bad request id' });
+    res.json(await dailyWorkMove.getConflicts(req.orgId, req.userId, id, (req.body || {}).newTask));
+  } catch (err) { handle(res, err, 'POST /move-requests/:id/conflicts'); }
+});
+
 // Body: { handoverId, decision: 'approve'|'reject', reason, untickEntryIds,
-//         placement: { existingPlayInstanceId }, batchId }
+//         placement: { existingPlayInstanceId } | { newTask: {…as above} }, batchId }
 router.post('/move-requests/:id/decide', async (req, res) => {
   try {
     const id = asId(req.params.id);

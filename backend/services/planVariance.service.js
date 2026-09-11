@@ -74,6 +74,11 @@ async function getProjectVariance(handoverId, orgId, hideInternalNotes = false) 
        p.baseline_due_date,
        p.baseline_source,
        p.completed_at,
+       -- 2026_142. Added to an already-frozen plan by an approved daily work
+       -- move. Its own column, not a baseline_source value: a rebaseline
+       -- overwrites baseline_source and would erase the fact.
+       p.scope_added_at,
+       p.added_by_move_request_id,
        -- 2026_116: must match handover.service._getPlays() exactly. If these
        -- two disagree, Plan vs Actual lists stages in a different order from
        -- the checklist it is meant to explain. project_stages is
@@ -188,6 +193,10 @@ async function getProjectVariance(handoverId, orgId, hideInternalNotes = false) 
     ownerName:         r.owner_name,
     baselineDueDate:   r.baseline_due_date,
     baselineSource:    r.baseline_source,
+    // 2026_142. Counted in on-time % like every other task; reported so the
+    // plan can say how much of it was added after it was frozen.
+    scopeAddedAt:        r.scope_added_at,
+    addedByMoveRequestId: r.added_by_move_request_id,
     dueDate:           r.due_date,
     completedAt:       r.completed_at,
     completed:         r.completed_at != null,
@@ -267,6 +276,11 @@ function summarise(plays) {
     lateWithNotes:   plays.filter(p => p.baselineVariance > 0 && p.noteCount > 0).length,
     withNotes:       plays.filter(p => p.noteCount > 0).length,
     adHoc:           plays.filter(p => p.isAdHoc).length,
+    // 2026_142. Tasks added to the frozen plan by approved daily work moves.
+    // INCLUDED in onTimePct and every other figure above, as agreed; a later
+    // filter can split original from added. Not the same as adHoc, which also
+    // counts every bulk-imported task.
+    addedScope:      plays.filter(p => p.scopeAddedAt != null).length,
     // How much of the baseline is guesswork. Non-zero means the headline
     // understates the real slip, and the UI must say so.
     inferredBaselines: measurable.filter(p => p.baselineSource === 'inferred').length,
