@@ -33,7 +33,7 @@
 // merges, left-out entries, a second batch moving — is decided server-side and
 // a guess here would be wrong in exactly the interesting cases.
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { apiService } from './apiService';
 
 /* ───────────────────────── helpers ─────────────────────────────────── */
@@ -450,6 +450,8 @@ export function MoveApprovalPanel({ requestId, handoverId, onDecided, onCancel }
   const [check, setCheck] = useState(null);   // { key, result }
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
+  // Pressing Approve while the plan is unchecked sends the cursor here.
+  const checkBtnRef = useRef(null);
 
   useEffect(() => {
     let alive = true;
@@ -514,22 +516,27 @@ export function MoveApprovalPanel({ requestId, handoverId, onDecided, onCancel }
     try {
       const { data } = await apiService.dailyWork.moveConflicts(requestId, newTaskBody());
       setCheck({ key: specKey, result: data });
-      return true;
-    } catch (err) { setError(readError(err, 'Could not check the plan.')); return false; }
+    } catch (err) { setError(readError(err, 'Could not check the plan.')); }
     finally { setBusy(false); }
   };
 
   // What still stands between this approver and an approval, in their words.
-  // Shown on the panel and said again on the click, because the gate used to be
-  // a disabled button carrying a title tooltip — and a disabled control takes no
+  // Said on the panel and again on the press, because the gate used to be a
+  // disabled button carrying a title tooltip — and a disabled control takes no
   // pointer events, so Chrome never draws it. The press did nothing, silently,
   // and the request looked like it had been swallowed.
+  //
+  // A stale check gets its own sentence. Checking, then changing the due date,
+  // blocks again for a reason the approver has no way to guess from "check the
+  // plan", which they know they already did.
   const approveNeeds = !choosesTask ? null
     : mode === 'existing'
       ? (taskId ? null : 'Choose the task this work should go to, or switch to “A new task”.')
       : !spec.title.trim() ? 'The new task needs a title.'
-        : !checked ? 'Check the plan before approving — the point of the step is seeing what this task does to it.'
-          : null;
+        : !check ? 'Press “Check the plan” before approving. You are deciding where this sits in the plan, '
+                   + 'so the panel wants you to see what it does to it first.'
+          : !checked ? 'The task changed since you last checked it. Press “Check the plan again” before approving.'
+            : null;
 
   const decide = async (decision) => {
     if (decision === 'reject' && !reason.trim()) {
@@ -537,15 +544,11 @@ export function MoveApprovalPanel({ requestId, handoverId, onDecided, onCancel }
       return;
     }
     if (decision === 'approve' && approveNeeds) {
-      // The one thing that is only ever a missing button press, we do for them;
-      // anything else needs a choice we cannot make.
-      if (choosesTask && mode === 'new' && spec.title.trim() && !checked) {
-        if (await runCheck()) {
-          setError('That is what this task would do to the plan. Press Approve again to go ahead.');
-        }
-      } else {
-        setError(approveNeeds);
-      }
+      setError(approveNeeds);
+      // The check stays theirs to run. Running it off the Approve button would
+      // make the plan something they clicked past twice rather than looked at,
+      // which is the whole reason the step exists. Put the cursor on it instead.
+      if (choosesTask && mode === 'new' && spec.title.trim()) checkBtnRef.current?.focus();
       return;
     }
     setBusy(true);
@@ -650,7 +653,8 @@ export function MoveApprovalPanel({ requestId, handoverId, onDecided, onCancel }
 
               {mode === 'new' && (
                 <div style={{ marginTop: 12 }}>
-                  <button className="dw-btn dw-btn-sm" disabled={busy || !spec.title.trim()} onClick={runCheck}>
+                  <button ref={checkBtnRef} className="dw-btn dw-btn-sm"
+                          disabled={busy || !spec.title.trim()} onClick={runCheck}>
                     {check && !checked ? 'Check the plan again' : 'Check the plan'}
                   </button>
                   {check && !checked && (
