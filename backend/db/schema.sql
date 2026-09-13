@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 1WoEg4NlUL3InCRdIxJH61t3aUElBUN5ZMQflcagJyvaMMTgzmRmUsTxIKh7Uah
+\restrict aeaqT9KogSBbAcPViq5LBtCR5l3RNviRQDfJgl6Xa7BBjnb1tn1Ams7va209LU8
 
 -- Dumped from database version 17.11 (Debian 17.11-1.pgdg13+2)
 -- Dumped by pg_dump version 18.1
@@ -3953,7 +3953,7 @@ CREATE TABLE public.daily_work_items (
     CONSTRAINT chk_dwi_anchor_shape CHECK ((((anchor_kind IS NULL) AND (anchor_id IS NULL)) OR ((anchor_kind IS NOT NULL) AND (anchor_id IS NOT NULL)))),
     CONSTRAINT chk_dwi_kind CHECK ((kind = ANY (ARRAY['recurring'::text, 'assigned'::text]))),
     CONSTRAINT chk_dwi_linked_is_assigned CHECK (((play_instance_id IS NULL) OR (kind = 'assigned'::text))),
-    CONSTRAINT chk_dwi_status_by_kind CHECK ((((kind = 'assigned'::text) AND (status = ANY (ARRAY['yet_to_start'::text, 'in_progress'::text, 'in_review'::text, 'completed'::text, 'dropped'::text]))) OR ((kind = 'recurring'::text) AND (status = ANY (ARRAY['active'::text, 'retired'::text]))))),
+    CONSTRAINT chk_dwi_status_by_kind CHECK ((((kind = 'assigned'::text) AND (status = ANY (ARRAY['yet_to_start'::text, 'in_progress'::text, 'in_review'::text, 'completed'::text, 'dropped'::text, 'moved'::text]))) OR ((kind = 'recurring'::text) AND (status = ANY (ARRAY['active'::text, 'retired'::text]))))),
     CONSTRAINT chk_dwi_target_date_kind CHECK (((target_date IS NULL) OR (kind = 'assigned'::text))),
     CONSTRAINT chk_dwi_title_not_blank CHECK ((btrim(title) <> ''::text))
 );
@@ -3964,6 +3964,13 @@ CREATE TABLE public.daily_work_items (
 --
 
 COMMENT ON COLUMN public.daily_work_items.anchor_kind IS 'Soft polymorphic reference: handover | account | campaign. Text rather than an FK so the vocabulary can grow without cascading changes, per the account_teams.dimension precedent. As of 2026_131.';
+
+
+--
+-- Name: COLUMN daily_work_items.status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.daily_work_items.status IS 'assigned: yet_to_start | in_progress | in_review | completed | dropped | moved. recurring: active | retired. moved (2026_142) = this item''s work was moved onto a project task by an approved move request; the item is closed and its remaining entries are history. Any read that lists CLOSED statuses by name must include moved, or a moved item reads as open.';
 
 
 --
@@ -4005,6 +4012,229 @@ CREATE SEQUENCE public.daily_work_items_id_seq
 --
 
 ALTER SEQUENCE public.daily_work_items_id_seq OWNED BY public.daily_work_items.id;
+
+
+--
+-- Name: daily_work_move_approvals; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.daily_work_move_approvals (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    request_id integer NOT NULL,
+    batch_id integer NOT NULL,
+    handover_id integer NOT NULL,
+    role text NOT NULL,
+    decision text DEFAULT 'pending'::text NOT NULL,
+    decided_by integer,
+    decided_at timestamp with time zone,
+    reason text,
+    placement text,
+    existing_play_instance_id integer,
+    new_task jsonb,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_dwma_decided_shape CHECK (((decision = 'pending'::text) = (decided_at IS NULL))),
+    CONSTRAINT chk_dwma_decision CHECK ((decision = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text]))),
+    CONSTRAINT chk_dwma_new_task_shape CHECK (((new_task IS NULL) OR (placement = 'new_task'::text))),
+    CONSTRAINT chk_dwma_placement CHECK (((placement IS NULL) OR ((role = 'target'::text) AND (placement = ANY (ARRAY['existing_task'::text, 'new_task'::text]))))),
+    CONSTRAINT chk_dwma_rejection_reason CHECK (((decision <> 'rejected'::text) OR ((reason IS NOT NULL) AND (btrim(reason) <> ''::text)))),
+    CONSTRAINT chk_dwma_role CHECK ((role = ANY (ARRAY['target'::text, 'source'::text])))
+);
+
+
+--
+-- Name: daily_work_move_approvals_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.daily_work_move_approvals_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: daily_work_move_approvals_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.daily_work_move_approvals_id_seq OWNED BY public.daily_work_move_approvals.id;
+
+
+--
+-- Name: daily_work_move_batches; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.daily_work_move_batches (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    request_id integer NOT NULL,
+    batch_no integer NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    added_by integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    decided_at timestamp with time zone,
+    executed_at timestamp with time zone,
+    CONSTRAINT chk_dwmb_batch_no CHECK ((batch_no >= 1)),
+    CONSTRAINT chk_dwmb_decided_shape CHECK (((status = 'pending'::text) = (decided_at IS NULL))),
+    CONSTRAINT chk_dwmb_executed_shape CHECK (((status = 'approved'::text) = (executed_at IS NOT NULL))),
+    CONSTRAINT chk_dwmb_status CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'withdrawn'::text])))
+);
+
+
+--
+-- Name: daily_work_move_batches_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.daily_work_move_batches_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: daily_work_move_batches_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.daily_work_move_batches_id_seq OWNED BY public.daily_work_move_batches.id;
+
+
+--
+-- Name: daily_work_move_entries; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.daily_work_move_entries (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    request_id integer NOT NULL,
+    batch_id integer NOT NULL,
+    entry_id integer,
+    selected boolean DEFAULT true NOT NULL,
+    unticked_by integer,
+    unticked_at timestamp with time zone,
+    unticked_for_handover_id integer,
+    outcome text DEFAULT 'pending'::text NOT NULL,
+    target_entry_id integer,
+    left_out_reason text,
+    moved_at timestamp with time zone,
+    needs_edit boolean DEFAULT false NOT NULL,
+    needs_edit_cleared_by integer,
+    needs_edit_cleared_at timestamp with time zone,
+    copied_evidence jsonb,
+    copied_notes jsonb,
+    snap_item_id integer NOT NULL,
+    snap_entry_date date NOT NULL,
+    snap_description text NOT NULL,
+    snap_next_steps text,
+    snap_day_stage text NOT NULL,
+    snap_activity_type_key text,
+    snap_anchor_kind text,
+    snap_anchor_id integer,
+    snap_account_id integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_dwme_copies_shape CHECK ((((copied_evidence IS NULL) AND (copied_notes IS NULL)) OR (outcome = 'merged'::text))),
+    CONSTRAINT chk_dwme_left_out_reason CHECK (((outcome <> 'left_out_too_long'::text) OR ((left_out_reason IS NOT NULL) AND (btrim(left_out_reason) <> ''::text)))),
+    CONSTRAINT chk_dwme_moved_shape CHECK (((outcome = ANY (ARRAY['moved'::text, 'merged'::text])) = (moved_at IS NOT NULL))),
+    CONSTRAINT chk_dwme_needs_edit_shape CHECK ((((NOT needs_edit) AND (needs_edit_cleared_at IS NULL)) OR ((outcome = 'merged'::text) AND (NOT (needs_edit AND (needs_edit_cleared_at IS NOT NULL)))))),
+    CONSTRAINT chk_dwme_outcome CHECK ((outcome = ANY (ARRAY['pending'::text, 'moved'::text, 'merged'::text, 'left_out_too_long'::text, 'excluded'::text]))),
+    CONSTRAINT chk_dwme_unticked_outcome CHECK ((selected OR (outcome = ANY (ARRAY['pending'::text, 'excluded'::text])))),
+    CONSTRAINT chk_dwme_unticked_shape CHECK ((selected = (unticked_at IS NULL)))
+);
+
+
+--
+-- Name: daily_work_move_entries_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.daily_work_move_entries_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: daily_work_move_entries_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.daily_work_move_entries_id_seq OWNED BY public.daily_work_move_entries.id;
+
+
+--
+-- Name: daily_work_move_requests; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.daily_work_move_requests (
+    id integer NOT NULL,
+    org_id integer NOT NULL,
+    item_id integer NOT NULL,
+    owner_user_id integer NOT NULL,
+    requested_by integer,
+    target_handover_id integer NOT NULL,
+    note text,
+    status text DEFAULT 'pending'::text NOT NULL,
+    is_open boolean DEFAULT true NOT NULL,
+    placement text,
+    play_instance_id integer,
+    decided_at timestamp with time zone,
+    executed_at timestamp with time zone,
+    recurring_decision text,
+    recurring_decided_by integer,
+    recurring_decided_at timestamp with time zone,
+    withdrawn_by integer,
+    withdrawn_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_dwmr_approved_shape CHECK (((status <> 'approved'::text) OR ((placement IS NOT NULL) AND (play_instance_id IS NOT NULL) AND (decided_at IS NOT NULL) AND (executed_at IS NOT NULL)))),
+    CONSTRAINT chk_dwmr_open_shape CHECK ((((status = 'pending'::text) AND is_open) OR ((status = ANY (ARRAY['rejected'::text, 'withdrawn'::text])) AND (NOT is_open)) OR (status = 'approved'::text))),
+    CONSTRAINT chk_dwmr_pending_shape CHECK (((status <> 'pending'::text) OR ((placement IS NULL) AND (play_instance_id IS NULL) AND (executed_at IS NULL)))),
+    CONSTRAINT chk_dwmr_placement CHECK (((placement IS NULL) OR (placement = ANY (ARRAY['existing_task'::text, 'new_task'::text])))),
+    CONSTRAINT chk_dwmr_recurring_decided_shape CHECK (((recurring_decision = ANY (ARRAY['retired'::text, 'kept'::text])) = (recurring_decided_at IS NOT NULL))),
+    CONSTRAINT chk_dwmr_recurring_decision CHECK (((recurring_decision IS NULL) OR (recurring_decision = ANY (ARRAY['pending'::text, 'retired'::text, 'kept'::text])))),
+    CONSTRAINT chk_dwmr_rejected_shape CHECK (((status <> 'rejected'::text) OR (decided_at IS NOT NULL))),
+    CONSTRAINT chk_dwmr_status CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'withdrawn'::text]))),
+    CONSTRAINT chk_dwmr_withdrawn_shape CHECK (((status = 'withdrawn'::text) = (withdrawn_at IS NOT NULL)))
+);
+
+
+--
+-- Name: TABLE daily_work_move_requests; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.daily_work_move_requests IS 'A request to move one daily work item onto a task in one project or initiative, decided by that project''s manager and by the manager of any other timeboxed project the moving work is tagged to. As of 2026_142.';
+
+
+--
+-- Name: COLUMN daily_work_move_requests.is_open; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.daily_work_move_requests.is_open IS 'True while anything about the request is undecided: batch 1 pending, or a later batch pending after batch 1 moved. uq_dwmr_one_open_per_item keys on it. Pinned to status by chk_dwmr_open_shape except for approved requests, which the service closes when their last pending batch is decided.';
+
+
+--
+-- Name: daily_work_move_requests_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.daily_work_move_requests_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: daily_work_move_requests_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.daily_work_move_requests_id_seq OWNED BY public.daily_work_move_requests.id;
 
 
 --
@@ -5168,6 +5398,8 @@ CREATE TABLE public.project_play_instances (
     review_submitted_by integer,
     review_evidence jsonb,
     fired_action_ids integer[],
+    added_by_move_request_id integer,
+    scope_added_at timestamp with time zone,
     CONSTRAINT project_play_instances_baseline_source_chk CHECK (((baseline_source IS NULL) OR (baseline_source = ANY (ARRAY['original'::text, 'inferred'::text, 'rebaselined'::text])))),
     CONSTRAINT project_play_instances_depends_not_self CHECK (((depends_on IS NULL) OR (NOT (id = ANY (depends_on))))),
     CONSTRAINT project_play_instances_due_anchor_check CHECK (((due_anchor)::text = ANY (ARRAY['created'::text, 'go_live'::text, 'project_start'::text]))),
@@ -5211,6 +5443,13 @@ COMMENT ON COLUMN public.project_play_instances.review_evidence IS 'Evidence cap
 --
 
 COMMENT ON COLUMN public.project_play_instances.fired_action_ids IS 'actions.id rows created as a CONSEQUENCE of this play completing (next-play chain + dependents unblocked). Cancelled when a completion is rejected, un-cancelled if it is later re-approved.';
+
+
+--
+-- Name: COLUMN project_play_instances.scope_added_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.project_play_instances.scope_added_at IS 'When this task was added to an already-frozen plan by an approved daily work move request. NULL for everything in the original or provisional plan. Independent of baseline_source, which a rebaseline overwrites. As of 2026_142.';
 
 
 --
@@ -10934,7 +11173,10 @@ CREATE TABLE public.user_module_access (
     user_id integer NOT NULL,
     module_key text NOT NULL,
     granted_by integer,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    source text,
+    source_move_request_id integer,
+    CONSTRAINT chk_uma_source CHECK (((source IS NULL) OR (source = 'move_request_approver'::text)))
 );
 
 
@@ -12694,6 +12936,34 @@ ALTER TABLE ONLY public.daily_work_items ALTER COLUMN id SET DEFAULT nextval('pu
 
 
 --
+-- Name: daily_work_move_approvals id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_approvals ALTER COLUMN id SET DEFAULT nextval('public.daily_work_move_approvals_id_seq'::regclass);
+
+
+--
+-- Name: daily_work_move_batches id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_batches ALTER COLUMN id SET DEFAULT nextval('public.daily_work_move_batches_id_seq'::regclass);
+
+
+--
+-- Name: daily_work_move_entries id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_entries ALTER COLUMN id SET DEFAULT nextval('public.daily_work_move_entries_id_seq'::regclass);
+
+
+--
+-- Name: daily_work_move_requests id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_requests ALTER COLUMN id SET DEFAULT nextval('public.daily_work_move_requests_id_seq'::regclass);
+
+
+--
 -- Name: daily_work_schedules id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -14269,6 +14539,38 @@ ALTER TABLE ONLY public.daily_work_items
 
 
 --
+-- Name: daily_work_move_approvals daily_work_move_approvals_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_approvals
+    ADD CONSTRAINT daily_work_move_approvals_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: daily_work_move_batches daily_work_move_batches_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_batches
+    ADD CONSTRAINT daily_work_move_batches_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: daily_work_move_entries daily_work_move_entries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_entries
+    ADD CONSTRAINT daily_work_move_entries_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: daily_work_move_requests daily_work_move_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_requests
+    ADD CONSTRAINT daily_work_move_requests_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: daily_work_schedules daily_work_schedules_org_id_user_id_effective_from_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -15626,6 +15928,30 @@ ALTER TABLE ONLY public.conversation_project_candidates
 
 ALTER TABLE ONLY public.deal_health_config
     ADD CONSTRAINT uq_deal_health_config_user_org UNIQUE (user_id, org_id);
+
+
+--
+-- Name: daily_work_move_approvals uq_dwma_batch_handover; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_approvals
+    ADD CONSTRAINT uq_dwma_batch_handover UNIQUE (batch_id, handover_id);
+
+
+--
+-- Name: daily_work_move_batches uq_dwmb_id_request; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_batches
+    ADD CONSTRAINT uq_dwmb_id_request UNIQUE (id, request_id);
+
+
+--
+-- Name: daily_work_move_batches uq_dwmb_request_batch_no; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_batches
+    ADD CONSTRAINT uq_dwmb_request_batch_no UNIQUE (request_id, batch_no);
 
 
 --
@@ -17660,6 +17986,62 @@ CREATE INDEX idx_dwi_target ON public.daily_work_items USING btree (org_id, targ
 
 
 --
+-- Name: idx_dwma_pending_by_project; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dwma_pending_by_project ON public.daily_work_move_approvals USING btree (org_id, handover_id) WHERE (decision = 'pending'::text);
+
+
+--
+-- Name: idx_dwma_request; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dwma_request ON public.daily_work_move_approvals USING btree (request_id, batch_id);
+
+
+--
+-- Name: idx_dwmb_pending; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dwmb_pending ON public.daily_work_move_batches USING btree (request_id) WHERE (status = 'pending'::text);
+
+
+--
+-- Name: idx_dwme_request_batch; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dwme_request_batch ON public.daily_work_move_entries USING btree (request_id, batch_id);
+
+
+--
+-- Name: idx_dwme_target_open; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dwme_target_open ON public.daily_work_move_entries USING btree (target_entry_id) WHERE (needs_edit OR (outcome = 'left_out_too_long'::text));
+
+
+--
+-- Name: idx_dwmr_owner; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dwmr_owner ON public.daily_work_move_requests USING btree (org_id, owner_user_id, created_at DESC);
+
+
+--
+-- Name: idx_dwmr_recurring_pending; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dwmr_recurring_pending ON public.daily_work_move_requests USING btree (org_id, owner_user_id) WHERE (recurring_decision = 'pending'::text);
+
+
+--
+-- Name: idx_dwmr_target_open; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_dwmr_target_open ON public.daily_work_move_requests USING btree (org_id, target_handover_id) WHERE is_open;
+
+
+--
 -- Name: idx_dws_user_effective; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -18980,6 +19362,13 @@ CREATE INDEX idx_ppi_playbook_id ON public.project_play_instances USING btree (p
 --
 
 CREATE INDEX idx_ppi_project_start_anchored ON public.project_play_instances USING btree (handover_id) WHERE (((due_anchor)::text = 'project_start'::text) AND (status <> ALL (ARRAY['completed'::text, 'skipped'::text])));
+
+
+--
+-- Name: idx_ppi_scope_added; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_ppi_scope_added ON public.project_play_instances USING btree (handover_id) WHERE (scope_added_at IS NOT NULL);
 
 
 --
@@ -20548,6 +20937,20 @@ CREATE UNIQUE INDEX uq_dhd_grain ON public.domain_health_daily USING btree (org_
 --
 
 CREATE UNIQUE INDEX uq_dwi_owner_play ON public.daily_work_items USING btree (owner_user_id, play_instance_id) WHERE (play_instance_id IS NOT NULL);
+
+
+--
+-- Name: uq_dwme_entry_outstanding; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_dwme_entry_outstanding ON public.daily_work_move_entries USING btree (entry_id) WHERE (outcome = ANY (ARRAY['pending'::text, 'left_out_too_long'::text]));
+
+
+--
+-- Name: uq_dwmr_one_open_per_item; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_dwmr_one_open_per_item ON public.daily_work_move_requests USING btree (item_id) WHERE is_open;
 
 
 --
@@ -22798,6 +23201,174 @@ ALTER TABLE ONLY public.daily_work_items
 
 
 --
+-- Name: daily_work_move_approvals daily_work_move_approvals_decided_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_approvals
+    ADD CONSTRAINT daily_work_move_approvals_decided_by_fkey FOREIGN KEY (decided_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_work_move_approvals daily_work_move_approvals_existing_play_instance_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_approvals
+    ADD CONSTRAINT daily_work_move_approvals_existing_play_instance_id_fkey FOREIGN KEY (existing_play_instance_id) REFERENCES public.project_play_instances(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_work_move_approvals daily_work_move_approvals_handover_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_approvals
+    ADD CONSTRAINT daily_work_move_approvals_handover_id_fkey FOREIGN KEY (handover_id) REFERENCES public.sales_handovers(id) ON DELETE CASCADE;
+
+
+--
+-- Name: daily_work_move_approvals daily_work_move_approvals_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_approvals
+    ADD CONSTRAINT daily_work_move_approvals_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: daily_work_move_batches daily_work_move_batches_added_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_batches
+    ADD CONSTRAINT daily_work_move_batches_added_by_fkey FOREIGN KEY (added_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_work_move_batches daily_work_move_batches_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_batches
+    ADD CONSTRAINT daily_work_move_batches_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: daily_work_move_batches daily_work_move_batches_request_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_batches
+    ADD CONSTRAINT daily_work_move_batches_request_id_fkey FOREIGN KEY (request_id) REFERENCES public.daily_work_move_requests(id) ON DELETE CASCADE;
+
+
+--
+-- Name: daily_work_move_entries daily_work_move_entries_entry_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_entries
+    ADD CONSTRAINT daily_work_move_entries_entry_id_fkey FOREIGN KEY (entry_id) REFERENCES public.daily_work_entries(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_work_move_entries daily_work_move_entries_needs_edit_cleared_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_entries
+    ADD CONSTRAINT daily_work_move_entries_needs_edit_cleared_by_fkey FOREIGN KEY (needs_edit_cleared_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_work_move_entries daily_work_move_entries_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_entries
+    ADD CONSTRAINT daily_work_move_entries_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: daily_work_move_entries daily_work_move_entries_target_entry_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_entries
+    ADD CONSTRAINT daily_work_move_entries_target_entry_id_fkey FOREIGN KEY (target_entry_id) REFERENCES public.daily_work_entries(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_work_move_entries daily_work_move_entries_unticked_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_entries
+    ADD CONSTRAINT daily_work_move_entries_unticked_by_fkey FOREIGN KEY (unticked_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_work_move_entries daily_work_move_entries_unticked_for_handover_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_entries
+    ADD CONSTRAINT daily_work_move_entries_unticked_for_handover_id_fkey FOREIGN KEY (unticked_for_handover_id) REFERENCES public.sales_handovers(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_work_move_requests daily_work_move_requests_item_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_requests
+    ADD CONSTRAINT daily_work_move_requests_item_id_fkey FOREIGN KEY (item_id) REFERENCES public.daily_work_items(id) ON DELETE CASCADE;
+
+
+--
+-- Name: daily_work_move_requests daily_work_move_requests_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_requests
+    ADD CONSTRAINT daily_work_move_requests_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: daily_work_move_requests daily_work_move_requests_owner_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_requests
+    ADD CONSTRAINT daily_work_move_requests_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: daily_work_move_requests daily_work_move_requests_play_instance_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_requests
+    ADD CONSTRAINT daily_work_move_requests_play_instance_id_fkey FOREIGN KEY (play_instance_id) REFERENCES public.project_play_instances(id);
+
+
+--
+-- Name: daily_work_move_requests daily_work_move_requests_recurring_decided_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_requests
+    ADD CONSTRAINT daily_work_move_requests_recurring_decided_by_fkey FOREIGN KEY (recurring_decided_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_work_move_requests daily_work_move_requests_requested_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_requests
+    ADD CONSTRAINT daily_work_move_requests_requested_by_fkey FOREIGN KEY (requested_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: daily_work_move_requests daily_work_move_requests_target_handover_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_requests
+    ADD CONSTRAINT daily_work_move_requests_target_handover_id_fkey FOREIGN KEY (target_handover_id) REFERENCES public.sales_handovers(id) ON DELETE CASCADE;
+
+
+--
+-- Name: daily_work_move_requests daily_work_move_requests_withdrawn_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_requests
+    ADD CONSTRAINT daily_work_move_requests_withdrawn_by_fkey FOREIGN KEY (withdrawn_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
 -- Name: daily_work_schedules daily_work_schedules_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -23406,6 +23977,22 @@ ALTER TABLE ONLY public.daily_work_items
 
 
 --
+-- Name: daily_work_move_approvals fk_dwma_batch; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_approvals
+    ADD CONSTRAINT fk_dwma_batch FOREIGN KEY (batch_id, request_id) REFERENCES public.daily_work_move_batches(id, request_id) ON DELETE CASCADE;
+
+
+--
+-- Name: daily_work_move_entries fk_dwme_batch; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.daily_work_move_entries
+    ADD CONSTRAINT fk_dwme_batch FOREIGN KEY (batch_id, request_id) REFERENCES public.daily_work_move_batches(id, request_id) ON DELETE CASCADE;
+
+
+--
 -- Name: email_sync_history fk_email_sync_history_org; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -23478,6 +24065,14 @@ ALTER TABLE ONLY public.oauth_tokens
 
 
 --
+-- Name: project_play_instances fk_ppi_added_by_move_request; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.project_play_instances
+    ADD CONSTRAINT fk_ppi_added_by_move_request FOREIGN KEY (added_by_move_request_id) REFERENCES public.daily_work_move_requests(id) ON DELETE SET NULL;
+
+
+--
 -- Name: prompts fk_prompts_org; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -23507,6 +24102,14 @@ ALTER TABLE ONLY public.sequence_step_logs
 
 ALTER TABLE ONLY public.storage_files
     ADD CONSTRAINT fk_storage_files_org FOREIGN KEY (org_id) REFERENCES public.organizations(id);
+
+
+--
+-- Name: user_module_access fk_uma_source_move_request; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_module_access
+    ADD CONSTRAINT fk_uma_source_move_request FOREIGN KEY (source_move_request_id) REFERENCES public.daily_work_move_requests(id) ON DELETE SET NULL;
 
 
 --
@@ -26773,5 +27376,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 1WoEg4NlUL3InCRdIxJH61t3aUElBUN5ZMQflcagJyvaMMTgzmRmUsTxIKh7Uah
+\unrestrict aeaqT9KogSBbAcPViq5LBtCR5l3RNviRQDfJgl6Xa7BBjnb1tn1Ams7va209LU8
 

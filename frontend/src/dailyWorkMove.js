@@ -474,6 +474,10 @@ export function MoveApprovalPanel({ requestId, handoverId, onDecided, onCancel }
         if (!alive) return;
         setPlace(data);
         setSpec(s => ({ ...s, title: s.title || data.itemTitle || '' }));
+        // A project with no open task has nothing to offer under "an existing
+        // task": the approver lands on an empty dropdown and the only way on is
+        // a radio they have to notice. Start them where the work can actually go.
+        if (!data.tasks.some(t => !CLOSED_TASK.includes(t.status))) setMode('new');
       })
       .catch(err => { if (alive) setError(readError(err, 'Could not load the project’s tasks.')); });
     return () => { alive = false; };
@@ -510,13 +514,38 @@ export function MoveApprovalPanel({ requestId, handoverId, onDecided, onCancel }
     try {
       const { data } = await apiService.dailyWork.moveConflicts(requestId, newTaskBody());
       setCheck({ key: specKey, result: data });
-    } catch (err) { setError(readError(err, 'Could not check the plan.')); }
+      return true;
+    } catch (err) { setError(readError(err, 'Could not check the plan.')); return false; }
     finally { setBusy(false); }
   };
+
+  // What still stands between this approver and an approval, in their words.
+  // Shown on the panel and said again on the click, because the gate used to be
+  // a disabled button carrying a title tooltip — and a disabled control takes no
+  // pointer events, so Chrome never draws it. The press did nothing, silently,
+  // and the request looked like it had been swallowed.
+  const approveNeeds = !choosesTask ? null
+    : mode === 'existing'
+      ? (taskId ? null : 'Choose the task this work should go to, or switch to “A new task”.')
+      : !spec.title.trim() ? 'The new task needs a title.'
+        : !checked ? 'Check the plan before approving — the point of the step is seeing what this task does to it.'
+          : null;
 
   const decide = async (decision) => {
     if (decision === 'reject' && !reason.trim()) {
       setError('Say why, so the person knows what to do next.');
+      return;
+    }
+    if (decision === 'approve' && approveNeeds) {
+      // The one thing that is only ever a missing button press, we do for them;
+      // anything else needs a choice we cannot make.
+      if (choosesTask && mode === 'new' && spec.title.trim() && !checked) {
+        if (await runCheck()) {
+          setError('That is what this task would do to the plan. Press Approve again to go ahead.');
+        }
+      } else {
+        setError(approveNeeds);
+      }
       return;
     }
     setBusy(true);
@@ -538,9 +567,6 @@ export function MoveApprovalPanel({ requestId, handoverId, onDecided, onCancel }
       setBusy(false);
     }
   };
-
-  const approveBlocked = choosesTask
-    && (mode === 'existing' ? !taskId : (!spec.title.trim() || !checked));
 
   return (
     <div className="dw-move">
@@ -597,8 +623,9 @@ export function MoveApprovalPanel({ requestId, handoverId, onDecided, onCancel }
               <div role="radiogroup" style={{ display: 'flex', gap: 16, fontSize: 13.5, marginBottom: 8 }}>
                 <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
                   <input type="radio" name={`dw-place-${requestId}`} checked={mode === 'existing'}
+                         disabled={openTasks.length === 0}
                          onChange={() => setMode('existing')} />
-                  An existing task
+                  An existing task{openTasks.length === 0 && ' (none open)'}
                 </label>
                 <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
                   <input type="radio" name={`dw-place-${requestId}`} checked={mode === 'new'}
@@ -645,10 +672,12 @@ export function MoveApprovalPanel({ requestId, handoverId, onDecided, onCancel }
       </div>
 
       {error && <div className="dw-banner stop" style={{ marginTop: 12, marginBottom: 0 }}>{error}</div>}
+      {approveNeeds && !error && (
+        <div className="dw-meta" style={{ marginTop: 12 }}>{approveNeeds}</div>
+      )}
 
       <div className="dw-move-actions">
-        <button className="dw-btn dw-btn-sm dw-btn-primary" disabled={busy || approveBlocked}
-                title={approveBlocked && mode === 'new' ? 'Check the plan first' : undefined}
+        <button className="dw-btn dw-btn-sm dw-btn-primary" disabled={busy}
                 onClick={() => decide('approve')}>
           {busy ? 'Saving…' : 'Approve'}
         </button>
