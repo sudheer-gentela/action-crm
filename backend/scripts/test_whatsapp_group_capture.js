@@ -627,14 +627,19 @@ async function run() {
           (await countMsgs(org, GROUPS.G1.jid, `AND (m.handover_id <> ${ID.p1} OR m.handover_source <> 'thread')`)) === 0);
     check("C1d binding_status 'bound'", (await groupRow(org, GROUPS.G1.jid)).binding_status === 'bound');
 
-    // recent_outbound: the handset spoke in the last 24h, so rule 2 fires.
+    // C9 changed what fires here. In a group thread carrying a project, rule 2
+    // is skipped and rule 3 answers. The DESTINATION is identical either way —
+    // an outbound in a project group is itself attributed to that project — so
+    // only the recorded provenance moves, from 'recent_outbound' to 'thread'.
+    // 'thread' is also the truer label: the message landed on P1 because the
+    // group IS P1's group, not because somebody spoke twenty minutes ago.
     const mOut = waMessage('G1', 'u1', text('Runbook attached above'));
     const mAfterOut = waMessage('G1', 'u4', text('Thanks, reviewing'));
     await send(mOut, mAfterOut);
     const rowAfterOut = await msgByWamid(org, mAfterOut.key.id);
     check('C2 new G1 message lands on P1', rowAfterOut.handover_id === ID.p1);
-    check("C2b …via 'recent_outbound' (the handset's own message counts as outbound)",
-          rowAfterOut.handover_source === 'recent_outbound', rowAfterOut.handover_source);
+    check("C2b …via 'thread', because C9 skips rule 2 in a project group",
+          rowAfterOut.handover_source === 'thread', rowAfterOut.handover_source);
 
     const g2 = await groupRow(org, GROUPS.G2.jid);
     const bG2 = await call('POST', `/api/whatsapp-session/triage/${g2.id}/bind`, {
@@ -705,8 +710,14 @@ async function run() {
     const nextG1 = waMessage('G1', 'u4', text('Acme: can we get the rollback plan by Friday?'));
     await sendOne(nextG1);
     const nextG1Row = await msgByWamid(org, nextG1.key.id);
-    info('C9 project group: one message filed to P2, then an ordinary Acme message arrives',
-         `landed on ${nextG1Row.handover_id === ID.p1 ? 'P1' : nextG1Row.handover_id === ID.p2 ? 'P2' : nextG1Row.handover_id} via '${nextG1Row.handover_source}' — rule 2 treats one filed message as steering the whole group for 24h`);
+    // Was an INFO while this was an open design question. It is now decided:
+    // filing in a project group is a correction to ONE message, so the group's
+    // own project answers for everything after it.
+    check('C9 in a project group a manual filing does NOT steer the next message',
+          nextG1Row.handover_id === ID.p1 && nextG1Row.handover_source === 'thread',
+          `landed on ${nextG1Row.handover_id} via '${nextG1Row.handover_source}'`);
+    check('C9b …and the filed message itself keeps P2',
+          (await msgByWamid(org, strayRow.id ? strayP2.key.id : strayP2.key.id)).handover_id === ID.p2);
 
     const sendRows = Number((await q1(
       `SELECT count(*) n FROM whatsapp_messages WHERE org_id = $1 AND handover_source = 'send'`, [org])).n);

@@ -5307,7 +5307,13 @@ async function getCommunications(handoverId, orgId) {
       -- everything — every message on that person's conversation showed up
       -- under whichever project happened to open it, including the other
       -- project's templates and the replies to them.
+      -- F3b: excluded_at, the same filter the Teams query below already
+      -- applies. Excluding a message is how somebody says "this was sensitive
+      -- and does not belong on the project record"; without this it kept
+      -- showing here, so the control worked in search and nowhere else. The
+      -- ROW is not deleted — play evidence pointing at it still resolves.
       WHERE t.org_id = $1
+        AND m.excluded_at IS NULL
         AND ( m.handover_id = $2
            OR (m.handover_id IS NULL AND t.handover_id = $2) )`,
     [orgId, handoverId]

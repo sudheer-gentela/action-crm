@@ -354,6 +354,22 @@ router.post('/internal/group-meta', workerAuth, async (req, res) => {
 // User-facing
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * One refusal → one status, for every triage mutation.
+ *
+ * FORBIDDEN is the E7 guard in whatsappSession.service: steward, or manager of
+ * the project the action concerns. The service is the only place that decides;
+ * this just translates. The body is passed through whole, because a bulk
+ * refusal carries `denied[]` naming each group and what would fix it, and the
+ * screen needs that list rather than a flat "forbidden".
+ */
+function statusFor(result) {
+  return result.code === 'FORBIDDEN' ? 403
+       : result.code === 'NOT_FOUND' ? 404
+       : result.code === 'NEEDS_FORCE' ? 409
+       : 400;
+}
+
 router.use(authenticateToken);
 router.use(orgContext);
 
@@ -527,7 +543,7 @@ router.post('/triage/watch-jid', async (req, res) => {
     if (!s) return res.status(404).json({ error: { message: 'No session' } });
     const snap = groupCache.get(s.id);
     const result = await session.watchByJid(req.orgId, s.id, req.userId, jids, watched, snap?.groups || []);
-    if (!result.ok) return res.status(400).json(result);
+    if (!result.ok) return res.status(statusFor(result)).json(result);
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: { message: e.message } });
@@ -540,7 +556,7 @@ router.post('/triage/watch', async (req, res) => {
   try {
     const { groupIds, watched } = req.body || {};
     const result = await session.setWatch(req.orgId, req.userId, groupIds, watched);
-    if (!result.ok) return res.status(400).json(result);
+    if (!result.ok) return res.status(statusFor(result)).json(result);
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: { message: e.message } });
@@ -561,7 +577,7 @@ router.post('/triage/media-policy', async (req, res) => {
   try {
     const { groupIds, policy } = req.body || {};
     const result = await session.setGroupMediaPolicy(req.orgId, req.userId, groupIds, policy);
-    if (!result.ok) return res.status(result.code === 'NOT_FOUND' ? 404 : 400).json(result);
+    if (!result.ok) return res.status(statusFor(result)).json(result);
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: { message: e.message } });
@@ -599,10 +615,8 @@ router.post('/triage/:groupId/bind', async (req, res) => {
     );
 
     if (!result.ok) {
-      const status = result.code === 'NOT_FOUND'   ? 404
-                   : result.code === 'NEEDS_FORCE' ? 409
-                   : 400;
-      return res.status(status).json({ ...result, error: { message: result.error || result.code } });
+      return res.status(statusFor(result))
+                .json({ ...result, error: { message: result.error || result.code } });
     }
     res.json(result);
   } catch (e) {
@@ -629,10 +643,8 @@ router.post('/threads/:threadId/bind', async (req, res) => {
       { mode, accountId, force: !!force }
     );
     if (!result.ok) {
-      const status = result.code === 'NOT_FOUND'   ? 404
-                   : result.code === 'NEEDS_FORCE' ? 409
-                   : 400;
-      return res.status(status).json({ ...result, error: { message: result.error || result.code } });
+      return res.status(statusFor(result))
+                .json({ ...result, error: { message: result.error || result.code } });
     }
     res.json(result);
   } catch (e) {
@@ -655,7 +667,7 @@ router.post('/triage/:groupId/unbind', async (req, res) => {
     const result = await session.unbindGroup(
       req.orgId, req.userId, parseInt(req.params.groupId, 10)
     );
-    if (!result.ok) return res.status(result.code === 'NOT_FOUND' ? 404 : 400).json(result);
+    if (!result.ok) return res.status(statusFor(result)).json(result);
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: { message: e.message } });
@@ -665,7 +677,7 @@ router.post('/triage/:groupId/unbind', async (req, res) => {
 router.post('/triage/:groupId/ignore', async (req, res) => {
   try {
     const result = await session.ignoreGroup(req.orgId, req.userId, parseInt(req.params.groupId, 10));
-    if (!result.ok) return res.status(404).json(result);
+    if (!result.ok) return res.status(statusFor(result)).json(result);
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: { message: e.message } });

@@ -1287,6 +1287,31 @@ async function resolveInboundHandover(orgId, thread, m) {
   // around a project. Stop rather than guess.
   if (entityScoped) return { handoverId: null, source: null, replyToWamid };
 
+  // ── C9: a project GROUP skips rule 2 ────────────────────────────────────
+  //
+  // Rule 2 is a 24-hour decaying pointer: the last manual filing or outbound
+  // send in the thread claims everything after it. That is right for a 1:1,
+  // where "this conversation is now about X" is a real signal. In a group whose
+  // organising principle IS a project, it is wrong in both legs:
+  //
+  //   the outbound leg is already dead — nobody sends from a project into a
+  //   group the handset merely observes;
+  //
+  //   the manual leg turns a CORRECTION into a takeover. Someone files one
+  //   off-topic message to another project and the Acme group's next day of
+  //   traffic follows it there, against the group's own stated project.
+  //
+  // So a group thread carrying a project goes straight to rule 3 and filing
+  // stays what it looks like: a decision about one message.
+  //
+  // Scoped to kind='group' with a project, binding row or not — the 24-hour
+  // steer is wrong in every project group, not only the ones bound since
+  // Phase 1. Groups with NO project still fall through to rule 2 unchanged,
+  // because there is no stated project for a filing to contradict.
+  if (thread?.kind === 'group' && thread.handover_id != null) {
+    return { handoverId: thread.handover_id, source: 'thread', replyToWamid };
+  }
+
   const ts = Number(m?.timestamp) || (Date.now() / 1000);
   // One query, two candidate signals, ordered by when each ACT happened. A
   // manual move is dated by handover_tagged_at; an outbound by when it was

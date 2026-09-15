@@ -26,6 +26,8 @@ const waService = require('./whatsapp.service');
 const groupCache = require('./whatsapp/groupCache');
 const bindings = require('./conversationBindings.service');
 const accountRels = require('./accountRelationships.service');
+const access = require('./whatsappAccess.service');
+const projectMembers = require('./projectMembers.service');
 
 const WORKER_VERSION = '1.1.0';   // 1.1.0 adds session media capture
 
@@ -1146,6 +1148,120 @@ async function listTriage(orgId, { status = 'all', watched = null, q = null, lim
   };
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Who may change a group's triage settings
+ *
+ * Every mutation below this point used to sit behind authenticateToken and
+ * nothing else, so any member of the org could bind any group, dismiss it, or
+ * switch its attachment policy to 'all' — which queues earlier attachments for
+ * upload into a project's Drive. That is the E7 hole.
+ *
+ * THE RULE: a communications steward, OR someone who can manage the project the
+ * action concerns.
+ *
+ *   steward          isSteward already resolves an explicit grant, an org
+ *                    admin/owner, or whoever connected the session.
+ *   project manager  canManageProject — org admin, service owner, creator, or
+ *                    an approved member carrying can_manage. Shared with the
+ *                    Daily Work approvals so there is one definition of
+ *                    "runs this project", not two that drift.
+ *
+ * A group with NO project is steward-only, and that is most of triage: an
+ * undecided group has no project to be a manager of. This is deliberate rather
+ * than a gap — see the comment on GET /triage, which already refuses a
+ * non-steward the snapshot for the same reason.
+ *
+ * REBINDING IS CHECKED BOTH WAYS. Moving a group from project P to project Q
+ * needs authority over P as well as Q. Checking only the target would let
+ * anyone running any project walk off with another project's group.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/** The one sentence a refusal shows, so every call site says the same thing. */
+function authorityError(reason) {
+  return reason === 'NO_PROJECT'
+    ? 'Only a communications steward can change a group that is not linked to a project. '
+      + 'Ask an admin for the steward role, or link the group to a project you manage first.'
+    : 'You can only change groups linked to a project you manage. '
+      + 'Ask the project\'s service owner for manage rights on it, or ask an admin for the steward role.';
+}
+
+/**
+ * @param {number[]} projects  the projects this action concerns. Empty means
+ *        the action names no project, which is steward-only.
+ * @returns {Promise<{ok:true,via:string}|{ok:false,code:'FORBIDDEN',...}>}
+ */
+async function authorityFor(orgId, userId, projects = []) {
+  const { steward, via } = await access.isSteward(orgId, userId);
+  if (steward) return { ok: true, via };
+
+  const ids = [...new Set(projects.map(n => parseInt(n, 10)).filter(Number.isInteger))];
+  if (!ids.length) {
+    return { ok: false, code: 'FORBIDDEN', reason: 'NO_PROJECT', error: authorityError('NO_PROJECT') };
+  }
+  const allowed = await Promise.all(ids.map(id => projectMembers.canManageProject(id, orgId, userId)));
+  const denied = ids.filter((id, i) => !allowed[i]);
+  if (denied.length) {
+    return {
+      ok: false, code: 'FORBIDDEN', reason: 'NOT_PROJECT_MANAGER',
+      deniedHandoverIds: denied, error: authorityError('NOT_PROJECT_MANAGER'),
+    };
+  }
+  return { ok: true, via: 'project_manager' };
+}
+
+/**
+ * The bulk form, for the routes that take an array of group ids.
+ *
+ * ALL OR NOTHING. A partial apply is the worst outcome here: the caller sees a
+ * 200, believes the setting took, and finds out months later that nine of ten
+ * groups changed. So the whole request is refused and `denied` names every
+ * group that failed, with the reason and what would fix it — the UI can list
+ * them rather than showing one flat "forbidden".
+ */
+async function authorityForGroups(orgId, userId, groupIds) {
+  const ids = [...new Set((groupIds || []).map(n => parseInt(n, 10)).filter(Number.isInteger))];
+  if (!ids.length) return { ok: false, code: 'NO_IDS' };
+
+  const { steward, via } = await access.isSteward(orgId, userId);
+  if (steward) return { ok: true, via, ids };
+
+  // A group's project is the THREAD's project — the same field the attribution
+  // fallback and the Communications tab read. An entity-bound group has none by
+  // construction, so it lands in the steward-only branch, which is correct: a
+  // vendor group belongs to no single project's manager.
+  const { rows } = await pool.query(
+    `SELECT g.id, g.subject, t.handover_id
+       FROM whatsapp_session_groups g
+       LEFT JOIN whatsapp_threads t ON t.id = g.thread_id
+      WHERE g.org_id = $1 AND g.id = ANY($2::int[])`,
+    [orgId, ids]
+  );
+  if (rows.length !== ids.length) return { ok: false, code: 'NOT_FOUND' };
+
+  const denied = [];
+  for (const g of rows) {
+    if (g.handover_id == null) {
+      denied.push({ groupId: g.id, subject: g.subject, reason: 'NO_PROJECT', fix: authorityError('NO_PROJECT') });
+      continue;
+    }
+    if (!(await projectMembers.canManageProject(g.handover_id, orgId, userId))) {
+      denied.push({
+        groupId: g.id, subject: g.subject, handoverId: g.handover_id,
+        reason: 'NOT_PROJECT_MANAGER', fix: authorityError('NOT_PROJECT_MANAGER'),
+      });
+    }
+  }
+  if (denied.length) {
+    return {
+      ok: false, code: 'FORBIDDEN', denied,
+      error: denied.length === rows.length
+        ? authorityError(denied[0].reason)
+        : `${denied.length} of ${rows.length} groups are not yours to change, so nothing was changed.`,
+    };
+  }
+  return { ok: true, via: 'project_manager', ids };
+}
+
 /**
  * The PM's per-group attachment decision.
  *
@@ -1164,8 +1280,11 @@ async function setGroupMediaPolicy(orgId, userId, groupIds, policy) {
   if (!allowed.includes(policy)) {
     return { ok: false, code: 'BAD_POLICY', error: `policy must be one of ${allowed.join(', ')}` };
   }
-  const ids = (groupIds || []).map(n => parseInt(n, 10)).filter(Number.isInteger);
-  if (!ids.length) return { ok: false, code: 'NO_IDS' };
+  // Before the UPDATE, not after: this setting can start uploads into a
+  // project's file storage, so an unauthorised call must change nothing.
+  const auth = await authorityForGroups(orgId, userId, groupIds);
+  if (!auth.ok) return auth;
+  const ids = auth.ids;
 
   const { rows } = await pool.query(
     `UPDATE whatsapp_session_groups
@@ -1230,14 +1349,22 @@ async function sessionOwnsMessage(sessionId, messageId) {
  * hundreds of catalogued groups, one-at-a-time is not a workable interaction.
  */
 async function setWatch(orgId, userId, groupIds, watched) {
-  const ids = (groupIds || []).map(n => parseInt(n, 10)).filter(Number.isInteger);
-  if (!ids.length) return { ok: false, code: 'NO_IDS' };
+  const auth = await authorityForGroups(orgId, userId, groupIds);
+  if (!auth.ok) return auth;
+  const ids = auth.ids;
 
+  // Switching capture back ON is the EXPLICIT RE-WATCH that lifts an ignore.
+  // ignoreGroup now clears is_watched, so without this the two fields disagree
+  // again in the other direction: watched = true on a row still marked
+  // 'ignored'. Re-watching is a decision to look at the group again, so the
+  // dismissal goes with it; nothing lifts an ignore by accident.
   const { rowCount } = await pool.query(
     `UPDATE whatsapp_session_groups
         SET is_watched = $1,
             watched_by = CASE WHEN $1 THEN $2 ELSE watched_by END,
             watched_at = CASE WHEN $1 THEN now() ELSE watched_at END,
+            binding_status = CASE WHEN $1 AND binding_status = 'ignored'
+                                  THEN 'unbound' ELSE binding_status END,
             updated_at = now()
       WHERE org_id = $3 AND id = ANY($4::int[])`,
     [!!watched, userId || null, orgId, ids]
@@ -1396,6 +1523,21 @@ async function bindGroup(orgId, userId, groupId, opts = {}) {
     derived = found.map(r => ({ handoverId: r.id }));
   }
 
+  // ── authority ───────────────────────────────────────────────────────────
+  //
+  // Checked here rather than at the top: the projects this action concerns are
+  // only known once the mode has been validated. Both ends of a rebind count —
+  // the project the group is leaving (thread.handover_id) and the one it is
+  // joining — so nobody can walk off with a group by managing only the target.
+  // account mode names no project at all and is therefore steward-only, which
+  // is right: a vendor group belongs to no single project's manager.
+  const concerns = [];
+  if (thread.handover_id != null) concerns.push(thread.handover_id);
+  if (mode === 'project') concerns.push(handoverId);
+  if (mode === 'pool') concerns.push(...derived.map(d => d.handoverId));
+  const auth = await authorityFor(orgId, userId, concerns);
+  if (!auth.ok) return auth;
+
   // ── the two transitions that need force ─────────────────────────────────
   if (isEntity && thread.handover_id != null && !force) {
     return {
@@ -1551,6 +1693,11 @@ async function watchByJid(orgId, sessionId, userId, jids = [], watched = true, s
   const list = (jids || []).filter(Boolean);
   if (!list.length) return { ok: false, code: 'NO_JIDS' };
 
+  // These groups are UNDECIDED — most have no row yet, and none has a project.
+  // There is nothing to be a project manager of, so this is steward-only.
+  const auth = await authorityFor(orgId, userId, []);
+  if (!auth.ok) return auth;
+
   const byJid = new Map(snapshot.map(g => [g.jid, g]));
   const results = [];
 
@@ -1635,6 +1782,12 @@ async function bindThread(orgId, userId, threadId, { mode = 'account', accountId
   if (!thread.wa_phone) return { ok: false, code: 'NO_THREAD' };
   if (!accountId) return { ok: false, code: 'INVALID_ACCOUNT', error: 'Pick a vendor or partner.' };
 
+  // Account mode names no project, so this is steward-only unless the bind
+  // would CLEAR an existing project link — in which case that project's manager
+  // may make the call about their own conversation.
+  const authT = await authorityFor(orgId, userId, thread.handover_id != null ? [thread.handover_id] : []);
+  if (!authT.ok) return authT;
+
   const { rows: [rel] } = await pool.query(
     `SELECT 1 FROM account_relationships
       WHERE org_id = $1 AND account_id = $2
@@ -1716,13 +1869,18 @@ async function bindThread(orgId, userId, threadId, { mode = 'account', accountId
  */
 async function unbindGroup(orgId, userId, groupId) {
   const { rows: [group] } = await pool.query(
-    `SELECT g.id, g.thread_id, t.wa_group_id
+    `SELECT g.id, g.thread_id, t.wa_group_id, t.handover_id
        FROM whatsapp_session_groups g
        LEFT JOIN whatsapp_threads t ON t.id = g.thread_id
       WHERE g.id = $1 AND g.org_id = $2`,
     [groupId, orgId]
   );
   if (!group) return { ok: false, code: 'NOT_FOUND' };
+
+  // Undoing a bind is judged by what is being undone, so the project the group
+  // is bound to now is the one that has to be yours.
+  const auth = await authorityFor(orgId, userId, group.handover_id != null ? [group.handover_id] : []);
+  if (!auth.ok) return auth;
 
   let removed = 0;
   if (group.wa_group_id) {
@@ -1739,11 +1897,32 @@ async function unbindGroup(orgId, userId, groupId) {
   return { ok: true, removed };
 }
 
-/** Dismiss a group permanently. Capture stops; existing messages are kept. */
+/**
+ * Dismiss a group. Capture stops; existing messages are kept.
+ *
+ * G1b: this used to set binding_status alone, and the allowlist gate reads
+ * is_watched — so an "ignored" group went on storing every message. The comment
+ * above said capture stopped and it did not. Two fields answering the same
+ * question, disagreeing. Ignoring now clears is_watched in the same statement,
+ * and only an explicit re-watch through setWatch/watchByJid brings it back.
+ */
 async function ignoreGroup(orgId, userId, groupId) {
+  const { rows: [group] } = await pool.query(
+    `SELECT g.id, t.handover_id
+       FROM whatsapp_session_groups g
+       LEFT JOIN whatsapp_threads t ON t.id = g.thread_id
+      WHERE g.id = $1 AND g.org_id = $2`,
+    [groupId, orgId]
+  );
+  if (!group) return { ok: false, code: 'NOT_FOUND' };
+
+  const auth = await authorityFor(orgId, userId, group.handover_id != null ? [group.handover_id] : []);
+  if (!auth.ok) return auth;
+
   const { rowCount } = await pool.query(
     `UPDATE whatsapp_session_groups
-        SET binding_status = 'ignored', bound_by = $1, bound_at = now(), updated_at = now()
+        SET binding_status = 'ignored', is_watched = false,
+            bound_by = $1, bound_at = now(), updated_at = now()
       WHERE id = $2 AND org_id = $3`,
     [userId || null, groupId, orgId]
   );
