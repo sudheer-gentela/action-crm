@@ -51,7 +51,7 @@ async function getSession(orgId) {
             media_max_bytes, media_retention_days,
             heartbeat_at, heartbeat_seconds, flush_interval_ms, batch_max,
             stale_socket_minutes, reconnect_max_seconds, reconnect_count,
-            capture_mode
+            capture_mode, late_joiner_history
        FROM whatsapp_sessions
       WHERE org_id = $1 AND status <> 'disabled'
       LIMIT 1`,
@@ -288,6 +288,17 @@ async function updateRuntimeConfig(orgId, patch = {}) {
   if (patch.captureMedia !== undefined) {
     sets.push(`capture_media = $${i++}`);
     vals.push(!!patch.captureMedia);
+  }
+  // 2026_143. Applies only to members who joined AFTER capture began; someone
+  // present in the first roster reads the whole group either way, because our
+  // record simply starts later than their membership.
+  if (patch.lateJoinerHistory !== undefined) {
+    if (!['from_join', 'all'].includes(patch.lateJoinerHistory)) {
+      return { ok: false, code: 'BAD_HISTORY_MODE',
+               error: "lateJoinerHistory must be 'from_join' or 'all'" };
+    }
+    sets.push(`late_joiner_history = $${i++}`);
+    vals.push(patch.lateJoinerHistory);
   }
   // Bounds duplicated from whatsapp_sessions_media_chk. The constraint is the
   // guarantee; this is so the admin gets a sentence instead of a 500 with a
@@ -692,7 +703,12 @@ async function ingestGroupMessage(sessionId, evt) {
   const senderPhone = phoneFromJid(evt.participantJid);
   if (senderPhone) {
     try {
-      await upsertParticipant(orgId, thread.id, senderPhone, evt.pushName, evt.fromMe);
+      // Someone speaking is not evidence they predate capture — only a roster
+      // is. 'first_message' therefore bounds them like a late arrival until a
+      // roster says otherwise, which is the honest reading of "we have never
+      // seen a membership list for this group".
+      await upsertParticipant(orgId, thread.id, senderPhone, evt.pushName, evt.fromMe,
+                              'first_message');
     } catch (err) {
       console.warn(`[wa-session] participant upsert failed for ${evt.jid}: ${err.message}`);
     }
@@ -894,15 +910,38 @@ async function threadForSessionGroup(orgId, jid, group) {
  * Roster upsert. Mirrors whatsapp.service.upsertGroupParticipant (which is not
  * exported) and adds the `side` inference: the observed number itself is us.
  */
-async function upsertParticipant(orgId, threadId, waPhone, displayName, isSelf) {
+async function upsertParticipant(orgId, threadId, waPhone, displayName, isSelf, source = 'first_message') {
+  // 2026_143. joined_at answers "when did we first know", which is all WhatsApp
+  // ever lets us know. What decides whether that date may bound anyone is a
+  // different question: did we OBSERVE them missing?
+  //
+  // We did exactly when this thread has already been rostered and they were not
+  // in that roster — which, at this point, means the thread carries a
+  // roster_synced_at and no row for them yet. A first_roster sync sets
+  // roster_synced_at only AFTER its loop, so its own members correctly see NULL
+  // here and stay unbounded.
+  const { rows: [t] } = await pool.query(
+    `SELECT (t.roster_synced_at IS NOT NULL) AS rostered,
+            EXISTS (SELECT 1 FROM whatsapp_thread_participants wp
+                     WHERE wp.thread_id = t.id AND wp.wa_phone = $2) AS known
+       FROM whatsapp_threads t WHERE t.id = $1`,
+    [threadId, waPhone]
+  );
+  const bounded = !!t && t.rostered && !t.known;
+
   await pool.query(
     `INSERT INTO whatsapp_thread_participants
-       (thread_id, org_id, wa_phone, display_name, side, joined_at)
-     VALUES ($1,$2,$3,$4,$5, now())
+       (thread_id, org_id, wa_phone, display_name, side, joined_at, joined_source, history_bounded)
+     VALUES ($1,$2,$3,$4,$5, now(), $6, $7)
      ON CONFLICT (thread_id, wa_phone) DO UPDATE SET
        display_name = COALESCE(EXCLUDED.display_name, whatsapp_thread_participants.display_name),
-       joined_at    = COALESCE(whatsapp_thread_participants.joined_at, EXCLUDED.joined_at)`,
-    [threadId, orgId, waPhone, displayName || null, isSelf ? 'internal' : 'customer']
+       joined_at    = COALESCE(whatsapp_thread_participants.joined_at, EXCLUDED.joined_at)
+       -- joined_source and history_bounded are written ONCE, by whatever saw
+       -- them first. A later roster seeing a member again is not new evidence
+       -- about when they arrived, and must not re-bound someone already
+       -- unbounded — nor unbind someone we watched join.`,
+    [threadId, orgId, waPhone, displayName || null, isSelf ? 'internal' : 'customer',
+     source, bounded]
   );
 
   // Link to a GoWarmCRM user when the number is a verified one. This is what
@@ -940,15 +979,34 @@ async function syncGroupMetadata(sessionId, { jid, subject, participants = [], o
   if (!group.thread_id) return { ok: true, thread: null, groupId: group.id };
 
   const selfPhone = session.wa_phone;
+
+  // Read BEFORE the loop and stamped AFTER it. Within one sync every
+  // participant must be judged against the state as the sync began, or the
+  // second name in the list would look like a late arrival next to the first.
+  const { rows: [{ rostered }] } = await pool.query(
+    `SELECT (roster_synced_at IS NOT NULL) AS rostered FROM whatsapp_threads WHERE id = $1`,
+    [group.thread_id]
+  );
+  const rosterSource = rostered ? 'later_roster' : 'first_roster';
+
   for (const p of participants) {
     const phone = phoneFromJid(p.id || p.jid);
     if (!phone) continue;
     try {
-      await upsertParticipant(session.org_id, group.thread_id, phone, p.name || null, phone === selfPhone);
+      await upsertParticipant(session.org_id, group.thread_id, phone, p.name || null,
+                              phone === selfPhone, rosterSource);
     } catch (err) {
       console.warn(`[wa-session] roster sync failed for ${phone}: ${err.message}`);
     }
   }
+  // Only now. From here on, a number absent from this roster and appearing
+  // later is a person we WATCHED arrive, and may be bounded. Until a thread has
+  // been rostered once, nothing about it can be called a late arrival.
+  await pool.query(
+    `UPDATE whatsapp_threads SET roster_synced_at = now() WHERE id = $1 AND org_id = $2`,
+    [group.thread_id, session.org_id]
+  );
+
   if (owner) {
     await pool.query(
       `UPDATE whatsapp_session_groups SET subject_owner_jid = $1, updated_at = now() WHERE id = $2`,
@@ -1146,6 +1204,20 @@ async function listTriage(orgId, { status = 'all', watched = null, q = null, lim
       needsBinding: Number(counts.needs_binding),
     },
   };
+}
+
+/**
+ * Is this project somewhere new work can still be filed?
+ *
+ * Two different endings, and testing only one misses half of them. A TIMEBOXED
+ * project finishes by status; a STANDING initiative never completes and is
+ * finished by retired_at instead (2026_133). Same predicate as
+ * dailyWorkMove.isProjectOpen — written out rather than imported because that
+ * one is private to its module, and a second copy that drifts is worse than a
+ * second copy that is commented.
+ */
+function isProjectOpen(p) {
+  return !!p && !['completed', 'cancelled'].includes(p.status) && p.retired_at == null;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -1478,11 +1550,24 @@ async function bindGroup(orgId, userId, groupId, opts = {}) {
 
   if (mode === 'project') {
     if (!handoverId) return { ok: false, code: 'INVALID_HANDOVER', error: 'Pick a project.' };
+    // D4: existence was the only test, so a project that had been closed — or a
+    // standing initiative that had been RETIRED — could still be chosen as the
+    // target, and the group's traffic would start filing onto something nobody
+    // is looking at any more. A timeboxed project is finished by status; a
+    // standing initiative is finished by retired_at (2026_133), and checking
+    // only one of the two misses half of them.
     const { rows: [handover] } = await pool.query(
-      `SELECT id FROM sales_handovers WHERE id = $1 AND org_id = $2`,
+      `SELECT id, name, status, retired_at FROM sales_handovers WHERE id = $1 AND org_id = $2`,
       [handoverId, orgId]
     );
     if (!handover) return { ok: false, code: 'INVALID_HANDOVER' };
+    if (!isProjectOpen(handover)) {
+      return {
+        ok: false, code: 'PROJECT_CLOSED',
+        error: `${handover.name || 'That project'} is closed, so work cannot be filed onto it. `
+             + 'Pick an open project, or reopen that one first.',
+      };
+    }
 
   } else if (mode === 'account') {
     if (!accountId) return { ok: false, code: 'INVALID_ACCOUNT', error: 'Pick a vendor or partner.' };

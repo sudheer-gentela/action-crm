@@ -222,13 +222,35 @@ async function buildVisibilityClause(orgId, userId, { scope = 'all', startIndex 
 
   // Participation, time-bounded: access follows the window during which the
   // person was actually in the room.
+  //
+  // THE LOWER BOUND IS LIFTED IN TWO CASES (2026_143):
+  //
+  //   history_bounded = false  we never OBSERVED this person missing. Either
+  //     they were in the first roster we synced, or the thread has never been
+  //     rostered at all. A message proves presence then; it proves nothing
+  //     about before, and joined_at records when GoWarm first noticed them — so
+  //     a member who read along quietly for a fortnight was cut off from a
+  //     fortnight of their own group. This is the E6 defect, and it under-served
+  //     real members rather than over-serving anyone.
+  //
+  //   late_joiner_history = 'all'  the org has decided a project group is a
+  //     shared record somebody inherits on joining. Off by default, because the
+  //     conservative reading — you see it from when we knew you were in it —
+  //     never shows anyone a conversation that predates their membership.
+  //
+  // The UPPER bound is untouched in both cases. Leaving is always known: we saw
+  // them in one roster and not the next, so left_at is real and still applies.
   const participant = `
     EXISTS (
       SELECT 1 FROM whatsapp_thread_participants wp
        WHERE wp.thread_id = m.thread_id
          AND wp.org_id    = ${orgP}
          AND wp.user_id   = ${userP}
-         AND (wp.joined_at IS NULL OR m.created_at >= wp.joined_at)
+         AND ( NOT wp.history_bounded
+            OR wp.joined_at IS NULL
+            OR m.created_at >= wp.joined_at
+            OR EXISTS (SELECT 1 FROM whatsapp_sessions ws
+                        WHERE ws.org_id = ${orgP} AND ws.late_joiner_history = 'all') )
          AND (wp.left_at   IS NULL OR m.created_at <= wp.left_at)
     )`;
 

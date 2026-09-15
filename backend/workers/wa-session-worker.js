@@ -188,6 +188,46 @@ function makeBuffer(sessionId, getConfig, mediaQueue) {
  *
  * Returns null for anything without an attachment, which is most messages.
  */
+/**
+ * The id of the message this one QUOTES, from whatever kind of message it is.
+ *
+ * C7b: this used to read `extendedTextMessage.contextInfo.stanzaId` and nothing
+ * else. A reply typed as text is an extendedTextMessage, so text replies worked
+ * — but a reply that carries an IMAGE is an imageMessage whose contextInfo sits
+ * on the imageMessage, and a reply carrying a document sits on documentMessage.
+ * Those replies arrived with quotedMessageId null, so reply_context never fired
+ * and they landed unassigned.
+ *
+ * That matters most in the place the miss is least visible: in an entity-scoped
+ * group — a vendor or pool group — reply_context is the ONLY automatic
+ * attribution there is. Every other rule is deliberately switched off. So the
+ * screenshot of the signed-off drawing, replying to the message that named the
+ * project, was exactly the message that lost it.
+ *
+ * Same envelope unwrapping as extractMediaRef, and the same depth guard, so the
+ * two agree about what "the message" is inside ephemeral and view-once wrappers.
+ */
+function extractQuotedId(message, depth = 0) {
+  if (!message || depth > 3) return null;
+
+  if (message.ephemeralMessage)   return extractQuotedId(message.ephemeralMessage.message, depth + 1);
+  if (message.viewOnceMessage)    return extractQuotedId(message.viewOnceMessage.message, depth + 1);
+  if (message.viewOnceMessageV2)  return extractQuotedId(message.viewOnceMessageV2.message, depth + 1);
+  if (message.documentWithCaptionMessage) {
+    return extractQuotedId(message.documentWithCaptionMessage.message, depth + 1);
+  }
+
+  // Ordered with the text case first only because it is much the commonest;
+  // every branch is equivalent. contextInfo is optional on all of them — a
+  // message that quotes nothing simply has none.
+  for (const key of ['extendedTextMessage', 'imageMessage', 'videoMessage',
+                     'documentMessage', 'audioMessage', 'stickerMessage']) {
+    const id = message[key]?.contextInfo?.stanzaId;
+    if (id) return id;
+  }
+  return null;
+}
+
 function extractMediaRef(message, depth = 0) {
   if (!message || depth > 3) return null;
 
@@ -733,8 +773,7 @@ async function startSession(sessionRow) {
           fromMe: !!m.key.fromMe,
           timestamp: Number(m.messageTimestamp) || Math.floor(Date.now() / 1000),
           pushName: m.pushName || null,
-          quotedMessageId:
-            m.message?.extendedTextMessage?.contextInfo?.stanzaId || null,
+          quotedMessageId: extractQuotedId(m.message),
           baileysVersion: version.join('.'),
           // Base64 here, explicitly, rather than leaving the API to dig the
           // key out of `raw`. Byte fields do not survive JSON uniformly: a

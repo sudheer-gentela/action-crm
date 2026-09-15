@@ -370,6 +370,12 @@ async function listProjectsForAccount(orgId, userId, accountId, subordinateIds =
  *     collecting new candidate matches; Phase 7's project-close nudge is the
  *     mechanism for what is already filed on it.
  *
+ *   retired_at IS NULL  — C3e. A STANDING initiative never completes; 2026_133
+ *     gave it retired_at instead, so the status test above cannot see it and a
+ *     retired initiative stayed a live candidate. Retiring is how a standing
+ *     initiative is finished, and a finished thing should not be offered as
+ *     somewhere to file new work.
+ *
  * Returns [{ handoverId, projectName, status, side }]. No relationship check
  * here — the caller validates that the account actually holds an active
  * vendor/partner row before deciding to derive anything.
@@ -393,6 +399,7 @@ async function projectsForRelationship(orgId, accountId) {
         AND c.account_id     = $2
         AND pc.side          IN ('vendor', 'partner')
         AND h.status         NOT IN ('draft', 'completed', 'cancelled')
+        AND h.retired_at     IS NULL
         AND (h.account_id IS NULL OR h.account_id <> $2)
       -- DISTINCT ON collapses the several contacts one vendor has on a project
       -- into one candidate. listProjectsForAccount groups by side and can

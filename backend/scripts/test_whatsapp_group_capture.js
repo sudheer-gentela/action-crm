@@ -60,7 +60,136 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(24).toStri
 process.env.WA_SESSION_WORKER_SECRET =
   process.env.WA_SESSION_WORKER_SECRET || crypto.randomBytes(24).toString('hex');
 
-const ROOT = path.join(__dirname, '..');
+/* ─────────────────────────────────────────────────────────────────────────────
+ * WHERE THE BACKEND IS — the one line to edit
+ *
+ * Every require below is absolute, off ROOT, because this harness loads the
+ * REAL services, routes and worker rather than copies. In place at
+ * backend/scripts/ the default is right and you change nothing.
+ *
+ * Run it from a scratch folder instead (the usual way, because that folder
+ * holds node_modules) and `..` points at that folder's parent, so the first
+ * require dies with a MODULE_NOT_FOUND naming a path nobody chose. Put the
+ * backend's path here instead:
+ *
+ *   const BACKEND_PATH = 'C:/Projects/action-crm-clean/backend';
+ *
+ * THIS IS A JAVASCRIPT STRING, NOT A SHELL COMMAND. `set WA_REPO=...` belongs
+ * in the terminal, never in this file — pasted here it is a syntax error.
+ *
+ * WINDOWS: use forward slashes. Node accepts them everywhere, and a single
+ * backslash inside quotes is an ESCAPE, not a separator:
+ * 'C:\Projects\action-crm-clean\backend' silently becomes C:Projectsaction-crm-
+ * cleanackend, because \b is a backspace character. Double them if you must.
+ * The check below catches that rather than letting it fail somewhere stranger.
+ *
+ * NODE_PATH is NOT needed. The harness's own dependencies (express,
+ * jsonwebtoken, baileys, pg, dotenv) resolve from the folder this file sits in.
+ * The BACKEND however resolves ITS dependencies from its own directory, so the
+ * backend needs `npm ci --ignore-scripts` run in it — multer is the first thing
+ * that fails without it.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+const BACKEND_PATH = '';
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * WHERE THE node_modules ARE
+ *
+ * Two separate questions, and getting them confused is what makes this script
+ * awkward to run from anywhere but its home:
+ *
+ *   BACKEND_PATH  where the CODE under test lives.
+ *   this block    where the DEPENDENCIES that code needs live.
+ *
+ * Node resolves a bare `require('pg')` by walking up from the requiring FILE.
+ * So backend/config/database.js looks in backend/node_modules, then up the
+ * backend's parents — it never looks in this harness's folder, however that
+ * folder is stocked. Hence "Cannot find module 'pg'" while pg sits right beside
+ * this file.
+ *
+ * NODE_PATH is the supported answer, but it has to be set before Node starts,
+ * which means remembering it in the terminal every time. Setting it here and
+ * re-running _initPaths() does the same job from inside the file: NODE_PATH
+ * entries go into Module.globalPaths, which is consulted for EVERY bare require
+ * regardless of which directory asked. So the backend's own requires resolve
+ * against this folder's node_modules.
+ *
+ * Automatic, and a no-op in place: backend/scripts/node_modules does not exist,
+ * so nothing is added and the backend resolves its dependencies normally.
+ * An externally set NODE_PATH is preserved and still wins.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+const LOCAL_MODULES = path.join(__dirname, 'node_modules');
+if (fs.existsSync(LOCAL_MODULES)) {
+  process.env.NODE_PATH = process.env.NODE_PATH
+    ? `${process.env.NODE_PATH}${path.delimiter}${LOCAL_MODULES}`
+    : LOCAL_MODULES;
+  require('module').Module._initPaths();
+}
+
+// Environment wins only when BACKEND_PATH is blank, so a path edited in by hand
+// is never quietly overridden by a DW_REPO left over from the Daily Work tests.
+const ROOT = path.resolve(
+  BACKEND_PATH || process.env.WA_REPO || process.env.DW_REPO || path.join(__dirname, '..')
+);
+
+// Fail with a sentence rather than a stack trace pointing at a path the reader
+// never chose. Checked before the first require so the message is the first
+// thing printed, not the tenth.
+// eslint-disable-next-line no-control-regex
+if (/[\x00-\x1f]/.test(BACKEND_PATH)) {
+  console.error(
+    '\nBACKEND_PATH contains an escape character, so the path is not what it looks like.\n'
+    + 'A single backslash inside quotes escapes the next letter — \\b is a backspace.\n\n'
+    + "Use forward slashes:  const BACKEND_PATH = 'C:/Projects/your-repo/backend';\n"
+  );
+  process.exit(2);
+}
+if (!fs.existsSync(path.join(ROOT, 'config', 'database.js'))) {
+  console.error(
+    `\nCannot find the backend at:\n  ${ROOT}\n\n`
+    + `Expected ${path.join(ROOT, 'config', 'database.js')} to exist.\n\n`
+    + `Edit BACKEND_PATH near the top of this file, e.g.\n`
+    + `  const BACKEND_PATH = 'C:/Projects/your-repo/backend';\n\n`
+    + `and make sure that backend has had 'npm ci --ignore-scripts' run in it.\n`
+  );
+  process.exit(2);
+}
+console.log(`backend : ${ROOT}`);
+
+// The backend pulls in more than this harness does — multer arrives through
+// handover.service → orgAdmin.routes, and is the usual first casualty. Say
+// which module is missing and where it was looked for, rather than leaving a
+// require stack to be read backwards.
+/**
+ * The install instruction, said the same way whether a dependency is missing at
+ * start-up or only when a route is mounted an hour into the run.
+ */
+function missingDependency(dep) {
+  return `\nCannot find '${dep}', which the backend needs.\n\n`
+    + `Looked in ${path.join(ROOT, 'node_modules')}\n`
+    + `       and ${LOCAL_MODULES}${fs.existsSync(LOCAL_MODULES) ? '' : '  (does not exist)'}\n\n`
+    + `Either install it beside this file:   npm i ${dep}\n`
+    + `or run 'npm ci --ignore-scripts' in   ${ROOT}\n`;
+}
+
+// The set the harness's load path actually reaches, found by running it against
+// a backend with no node_modules of its own and installing whatever it asked
+// for next until it completed. NOT the backend's full dependency list — most of
+// that is never loaded here, and demanding it would defeat the point of a
+// scratch folder. Checked up front so a missing one costs a second rather than
+// dying after the fixture is built. Anything reached later that is not on this
+// list is caught by the handler at the bottom of the run.
+for (const dep of ['pg', 'dotenv', 'express', 'jsonwebtoken', 'multer', 'qrcode',
+                   '@whiskeysockets/baileys']) {
+  try {
+    require.resolve(dep, { paths: [path.join(ROOT, 'config'), __dirname] });
+  } catch {
+    console.error(missingDependency(dep));
+    process.exit(2);
+  }
+}
+
 const { pool } = require(path.join(ROOT, 'config', 'database'));
 const express  = require('express');
 const jwt      = require('jsonwebtoken');
@@ -84,19 +213,35 @@ const ARGS = new Set(process.argv.slice(2));
 // ─────────────────────────────────────────────────────────────────────────────
 
 let pass = 0, fail = 0;
-const lines = [];
 const failures = [];
 let section = '';
+const STARTED = Date.now();
 
-function heading(title) { section = title; lines.push('', `── ${title} ${'─'.repeat(Math.max(0, 70 - title.length))}`); }
+/**
+ * Printed AS IT HAPPENS, not collected and dumped at the end.
+ *
+ * Every result used to go into an array joined after the last check. On a local
+ * database that is invisible — the whole run is about four seconds. Against a
+ * remote one it is roughly 730 round trips with nothing on screen between the
+ * connection banner and the summary, which is several minutes of a process that
+ * looks hung and is not. Streaming costs nothing and the run becomes readable.
+ *
+ * Section headings carry elapsed seconds, so a section that is slow because of
+ * latency can be told apart from one that is stuck on a lock.
+ */
+function heading(title) {
+  section = title;
+  console.log(`\n── ${title} ${'─'.repeat(Math.max(0, 70 - title.length))}`
+    + `  ${((Date.now() - STARTED) / 1000).toFixed(1)}s`);
+}
 function check(name, ok, detail = '') {
-  if (ok) { pass++; lines.push(`  PASS  ${name}`); return true; }
+  if (ok) { pass++; console.log(`  PASS  ${name}`); return true; }
   fail++;
-  lines.push(`  FAIL  ${name}${detail ? `\n          ${detail}` : ''}`);
+  console.log(`  FAIL  ${name}${detail ? `\n          ${detail}` : ''}`);
   failures.push(`[${section}] ${name}`);
   return false;
 }
-function info(name, detail) { lines.push(`  INFO  ${name}${detail ? `\n          ${detail}` : ''}`); }
+function info(name, detail) { console.log(`  INFO  ${name}${detail ? `\n          ${detail}` : ''}`); }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Lifting code out of the worker
@@ -158,18 +303,37 @@ function liftWorker() {
   const handlerBody = scanBalanced(src, src.indexOf('{', onAt + sig.length));
   if (!handlerBody.includes('buffer.push({')) throw new Error('messages.upsert handler no longer calls buffer.push');
 
-  const fnAt = src.indexOf('function extractMediaRef(');
-  if (fnAt < 0) throw new Error('extractMediaRef not found in the worker');
-  const fnSrc = src.slice(fnAt, src.indexOf('{', fnAt)) + scanBalanced(src, src.indexOf('{', fnAt));
-  const extractMediaRef = new Function(`${fnSrc}; return extractMediaRef;`)();
+  // Module-level helpers the handler calls. Lifted BY NAME and handed to the
+  // handler as arguments, because `new Function` bodies see only globals and
+  // their own parameters — a helper left out becomes a ReferenceError swallowed
+  // by the worker's own try/catch, surfacing as "buffered 0 of 1" rather than
+  // as the missing name. Add to this list when the handler gains a helper.
+  const HELPER_NAMES = ['extractMediaRef', 'extractQuotedId'];
+  const helpers = HELPER_NAMES.map((name) => {
+    const fnAt = src.indexOf(`function ${name}(`);
+    if (fnAt < 0) throw new Error(`${name} not found in the worker`);
+    const fnSrc = src.slice(fnAt, src.indexOf('{', fnAt)) + scanBalanced(src, src.indexOf('{', fnAt));
+    return new Function(`${fnSrc}; return ${name};`)();
+  });
 
-  const handler = new Function('buffer', 'touch', 'sessionId', 'version', 'extractMediaRef',
+  // Every name the handler calls must be provided. A helper added to the worker
+  // and forgotten here is caught now, by name, instead of as a silent drop.
+  const bodyCode = stripComments(handlerBody);
+  for (const name of (bodyCode.match(/\b(extract[A-Za-z]+)\s*\(/g) || [])
+                       .map(x => x.replace(/\s*\($/, ''))) {
+    if (!HELPER_NAMES.includes(name)) {
+      throw new Error(`the worker's handler calls ${name}(), which this harness does not lift — `
+        + `add it to HELPER_NAMES in liftWorker()`);
+    }
+  }
+
+  const handler = new Function('buffer', 'touch', 'sessionId', 'version', ...HELPER_NAMES,
     `return async ({ messages, type }) => ${handlerBody};`);
 
   /** Run a messages.upsert event through the worker's handler; return what it buffered. */
   async function upsert(messages, type = 'notify') {
     const pushed = [];
-    await handler({ push: (e) => pushed.push(e) }, () => {}, 0, [6, 7, 24], extractMediaRef)({ messages, type });
+    await handler({ push: (e) => pushed.push(e) }, () => {}, 0, [6, 7, 24], ...helpers)({ messages, type });
     return pushed;
   }
 
@@ -923,13 +1087,17 @@ async function run() {
       return;
     }
     await run();
-    console.log(lines.join('\n'));
-    console.log(`\n${'='.repeat(72)}\n${pass} passed, ${fail} failed`);
+    console.log(`\n${'='.repeat(72)}\n${pass} passed, ${fail} failed`
+      + `  in ${((Date.now() - STARTED) / 1000).toFixed(1)}s`);
     if (failures.length) console.log(`\nFailures:\n  ${failures.join('\n  ')}`);
     code = fail ? 1 : 0;
   } catch (err) {
-    console.log(lines.join('\n'));
-    console.error('\nHARNESS ERROR:', err.stack || err.message);
+    // A dependency the preflight did not know about, reached part-way through.
+    // Same sentence as the preflight rather than a require stack read backwards.
+    const missing = err.code === 'MODULE_NOT_FOUND'
+      && /Cannot find module '([^']+)'/.exec(err.message);
+    if (missing) console.error(missingDependency(missing[1]));
+    else console.error('\nHARNESS ERROR:', err.stack || err.message);
     code = 3;
   } finally {
     if (!ARGS.has('--keep') && !ARGS.has('--teardown')) {
