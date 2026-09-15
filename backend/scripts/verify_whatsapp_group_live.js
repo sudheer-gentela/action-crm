@@ -409,7 +409,13 @@ async function stage4() {
   const srcs = {};
   for (const m of after1) srcs[m.handover_source] = (srcs[m.handover_source] || 0) + 1;
   info('G1 attribution sources after the bind', JSON.stringify(srcs));
-  if (srcs.manual_recent) info('manual_recent seen in the project group — a filed message is steering later traffic (see findings)');
+  // Was an observation while C9 was an open question. C9 is decided: a project
+  // group skips rule 2, so filing one message is a correction to that message
+  // and nothing else. manual_recent appearing here means the fix is not live —
+  // most likely the API was deployed without services/whatsapp.service.js.
+  check('no manual_recent in the project group (C9: a filed message steers nothing)',
+        !srcs.manual_recent,
+        `${srcs.manual_recent} message(s) attributed by a filing up to 24h earlier`);
 
   const after5 = await messages(g5, 'AND created_at > $3', [g5?.bound_at]);
   check('G5 received messages after it was bound', after5.length > 0, 'send at least one G5 message after the bind');

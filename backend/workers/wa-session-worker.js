@@ -627,7 +627,7 @@ async function startSession(sessionRow) {
           subject: g.subject,
           owner: g.owner || null,
           creation: g.creation || null,
-          participants: (g.participants || []).map(p => ({ id: p.id, name: p.notify || null })),
+          participants: (g.participants || []).map(p => ({ id: p.jid || p.id, name: p.notify || null })),
           via: 'snapshot',
         }));
         if (groups.length) {
@@ -701,7 +701,7 @@ async function startSession(sessionRow) {
           jid: g.id,
           subject: g.subject,
           creation: g.creation || null,
-          participants: (g.participants || []).map(p => ({ id: p.id, name: p.notify || null })),
+          participants: (g.participants || []).map(p => ({ id: p.jid || p.id, name: p.notify || null })),
         }));
         await safeApi('/internal/group-snapshot', { sessionId, groups });
         console.log(`[wa-session:${sessionId}] sent snapshot of ${groups.length} groups`);
@@ -769,7 +769,14 @@ async function startSession(sessionRow) {
         buffer.push({
           jid,
           messageId: m.key.id,
-          participantJid: m.key.participant || m.participant || null,
+          // L1. In a LID-addressed group WhatsApp identifies the sender by a
+          // LID — an opaque per-account id like 28325426798744@lid — and puts
+          // the real number in key.participantPn. Reading key.participant first
+          // stored the LID in from_phone, where it is indistinguishable from a
+          // phone number with an odd country code, and matched no CRM user.
+          // participantPn first, the LID only as a fallback so a group that
+          // supplies no phone number still yields a stable sender id.
+          participantJid: m.key.participantPn || m.key.participant || m.participant || null,
           fromMe: !!m.key.fromMe,
           timestamp: Number(m.messageTimestamp) || Math.floor(Date.now() / 1000),
           pushName: m.pushName || null,
@@ -797,6 +804,11 @@ async function startSession(sessionRow) {
     if (groups.length) await safeApi('/internal/group-meta', { sessionId, groups });
   });
 
+  // L3/L5. extractGroupMetadata gives a LID roster { id: <lid>, jid: <phone> }
+  // and a phone roster { id: <phone>, jid: <phone> }, so p.jid is the number in
+  // both and p.id is the number in only one. Reading id first meant a LID group
+  // rostered entirely in LIDs: no member matched a verified user, so nobody
+  // could see the group in triage and the handset was not recognised as itself.
   sock.ev.on('group-participants.update', async ({ id }) => {
     try {
       const meta = await sock.groupMetadata(id);
@@ -807,7 +819,7 @@ async function startSession(sessionRow) {
           subject: meta.subject,
           owner: meta.owner || null,
           creation: meta.creation || null,
-          participants: (meta.participants || []).map(p => ({ id: p.id, name: p.notify || null })),
+          participants: (meta.participants || []).map(p => ({ id: p.jid || p.id, name: p.notify || null })),
         }],
       });
     } catch (err) {
