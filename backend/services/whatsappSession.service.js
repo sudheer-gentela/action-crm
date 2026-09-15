@@ -700,7 +700,21 @@ async function ingestGroupMessage(sessionId, evt) {
   // different transport.
   const thread = await threadForSessionGroup(orgId, evt.jid, group);
 
-  const senderPhone = phoneFromJid(evt.participantJid);
+  // The handset's OWN messages carry no phone number to read.
+  //
+  // In a LID-addressed group WhatsApp identifies senders by LID and supplies
+  // the real number in participant_pn — but NOT for messages the handset sent
+  // itself. Those arrive with participant = <our own LID> and no participant_pn
+  // at all, so the worker's fallback hands us a LID and it lands in from_phone
+  // looking like a phone number with a strange country code.
+  //
+  // There is nothing to decode here, and no need to: fromMe means the sender is
+  // this session, and the session's own number is on the row in front of us.
+  // Taken from wa_phone rather than from the stanza, so it holds whether or not
+  // WhatsApp ever sends participant_pn for own messages.
+  const senderPhone = evt.fromMe
+    ? (phoneFromJid(session.wa_phone) || phoneFromJid(evt.participantJid))
+    : phoneFromJid(evt.participantJid);
   if (senderPhone) {
     try {
       // Someone speaking is not evidence they predate capture — only a roster

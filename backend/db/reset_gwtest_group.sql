@@ -24,12 +24,38 @@
 --   costs you a printout and nothing else.
 -- ─────────────────────────────────────────────────────────────────────────────
 
-BEGIN;
-
-\set org_id 0
+-- ── guards, before the transaction ──────────────────────────────────────────
+-- Set these two, then run the file.
+\set org_id 112
 \set subject 'GWTEST G1 Acme Migration'
--- Note the quoted form :'subject' below — psql's :subject would paste the text
+-- :'subject' is psql's quoted form. Plain :subject would paste the text
 -- unquoted and Postgres would read it as a column name.
+
+-- A script that matches nothing must SAY so. Left at org_id 0 every query below
+-- filters on an org that cannot exist, every DELETE reports 0, and the closing
+-- "all zero" reads like success when nothing was ever found. These two checks
+-- turn that silence into a refusal.
+SELECT (:org_id = 0) AS org_unset \gset
+\if :org_unset
+\echo ''
+\echo 'STOP: org_id is still 0. Edit \\set org_id near the top of this file to the'
+\echo '      org you are resetting:  SELECT id, name FROM organizations WHERE ...'
+\echo ''
+\quit
+\endif
+
+SELECT count(*) = 0 AS no_match FROM whatsapp_threads
+ WHERE org_id = :org_id AND btrim(group_subject) = :'subject' \gset
+\if :no_match
+\echo ''
+\echo 'STOP: no thread in this org has that exact group subject, so there is'
+\echo '      nothing to reset. Check the org id and the subject — the match is'
+\echo '      exact after trimming, so a curly quote or an en dash will miss.'
+\echo ''
+\quit
+\endif
+
+BEGIN;
 
 \echo '--- what this will delete ---'
 

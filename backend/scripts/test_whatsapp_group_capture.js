@@ -419,7 +419,13 @@ function waMessage(groupKey, senderKey, content, { id = null } = {}) {
   };
   if (g.lid) {
     attrs.participant = lidJid(senderKey);
-    attrs.participant_pn = pnJid(senderKey);   // best case: WhatsApp supplies the phone
+    // WhatsApp supplies participant_pn for OTHER people and omits it for the
+    // handset's own messages — confirmed against live traffic, where every
+    // inbound message resolved to a number and the handset's own arrived as a
+    // bare LID. Supplying it here for u1 too made the fixture kinder than
+    // reality and hid the bug completely: the harness passed while production
+    // stored the handset's LID in from_phone.
+    if (senderKey !== 'u1') attrs.participant_pn = pnJid(senderKey);
   } else {
     attrs.participant = pnJid(senderKey);
   }
@@ -1077,6 +1083,17 @@ async function run() {
     const selfRow = await q1(`SELECT p.side, p.wa_phone FROM whatsapp_thread_participants p JOIN whatsapp_threads t ON t.id = p.thread_id
                                WHERE t.org_id = $1 AND t.wa_group_id = $2 AND p.side = 'internal' AND p.user_id IS NULL`, [org, GROUPS.G6.jid]);
     check('L5 [defect] the handset is recognised as itself in a LID roster', !!selfRow);
+    // L6. The handset's own message in a LID group: no participant_pn to read,
+    // so the number has to come from the session rather than from the stanza.
+    const lidSelf = waMessage('G6', 'u1', text('Handset speaking in the LID group'));
+    info('L6 key for the handset\'s own LID message',
+         `participant=${lidSelf.key.participant} participantPn=${lidSelf.key.participantPn} fromMe=${lidSelf.key.fromMe}`);
+    await sendOne(lidSelf);
+    const lidSelfRow = await msgByWamid(org, lidSelf.key.id);
+    check('L6 the handset\'s OWN message in a LID group carries its phone number, not its LID',
+          lidSelfRow && lidSelfRow.from_phone === PHONE.u1,
+          `from_phone=${lidSelfRow?.from_phone} (expected ${PHONE.u1})`);
+    check('L6b …and is still stored as outbound', lidSelfRow?.direction === 'outbound', lidSelfRow?.direction);
 
     // ── Z. The negative control, last, after everything else has run ───────
     heading('Z  Negative control');
