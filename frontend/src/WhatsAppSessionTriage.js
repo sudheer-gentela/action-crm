@@ -113,6 +113,9 @@ export default function WhatsAppSessionTriage() {
   const [loading,  setLoading]  = useState(true);
   const [busy,     setBusy]     = useState(false);
   const [error,    setError]    = useState('');
+  // A bulk refusal names every group it would not change, and why. Held apart
+  // from `error` because it is a list, not a sentence.
+  const [denied,   setDenied]   = useState([]);
   const [notice,   setNotice]   = useState('');
 
   const [filter,   setFilter]   = useState('all');
@@ -174,14 +177,18 @@ export default function WhatsAppSessionTriage() {
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(groups.map(g => g.group_jid)));
 
   const run = async (fn, okMsg) => {
-    setError(''); setNotice(''); setBusy(true);
+    setError(''); setNotice(''); setDenied([]); setBusy(true);
     try {
       const out = await fn();
       if (okMsg) setNotice(typeof okMsg === 'function' ? okMsg(out) : okMsg);
       setSelected(new Set());
       await load();
     } catch (e) {
-      setError(e?.response?.data?.error?.message || e.message);
+      setError(readApiError(e));
+      // Nothing was changed — the server refuses the whole request rather than
+      // applying it to the groups that pass. The selection is deliberately kept
+      // so the offending groups can be unticked and the action retried.
+      setDenied(Array.isArray(e?.response?.data?.denied) ? e.response.data.denied : []);
     } finally {
       setBusy(false);
     }
@@ -215,7 +222,7 @@ export default function WhatsAppSessionTriage() {
     setHandoverId(g.binding_mode === 'project' && g.handover_id ? String(g.handover_id) : '');
     setAccountId(g.bound_account_id ? String(g.bound_account_id) : '');
     setCandidates(new Set());
-    setConfirm(''); setError('');
+    setConfirm(''); setError(''); setDenied([]);
   };
 
   const closeBind = () => {
@@ -272,7 +279,8 @@ export default function WhatsAppSessionTriage() {
       if (e?.response?.status === 409 && body?.code === 'NEEDS_FORCE') {
         setConfirm(body.error?.message || body.error || 'This changes an existing link. Confirm to continue.');
       } else {
-        setError(body?.error?.message || e.message);
+        setError(readApiError(e));
+        setDenied(Array.isArray(body?.denied) ? body.denied : []);
       }
     } finally {
       setBusy(false);
@@ -312,7 +320,20 @@ export default function WhatsAppSessionTriage() {
         <Stat label="Undecided"   value={counts.needsBinding ?? 0} warn={needsAttention > 0} />
       </div>
 
-      {error  && <Banner tone="error">{error}</Banner>}
+      {error  && (
+        <Banner tone="error">
+          {error}
+          {denied.length > 0 && (
+            <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+              {denied.map(d => (
+                <li key={d.groupId} style={{ marginBottom: 4 }}>
+                  <b>{d.subject || `Group ${d.groupId}`}</b> — {d.fix}
+                </li>
+              ))}
+            </ul>
+          )}
+        </Banner>
+      )}
       {notice && <Banner tone="ok">{notice}</Banner>}
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
@@ -667,6 +688,24 @@ function Stat({ label, value, warn }) {
       <div style={{ fontSize: 17, fontWeight: 600, color: warn ? '#92400e' : '#1a202c' }}>{value}</div>
     </div>
   );
+}
+
+/**
+ * The message out of a failed call, whichever shape the route used.
+ *
+ * Two shapes reach here. The bind routes wrap the service result —
+ * `{ error: { message } }` — while watch, media-policy, unbind and ignore pass
+ * it straight through, so `error` is a plain string. Reading only the first
+ * shape is why a 403 used to surface as "Request failed with status code 403":
+ * the server's sentence was sitting in the body, unread.
+ */
+function readApiError(e) {
+  const body = e?.response?.data;
+  return body?.error?.message
+      || (typeof body?.error === 'string' ? body.error : null)
+      || body?.reason
+      || e?.message
+      || 'Something went wrong.';
 }
 
 function Banner({ tone, children }) {

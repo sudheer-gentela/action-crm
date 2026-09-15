@@ -2108,6 +2108,10 @@ async function health(orgId) {
     captureEnabled: session.capture_enabled,
     captureMedia: session.capture_media,
     captureMode: session.capture_mode,
+    // 2026_143. Read by the capture-settings screen; defaulted here so a
+    // session row written before the migration renders as the conservative
+    // setting rather than as undefined.
+    lateJoinerHistory: session.late_joiner_history || 'from_join',
     label: session.label,
     heartbeatStaleMins,
     socketStaleMins,

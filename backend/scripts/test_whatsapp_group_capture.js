@@ -183,7 +183,7 @@ function missingDependency(dep) {
 for (const dep of ['pg', 'dotenv', 'express', 'jsonwebtoken', 'multer', 'qrcode',
                    '@whiskeysockets/baileys']) {
   try {
-    require.resolve(dep, { paths: [path.join(ROOT, 'config'), __dirname] });
+    require.resolve(dep, { paths: [ROOT, path.join(ROOT, 'config'), __dirname] });
   } catch {
     console.error(missingDependency(dep));
     process.exit(2);
@@ -193,10 +193,28 @@ for (const dep of ['pg', 'dotenv', 'express', 'jsonwebtoken', 'multer', 'qrcode'
 const { pool } = require(path.join(ROOT, 'config', 'database'));
 const express  = require('express');
 const jwt      = require('jsonwebtoken');
-const baileys  = require('@whiskeysockets/baileys');
+/**
+ * Baileys is resolved from the BACKEND first, and only then from beside this
+ * file.
+ *
+ * The point of this harness is to feed the worker's own handler through the
+ * decoder the WORKER will use. Two copies means two decoders, and they disagree
+ * about things that matter: 6.7.24 surfaces key.participantPn on a LID-addressed
+ * group message and 7.0.0-rc14 does not, which is the single fact the live LID
+ * test exists to establish. A harness answering that question from a different
+ * version than production runs is worse than no answer.
+ *
+ * It also means Baileys need only be installed once, in the backend, where the
+ * worker needs it anyway.
+ */
+function fromBackend(spec) {
+  try { return require(require.resolve(spec, { paths: [ROOT, __dirname] })); }
+  catch { return require(spec); }
+}
+const baileys  = fromBackend('@whiskeysockets/baileys');
 // Deep import only after the package index has loaded: groups.js imports
 // generics.js, which needs DisconnectReason initialised by the index first.
-const { extractGroupMetadata } = require('@whiskeysockets/baileys/lib/Socket/groups.js');
+const { extractGroupMetadata } = fromBackend('@whiskeysockets/baileys/lib/Socket/groups.js');
 
 const session     = require(path.join(ROOT, 'services', 'whatsappSession.service'));
 const search      = require(path.join(ROOT, 'services', 'whatsappSearch.service'));

@@ -183,6 +183,24 @@ export default function WhatsAppSessionConnect() {
       : 'Attachment capture on. New attachments are saved to each project\u2019s folder.'
   );
 
+  /**
+   * What someone added to a group AFTER capture started may read back.
+   *
+   * A one-click switch for the same reason as attachment capture: parking it
+   * behind "Save settings" is how a choice about who reads what gets made and
+   * silently not applied.
+   */
+  const toggleLateJoinerHistory = () => run(
+    async () => {
+      await apiService.whatsappSession.updateSettings({
+        lateJoinerHistory: health?.lateJoinerHistory === 'all' ? 'from_join' : 'all',
+      });
+    },
+    health?.lateJoinerHistory === 'all'
+      ? 'Someone added to a group now reads it from the day they joined.'
+      : 'Someone added to a group now reads everything captured in it.'
+  );
+
   if (loading) return <div style={{ padding: 16, color: '#6b7280', fontSize: 13 }}>Loading capture settings…</div>;
 
   const configured = health?.configured;
@@ -329,6 +347,36 @@ export default function WhatsAppSessionConnect() {
                 automatically — no need to ask anyone to resend.
               </p>
             )}
+          </div>
+
+          {/* ── Who reads the history ─────────────────────────────────────
+              Beside attachments rather than among the dials, for the same
+              reason: this decides who reads whose conversation, and it does not
+              belong next to a millisecond interval. */}
+          <div style={CARD}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+              <h4 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: '#1a202c' }}>
+                Reading back a group
+              </h4>
+              <button
+                style={{
+                  ...BTN, fontSize: 12, padding: '4px 12px', marginLeft: 'auto',
+                  background: health.lateJoinerHistory === 'all' ? '#eff6ff' : '#f3f4f6',
+                  color:      health.lateJoinerHistory === 'all' ? '#1e40af' : '#6b7280',
+                  border: `1px solid ${health.lateJoinerHistory === 'all' ? '#bfdbfe' : '#e5e7eb'}`,
+                }}
+                disabled={busy}
+                onClick={toggleLateJoinerHistory}
+              >{health.lateJoinerHistory === 'all' ? 'The whole group' : 'From the day they joined'}</button>
+            </div>
+
+            <p style={{ fontSize: 12, color: '#6b7280', margin: 0, lineHeight: 1.5 }}>
+              This applies to people you watched join a group — they were not in it
+              when we last checked, and then they were. Everyone else reads the whole
+              group either way: WhatsApp never tells us when somebody joined, so for a
+              member who was already there the day capture started, or one we have only
+              ever seen speaking, there is no honest date to cut them off at.
+            </p>
           </div>
 
           <div style={CARD}>
