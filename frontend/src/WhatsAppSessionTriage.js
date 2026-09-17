@@ -157,7 +157,17 @@ export default function WhatsAppSessionTriage() {
   }, [load, search]);
 
   useEffect(() => {
-    apiService.handovers.list('all')
+    // trackingMode 'all', explicitly. The server defaults this argument to
+    // 'timeboxed' when it is omitted, so the obvious-looking list('all') —
+    // where 'all' is the SCOPE, meaning whose projects — came back with every
+    // standing initiative filtered out. A group could therefore never be bound
+    // to one from this dialog, though the server accepts it perfectly well:
+    // bindGroup's isProjectOpen treats a standing initiative as live, and the
+    // capture harness has a check proving the bind works.
+    //
+    // Two different axes with one word between them, and the picker wants both
+    // wide: any project in the org, timeboxed or standing.
+    apiService.handovers.list('all', undefined, undefined, 'all')
       .then(r => setHandovers(r.data?.handovers || r.data || []))
       .catch(() => setHandovers([]));
   }, []);

@@ -145,8 +145,19 @@ async function account(key) {
   return rows[0] || null;
 }
 async function user(key) {
-  return q1(`SELECT id, email, role, whatsapp_phone, whatsapp_phone_verified_at, whatsapp_phone_source
-               FROM users WHERE org_id = $1 AND lower(email) = lower($2)`, [CONFIG.orgId, CONFIG.users[key]]);
+  // org_role, not users.role. GoWarm carries two role columns and only
+  // org_users.role is the org's — requireRole reads it, the Org Admin screens
+  // write it, and canManageProject and isSteward read it. users.role predates
+  // multi-org and cannot express a per-org role, so a genuine org admin can sit
+  // there as 'user' indefinitely. Reading it here made this script report a
+  // correctly promoted admin as not an admin.
+  return q1(`SELECT u.id, u.email, ou.role AS role, u.role AS legacy_role,
+                    u.whatsapp_phone, u.whatsapp_phone_verified_at, u.whatsapp_phone_source
+               FROM users u
+               LEFT JOIN org_users ou ON ou.user_id = u.id AND ou.org_id = u.org_id
+                                     AND ou.is_active = TRUE
+              WHERE u.org_id = $1 AND lower(u.email) = lower($2)`,
+            [CONFIG.orgId, CONFIG.users[key]]);
 }
 async function messages(g, extra = '', params = []) {
   if (!g?.thread_id) return [];
@@ -442,7 +453,8 @@ async function stage5() {
   const subjects = ['G1', 'G2', 'G3', 'G4', 'G5'].map(k => CONFIG.groups[k]);
   const steward = async (u) => q1(
     `SELECT EXISTS (SELECT 1 FROM communication_stewards WHERE org_id = $1 AND user_id = $2 AND revoked_at IS NULL)
-         OR EXISTS (SELECT 1 FROM users WHERE id = $2 AND org_id = $1 AND role IN ('admin','owner'))
+         OR EXISTS (SELECT 1 FROM org_users WHERE user_id = $2 AND org_id = $1
+                                              AND is_active = TRUE AND role IN ('admin','owner'))
          OR EXISTS (SELECT 1 FROM whatsapp_sessions WHERE org_id = $1 AND created_by = $2 AND status <> 'disabled') AS s`,
     [CONFIG.orgId, u.id]);
   const visible = async (u) => (await q(
