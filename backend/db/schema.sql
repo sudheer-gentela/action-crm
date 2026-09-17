@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict aeaqT9KogSBbAcPViq5LBtCR5l3RNviRQDfJgl6Xa7BBjnb1tn1Ams7va209LU8
+\restrict Mrx63KrYOaJwOSVhMC1t8xuW4RB6DXcejbuakHBLQ1f0h92aUAD4emDlpeYqJQo
 
 -- Dumped from database version 17.11 (Debian 17.11-1.pgdg13+2)
 -- Dumped by pg_dump version 18.1
@@ -11883,6 +11883,8 @@ CREATE TABLE public.whatsapp_sessions (
     capture_mode text DEFAULT 'allowlist'::text NOT NULL,
     media_max_bytes bigint DEFAULT 26214400 NOT NULL,
     media_retention_days integer DEFAULT 14 NOT NULL,
+    late_joiner_history text DEFAULT 'from_join'::text NOT NULL,
+    CONSTRAINT wa_sessions_late_joiner_history_chk CHECK ((late_joiner_history = ANY (ARRAY['from_join'::text, 'all'::text]))),
     CONSTRAINT whatsapp_sessions_capture_mode_chk CHECK ((capture_mode = ANY (ARRAY['allowlist'::text, 'all'::text]))),
     CONSTRAINT whatsapp_sessions_config_chk CHECK ((((heartbeat_seconds >= 15) AND (heartbeat_seconds <= 3600)) AND ((flush_interval_ms >= 250) AND (flush_interval_ms <= 60000)) AND ((batch_max >= 1) AND (batch_max <= 500)) AND ((stale_socket_minutes >= 5) AND (stale_socket_minutes <= 1440)) AND ((reconnect_max_seconds >= 10) AND (reconnect_max_seconds <= 3600)))),
     CONSTRAINT whatsapp_sessions_media_chk CHECK ((((media_max_bytes >= 1048576) AND (media_max_bytes <= 104857600)) AND ((media_retention_days >= 1) AND (media_retention_days <= 30)))),
@@ -11937,6 +11939,13 @@ COMMENT ON COLUMN public.whatsapp_sessions.media_max_bytes IS 'Largest session a
 --
 
 COMMENT ON COLUMN public.whatsapp_sessions.media_retention_days IS 'Assumed WhatsApp CDN retention for companion-device media, in days. Default 14. Only an estimate: WhatsApp does not document it, and updateMediaMessage ΓÇö the re-upload request that would remove the guesswork ΓÇö is deliberately never called, because it makes the session transmit.';
+
+
+--
+-- Name: COLUMN whatsapp_sessions.late_joiner_history; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_sessions.late_joiner_history IS 'What a member we watched JOIN may read. from_join = from when we first knew they were in the group (default). all = the whole captured group. No effect on members whose absence was never observed.';
 
 
 --
@@ -12100,8 +12109,26 @@ CREATE TABLE public.whatsapp_thread_participants (
     joined_at timestamp with time zone,
     left_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    joined_source text DEFAULT 'unknown'::text NOT NULL,
+    history_bounded boolean DEFAULT false NOT NULL,
+    CONSTRAINT wa_participants_bounded_chk CHECK (((history_bounded = false) OR (joined_source <> 'first_roster'::text))),
+    CONSTRAINT wa_participants_joined_source_chk CHECK ((joined_source = ANY (ARRAY['first_roster'::text, 'later_roster'::text, 'first_message'::text, 'unknown'::text]))),
     CONSTRAINT wa_participants_side_chk CHECK ((side = ANY (ARRAY['customer'::text, 'internal'::text])))
 );
+
+
+--
+-- Name: COLUMN whatsapp_thread_participants.joined_source; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_thread_participants.joined_source IS 'How this membership was learned: first_roster (in the first roster synced for the thread), later_roster, first_message (seen speaking), unknown (recorded before 2026_143).';
+
+
+--
+-- Name: COLUMN whatsapp_thread_participants.history_bounded; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_thread_participants.history_bounded IS 'True only when we OBSERVED this person''s absence: the thread had already been rostered and they were not in it. Read by whatsappAccess.buildVisibilityClause; false means no lower bound, because a bound would be a guess.';
 
 
 --
@@ -12153,6 +12180,7 @@ CREATE TABLE public.whatsapp_threads (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     source text DEFAULT 'cloud_api'::text NOT NULL,
+    roster_synced_at timestamp with time zone,
     CONSTRAINT whatsapp_threads_identity_chk CHECK ((((kind = 'direct'::text) AND (wa_phone IS NOT NULL)) OR ((kind = 'group'::text) AND (wa_group_id IS NOT NULL)))),
     CONSTRAINT whatsapp_threads_kind_chk CHECK ((kind = ANY (ARRAY['direct'::text, 'group'::text]))),
     CONSTRAINT whatsapp_threads_session_group_only_chk CHECK (((source <> 'session'::text) OR (kind = 'group'::text))),
@@ -12180,6 +12208,13 @@ COMMENT ON COLUMN public.whatsapp_threads.window_expires_at IS 'last_inbound_at 
 --
 
 COMMENT ON COLUMN public.whatsapp_threads.source IS 'Which transport owns this thread. cloud_api = Meta Graph, sendable. session = observed via a companion-device client, READ-ONLY ΓÇö wa_group_id holds a JID, not a Meta group id, and any Graph send against it will fail. listSendTargets() must exclude source=''session''.';
+
+
+--
+-- Name: COLUMN whatsapp_threads.roster_synced_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.whatsapp_threads.roster_synced_at IS 'When a participant roster was last synced for this thread. NULL means we have never held a membership list for it, which is why someone seen only speaking cannot be treated as a late joiner.';
 
 
 --
@@ -27376,5 +27411,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict aeaqT9KogSBbAcPViq5LBtCR5l3RNviRQDfJgl6Xa7BBjnb1tn1Ams7va209LU8
+\unrestrict Mrx63KrYOaJwOSVhMC1t8xuW4RB6DXcejbuakHBLQ1f0h92aUAD4emDlpeYqJQo
 

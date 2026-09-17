@@ -269,8 +269,21 @@ async function stage1() {
     check(`${k} is a live customer project`, p.project_kind === 'customer' && !['draft', 'completed', 'cancelled'].includes(p.status),
           `${p.project_kind}/${p.status}`);
   }
-  check('the initiative is standing, internal, not retired, not draft',
-        INIT.tracking_mode === 'standing' && INIT.project_kind === 'internal' && !INIT.retired_at && INIT.status !== 'draft',
+  // 'draft' is NOT tested for a standing initiative, and that is not a relaxed
+  // check — it is the wrong question. A standing initiative has one meaningful
+  // state, live or retired, and the detail screen deliberately offers no Start
+  // button for one. Everything that consumes projects agrees: getAnchorOptions
+  // and getPersonProjectItems exclude cancelled/completed/retired and let a
+  // draft through, and isProjectOpen — which decides whether a group may bind
+  // to it — does the same. Requiring a non-draft status here would have meant
+  // pushing this one initiative into a state no ordinary initiative reaches,
+  // which is the opposite of what a fixture should be.
+  //
+  // retired_at is the real liveness test, and cancelled/completed are still
+  // refused: an initiative cancelled in error must not pass for live.
+  check('the initiative is standing, internal and live (not retired, not cancelled)',
+        INIT.tracking_mode === 'standing' && INIT.project_kind === 'internal'
+        && !INIT.retired_at && !['completed', 'cancelled'].includes(INIT.status),
         `${INIT.tracking_mode}/${INIT.project_kind}/${INIT.status}/retired=${!!INIT.retired_at}`);
 
   const onProject = async (h, phone, side) => q1(

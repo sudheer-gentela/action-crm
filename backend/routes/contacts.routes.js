@@ -514,11 +514,29 @@ router.post('/', workflowRulesMiddleware('contact', 'create'), async (req, res) 
       }
     }
 
+    // An untouched optional field arrives as '' from a form, not as undefined,
+    // and '' is a VALUE — so role_type='' is tested against
+    // contacts_role_type_check and rejected, while NULL would pass unexamined.
+    // Leaving the Role dropdown alone therefore failed the whole insert with a
+    // constraint name and no hint about which field was at fault.
+    //
+    // The bulk-import path a few hundred lines up already coalesces (`row.roleType
+    // || null`); this one did not, so the same body succeeded one way and failed
+    // the other. Coalesced here rather than in the form because every client
+    // posting to this route has the same problem.
+    //
+    // Only the optional columns. email is left alone: it drives the duplicate
+    // checks above, and quietly turning '' into NULL there would change which
+    // contacts count as duplicates.
+    const blankToNull = (v) => (typeof v === 'string' && v.trim() === '' ? null : v ?? null);
+
     const result = await db.query(
       `INSERT INTO contacts
          (org_id, account_id, first_name, last_name, email, phone, title, role_type, location, linkedin_url, notes)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-      [req.orgId, accountId, firstName, lastName, email, phone, title, roleType, location, linkedinUrl, notes]
+      [req.orgId, accountId, firstName, lastName, email,
+       blankToNull(phone), blankToNull(title), blankToNull(roleType),
+       blankToNull(location), blankToNull(linkedinUrl), blankToNull(notes)]
     );
 
     const response = { contact: result.rows[0] };

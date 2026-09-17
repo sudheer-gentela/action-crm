@@ -172,8 +172,18 @@ async function isSteward(orgId, userId) {
     `SELECT
        EXISTS (SELECT 1 FROM communication_stewards
                 WHERE org_id = $1 AND user_id = $2 AND revoked_at IS NULL) AS explicit_grant,
-       EXISTS (SELECT 1 FROM users
-                WHERE id = $2 AND org_id = $1 AND role IN ('admin','owner')) AS is_admin,
+       -- org_users, NOT users.role. The app has two role columns and only one
+       -- of them is the org's: requireRole reads org_users, the Org Admin
+       -- screens write it, and projectMembers.canManageProject reads it too.
+       -- users.role predates multi-org and cannot express a per-org role at
+       -- all, so reading it got both directions wrong — an org admin whose
+       -- users.role still said 'user' was refused steward rights, and a user
+       -- carrying a stale 'admin' there would have been granted them in every
+       -- org they belong to. is_active matters as well: a removed member keeps
+       -- their row.
+       EXISTS (SELECT 1 FROM org_users
+                WHERE user_id = $2 AND org_id = $1 AND is_active = TRUE
+                  AND role IN ('admin','owner')) AS is_admin,
        EXISTS (SELECT 1 FROM whatsapp_sessions
                 WHERE org_id = $1 AND created_by = $2 AND status <> 'disabled') AS connected_session`,
     [orgId, userId]

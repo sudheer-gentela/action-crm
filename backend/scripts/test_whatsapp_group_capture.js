@@ -550,10 +550,27 @@ async function seed() {
     await c.query('BEGIN');
     ID.org = await one(`INSERT INTO organizations (name, slug) VALUES ($1, 'wa-capture-harness') RETURNING id`, [FIXTURE_ORG]);
 
-    const user = (k, first, role) => one(
-      `INSERT INTO users (org_id, email, first_name, last_name, role, password_hash)
-       VALUES ($1, $2, $3, 'Harness', $4, 'x') RETURNING id`,
-      [ID.org, `wa-harness-${k}@example.invalid`, first, role]);
+    // BOTH role columns, because production has both and they are read by
+    // different code. org_users.role is the org's — requireRole, the Org Admin
+    // screens and canManageProject all use it. users.role predates multi-org.
+    //
+    // The fixture used to write only users.role, which made the two
+    // indistinguishable and hid a real defect: isSteward read users.role, so an
+    // org admin whose users.role still said 'user' was refused steward rights
+    // in production while every check here passed. Writing both, with the org
+    // role as the one that means anything, keeps that gap closed.
+    const user = async (k, first, role) => {
+      const id = await one(
+        `INSERT INTO users (org_id, email, first_name, last_name, role, password_hash)
+         VALUES ($1, $2, $3, 'Harness', $4, 'x') RETURNING id`,
+        // Deliberately NOT the org role: 'user' throughout, so anything that
+        // reads this column instead of org_users fails the way it would live.
+        [ID.org, `wa-harness-${k}@example.invalid`, first, 'user']);
+      await c.query(
+        `INSERT INTO org_users (org_id, user_id, role, is_active) VALUES ($1, $2, $3, TRUE)`,
+        [ID.org, id, role === 'admin' ? 'admin' : 'member']);
+      return id;
+    };
     ID.u1 = await user('u1', 'Handset', 'user');     // connects the session → steward implicitly
     ID.u2 = await user('u2', 'Lead', 'admin');       // delivery lead, does the binding
     ID.u3 = await user('u3', 'Engineer', 'user');    // the scoping test
