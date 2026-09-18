@@ -1109,33 +1109,108 @@ async function syncOrgMembersForGroup(orgId, sessionGroupId, participants = []) 
 async function listTriage(orgId, { status = 'all', watched = null, q = null, limit = 200, userId = null } = {}) {
   const params = [orgId];
   const where = ['g.org_id = $1'];
+  const add = (v) => { params.push(v); return `$${params.length}`; };
 
-  if (status && status !== 'all') { params.push(status); where.push(`g.binding_status = $${params.length}`); }
+  if (status && status !== 'all') where.push(`g.binding_status = ${add(status)}`);
   if (watched === true  || watched === 'true')  where.push('g.is_watched = true');
   if (watched === false || watched === 'false') where.push('g.is_watched = false');
-  if (q) { params.push(`%${String(q).toLowerCase()}%`); where.push(`lower(coalesce(g.subject,'')) LIKE $${params.length}`); }
+  if (q) where.push(`lower(coalesce(g.subject,'')) LIKE ${add(`%${String(q).toLowerCase()}%`)}`);
 
   // See the note on this function: stewards and admins see everything, everyone
   // else sees only the groups they were actually in.
-  let scoped = false;
-  if (userId) {
-    const access = require('./whatsappAccess.service');
-    const { steward } = await access.isSteward(orgId, userId);
-    if (!steward) {
-      scoped = true;
-      params.push(parseInt(userId, 10));
-      where.push(`EXISTS (SELECT 1 FROM whatsapp_thread_participants wp
-                           WHERE wp.thread_id = g.thread_id
-                             AND wp.org_id    = g.org_id
-                             AND wp.user_id   = $${params.length})`);
-    }
+  const viewerId = userId ? parseInt(userId, 10) : null;
+  let steward = false;
+  if (viewerId) ({ steward } = await access.isSteward(orgId, viewerId));
+  const scoped = !!viewerId && !steward;
+  const userP = viewerId ? add(viewerId) : null;
+
+  if (scoped) {
+    // Participation only — NOT left_at. Someone who left a group is still
+    // entitled to what was said while they were in it, and the Groups tab is
+    // how they find that history. What leaving takes away is the messages sent
+    // afterwards, which the windowed preview and count below enforce.
+    where.push(`EXISTS (SELECT 1 FROM whatsapp_thread_participants wp
+                         WHERE wp.thread_id = g.thread_id
+                           AND wp.org_id    = g.org_id
+                           AND wp.user_id   = ${userP})`);
   }
 
-  params.push(Math.min(parseInt(limit, 10) || 200, 500));
+  // What a scoped viewer sees ABOUT the traffic comes through the same
+  // participant rule as Communication → Messages — the join/leave window, the
+  // E6 history rule, exclusions — reused, not restated. The whole-group count,
+  // latest message and last-activity time would otherwise describe messages
+  // this person may not open: everything sent after they left, and anything
+  // excluded as not CRM material.
+  let traffic;
+  if (scoped) {
+    const vis = await access.buildVisibilityClause(orgId, viewerId, {
+      scope: 'participant', startIndex: params.length + 1,
+    });
+    params.push(...vis.params);
+    traffic = {
+      join: `LEFT JOIN LATERAL (
+               SELECT count(*)::int AS n, max(m.created_at) AS last_at
+                 FROM whatsapp_messages m
+                WHERE m.thread_id = g.thread_id AND ${vis.clause}
+             ) vt ON true
+             LEFT JOIN LATERAL (
+               SELECT m.body
+                 FROM whatsapp_messages m
+                WHERE m.thread_id = g.thread_id AND ${vis.clause}
+                ORDER BY m.created_at DESC, m.id DESC
+                LIMIT 1
+             ) vp ON true`,
+      count:   'COALESCE(vt.n, 0)',
+      lastAt:  'vt.last_at',
+      preview: 'vp.body',
+    };
+  } else {
+    traffic = {
+      join: '',
+      count:  'g.message_count',
+      lastAt: 'g.last_message_at',
+      // excluded_at: an excluded message is gone from every read path, and a
+      // preview is a read path. Before this the steward list could show the
+      // very message someone had just marked as not CRM material.
+      preview: `(SELECT m.body FROM whatsapp_messages m
+                  WHERE m.thread_id = g.thread_id AND m.excluded_at IS NULL
+                  ORDER BY m.created_at DESC LIMIT 1)`,
+    };
+  }
+
+  // Whether THIS viewer may change the group. The screen needs it per row
+  // because authority is per project: the same person manages the Acme group
+  // and only reads the Cloudsmith one.
+  //
+  // Same rule the mutations enforce (authorityFor / bindGroup): steward, or a
+  // manager of the group's CURRENT project. A group with no project — unbound,
+  // vendor, several projects — is steward-only. manageableProjectSql is
+  // projectMembers' exported SQL form of canManageProject, so a list of forty
+  // groups is one query rather than forty. It omits the org-admin arm, which is
+  // correct here: an active org admin is a steward and never reaches this
+  // branch.
+  const canManage = !viewerId ? 'NULL::boolean'
+    : steward ? 'TRUE'
+    : `COALESCE(t.handover_id IS NOT NULL AND ${projectMembers.manageableProjectSql('h', userP, '$1')}, FALSE)`;
+
+  // Left = the viewer has participant rows here and every one is closed. "Every"
+  // because rows are unique per (thread, phone), not per user: the LID and the
+  // phone address of one person are two rows, and one closed row is not a
+  // departure.
+  const leftGroup = !viewerId ? 'NULL::boolean' : `(
+      EXISTS     (SELECT 1 FROM whatsapp_thread_participants lp
+                   WHERE lp.thread_id = g.thread_id AND lp.org_id = g.org_id AND lp.user_id = ${userP})
+      AND NOT EXISTS (SELECT 1 FROM whatsapp_thread_participants lp
+                   WHERE lp.thread_id = g.thread_id AND lp.org_id = g.org_id AND lp.user_id = ${userP}
+                     AND lp.left_at IS NULL))`;
+
+  const limP = add(Math.min(parseInt(limit, 10) || 200, 500));
 
   const { rows } = await pool.query(
-    `SELECT g.id, g.group_jid, g.subject, g.participant_count, g.message_count,
-            g.last_message_at, g.first_seen_at, g.binding_status, g.is_watched,
+    `SELECT g.id, g.group_jid, g.subject, g.participant_count,
+            ${traffic.count}  AS message_count,
+            ${traffic.lastAt} AS last_message_at,
+            g.first_seen_at, g.binding_status, g.is_watched,
             g.discovered_via, g.thread_id, t.handover_id,
             g.media_policy, g.media_policy_at,
             (pu.first_name || ' ' || pu.last_name) AS media_policy_by_name,
@@ -1159,9 +1234,9 @@ async function listTriage(orgId, { status = 'all', watched = null, q = null, lim
                 AND mm.media_source = 'session'
                 AND mm.media_status IN ('skipped', 'failed', 'expired')) AS media_unstored,
             h.name AS project_name,
-            (SELECT m.body FROM whatsapp_messages m
-              WHERE m.thread_id = g.thread_id
-              ORDER BY m.created_at DESC LIMIT 1) AS last_message_preview
+            ${traffic.preview} AS last_message_preview,
+            ${canManage} AS can_manage,
+            ${leftGroup} AS left_group
        FROM whatsapp_session_groups g
        LEFT JOIN whatsapp_threads   t ON t.id = g.thread_id
        LEFT JOIN sales_handovers    h ON h.id = t.handover_id
@@ -1172,11 +1247,19 @@ async function listTriage(orgId, { status = 'all', watched = null, q = null, lim
                                          AND cb.channel    = 'whatsapp'
                                          AND cb.thread_ref = t.wa_group_id
        LEFT JOIN accounts ba ON ba.id = cb.bound_account_id AND ba.org_id = g.org_id
+       ${traffic.join}
       WHERE ${where.join(' AND ')}
-      ORDER BY g.is_watched DESC, g.last_message_at DESC NULLS LAST, g.subject
-      LIMIT $${params.length}`,
+      ORDER BY g.is_watched DESC, ${traffic.lastAt} DESC NULLS LAST, g.subject
+      LIMIT ${limP}`,
     params
   );
+
+  // The unstored-attachment count is feedback on a setting, so it belongs to
+  // whoever can change that setting. To anyone else it is a whole-group figure
+  // about files they have no say over.
+  for (const r of rows) {
+    if (r.can_manage === false) r.media_unstored = null;
+  }
 
   const { rows: [counts] } = await pool.query(
     // 'bound' still means bound to a project, exactly as it did before Phase 1.
@@ -1200,7 +1283,7 @@ async function listTriage(orgId, { status = 'all', watched = null, q = null, lim
                WHERE wp.thread_id = g.thread_id
                  AND wp.org_id    = g.org_id
                  AND wp.user_id   = $2::int))`,
-    [orgId, scoped ? parseInt(userId, 10) : null]
+    [orgId, scoped ? viewerId : null]
   );
 
   return {
@@ -1264,11 +1347,16 @@ function isProjectOpen(p) {
 
 /** The one sentence a refusal shows, so every call site says the same thing. */
 function authorityError(reason) {
-  return reason === 'NO_PROJECT'
-    ? 'Only a communications steward can change a group that is not linked to a project. '
-      + 'Ask an admin for the steward role, or link the group to a project you manage first.'
-    : 'You can only change groups linked to a project you manage. '
-      + 'Ask the project\'s service owner for manage rights on it, or ask an admin for the steward role.';
+  if (reason === 'NO_PROJECT') {
+    return 'Only a communications steward can change a group that is not linked to a project. '
+      + 'Ask an admin for the steward role.';
+  }
+  if (reason === 'VENDOR_STEWARD_ONLY') {
+    return 'Only a communications steward can organise a group around a vendor or partner. '
+      + 'A vendor group belongs to no single project, so no project manager can decide it.';
+  }
+  return 'You can only change groups linked to a project you manage. '
+    + 'Ask the project\'s service owner for manage rights on it, or ask an admin for the steward role.';
 }
 
 /**
@@ -1630,12 +1718,39 @@ async function bindGroup(orgId, userId, groupId, opts = {}) {
   // joining — so nobody can walk off with a group by managing only the target.
   // account mode names no project at all and is therefore steward-only, which
   // is right: a vendor group belongs to no single project's manager.
-  const concerns = [];
-  if (thread.handover_id != null) concerns.push(thread.handover_id);
-  if (mode === 'project') concerns.push(handoverId);
-  if (mode === 'pool') concerns.push(...derived.map(d => d.handoverId));
-  const auth = await authorityFor(orgId, userId, concerns);
-  if (!auth.ok) return auth;
+  //
+  // THE GROUP'S CURRENT PROJECT DECIDES WHO MAY TOUCH IT. Checking only the
+  // projects named in the request let a manager of ANY project bind an unbound
+  // group they were not even in: the target was theirs, so authorityFor passed,
+  // the bind back-filled the group's history into their project, and every
+  // approved member of that project could then read it. Group ids are
+  // sequential, so no screen was needed to do it. The rule stated on
+  // authorityFor — a group with no project is steward-only — was simply not the
+  // rule this function applied. For a non-steward, then:
+  //
+  //   no current project   refused, whatever the target. That covers unbound
+  //                        groups and vendor or multi-project groups alike.
+  //   vendor mode          refused. A vendor group belongs to no single
+  //                        project's manager, which is the reason the comment
+  //                        above always gave; the code let the manager of the
+  //                        group's current project make that call anyway.
+  //   otherwise            authority over the current project AND every target,
+  //                        as before, so nobody walks off with a group by
+  //                        managing only one end.
+  const { steward } = await access.isSteward(orgId, userId);
+  if (!steward) {
+    if (thread.handover_id == null) {
+      return { ok: false, code: 'FORBIDDEN', reason: 'NO_PROJECT', error: authorityError('NO_PROJECT') };
+    }
+    if (mode === 'account') {
+      return { ok: false, code: 'FORBIDDEN', reason: 'VENDOR_STEWARD_ONLY', error: authorityError('VENDOR_STEWARD_ONLY') };
+    }
+    const concerns = [thread.handover_id];
+    if (mode === 'project') concerns.push(handoverId);
+    if (mode === 'pool') concerns.push(...derived.map(d => d.handoverId));
+    const auth = await authorityFor(orgId, userId, concerns);
+    if (!auth.ok) return auth;
+  }
 
   // ── the two transitions that need force ─────────────────────────────────
   if (isEntity && thread.handover_id != null && !force) {

@@ -22,9 +22,9 @@
  *   captured", which no amount of re-searching will fix.
  */
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { apiService } from './apiService';
-import { hashSegment, writeHash } from './hashNav';
+import { hashSegment, hashIdSegment, writeHash } from './hashNav';
 
 const CARD    = { border: '1px solid #e5e7eb', borderRadius: 8, background: '#fff' };
 const BTN     = { padding: '6px 12px', borderRadius: 6, fontSize: 13, fontWeight: 500, cursor: 'pointer', border: '1px solid transparent' };
@@ -39,16 +39,42 @@ const SCOPES = [
   { key: 'unassigned',  label: 'Unassigned queue', stewardOnly: true },
 ];
 
+/*
+ * What the hash below segment 1 says. Two shapes share segment 3, so it is
+ * read as one decision rather than two independent lookups:
+ *
+ *   #/email/messages/<channel>/<messageId>                 one pinned message
+ *   #/email/messages/<channel>/thread/<threadId>[/<scope>] one conversation
+ *
+ * The pinned id is read with hashIdSegment, not hashSegment: the literal
+ * 'thread' in segment 3 is not a message id, and reading it as one would pin a
+ * message that does not exist and show the "no longer exists" warning over a
+ * perfectly good conversation link.
+ */
+function readMessagesHash() {
+  const isThread = hashSegment(3) === 'thread';
+  const threadId = isThread ? hashIdSegment(4) : null;
+  const scopeSeg = isThread ? hashSegment(5) : null;
+  return {
+    channel:  hashSegment(2) || 'all',
+    pinnedId: isThread ? null : hashIdSegment(3),
+    threadId,
+    scope:    SCOPES.some(sc => sc.key === scopeSeg) ? scopeSeg : 'all',
+  };
+}
+
 export default function CommunicationMessages() {
   const [q,        setQ]        = useState('');
   const [from,     setFrom]     = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo,   setDateTo]   = useState('');
-  const [scope,    setScope]    = useState('all');
-  // Segments 2 and 3 are ours: #/email/messages/<channel>/<messageId>.
-  // CommunicationView owns segment 1 and truncates below it on tab change.
-  const [channel,  setChannel]  = useState(() => hashSegment(2) || 'all');
-  const [pinnedId, setPinnedId] = useState(() => hashSegment(3) || null);
+  // Segments 2 and below are ours — see readMessagesHash. CommunicationView owns
+  // segment 1 and truncates below it on tab change.
+  const [initialHash] = useState(readMessagesHash);
+  const [scope,    setScope]    = useState(initialHash.scope);
+  const [channel,  setChannel]  = useState(initialHash.channel);
+  const [pinnedId, setPinnedId] = useState(initialHash.pinnedId);
+  const [threadId, setThreadId] = useState(initialHash.threadId);
   const [channels, setChannels] = useState([]);
   const [isDefault,setIsDefault]= useState(true);
 
@@ -78,15 +104,23 @@ export default function CommunicationMessages() {
   }, []);
 
   const clearPin = () => { setPinnedId(null); };
+  const clearThread = () => { setThreadId(null); };
 
-  const runSearch = useCallback(async () => {
-    setLoading(true); setError(''); setNotice(''); setDiagnosis(null);
+  // `override` exists for one caller: the steward-scope downgrade below has to
+  // search under the corrected scope in the same tick it sets it, before the
+  // state update has reached this closure. Handlers call runSearch() with no
+  // argument, never passing an event through.
+  const runSearch = useCallback(async (override = {}) => {
+    const useScope = override.scope || scope;
+    setLoading(true); setError(''); setDiagnosis(null);
+    if (!override.keepNotice) setNotice('');
     try {
       const res = await apiService.whatsappMessages.search({
         ...(q && { q }), ...(from && { from }),
         ...(dateFrom && { dateFrom }), ...(dateTo && { dateTo }),
-        scope, channel,
+        scope: useScope, channel,
         ...(pinnedId && { messageId: pinnedId }),
+        ...(threadId && { threadId }),
       });
       const found = res.data?.messages || [];
       setMessages(found);
@@ -106,15 +140,77 @@ export default function CommunicationMessages() {
     } finally {
       setLoading(false);
     }
-  }, [q, from, dateFrom, dateTo, scope, channel, pinnedId]);
+  }, [q, from, dateFrom, dateTo, scope, channel, pinnedId, threadId]);
+
+  const identityKnown = identity !== null;
+  const isSteward = !!identity?.steward?.steward;
 
   // Open with recent traffic rather than an empty page. Someone arriving here
   // usually wants to see what came in, not to compose a query first.
-  useEffect(() => { runSearch(); }, [channel, pinnedId]);   // eslint-disable-line react-hooks/exhaustive-deps
+  //
+  // The unassigned queue is steward-only, and whether this person is a steward
+  // arrives with identity, after mount. Searching before that would flash a
+  // "only a steward" error at a steward, and searching as a non-steward would
+  // show it for real. A pasted link can carry that scope to anyone, so wait for
+  // identity, and send a non-steward to the conversation's normal view instead
+  // of an error — they can still file what is waiting there as a participant.
+  //
+  // identityKnown is deliberately NOT a dependency of the main effect: it flips
+  // once for every visitor, and as a dependency it re-ran every page's opening
+  // search the moment identity arrived. Only a search actually deferred for it
+  // is resumed, by the second effect, through the ref.
+  const deferredForIdentity = useRef(false);
+
+  const searchOrDowngrade = () => {
+    if (scope === 'unassigned' && !isSteward) {
+      setScope('all');
+      setNotice('The unassigned queue is for communications stewards, so this shows the messages you can see instead.');
+      runSearch({ scope: 'all', keepNotice: true });
+      return;
+    }
+    runSearch();
+  };
 
   useEffect(() => {
-    writeHash(['email', 'messages', channel, pinnedId]);
-  }, [channel, pinnedId]);
+    if (scope === 'unassigned' && !identityKnown) { deferredForIdentity.current = true; return; }
+    searchOrDowngrade();
+  }, [channel, pinnedId, threadId]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!identityKnown || !deferredForIdentity.current) return;
+    deferredForIdentity.current = false;
+    searchOrDowngrade();
+  }, [identityKnown]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Scope is only written while a conversation is open. Without one it is the
+  // viewer's lens, not part of what the page shows; with one it decides which
+  // messages the link means, so a copied or refreshed link must keep it. 'all'
+  // is the default and is left out, which keeps the plain link short.
+  useEffect(() => {
+    if (threadId) {
+      writeHash(['email', 'messages', channel, 'thread', threadId, scope === 'all' ? null : scope]);
+    } else {
+      writeHash(['email', 'messages', channel, pinnedId]);
+    }
+  }, [channel, pinnedId, threadId, scope]);
+
+  // Following a link while already on this tab. CommunicationView re-renders
+  // for a tab change, but a link from Messages to Messages keeps this component
+  // mounted, and without this the address bar would change and the list would
+  // not. writeHash uses replaceState, which fires no hashchange, so this cannot
+  // loop against the effect above.
+  useEffect(() => {
+    const onHash = () => {
+      if (hashSegment(0) !== 'email' || hashSegment(1) !== 'messages') return;
+      const h = readMessagesHash();
+      setChannel(h.channel);
+      setPinnedId(h.pinnedId);
+      setThreadId(h.threadId);
+      setScope(h.scope);
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
 
   const act = async (fn, ok) => {
     setError(''); setNotice('');
@@ -122,7 +218,9 @@ export default function CommunicationMessages() {
       const r = await fn();
       setNotice(typeof ok === 'function' ? ok(r) : ok);
       setFileFor(null); setTarget('');
-      await runSearch();
+      // keepNotice: the refresh used to clear the confirmation in the same
+      // batched update that set it, so "filed" and "excluded" never appeared.
+      await runSearch({ keepNotice: true });
     } catch (e) {
       setError(e?.response?.data?.error || e?.response?.data?.error?.message || e.message);
     }
@@ -153,7 +251,16 @@ export default function CommunicationMessages() {
     `Requested capture for "${g.subject}". An admin will review it.`
   );
 
-  const isSteward = identity?.steward?.steward;
+  // A thread is WhatsApp's. Changing channel means looking somewhere else, so
+  // the conversation filter goes with it rather than silently narrowing a
+  // channel it cannot belong to.
+  const pickChannel = (c) => { setChannel(c); setThreadId(null); };
+
+  // Named from the rows themselves: the server returns only messages this
+  // viewer may see, so a name here is never one they could not already read.
+  const threadName = threadId && messages.length
+    ? (messages[0].conversationName || null)
+    : null;
 
   return (
     <div style={{ maxWidth: 980 }}>
@@ -176,7 +283,7 @@ export default function CommunicationMessages() {
         {[{ channel: 'all', label: 'All', available: true }, ...channels].map(c => (
           <button
             key={c.channel}
-            onClick={() => c.available && setChannel(c.channel)}
+            onClick={() => c.available && pickChannel(c.channel)}
             disabled={!c.available}
             title={c.available ? '' : 'Not connected yet'}
             style={{
@@ -218,7 +325,7 @@ export default function CommunicationMessages() {
               <option key={s.key} value={s.key}>{s.label}</option>
             ))}
           </select>
-          <button style={{ ...PRIMARY, marginLeft: 'auto' }} disabled={loading} onClick={runSearch}>
+          <button style={{ ...PRIMARY, marginLeft: 'auto' }} disabled={loading} onClick={() => runSearch()}>
             {loading ? 'Searching…' : 'Search'}
           </button>
         </div>
@@ -231,6 +338,27 @@ export default function CommunicationMessages() {
             Show all messages
           </button>
         </div>
+      )}
+
+      {threadId && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, padding: '8px 12px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, fontSize: 13, color: '#1e40af' }}>
+          <span>
+            Showing one conversation{threadName ? <>: <strong>{threadName}</strong></> : ''}
+            {scope === 'unassigned' && ' — messages waiting to be filed'}
+            {scope === 'participant' && ' — what was said while you were in it'}
+          </span>
+          <button style={{ ...GHOST, fontSize: 12, padding: '3px 9px', marginLeft: 'auto' }} onClick={clearThread}>
+            Show all conversations
+          </button>
+        </div>
+      )}
+
+      {threadId && searched && !loading && !error && messages.length === 0 && (
+        <Banner tone={scope === 'unassigned' ? 'ok' : 'warn'}>
+          {scope === 'unassigned'
+            ? 'Nothing in this conversation is waiting to be filed.'
+            : 'No messages from this conversation are visible to you. A link does not grant access — you see the same messages here as you would have found by searching.'}
+        </Banner>
       )}
 
       {pinnedId && searched && messages.length === 0 && (

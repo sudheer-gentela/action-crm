@@ -469,7 +469,14 @@ async function stage5() {
   check('u6 is NOT a steward', !(await steward(u6)).s);
   check('u3 would see exactly G3 and G5', sameSet(await visible(u3), [CONFIG.groups.G3, CONFIG.groups.G5]), JSON.stringify(await visible(u3)));
   check('u6 would see no test group', (await visible(u6)).length === 0, JSON.stringify(await visible(u6)));
-  info('now confirm on screen', 'log in as u3 and u6 and open Communication → Messages triage; the lists must match the two lines above');
+  // Communication → Groups is the member screen for this list; the triage
+  // screen it replaces here was reachable only from Org Admin, which neither u3
+  // nor u6 can open, so the old instruction could not be followed. Controls on a
+  // row appear only where the viewer manages the group's project — that part is
+  // per-row server data (can_manage) this read-only script does not mirror.
+  info('now confirm on screen',
+       'log in as u3 and u6 and open Communication → Groups; the lists must match the two lines above. '
+       + 'Capture, attachment and Change/Remove controls must appear only on groups linked to a project that user manages.');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

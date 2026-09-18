@@ -50,6 +50,7 @@ const MAX_LIMIT = 100;
  *   dateFrom   ISO date
  *   dateTo     ISO date
  *   groupJid   restrict to one group
+ *   threadId   restrict to one conversation, by our integer thread id
  *   handoverId restrict to one project
  *   scope      'all' (participant OR project member) | 'participant' |
  *              'assigned' | 'unassigned' (steward only)
@@ -58,7 +59,7 @@ async function searchMessages(orgId, userId, opts = {}) {
   const {
     q = null, from = null, dateFrom = null, dateTo = null,
     groupJid = null, handoverId = null, scope = 'all',
-    messageId = null,
+    messageId = null, threadId = null,
     limit = 50, offset = 0,
   } = opts;
 
@@ -82,6 +83,15 @@ async function searchMessages(orgId, userId, opts = {}) {
   if (dateFrom)   where.push(`m.created_at >= ${p(dateFrom)}`);
   if (dateTo)     where.push(`m.created_at <= ${p(dateTo)}`);
   if (groupJid)   where.push(`t.wa_group_id = ${p(groupJid)}`);
+  // By integer id rather than JID because that is what every internal link
+  // carries (the vendor panel, the Groups tab). A non-numeric value is ignored
+  // rather than coerced: NaN bound as a parameter errors, and treating a
+  // malformed link as "no filter" would widen the result instead of narrowing
+  // it, so an unparseable id matches nothing.
+  if (threadId != null && threadId !== '') {
+    const tid = parseInt(threadId, 10);
+    where.push(Number.isInteger(tid) && tid > 0 ? `m.thread_id = ${p(tid)}` : 'FALSE');
+  }
   if (handoverId) where.push(`m.handover_id = ${p(parseInt(handoverId, 10))}`);
 
   // Shared-link lookup. Deliberately routed through the SAME visibility clause

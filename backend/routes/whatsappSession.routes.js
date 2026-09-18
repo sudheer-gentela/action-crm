@@ -462,7 +462,10 @@ router.post('/phone-seen', async (req, res) => {
 router.get('/triage', async (req, res) => {
   try {
     const s = await session.getSession(req.orgId);
-    if (!s) return res.json({ groups: [], counts: {}, connected: false });
+    // noSession lets the screen say "not set up" rather than render an empty
+    // table under copy written for a connected number. It is now reachable by
+    // every member from Communication → Groups, not only from Org Admin.
+    if (!s) return res.json({ groups: [], counts: {}, connected: false, noSession: true });
 
     // SCOPING, and why the snapshot is handled separately.
     //
@@ -503,6 +506,9 @@ router.get('/triage', async (req, res) => {
         is_watched: false, binding_status: 'unbound',
         thread_id: null, handover_id: null, project_name: null,
         last_message_at: null, live: true, persisted: false,
+        // Only a steward ever receives the snapshot (see above), and an
+        // undecided group is steward work, so the per-row answer is fixed.
+        can_manage: true, left_group: null,
       });
     }
     // Decided groups the snapshot did not mention — the number may have left

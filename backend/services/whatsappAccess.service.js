@@ -227,8 +227,15 @@ async function buildVisibilityClause(orgId, userId, { scope = 'all', startIndex 
   let i = startIndex;
   const p = (v) => { params.push(v); return `$${i++}`; };
 
-  const orgP  = p(orgId);
-  const userP = p(userId);
+  const orgP = p(orgId);
+
+  // The user parameter is registered on first use, not up front. The
+  // 'unassigned' scope never mentions the viewer, and a bound parameter that no
+  // SQL references leaves a gap Postgres cannot type: every steward opening the
+  // unassigned queue got 42P18 "could not determine data type of parameter $2".
+  // Registering lazily keeps the numbering dense whichever branch is built.
+  let userSlot = null;
+  const userP = () => (userSlot ||= p(userId));
 
   // Participation, time-bounded: access follows the window during which the
   // person was actually in the room.
@@ -250,12 +257,12 @@ async function buildVisibilityClause(orgId, userId, { scope = 'all', startIndex 
   //
   // The UPPER bound is untouched in both cases. Leaving is always known: we saw
   // them in one roster and not the next, so left_at is real and still applies.
-  const participant = `
+  const participant = () => `
     EXISTS (
       SELECT 1 FROM whatsapp_thread_participants wp
        WHERE wp.thread_id = m.thread_id
          AND wp.org_id    = ${orgP}
-         AND wp.user_id   = ${userP}
+         AND wp.user_id   = ${userP()}
          AND ( NOT wp.history_bounded
             OR wp.joined_at IS NULL
             OR m.created_at >= wp.joined_at
@@ -268,30 +275,39 @@ async function buildVisibilityClause(orgId, userId, { scope = 'all', startIndex 
   // rows, or the org-admin/owner path that canManageFiles allows. Kept in SQL
   // rather than a per-row call so a search over thousands of messages is one
   // query instead of thousands.
-  const assigned = `
+  //
+  // The admin arm reads org_users, not users.role. users.role predates
+  // multi-org and cannot express a per-org role, so it was wrong in both
+  // directions: an org admin whose users.role said 'user' could not see their
+  // own org's project traffic, and a stale 'admin' there counted in every org
+  // the person belonged to. is_active because a removed member keeps the row.
+  // Same reading as isSteward and canManageProject.
+  const assigned = () => `
     m.handover_id IS NOT NULL AND (
       EXISTS (
         SELECT 1 FROM project_members pm
          WHERE pm.context_type = 'handover'
            AND pm.context_id   = m.handover_id
            AND pm.org_id       = ${orgP}
-           AND pm.user_id      = ${userP}
+           AND pm.user_id      = ${userP()}
            AND pm.status       = 'approved'
       )
       OR EXISTS (
-        SELECT 1 FROM users au
-         WHERE au.id = ${userP} AND au.org_id = ${orgP}
-           AND au.role IN ('admin','owner')
+        SELECT 1 FROM org_users aou
+         WHERE aou.user_id   = ${userP()}
+           AND aou.org_id    = ${orgP}
+           AND aou.is_active = TRUE
+           AND aou.role IN ('admin','owner')
       )
     )`;
 
   const unassignedOnly = `m.handover_id IS NULL`;
 
   let clause;
-  if (scope === 'participant')      clause = participant;
-  else if (scope === 'assigned')    clause = assigned;
+  if (scope === 'participant')      clause = participant();
+  else if (scope === 'assigned')    clause = assigned();
   else if (scope === 'unassigned')  clause = unassignedOnly;
-  else                              clause = `(${participant} OR ${assigned})`;
+  else                              clause = `(${participant()} OR ${assigned()})`;
 
   // Excluded messages are gone from every read path. They survive only for
   // audit, which reads the table directly rather than through this helper.
@@ -426,9 +442,14 @@ async function listStewards(orgId) {
     [orgId]
   );
 
+  // org_users, for the same reason isSteward reads it: this list is the screen
+  // version of that rule, and read from users.role it named people isSteward
+  // refuses and omitted org admins it grants.
   const { rows: implicit } = await pool.query(
-    `SELECT id AS user_id, first_name, last_name, email, 'admin' AS via
-       FROM users WHERE org_id = $1 AND role IN ('admin','owner')`,
+    `SELECT u.id AS user_id, u.first_name, u.last_name, u.email, 'admin' AS via
+       FROM org_users ou
+       JOIN users u ON u.id = ou.user_id
+      WHERE ou.org_id = $1 AND ou.is_active = TRUE AND ou.role IN ('admin','owner')`,
     [orgId]
   );
 

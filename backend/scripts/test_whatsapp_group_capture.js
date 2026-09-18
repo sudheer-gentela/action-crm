@@ -375,7 +375,7 @@ function liftWorker() {
 
 const PHONE = {
   u1: '990000000001', u2: '990000000002', u3: '990000000003', u4: '990000000004',
-  u5: '990000000005', u7: '990000000007',
+  u5: '990000000005', u7: '990000000007', u8: '990000000008',
 };
 const LID = {
   u1: '180000000000001', u2: '180000000000002', u3: '180000000000003',
@@ -576,6 +576,10 @@ async function seed() {
     ID.u3 = await user('u3', 'Engineer', 'user');    // the scoping test
     ID.u6 = await user('u6', 'Outsider', 'user');    // in no groups, on no projects
     ID.u7 = await user('u7', 'Claimer', 'user');     // self-claimed phone, never verified
+    // A project MANAGER who is not a steward. Every other non-steward in this
+    // fixture manages nothing, which is how bindGroup's authority hole survived
+    // E7: a user who manages nothing is refused by any rule, right or wrong.
+    ID.u8 = await user('u8', 'Manager', 'user');
 
     ID.meridian   = await one(`INSERT INTO accounts (org_id, name) VALUES ($1, 'Meridian (harness)') RETURNING id`, [ID.org]);
     ID.cloudsmith = await one(`INSERT INTO accounts (org_id, name) VALUES ($1, 'Cloudsmith (harness)') RETURNING id`, [ID.org]);
@@ -615,6 +619,13 @@ async function seed() {
       }
     }
 
+    // u8 manages P1 through an approved can_manage row — the 2026_137 route, and
+    // the common one for a delivery lead who neither created the project nor is
+    // its named service owner. Not P2, so a rebind to P2 exercises both ends.
+    await c.query(
+      `INSERT INTO project_members (org_id, context_type, context_id, user_id, status, side, can_manage)
+       VALUES ($1, 'handover', $2, $3, 'approved', 'delivery', TRUE)`, [ID.org, ID.p1, ID.u8]);
+
     ID.session = await one(
       `INSERT INTO whatsapp_sessions (org_id, label, status, capture_enabled, capture_mode, capture_media, wa_phone, created_by)
        VALUES ($1, 'harness session', 'logged_out', true, 'allowlist', false, $2, $3) RETURNING id`,
@@ -630,11 +641,51 @@ async function seed() {
 
   // Through the real identity path, after COMMIT, because it opens its own
   // transaction. 'admin' source = verified; 'self_claimed' = not.
-  for (const [k, src] of [['u2', 'admin'], ['u3', 'admin'], ['u7', 'self_claimed']]) {
+  for (const [k, src] of [['u2', 'admin'], ['u3', 'admin'], ['u7', 'self_claimed'], ['u8', 'admin']]) {
     const r = await access.setUserWhatsAppPhone(ID.org, ID.u2, ID[k], PHONE[k], { source: src });
     if (!r.ok) throw new Error(`could not set phone for ${k}: ${JSON.stringify(r)}`);
   }
   return ID;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// In-app links
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The hash shapes CommunicationMessages reads (see readMessagesHash there):
+ *   #/email/messages/<channel>/<messageId>
+ *   #/email/messages/<channel>/thread/<threadId>[/<scope>]
+ * Lowercased like hashNav.hashParts, so a link that only works in one case
+ * does not pass here.
+ */
+function parseAppLink(href) {
+  if (typeof href !== 'string' || !href.startsWith('#/')) return null;
+  if (href.includes('?')) return null;   // hashNav has no query strings
+  const parts = href.slice(2).split('/').map(p => decodeURIComponent(p).toLowerCase());
+  const [tab, sub, channel, s3, s4, s5] = parts;
+  const asId = (v) => (/^[1-9][0-9]*$/.test(v || '') ? Number(v) : null);
+  return s3 === 'thread'
+    ? { tab, sub, channel, threadId: asId(s4), scope: s5 || null, messageId: null }
+    : { tab, sub, channel, threadId: null, scope: null, messageId: asId(s3) };
+}
+
+/**
+ * Tab ids read from the frontend source, not written here. A hard-coded
+ * 'email' would pass after someone renamed the tab — the same class of miss as
+ * the old regex. Member nav only: vendor panels are a member screen.
+ */
+function frontendTabs() {
+  const src = path.join(ROOT, '..', 'frontend', 'src');
+  const read = (f) => { try { return fs.readFileSync(path.join(src, f), 'utf8'); } catch { return null; } };
+  const app = read('App.js');
+  const comm = read('CommunicationView.js');
+  if (!app || !comm) return { ok: false, why: `frontend source not found under ${src}` };
+  const member = app.match(/member:\s*\[([\s\S]*?)\n\s*\],/);
+  const tabsBlock = comm.match(/const TABS = \[([\s\S]*?)\];/);
+  if (!member || !tabsBlock) return { ok: false, why: 'could not locate NAV_ITEMS_BY_ROLE.member or TABS' };
+  const ids = (block, key) => [...stripComments(block).matchAll(new RegExp(`${key}:\\s*'([^']+)'`, 'g'))].map(m => m[1]);
+  return { ok: true, appTabs: ids(member[1], 'id'), commTabs: ids(tabsBlock[1], 'key') };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1039,6 +1090,133 @@ async function run() {
     await pool.query(`DELETE FROM conversation_bindings WHERE org_id = $1 AND thread_ref = $2`, [org, GROUPS.G8.jid]);
     await pool.query(`UPDATE whatsapp_threads SET handover_id = NULL WHERE org_id = $1 AND wa_group_id = $2`, [org, GROUPS.G8.jid]);
 
+    // ── E7d–g. A project manager who is not a steward ──────────────────────
+    //
+    // The E7 checks above use u6, who manages nothing, so every rule refuses
+    // them — including a wrong one. u8 manages P1 and is in G1 (bound to P1)
+    // and G3 (a pool), which is exactly the person bindGroup's old authority
+    // check mishandled: it counted the TARGET project, so managing P1 was
+    // enough to bind any unbound group in the org to P1 and read its history.
+    heading('E7d–g  Project manager authority (non-steward)');
+    await send(waMessage('G1', 'u8', text('Manager here, runbook review Thursday')),
+               waMessage('G3', 'u8', text('Manager checking the internal delivery thread')));
+    const g1m = await groupRow(org, GROUPS.G1.jid);
+    const g3m = await groupRow(org, GROUPS.G3.jid);
+
+    const d1 = await call('POST', `/api/whatsapp-session/triage/${g8.id}/bind`, {
+      token: tok('u8'), body: { mode: 'project', handoverId: ID.p1 },
+    });
+    check('E7d [defect] a manager cannot bind an UNBOUND group to their own project',
+          d1.status === 403 && d1.data?.reason === 'NO_PROJECT', `HTTP ${d1.status} ${JSON.stringify(d1.data)}`);
+    check('E7d2 …and nothing from that group reaches their project',
+          (await threadRow(org, GROUPS.G8.jid)).handover_id === null
+          && (await countMsgs(org, GROUPS.G8.jid, 'AND m.handover_id IS NOT NULL')) === 0);
+
+    const d2 = await call('POST', `/api/whatsapp-session/triage/${g1m.id}/bind`, {
+      token: tok('u8'), body: { mode: 'account', accountId: ID.cloudsmith, force: true },
+    });
+    check('E7e [defect] a manager cannot turn their project group into a vendor group',
+          d2.status === 403 && d2.data?.reason === 'VENDOR_STEWARD_ONLY', `HTTP ${d2.status} ${JSON.stringify(d2.data)}`);
+    check('E7e2 …and the group is still bound to their project',
+          (await threadRow(org, GROUPS.G1.jid)).handover_id === ID.p1);
+
+    const d3 = await call('POST', `/api/whatsapp-session/triage/${g3m.id}/bind`, {
+      token: tok('u8'), body: { mode: 'project', handoverId: ID.p1, force: true },
+    });
+    check('E7e3 a manager cannot take over a pool group, even naming their own project',
+          d3.status === 403 && d3.data?.reason === 'NO_PROJECT', `HTTP ${d3.status} ${JSON.stringify(d3.data)}`);
+
+    const policyBefore = g1m.media_policy;
+    const d4 = await call('POST', '/api/whatsapp-session/triage/media-policy', {
+      token: tok('u8'), body: { groupIds: [g1m.id], policy: 'documents' },
+    });
+    check('E7f a manager CAN set attachment policy on their project\'s group', d4.status === 200, `HTTP ${d4.status} ${JSON.stringify(d4.data)}`);
+    const d5 = await call('POST', '/api/whatsapp-session/triage/watch', {
+      token: tok('u8'), body: { groupIds: [g1m.id], watched: true },
+    });
+    check('E7f2 …and switch its capture through the by-id watch route', d5.status === 200 && d5.data?.updated === 1,
+          `HTTP ${d5.status} ${JSON.stringify(d5.data)}`);
+    const d6 = await call('POST', '/api/whatsapp-session/triage/watch-jid', {
+      token: tok('u8'), body: { jids: [GROUPS.G1.jid], watched: true },
+    });
+    check('E7f3 the JID watch route stays steward-only (it can create rows for undecided groups)',
+          d6.status === 403, `HTTP ${d6.status}`);
+    await pool.query(`UPDATE whatsapp_session_groups SET media_policy = $3 WHERE org_id = $1 AND id = $2`,
+                     [org, g1m.id, policyBefore]);
+
+    const d7 = await call('POST', `/api/whatsapp-session/triage/${g1m.id}/bind`, {
+      token: tok('u8'), body: { mode: 'project', handoverId: ID.p2 },
+    });
+    check('E7g a manager of the current project cannot move it to a project they do not manage',
+          d7.status === 403, `HTTP ${d7.status} ${JSON.stringify(d7.data)}`);
+    const d8 = await session.bindGroup(org, ID.u8, g1m.id, { mode: 'pool', candidateIds: [ID.p1, ID.p2] });
+    check('E7g2 …nor into a pool naming a project they do not manage', !d8.ok && d8.code === 'FORBIDDEN', JSON.stringify(d8));
+
+    // ── E8. The member Groups view (listTriage per-row fields) ─────────────
+    heading('E8  Groups view for members: can_manage, leaving, windowed traffic');
+    const byJid = (list, jid) => list.groups.find(g => g.group_jid === jid);
+
+    const t8 = await session.listTriage(org, { userId: ID.u8 });
+    check('E8a a manager sees only their groups, scoped',
+          t8.scoped && JSON.stringify(t8.groups.map(g => g.group_jid).sort()) === JSON.stringify([GROUPS.G1.jid, GROUPS.G3.jid].sort()),
+          JSON.stringify(t8.groups.map(g => g.subject)));
+    check('E8a2 can_manage is true on their project group and false on the pool',
+          byJid(t8, GROUPS.G1.jid)?.can_manage === true && byJid(t8, GROUPS.G3.jid)?.can_manage === false,
+          JSON.stringify(t8.groups.map(g => [g.subject, g.can_manage])));
+    check('E8a3 unstored-attachment counts are withheld where they cannot act',
+          byJid(t8, GROUPS.G3.jid)?.media_unstored === null);
+
+    const t2m = await session.listTriage(org, { userId: ID.u2 });
+    check('E8b a steward can manage every row', t2m.groups.length > 0 && t2m.groups.every(g => g.can_manage === true));
+    const t3m = await session.listTriage(org, { userId: ID.u3 });
+    check('E8c an approved member who is not a manager can manage nothing',
+          t3m.groups.length > 0 && t3m.groups.every(g => g.can_manage === false),
+          JSON.stringify(t3m.groups.map(g => [g.subject, g.can_manage])));
+
+    // Leaving. left_at is set directly — the roster path that sets it is covered
+    // by the L checks; this is about what the list does with it.
+    const g1thread = (await threadRow(org, GROUPS.G1.jid)).id;
+    await pool.query(`UPDATE whatsapp_thread_participants SET left_at = now()
+                       WHERE org_id = $1 AND thread_id = $2 AND user_id = $3`, [org, g1thread, ID.u8]);
+    await sleep(50);   // created_at is now() at insert; keep it strictly after left_at
+    const afterLeft = 'posted after the manager left — must not reach them';
+    await sendOne(waMessage('G1', 'u2', text(afterLeft)));
+
+    const t8left = await session.listTriage(org, { userId: ID.u8 });
+    const g1left = byJid(t8left, GROUPS.G1.jid);
+    check('E8d a group the viewer left is still listed, marked as left',
+          !!g1left && g1left.left_group === true && byJid(t8left, GROUPS.G3.jid)?.left_group === false,
+          JSON.stringify(t8left.groups.map(g => [g.subject, g.left_group])));
+    check('E8d2 its preview is not a message sent after they left',
+          g1left && g1left.last_message_preview !== afterLeft, `preview=${g1left?.last_message_preview}`);
+    const s8 = await search.searchMessages(org, ID.u8, { threadId: g1thread, scope: 'participant', limit: 500 });
+    check('E8d3 its count is exactly what Messages shows them for that thread',
+          s8.ok && g1left && g1left.message_count === s8.messages.length
+          && !s8.messages.some(m => m.body === afterLeft),
+          `list=${g1left?.message_count} search=${s8.messages?.length}`);
+    const g1whole = await countMsgs(org, GROUPS.G1.jid);
+    check('E8d4 …and smaller than the whole group\'s count', g1left && g1left.message_count < g1whole,
+          `viewer=${g1left?.message_count} group=${g1whole}`);
+    await pool.query(`UPDATE whatsapp_thread_participants SET left_at = NULL
+                       WHERE org_id = $1 AND thread_id = $2 AND user_id = $3`, [org, g1thread, ID.u8]);
+
+    // Exclusion. The steward list's preview used to read the newest message
+    // regardless of excluded_at.
+    const secret = 'harness: excluded before anyone reads the preview';
+    await sendOne(waMessage('G3', 'u2', text(secret)));
+    const secretRow = (await qn(`SELECT m.id FROM whatsapp_messages m JOIN whatsapp_threads t ON t.id = m.thread_id
+                                  WHERE m.org_id = $1 AND t.wa_group_id = $2 AND m.body = $3`, [org, GROUPS.G3.jid, secret]))[0];
+    await search.excludeMessage(org, ID.u2, secretRow.id, 'harness: preview check');
+    const t2ex = await session.listTriage(org, { userId: ID.u2 });
+    const t3ex = await session.listTriage(org, { userId: ID.u3 });
+    check('E8e [defect] an excluded message is never a steward\'s preview',
+          byJid(t2ex, GROUPS.G3.jid)?.last_message_preview !== secret, `preview=${byJid(t2ex, GROUPS.G3.jid)?.last_message_preview}`);
+    check('E8e2 …nor a member\'s', byJid(t3ex, GROUPS.G3.jid)?.last_message_preview !== secret);
+
+    const noSess = await session.listTriage(org, {});
+    check('E8f an unscoped internal call still works, with can_manage left undecided',
+          !noSess.scoped && noSess.groups.length > 0 && noSess.groups.every(g => g.can_manage === null));
+
     // ── F. Read side ───────────────────────────────────────────────────────
     heading('F  What a project shows');
     const commsP1 = await handovers.getCommunications(ID.p1, org);
@@ -1055,9 +1233,41 @@ async function run() {
     const panelG2 = panel.conversations.find(cv => cv.threadRef === GROUPS.G2.jid);
     const g2unassigned = await countMsgs(org, GROUPS.G2.jid, 'AND m.handover_id IS NULL AND m.excluded_at IS NULL');
     check('F4 vendor panel lists the Cloudsmith group', !!panelG2, JSON.stringify(panel.conversations.map(cv => cv.subject)));
-    check('F4b …with its unassigned count and a link to the filing queue',
-          panelG2 && panelG2.unassignedCount === g2unassigned && /filter=unassigned/.test(panelG2.resolveHref),
+    check('F4b …with its unassigned count', panelG2 && panelG2.unassignedCount === g2unassigned,
           `panel=${panelG2?.unassignedCount} db=${g2unassigned}`);
+
+    // F4b used to assert only that the link CONTAINED "filter=unassigned". The
+    // link pointed at a tab that does not exist, used a query string no view
+    // reads, and targeted a search scope that threw 42P18 — and passed, because
+    // it tested the string rather than following it. A browser is out of reach,
+    // so this follows the link as far as code can: the route must name tabs
+    // that exist in the frontend source, and the parameters it carries must
+    // run through the real search and return the number the panel shows.
+    const link = parseAppLink(panelG2?.resolveHref);
+    const tabs = frontendTabs();
+    check('F4d the filing link names a real app tab and Communication sub-tab',
+          !!link && tabs.ok && tabs.appTabs.includes(link.tab) && tabs.commTabs.includes(link.sub),
+          tabs.ok ? `href=${panelG2?.resolveHref} app=${JSON.stringify(tabs.appTabs)} comm=${JSON.stringify(tabs.commTabs)}` : tabs.why);
+    const followed = link && link.threadId
+      ? await search.searchMessages(org, ID.u2, { threadId: link.threadId, scope: link.scope || 'all', limit: 500 })
+      : null;
+    check('F4e following the link as the steward returns exactly the unassigned count',
+          !!followed && followed.ok && link.scope === 'unassigned' && followed.messages.length === g2unassigned,
+          followed ? `scope=${link.scope} returned=${followed.messages?.length} ${followed.code || ''} expected=${g2unassigned}`
+                   : `unparseable href ${panelG2?.resolveHref}`);
+    const lastLink = parseAppLink(panelG2?.lastActivity?.href);
+    const pinned = lastLink?.messageId
+      ? await search.searchMessages(org, ID.u2, { messageId: lastLink.messageId, limit: 5 })
+      : null;
+    check('F4f the last-activity link opens that message',
+          !!pinned && pinned.ok && pinned.messages.length === 1
+          && Number(pinned.messages[0].id) === Number(panelG2.lastActivity.messageId),
+          `href=${panelG2?.lastActivity?.href} returned=${pinned?.messages?.length}`);
+    const panelU8 = await accountRels.listConversationsForAccount(org, ID.u8, ID.cloudsmith, []);
+    const u8G2 = panelU8.conversations.find(cv => cv.threadRef === GROUPS.G2.jid);
+    check('F4g a non-steward\'s link carries no steward-only scope',
+          !u8G2 || (parseAppLink(u8G2.resolveHref)?.scope ?? null) === null,
+          `href=${u8G2?.resolveHref ?? '(not on their panel)'}`);
     check('F4c the project-bound and pool groups are NOT on the vendor panel',
           !panel.conversations.some(cv => [GROUPS.G1.jid, GROUPS.G3.jid].includes(cv.threadRef)));
 

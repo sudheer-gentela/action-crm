@@ -26,10 +26,20 @@ import React, { useState, useEffect } from 'react';
 import { hashSegment, writeHash } from './hashNav';
 import EmailView from './EmailView';
 import CommunicationMessages from './CommunicationMessages';
+import WhatsAppSessionTriage from './WhatsAppSessionTriage';
 
+/*
+ * Groups sits beside Messages because it answers the question Messages cannot:
+ * which conversations exist at all. It was reachable only from Org Admin, so an
+ * ordinary member — and any steward or project manager who is not an org admin —
+ * had no screen for a list the API already scoped for them. The same component
+ * serves both places; what each person may do in it comes from the server, per
+ * group, not from where it is mounted.
+ */
 const TABS = [
   { key: 'emails',   label: 'Emails' },
   { key: 'messages', label: 'Messages' },
+  { key: 'groups',   label: 'Groups' },
   { key: 'calls',    label: 'Calls' },
 ];
 
@@ -87,6 +97,7 @@ export default function CommunicationView({ dealId, onDealFilterApplied }) {
 
       {tab === 'emails'   && <EmailView dealId={dealId} onDealFilterApplied={onDealFilterApplied} />}
       {tab === 'messages' && <CommunicationMessages />}
+      {tab === 'groups'   && <WhatsAppSessionTriage />}
       {tab === 'calls'    && <CallsPlaceholder />}
     </div>
   );

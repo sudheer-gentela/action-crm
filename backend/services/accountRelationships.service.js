@@ -20,6 +20,7 @@
 
 const { pool }       = require('../config/database');
 const projectSettings = require('./projectSettings.service');
+const waAccess        = require('./whatsappAccess.service');
 
 const KINDS = ['vendor', 'partner', 'reseller'];
 
@@ -449,6 +450,14 @@ async function projectsForRelationship(orgId, accountId) {
  * Returns one row per bound conversation, each carrying the deep links the UI
  * needs: `lastActivity` (to the message) and `resolveHref` (to the filing
  * queue, pre-filtered to this thread).
+ *
+ * THE LINKS ARE HASH PATHS, NOT QUERY STRINGS. The app has no router: App.js
+ * matches segment 0 against a tab id and each view owns the segments below it
+ * (hashNav.js). The Communication tab's id is 'email', and its Messages view
+ * reads #/email/messages/<channel>/<messageId> or
+ * #/email/messages/<channel>/thread/<threadId>/<scope>. A query string after the
+ * tab id is invisible to that scheme — the earlier #/communications?threadId=…
+ * links changed the address bar and nothing else.
  */
 async function listConversationsForAccount(orgId, userId, accountId, subordinateIds = []) {
   const id = parseInt(accountId, 10);
@@ -531,7 +540,7 @@ async function listConversationsForAccount(orgId, userId, accountId, subordinate
   // What makes this safe is the row filter above: the viewer only sees
   // conversations they hold a project role on or sit in as a participant. The
   // count belongs to a group they can already see, and whether they may act on
-  // it is decided at resolveHref by the same steward rule as everywhere else.
+  // it is decided when resolveHref is built, by the same steward rule as search.
   const threadIds = rows.map(r => r.thread_id);
   const { rows: counts } = await pool.query(
     `SELECT m.thread_id, count(*)::int AS n
@@ -544,6 +553,13 @@ async function listConversationsForAccount(orgId, userId, accountId, subordinate
     [orgId, threadIds]
   );
   const unassigned = Object.fromEntries(counts.map(c => [c.thread_id, c.n]));
+
+  // Which queue the link opens depends on who follows it. The unassigned scope
+  // is steward-only in search, so handing everyone that link sent non-stewards
+  // to a 403. They are not stuck, though: canMoveMessage lets a participant file
+  // an unassigned message from their own group, so their link opens the thread
+  // under the normal scope, where those messages show as Unassigned.
+  const { steward } = await waAccess.isSteward(orgId, userId);
 
   return {
     conversations: rows.map(r => ({
@@ -558,13 +574,15 @@ async function listConversationsForAccount(orgId, userId, accountId, subordinate
         messageId: r.last_message_id,
         at:        r.last_activity_at,
         preview:   r.last_message_preview,
-        // Deep link to the message itself in the Communications view.
-        href:      `#/communications?threadId=${r.thread_id}&messageId=${r.last_message_id}`,
+        // The Messages view's existing pinned-message link.
+        href:      `#/email/messages/whatsapp/${r.last_message_id}`,
       } : null,
-      // The number, and the place to act on it. Counted through the viewer's own
-      // visibility, so it is never a figure they cannot resolve.
+      // The number, and the place to act on it. Thread-wide, not per viewer —
+      // see the note above the count query for why that is safe here.
       unassignedCount: unassigned[r.thread_id] || 0,
-      resolveHref:     `#/communications?threadId=${r.thread_id}&filter=unassigned`,
+      resolveHref:     steward
+        ? `#/email/messages/whatsapp/thread/${r.thread_id}/unassigned`
+        : `#/email/messages/whatsapp/thread/${r.thread_id}`,
     })),
   };
 }

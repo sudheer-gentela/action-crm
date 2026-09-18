@@ -37,6 +37,14 @@
  * Binding implies watching (an unambiguous statement that the contents belong
  * in the CRM). Watching does not imply binding — you may want to retain a
  * group before deciding what it is.
+ *
+ * ONE SCREEN, TWO AUDIENCES
+ *   Mounted in Org Admin and in Communication → Groups. What a person may do is
+ *   not decided by where it is mounted: the server sends `canTriage` (steward)
+ *   and, per group, `can_manage`. A steward gets everything. Anyone else sees
+ *   the groups they are or were in, and can change only those linked to a
+ *   project they manage — the same rule the mutations enforce, so no control is
+ *   shown that the server would refuse. Everything else is read-only text.
  */
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
@@ -176,7 +184,20 @@ export default function WhatsAppSessionTriage() {
   // every render, which would make the needsAttention memo below recompute
   // every time regardless of whether anything changed.
   const groups = useMemo(() => data.groups || [], [data.groups]);
-  const allSelected = groups.length > 0 && groups.every(g => selected.has(g.group_jid));
+
+  const canTriage = !!data.canTriage;
+  const scoped    = !!data.scoped;
+  // Per row, from the server. Snapshot-only rows reach a steward alone and carry
+  // true; a missing value is treated as "no" so an older response shape can
+  // never render a control the server would refuse.
+  const canManage = (g) => g.can_manage === true;
+
+  // Selection is limited to rows the viewer can change. A bulk action over a
+  // mixed selection is refused whole (authorityForGroups is all-or-nothing), so
+  // offering an unmanageable row as selectable only sets up that refusal.
+  const selectable  = useMemo(() => groups.filter(g => g.can_manage === true), [groups]);
+  const allSelected = selectable.length > 0 && selectable.every(g => selected.has(g.group_jid));
+  const anySelectable = selectable.length > 0;
 
   const toggle = (id) => setSelected(s => {
     const n = new Set(s);
@@ -184,7 +205,7 @@ export default function WhatsAppSessionTriage() {
     return n;
   });
 
-  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(groups.map(g => g.group_jid)));
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(selectable.map(g => g.group_jid)));
 
   const run = async (fn, okMsg) => {
     setError(''); setNotice(''); setDenied([]); setBusy(true);
@@ -204,8 +225,17 @@ export default function WhatsAppSessionTriage() {
     }
   };
 
+  // Two routes on purpose. watch-jid is steward-only, because it can create a
+  // row for an undecided group that exists only in the live snapshot. A project
+  // manager's groups are stored by definition — a group has to exist to be
+  // linked to their project — so they go by id, through the route that checks
+  // project authority. Sending a manager through watch-jid refused every click.
+  const watchRequest = (rows, watched) => (canTriage
+    ? apiService.whatsappSession.watchJid({ jids: rows.map(g => g.group_jid), watched })
+    : apiService.whatsappSession.watch({ groupIds: rows.map(g => g.id), watched }));
+
   const bulkWatch = (watched) => run(
-    () => apiService.whatsappSession.watchJid({ jids: [...selected], watched }),
+    () => watchRequest(groups.filter(g => selected.has(g.group_jid)), watched),
     (r) => `${r.data.updated} group${r.data.updated === 1 ? '' : 's'} ${watched ? 'now being captured' : 'no longer captured'}.`
   );
 
@@ -297,10 +327,31 @@ export default function WhatsAppSessionTriage() {
     }
   };
 
-  const doUnbind = (g) => run(
-    () => apiService.whatsappSession.unbind(g.id),
-    'Binding removed. The group is still being captured.'
-  );
+  const doUnbind = (g) => {
+    // A group with no project is steward-only, so a project manager who removes
+    // the link cannot put it back. Say so before, not after.
+    if (!canTriage && !window.confirm(
+      'Remove this group\'s link to its project? Only a communications steward can link it again — '
+      + 'you will not be able to change this group afterwards.'
+    )) return;
+    run(
+      () => apiService.whatsappSession.unbind(g.id),
+      'Binding removed. The group is still being captured.'
+    );
+  };
+
+  // A project manager binds to one project, nothing else. Vendor mode is
+  // steward-only on the server; "several projects" would leave the group with
+  // no project, which ends their authority over it — a one-way door this
+  // screen should not hand them next to the everyday choice.
+  const modesFor = canTriage ? MODES : MODES.filter(m => m.key === 'project');
+
+  // Where the group's messages are read. Scoped viewers get the participant
+  // scope: what was said while they were in the group, which is the promise
+  // the Groups tab makes to someone who has since left.
+  const messagesHref = (g) => g.thread_id
+    ? `#/email/messages/whatsapp/thread/${g.thread_id}${scoped ? '/participant' : ''}`
+    : null;
 
   const counts = data.counts || {};
   const needsAttention = useMemo(
@@ -310,24 +361,51 @@ export default function WhatsAppSessionTriage() {
 
   if (loading) return <div style={{ padding: 16, color: '#6b7280', fontSize: 13 }}>Loading groups…</div>;
 
+  if (data.noSession) {
+    return (
+      <div style={{ maxWidth: 940 }}>
+        <h3 style={{ margin: '0 0 4px', fontSize: 16, fontWeight: 600, color: '#1a202c' }}>WhatsApp groups</h3>
+        <p style={{ margin: 0, fontSize: 13, color: '#6b7280', lineHeight: 1.5 }}>
+          WhatsApp group capture is not set up for this organisation. An org admin connects it
+          from Org Admin → Integrations.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div style={{ maxWidth: 940 }}>
       <h3 style={{ margin: '0 0 4px', fontSize: 16, fontWeight: 600, color: '#1a202c' }}>
         WhatsApp groups
       </h3>
-      <p style={{ margin: '0 0 14px', fontSize: 13, color: '#6b7280', lineHeight: 1.5 }}>
-        Every group this number belongs to is listed here, read live from WhatsApp. Nothing about
-        these groups is stored in GoWarmCRM until you switch one on — close this page and the rest
-        are forgotten.
-      </p>
+      {canTriage ? (
+        <p style={{ margin: '0 0 14px', fontSize: 13, color: '#6b7280', lineHeight: 1.5 }}>
+          Every group this number belongs to is listed here, read live from WhatsApp. Nothing about
+          these groups is stored in GoWarmCRM until you switch one on — close this page and the rest
+          are forgotten.
+        </p>
+      ) : (
+        // The steward copy above is untrue for anyone else: they get no live
+        // snapshot and only the groups they were in. Someone seeing four
+        // groups must not conclude the org has four.
+        <p style={{ margin: '0 0 14px', fontSize: 13, color: '#6b7280', lineHeight: 1.5 }}>
+          Groups you are in, or were in, that GoWarmCRM captures. Counts and previews cover what was
+          said while you were in each group.
+          {anySelectable
+            ? ' You can change the groups linked to a project you manage; the rest are managed by a communications steward.'
+            : ' Groups are managed by a communications steward or the project\'s manager.'}
+        </p>
+      )}
 
       <div style={{ display: 'flex', gap: 20, marginBottom: 14, fontSize: 12 }}>
-        <Stat label="In this list" value={counts.inSnapshot ?? 0} />
+        {canTriage
+          ? <Stat label="In this list" value={counts.inSnapshot ?? 0} />
+          : <Stat label="Your groups"  value={counts.total ?? groups.length} />}
         <Stat label="Capturing"   value={counts.watched ?? 0} />
         <Stat label="Projects"    value={counts.bound ?? 0} />
         <Stat label="Vendor"      value={counts.boundAccount ?? 0} />
         <Stat label="Multi"       value={counts.boundPool ?? 0} />
-        <Stat label="Undecided"   value={counts.needsBinding ?? 0} warn={needsAttention > 0} />
+        <Stat label="Undecided"   value={counts.needsBinding ?? 0} warn={canTriage && needsAttention > 0} />
       </div>
 
       {error  && (
@@ -398,7 +476,7 @@ export default function WhatsAppSessionTriage() {
           <thead>
             <tr style={{ background: '#f9fafb', textAlign: 'left', color: '#6b7280', fontSize: 12 }}>
               <th style={{ padding: '9px 12px', width: 34 }}>
-                <input type="checkbox" checked={allSelected} onChange={toggleAll} />
+                {anySelectable && <input type="checkbox" checked={allSelected} onChange={toggleAll} />}
               </th>
               <th style={{ padding: '9px 12px' }}>Group</th>
               <th style={{ padding: '9px 12px', width: 110 }}>Capturing</th>
@@ -416,13 +494,27 @@ export default function WhatsAppSessionTriage() {
             {groups.map(g => (
               <tr key={g.group_jid} style={{ borderTop: '1px solid #f3f4f6' }}>
                 <td style={{ padding: '10px 12px' }}>
-                  <input type="checkbox" checked={selected.has(g.group_jid)} onChange={() => toggle(g.group_jid)} />
+                  {canManage(g) && (
+                    <input type="checkbox" checked={selected.has(g.group_jid)} onChange={() => toggle(g.group_jid)} />
+                  )}
                 </td>
                 <td style={{ padding: '10px 12px' }}>
-                  <div style={{ fontWeight: 500, color: '#1a202c' }}>{g.subject || '(no name)'}</div>
+                  <div style={{ fontWeight: 500, color: '#1a202c' }}>
+                    {g.subject || '(no name)'}
+                    {g.left_group && (
+                      <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 500, color: '#6b7280', background: '#f3f4f6', padding: '1px 6px', borderRadius: 8 }}>
+                        You left this group
+                      </span>
+                    )}
+                  </div>
                   <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
                     {g.participant_count != null && `${g.participant_count} participants · `}
-                    {g.message_count > 0 ? `${g.message_count} captured` : 'nothing captured'}
+                    {g.message_count > 0
+                      ? `${g.message_count} ${scoped ? 'you can read' : 'captured'}`
+                      : (scoped ? 'nothing you can read' : 'nothing captured')}
+                    {messagesHref(g) && g.message_count > 0 && (
+                      <> · <a href={messagesHref(g)} style={{ color: '#1A3A5C', textDecoration: 'none', fontWeight: 500 }}>View messages ›</a></>
+                    )}
                   </div>
                   {g.is_watched && g.last_message_preview && (
                     <div style={{
@@ -432,24 +524,39 @@ export default function WhatsAppSessionTriage() {
                   )}
                 </td>
                 <td style={{ padding: '10px 12px' }}>
-                  <button
-                    style={{
-                      ...BTN, fontSize: 12, padding: '4px 10px',
-                      background: g.is_watched ? '#ecfdf5' : '#f3f4f6',
-                      color:      g.is_watched ? '#065f46' : '#6b7280',
-                      border: `1px solid ${g.is_watched ? '#a7f3d0' : '#e5e7eb'}`,
-                    }}
-                    disabled={busy}
-                    onClick={() => run(
-                      () => apiService.whatsappSession.watchJid({ jids: [g.group_jid], watched: !g.is_watched }),
-                      g.is_watched ? 'Capture stopped for that group.' : 'Now capturing that group.'
-                    )}
-                  >{g.is_watched ? 'On' : 'Off'}</button>
+                  {canManage(g) ? (
+                    <button
+                      style={{
+                        ...BTN, fontSize: 12, padding: '4px 10px',
+                        background: g.is_watched ? '#ecfdf5' : '#f3f4f6',
+                        color:      g.is_watched ? '#065f46' : '#6b7280',
+                        border: `1px solid ${g.is_watched ? '#a7f3d0' : '#e5e7eb'}`,
+                      }}
+                      disabled={busy}
+                      onClick={() => run(
+                        () => watchRequest([g], !g.is_watched),
+                        g.is_watched ? 'Capture stopped for that group.' : 'Now capturing that group.'
+                      )}
+                    >{g.is_watched ? 'On' : 'Off'}</button>
+                  ) : (
+                    <span style={{ fontSize: 12, color: g.is_watched ? '#065f46' : '#6b7280' }}>
+                      {g.is_watched ? 'On' : 'Off'}
+                    </span>
+                  )}
                 </td>
                 <td style={{ padding: '10px 12px' }}>
                   {/* Only meaningful once the group is persisted — an undecided
                       group has no row to hang a policy on. */}
-                  {g.id ? (
+                  {g.id && !canManage(g) ? (
+                    <span
+                      title={(MEDIA_POLICY[g.media_policy] || MEDIA_POLICY.inherit).hint}
+                      style={{
+                        display: 'inline-block', padding: '2px 7px', borderRadius: 4, fontSize: 11,
+                        background: (MEDIA_POLICY[g.media_policy] || MEDIA_POLICY.inherit).bg,
+                        color:      (MEDIA_POLICY[g.media_policy] || MEDIA_POLICY.inherit).fg,
+                      }}
+                    >{(MEDIA_POLICY[g.media_policy] || MEDIA_POLICY.inherit).label}</span>
+                  ) : g.id ? (
                     <>
                       <select
                         style={{
@@ -515,12 +622,14 @@ export default function WhatsAppSessionTriage() {
                           messages wait to be filed
                         </div>
                       )}
-                      <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                        <button style={{ ...GHOST, fontSize: 11, padding: '2px 8px' }}
-                          disabled={busy} onClick={() => openBind(g)}>Change</button>
-                        <button style={{ ...GHOST, fontSize: 11, padding: '2px 8px' }}
-                          disabled={busy} onClick={() => doUnbind(g)}>Remove</button>
-                      </div>
+                      {canManage(g) && (
+                        <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                          <button style={{ ...GHOST, fontSize: 11, padding: '2px 8px' }}
+                            disabled={busy} onClick={() => openBind(g)}>Change</button>
+                          <button style={{ ...GHOST, fontSize: 11, padding: '2px 8px' }}
+                            disabled={busy} onClick={() => doUnbind(g)}>Remove</button>
+                        </div>
+                      )}
                     </div>
                   ) : g.handover_id ? (
                     // Bound before Phase 1: a thread project with no binding row.
@@ -528,16 +637,20 @@ export default function WhatsAppSessionTriage() {
                     // alone until somebody decides otherwise.
                     <div>
                       <span style={{ color: '#374151' }}>{g.project_name || `#${g.handover_id}`}</span>
-                      <div>
-                        <button style={{ ...GHOST, fontSize: 11, padding: '2px 8px', marginTop: 4 }}
-                          disabled={busy} onClick={() => openBind(g)}>Change</button>
-                      </div>
+                      {canManage(g) && (
+                        <div>
+                          <button style={{ ...GHOST, fontSize: 11, padding: '2px 8px', marginTop: 4 }}
+                            disabled={busy} onClick={() => openBind(g)}>Change</button>
+                        </div>
+                      )}
                     </div>
-                  ) : g.id ? (
+                  ) : g.id && canManage(g) ? (
                     <button style={{ ...GHOST, fontSize: 12, padding: '4px 10px' }}
                       onClick={() => openBind(g)}>
                       Say what this is
                     </button>
+                  ) : g.id ? (
+                    <span style={{ fontSize: 11, color: '#9ca3af' }}>not organised yet</span>
                   ) : (
                     <span style={{ fontSize: 11, color: '#c7c7c7' }}>switch capture on first</span>
                   )}
@@ -569,7 +682,7 @@ export default function WhatsAppSessionTriage() {
             </p>
 
             <div style={{ display: 'grid', gap: 8, marginBottom: 16 }}>
-              {MODES.map(m => (
+              {modesFor.map(m => (
                 <label key={m.key} style={{
                   display: 'flex', gap: 9, alignItems: 'flex-start', padding: '9px 11px',
                   border: `1px solid ${bindMode === m.key ? '#1A3A5C' : '#e5e7eb'}`,

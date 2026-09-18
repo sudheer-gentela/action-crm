@@ -74,6 +74,12 @@ async function removeDomain(orgId, id) {
  * constrains a non-NULL exited_at to status IN ('declined','left'), so
  * 'approved' implies it is NULL — but someone reading this should not have to
  * know that to believe the query.
+ *
+ * AN INACTIVE MEMBERSHIP MANAGES NOTHING. Removing someone from the org sets
+ * org_users.is_active = FALSE and keeps the row, so without that predicate a
+ * removed admin — or a removed service owner or creator — kept authority over
+ * every project the row still pointed at. isSteward already tested it; this
+ * rule did not, and the two disagreed about the same person.
  */
 async function canManageProject(handoverId, orgId, userId) {
   if (!userId) return false;
@@ -93,7 +99,7 @@ async function canManageProject(handoverId, orgId, userId) {
             ) AS member_can_manage
        FROM org_users ou
        LEFT JOIN sales_handovers h ON h.id = $3 AND h.org_id = $1
-      WHERE ou.org_id = $1 AND ou.user_id = $2`,
+      WHERE ou.org_id = $1 AND ou.user_id = $2 AND ou.is_active = TRUE`,
     [orgId, userId, handoverId]
   );
   if (!r) return false;
@@ -125,7 +131,18 @@ async function canManageProject(handoverId, orgId, userId) {
  *   arm, which callers already resolve separately because it needs no join.
  */
 function manageableProjectSql(handoverAlias, userParam, orgParam) {
+  // The active-membership guard mirrors canManageProject. Some callers already
+  // resolve org_users with is_active before using this, but not all of them do,
+  // and a fragment whose correctness depends on each caller remembering a
+  // precondition is the drift this function exists to prevent. The alias is
+  // unusual on purpose so it cannot collide with an org_users alias in the
+  // caller's own FROM.
   return `(
+    EXISTS (SELECT 1 FROM org_users mps_ou
+             WHERE mps_ou.org_id    = ${orgParam}
+               AND mps_ou.user_id   = ${userParam}
+               AND mps_ou.is_active = TRUE)
+    AND (
        ${handoverAlias}.assigned_service_owner_id = ${userParam}
     OR ${handoverAlias}.created_by = ${userParam}
     OR EXISTS (SELECT 1 FROM project_members pm
@@ -136,6 +153,7 @@ function manageableProjectSql(handoverAlias, userParam, orgParam) {
                   AND pm.status       = 'approved'
                   AND pm.exited_at IS NULL
                   AND pm.can_manage   = TRUE)
+    )
   )`;
 }
 

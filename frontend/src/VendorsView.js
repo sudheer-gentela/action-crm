@@ -354,9 +354,13 @@ function ConversationsPanel({ accountId, accountName, reloadKey = 0 }) {
   if (!state.conversations.length) {
     return (
       <div style={S.panel}>
+        {/* Names a screen that exists, and who can act there. "WhatsApp › Groups"
+            was not a place in the app, and binding a group to a vendor is a
+            steward decision, so telling everyone to "bind one" promised an
+            action most readers cannot take. */}
         <div style={S.empty}>
-          No group conversations are bound to {accountName}. Bind one from
-          WhatsApp&nbsp;&rsaquo;&nbsp;Groups.
+          No group conversations are bound to {accountName}. A communications steward binds them from{' '}
+          <a href="#/email/groups" style={{ color: '#1A3A5C' }}>Communication&nbsp;&rsaquo;&nbsp;Groups</a>.
         </div>
       </div>
     );
