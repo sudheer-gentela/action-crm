@@ -31,6 +31,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { apiService } from './apiService';
+import { formatDateMedium, isServerToday, dayWord } from './dailyWorkDay';
 
 // Mirrors the server's MAX_DESCRIPTION and the 1000-character soft limit the
 // rest of the module warns at. The server refuses over the hard limit with the
@@ -47,12 +48,10 @@ const STAGE_LABEL = {
   dropped:      'Dropped',
 };
 
-function fmtDay(iso) {
-  if (!iso) return '';
-  const d = new Date(`${iso}T00:00:00Z`);
-  return d.toLocaleDateString('en-GB',
-    { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
-}
+// Dates are named by dailyWorkDay's formatDateMedium, the same format My day
+// uses, so "Mon 21 Sep" reads identically on both logging screens. This used a
+// fixed en-GB format of its own, which put two spellings of one day on screen
+// whenever the composer was opened from My day.
 
 /**
  * The days that may be written, newest first.
@@ -106,6 +105,11 @@ const S = {
             color: '#0369a1', cursor: 'pointer', textDecoration: 'underline' },
   err:    { marginTop: 6, fontSize: 11, color: '#991b1b', background: '#fef2f2',
             border: '1px solid #fecaca', borderRadius: 4, padding: '5px 8px' },
+  // Amber, not red: writing up an earlier day is allowed, just easy to do by
+  // accident. Same border as My day's dw-banner.warn and the same text colour
+  // as this file's soft-limit warning.
+  warn:   { marginBottom: 5, fontSize: 11, color: '#92400e', background: '#fffbeb',
+            border: '1px solid #fde68a', borderRadius: 4, padding: '5px 8px' },
   note:   { fontSize: 11, color: '#6b7280' },
   entry:  { padding: '5px 0', borderTop: '1px solid #e5e7eb' },
   badge:  { fontSize: 10, fontWeight: 600, color: '#374151', background: '#f3f4f6',
@@ -166,12 +170,17 @@ export default function TaskWorkComposer({ playInstanceId, onPosted, startOpen =
     setNextSteps(mine?.next_steps || '');
     setNextOpen(false);
     setStage(mine?.day_stage || 'in_progress');
-    setSaved(false);
     // Keyed on the row identity rather than the object: `mine` is a fresh
     // object on every render, and depending on it directly would reset the
     // textarea under someone mid-sentence.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mine?.entry_id, date]);
+
+  // "Saved for <day>" clears when the day changes or the text does — NOT when
+  // the entry id changes. It used to be cleared in the prefill effect above,
+  // and a first post creates the entry, so the id changed on the reload right
+  // after saving and the confirmation vanished before anyone could read it.
+  useEffect(() => { setSaved(false); }, [date]);
 
   const post = async () => {
     if (saving) return;
@@ -210,6 +219,24 @@ export default function TaskWorkComposer({ playInstanceId, onPosted, startOpen =
   const overSoft = length >= SOFT_LIMIT;
   const blank = !description.trim();
 
+  // The day this post will land on, in words. `date` is the picker's value and
+  // is only null before the first load settles; the server's today stands in
+  // for it, exactly as the picker's own `value` does.
+  //
+  // Every label below names this day. The toggle said "Edit today's update" and
+  // the button "Post update" whichever day the picker was on, so writing up
+  // Monday read as editing today — the same mislabel My day had, and the reason
+  // both now take their wording from dailyWorkDay.
+  const selected = date || state.today;
+  const onToday = isServerToday(selected, state.today);
+  const word = dayWord(selected, state.today);
+  const toggleLabel = open ? 'Close'
+    : !mine ? 'Log an update'
+    : onToday ? "Edit today's update" : `Edit update for ${word}`;
+  const postLabel = saving ? 'Saving…'
+    : mine ? (onToday ? 'Save changes' : `Save changes for ${word}`)
+    : (onToday ? 'Post update' : `Post update for ${word}`);
+
   return (
     <div style={S.wrap}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -222,7 +249,7 @@ export default function TaskWorkComposer({ playInstanceId, onPosted, startOpen =
         {state.canPost && (
           <button type="button" style={{ ...S.quiet, marginLeft: 'auto' }}
                   onClick={() => setOpen(v => !v)}>
-            {open ? 'Close' : mine ? "Edit today's update" : 'Log an update'}
+            {toggleLabel}
           </button>
         )}
       </div>
@@ -241,13 +268,22 @@ export default function TaskWorkComposer({ playInstanceId, onPosted, startOpen =
 
       {open && state.canPost && (
         <div style={{ marginTop: 6 }}>
+          {/* Said above the box, not only in the picker beside the button:
+              the picker is the last thing anyone reads before typing. Same
+              sentence as My day's banner, so the two screens teach one rule. */}
+          {!onToday && (
+            <div style={S.warn}>
+              You are writing up <b>{word}</b>. This update goes on that day, not today.
+            </div>
+          )}
           <textarea
-            aria-label="What did you do on this task"
+            aria-label={onToday ? 'What did you do on this task today'
+                                : `What did you do on this task on ${word}`}
             rows={2}
             style={{ ...S.ta, borderColor: overHard ? '#fca5a5' : '#d1d5db' }}
             value={description}
             placeholder="What did you actually do on this task?"
-            onChange={e => setDescription(e.target.value)}
+            onChange={e => { setDescription(e.target.value); setSaved(false); }}
           />
           {overSoft && (
             <div style={{ ...S.note, color: overHard ? '#991b1b' : '#92400e' }}>
@@ -265,7 +301,7 @@ export default function TaskWorkComposer({ playInstanceId, onPosted, startOpen =
                       autoFocus={nextOpen && !nextSteps}
                       value={nextSteps}
                       placeholder="What happens next?"
-                      onChange={e => setNextSteps(e.target.value)} />
+                      onChange={e => { setNextSteps(e.target.value); setSaved(false); }} />
           ) : (
             <button type="button" style={{ ...S.link, marginTop: 5 }}
                     onClick={() => setNextOpen(true)}>
@@ -279,7 +315,7 @@ export default function TaskWorkComposer({ playInstanceId, onPosted, startOpen =
                 keeps passing through whatever gating, review and evidence
                 rules this project applies. */}
             <select aria-label="Stage" style={S.select} value={stage}
-                    onChange={e => setStage(e.target.value)}>
+                    onChange={e => { setStage(e.target.value); setSaved(false); }}>
               {(state.stages || []).map(s => (
                 <option key={s} value={s}>{STAGE_LABEL[s] || s}</option>
               ))}
@@ -290,7 +326,7 @@ export default function TaskWorkComposer({ playInstanceId, onPosted, startOpen =
                       onChange={e => setDate(e.target.value)}>
                 {days.map(d => (
                   <option key={d} value={d}>
-                    {d === state.today ? 'Today' : fmtDay(d)}
+                    {d === state.today ? 'Today' : formatDateMedium(d)}
                   </option>
                 ))}
               </select>
@@ -300,9 +336,9 @@ export default function TaskWorkComposer({ playInstanceId, onPosted, startOpen =
                     disabled={saving || blank || overHard}
                     title={blank ? 'Say what you did' : undefined}
                     onClick={post}>
-              {saving ? 'Saving…' : mine ? 'Save changes' : 'Post update'}
+              {postLabel}
             </button>
-            {saved && !saving && <span style={S.note}>Saved</span>}
+            {saved && !saving && <span style={S.note}>Saved for {word}</span>}
             <span style={{ ...S.note, marginLeft: 'auto' }}>
               Finishing the task is a separate action on the task itself.
             </span>
@@ -322,13 +358,13 @@ export default function TaskWorkComposer({ playInstanceId, onPosted, startOpen =
                     ? 'You'
                     : `${f.first_name || ''} ${f.last_name || ''}`.trim() || 'Someone'}
                 </b>
-                <span style={S.note}>{fmtDay(f.entry_date)}</span>
+                <span style={S.note}>{formatDateMedium(f.entry_date)}</span>
                 <span style={S.badge}>{STAGE_LABEL[f.day_stage] || f.day_stage}</span>
                 {/* written_on later than entry_date means the day was written
                     up afterwards, inside the backfill window. Distinct from
                     edited, which is a correction to a day already written. */}
                 {f.written_on && f.written_on > f.entry_date && (
-                  <span style={S.note}>written {fmtDay(f.written_on)}</span>
+                  <span style={S.note}>written {formatDateMedium(f.written_on)}</span>
                 )}
                 {f.edited && <span style={S.note}>edited</span>}
               </div>

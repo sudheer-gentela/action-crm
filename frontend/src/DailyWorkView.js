@@ -39,6 +39,7 @@ import { DayItemTitles, DayItemWork, itemTitleList,
 // position. mode='own' is the difference: a day marked here is a REQUEST, and
 // the server decides that from who is asking — not from anything sent here.
 import { LeavePanel } from './dailyWorkLeave';
+import { formatDateMedium, isServerToday, dayWord } from './dailyWorkDay';
 import TaskWorkComposer from './TaskWorkComposer';
 // 2026_142 — moving daily work onto a project plan. Shared with People.
 import { MoveRequestForm, MovePromptCard, MoveReviewSection, MyMoveRequestsCard,
@@ -453,7 +454,12 @@ export default function DailyWorkView() {
       const { data } = await apiService.dailyWork.saveDay(entries, day.entryDate);
       setSaved(true);
       setMode('log');
-      setNotice({ kind: 'info', text: `Saved ${data.entries.length} ${data.entries.length === 1 ? 'entry' : 'entries'} for ${data.entryDate}.` });
+      // data.entryDate is the day the SERVER wrote to, so this line is the
+      // receipt: if the save ever lands somewhere other than the day on
+      // screen, it says so here in words rather than as a bare ISO date.
+      const savedCount = data.entries.length;
+      setNotice({ kind: 'info', text: `Saved ${savedCount} ${savedCount === 1 ? 'entry' : 'entries'} for ${
+        dayWord(data.entryDate, day.today)}.` });
       await load();
     } catch (err) {
       // The server's message is written for the person, so show it as-is:
@@ -621,8 +627,13 @@ export default function DailyWorkView() {
           {mode === 'edit' && (
             // On a phone the save lives here rather than in a sticky bottom bar:
             // iOS moves bottom-fixed elements when the keyboard opens.
+            // The label names the day the save will land on. It said "Save
+            // today's work" on every day, including the past days the ← button
+            // navigates to — see isServerToday.
             <button className="dw-btn dw-btn-primary" onClick={save} disabled={saving}>
-              {saving ? 'Saving…' : "Save today's work"}
+              {saving ? 'Saving…'
+                : isToday ? "Save today's work"
+                : `Save work for ${formatDateMedium(day.entryDate)}`}
             </button>
           )}
         </div>
@@ -686,6 +697,15 @@ export default function DailyWorkView() {
                   onEdit={itemId => { setOpenItem(itemId); setMode('edit'); }} />
         : (
           <>
+            {/* Said where the typing happens, not only in the heading, which
+                has scrolled away by the third row. Rows are ITEMS, not days:
+                to write up another day, change the day first. */}
+            {!isToday && (
+              <div className="dw-banner warn">
+                You are writing up <b>{formatDateMedium(day.entryDate)}</b>. Saving puts this
+                work on that day, not today. To log another day, change the day at the top first.
+              </div>
+            )}
             {editableRows.length === 0 ? (
               <div className="dw-card">
                 <div className="dw-empty">
@@ -721,6 +741,8 @@ export default function DailyWorkView() {
                     onActivity={(value, freeText) => setItemActivity(row.item_id, value, freeText)}
                     onRetire={retireItem}
                     onMoveChanged={onMoveChanged}
+                    entryDate={day.entryDate}
+                    today={day.today}
                   />
                 ))}
               </div>
@@ -737,6 +759,7 @@ export default function DailyWorkView() {
                 retireItem={retireItem}
                 onEvidence={load}
                 entryDate={day.entryDate}
+                today={day.today}
                 anchors={anchors}
                 onPatchItem={patchItem}
                 onMoveChanged={onMoveChanged}
@@ -1380,6 +1403,18 @@ function DayLog({ day, rows, written, drafts, saved, history, onEdit, me, activi
 
   const past = history || [];
 
+  // The day on screen may be an earlier one (← in the header). Everything
+  // below that said "today" now names it — see isServerToday.
+  const onToday = isServerToday(day.entryDate, day.today);
+  const word = dayWord(day.entryDate, day.today);
+  const logButton = onToday ? "Log today's work" : `Log work for ${word}`;
+  // The "today" tag beside the date, only when it is today. On an earlier day
+  // the date stands alone: the header already carries "writing up an earlier
+  // day", and a second word here would just be noise.
+  const dateTag = onToday
+    ? <> <span className="dw-today-tag">today</span></>
+    : null;
+
   if (!written.length && !past.length) {
     return (
       <div className="dw-card">
@@ -1389,7 +1424,7 @@ function DayLog({ day, rows, written, drafts, saved, history, onEdit, me, activi
             {rows.length > 0 && <><br />You have {rows.length} open {rows.length === 1 ? 'item' : 'items'} waiting.</>}
           </p>
           <button className="dw-btn dw-btn-primary" onClick={() => onEdit(rows[0]?.item_id)}>
-            Log today's work
+            {logButton}
           </button>
         </div>
       </div>
@@ -1402,8 +1437,8 @@ function DayLog({ day, rows, written, drafts, saved, history, onEdit, me, activi
         <h2>My daily log</h2>
         <span className={`m ${saved ? 'saved' : ''}`}>
           {written.length === 0
-            ? 'Nothing logged today'
-            : saved ? `Today saved · ${written.length} ${written.length === 1 ? 'item' : 'items'}`
+            ? `Nothing logged ${onToday ? 'today' : `for ${word}`}`
+            : saved ? `${onToday ? 'Today' : word} saved · ${written.length} ${written.length === 1 ? 'item' : 'items'}`
                     : `${written.length} written, not saved yet`}
         </span>
       </div>
@@ -1453,7 +1488,7 @@ function DayLog({ day, rows, written, drafts, saved, history, onEdit, me, activi
                     identical dates down a column is noise, and the blank cells
                     group the day visually without needing a rule. */}
                 <td className="dw-logdate">
-                  {i === 0 ? <>{formatDateShort(day.entryDate)} <span className="dw-today-tag">today</span></> : ''}
+                  {i === 0 ? <>{formatDateShort(day.entryDate)}{dateTag}</> : ''}
                 </td>
                 <td className="dw-logitem">
                   {r.title}
@@ -1485,13 +1520,13 @@ function DayLog({ day, rows, written, drafts, saved, history, onEdit, me, activi
             )) : (
               <tr className="today">
                 <td className="dw-logdate">
-                  {formatDateShort(day.entryDate)} <span className="dw-today-tag">today</span>
+                  {formatDateShort(day.entryDate)}{dateTag}
                 </td>
                 <td colSpan={5}>
                   <span className="dw-none">Not logged yet.</span>
                   <button className="dw-btn dw-btn-sm dw-btn-primary" style={{ marginLeft: 10 }}
                           onClick={() => onEdit(rows[0]?.item_id)}>
-                    Log today's work
+                    {logButton}
                   </button>
                 </td>
               </tr>
@@ -1750,7 +1785,12 @@ function InlineTitle({ title, onSave }) {
 
 function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
                      setDraft, setItemActivity, retireItem, onEvidence, entryDate,
-                     anchors, onPatchItem, onMoveChanged }) {
+                     today, anchors, onPatchItem, onMoveChanged }) {
+  // Every label below names the day being written, which is not always today:
+  // ← on My day navigates back inside the backfill window.
+  const onToday = isServerToday(entryDate, today);
+  const doneLine = onToday ? 'Done for today. It returns tomorrow.'
+                           : `Done for ${formatDateMedium(entryDate)}.`;
   // Which row's details panel has the move-to-project form open (2026_142).
   const [movingFor, setMovingFor] = useState(null);
   // Which row has had "+ Next steps" clicked. A row whose draft already has
@@ -1773,7 +1813,7 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
           <tr>
             <th>Date</th>
             <th>Item</th>
-            <th>What did you do today</th>
+            <th>{onToday ? 'What did you do today' : `What did you do on ${formatDateMedium(entryDate)}`}</th>
             <th>Activity</th>
             <th>Initiative</th>
             <th>Stage</th>
@@ -1804,10 +1844,11 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
             return (
               <React.Fragment key={row.item_id}>
                 <tr className={stage === 'dropped' ? 'dropped' : ''}>
-                  {/* The date being logged. Every row carries the same one —
-                      Edit rows only ever writes today — so this is orientation
-                      rather than data: the grid otherwise gives no clue which
-                      day the typing lands on, and the heading scrolls away. */}
+                  {/* The date being logged — the day on screen, which is today
+                      or an earlier day inside the backfill window. Every row
+                      carries the same one because rows are ITEMS, not days;
+                      this is orientation so nobody reads the grid as a
+                      spreadsheet with one row per day. */}
                   <td className="dw-grid-date">{formatDateShort(entryDate)}</td>
 
                   <td className="dw-grid-item">
@@ -1839,7 +1880,7 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
 
                   <td>
                     <textarea
-                      aria-label={`What did you do today on ${row.title}`}
+                      aria-label={`What did you do ${onToday ? 'today' : `on ${formatDateMedium(entryDate)}`} on ${row.title}`}
                       className={`dw-grid-ta ${overHard ? 'over' : overSoft ? 'warn' : ''}`}
                       rows={1}
                       value={description}
@@ -1975,7 +2016,7 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
                       )}
 
                       {row.kind === 'recurring' && closed && (
-                        <div className="dw-item-status">Done for today. It returns tomorrow.</div>
+                        <div className="dw-item-status">{doneLine}</div>
                       )}
 
                       <div className="dw-field">
@@ -2030,7 +2071,9 @@ function ItemTable({ rows, drafts, rowErrors, activityTypes, expanded, onExpand,
 }
 
 function ItemCard({ row, draft, error, isOpen, onToggle, onChange, onEvidence, collapsible,
-                   activityTypes, onActivity, onRetire, onMoveChanged }) {
+                   activityTypes, onActivity, onRetire, onMoveChanged, entryDate, today }) {
+  // The phone view of the same row, so the same day labels as ItemTable.
+  const onToday = isServerToday(entryDate, today);
   // Same control as the table's details panel (2026_142), for the phone layout.
   const [moving, setMoving] = useState(false);
 
@@ -2045,17 +2088,23 @@ function ItemCard({ row, draft, error, isOpen, onToggle, onChange, onEvidence, c
     <div className={`dw-item ${isOpen ? 'dw-open' : ''} ${stage === 'dropped' ? 'dropped' : ''}`}>
       {collapsible ? (
         <button className="dw-item-head" onClick={onToggle} aria-expanded={isOpen}>
-          <ItemHeader row={row} description={description} stage={stage} />
+          <ItemHeader row={row} description={description} stage={stage}
+                      day={dayWord(entryDate, today)} />
         </button>
       ) : (
-        <div className="dw-item-head"><ItemHeader row={row} description={description} stage={stage} /></div>
+        <div className="dw-item-head">
+          <ItemHeader row={row} description={description} stage={stage}
+                      day={dayWord(entryDate, today)} />
+        </div>
       )}
 
       {isOpen && (
         <div className="dw-item-body">
           <div className="dw-item-grid">
             <div className="dw-field desc" style={{ gridColumn: '1 / -1' }}>
-              <label htmlFor={`dw-desc-${row.item_id}`}>What did you do today</label>
+              <label htmlFor={`dw-desc-${row.item_id}`}>
+                {onToday ? 'What did you do today' : `What did you do on ${formatDateMedium(entryDate)}`}
+              </label>
 
               {row.prior_description ? (
                 <div className="dw-prior">
@@ -2113,7 +2162,9 @@ function ItemCard({ row, draft, error, isOpen, onToggle, onChange, onEvidence, c
                 <div className="dw-item-status">Finish it on the task.</div>
               )}
               {row.kind === 'recurring' && closed && (
-                <div className="dw-item-status">Done for today. It returns tomorrow.</div>
+                <div className="dw-item-status">
+                  {onToday ? 'Done for today. It returns tomorrow.' : `Done for ${formatDateMedium(entryDate)}.`}
+                </div>
               )}
             </div>
 
@@ -2166,7 +2217,9 @@ function ItemCard({ row, draft, error, isOpen, onToggle, onChange, onEvidence, c
   );
 }
 
-function ItemHeader({ row, description, stage }) {
+// `day` is the word for the day being written ("today" or "Mon 21 Sep"),
+// resolved by the caller; defaults to "today" for any caller that predates it.
+function ItemHeader({ row, description, stage, day = 'today' }) {
   const written = (description || '').trim().length > 0;
   return (
     <>
@@ -2181,7 +2234,7 @@ function ItemHeader({ row, description, stage }) {
         {stage === 'in_review' && <span className="dw-badge review">in review</span>}
       </div>
       <div className={`dw-item-status ${written ? 'done' : ''}`}>
-        {written ? 'Written for today' : 'Nothing written yet'}
+        {written ? `Written for ${day}` : 'Nothing written yet'}
       </div>
     </>
   );
@@ -2474,6 +2527,9 @@ function formatDateShort(dateStr) {
     day: 'numeric', month: 'short',
   });
 }
+
+// formatDateMedium, isServerToday and dayWord live in dailyWorkDay.js, shared
+// with TaskWorkComposer so both logging surfaces name the day the same way.
 
 function groupAnchors(anchors) {
   // Keys come from getAnchorOptions. Unknown keys fall through to the raw key
