@@ -1275,6 +1275,15 @@ twilio: {
 
     // Setup readiness — reported, never enforced. See getSetupReadiness.
     setupReadiness: () => api.get('/daily-work/setup/readiness'),
+
+    // Org-level module policy (2026_140): the backfill window. The routes and
+    // DailyWorkSetupView's BackfillSection shipped without these two, and that
+    // section guards on `typeof getSettings === 'function'` and renders nothing
+    // when it is missing — so the control was invisible and every org sat on
+    // the BACKFILL_DAYS default with no way to change it from the UI.
+    // GET is open to members (My day reads the bound); PATCH is admin-only.
+    getSettings: ()      => api.get('/daily-work/settings'),
+    setSettings: (patch) => api.patch('/daily-work/settings', patch),
     // Bulk provisioning. Both only touch people who have NO value set, so
     // neither can restate a schedule or timezone somebody chose deliberately.
     bulkSetSchedules: ({ weekdayMask, holidayCalendarId, effectiveFrom }) =>
