@@ -114,8 +114,12 @@ async function listForPlays(instanceIds, orgId) {
        FROM project_play_assignees a
        JOIN project_play_instances p
          ON p.id = a.instance_id AND p.org_id = $2
+       -- The select list reads u.* but the join was missing, so every call
+       -- failed with "missing FROM-clause entry for table u". LEFT, matching
+       -- listForPlay: a user removed from the org must not drop the row.
+       LEFT JOIN users u ON u.id = a.user_id
       WHERE a.instance_id = ANY($1::int[])
-      ORDER BY a.instance_id, (a.user_id = p.owner_user_id) DESC, a.created_at`,
+      ORDER BY a.instance_id, (a.user_id = p.owner_user_id) DESC, a.created_at, a.user_id`,
     [ids, orgId]);
 
   const out = {};

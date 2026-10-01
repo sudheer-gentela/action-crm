@@ -249,12 +249,33 @@ async function renew(sub) {
               WHERE id = $1`, [sub.id, 'Subscription no longer exists at Graph']);
           return { ok: false, code: 'GONE', recreate: true };
         }
+        // Logged as well as stored. The 04:34 UTC failure on 1 Oct reached
+        // the log only as "1 failed" with no reason, and the subscription
+        // lapsed 10 minutes later — the cause was only in the DB row.
+        console.error(
+          `[msteams] renew failed for ${sub.graph_id} ` +
+          `(sub ${sub.subscription_id}, HTTP ${err.response?.status || 'n/a'}): ${detail}`);
         await pool.query(
           `UPDATE msteams_subscriptions
               SET renewal_failures = renewal_failures + 1, last_error = $2, updated_at = now()
             WHERE id = $1`, [sub.id, detail.slice(0, 500)]);
       }
+    } else {
+      // Token refresh failed. Previously this branch recorded nothing, so a
+      // revoked owner token never counted toward MAX_RENEWAL_FAILURES and the
+      // subscription simply lapsed without a reason anywhere.
+      const reason = `owner token unavailable: ${tok.code || 'unknown'}`;
+      console.error(`[msteams] renew skipped for ${sub.graph_id}: ${reason}`);
+      await pool.query(
+        `UPDATE msteams_subscriptions
+            SET renewal_failures = renewal_failures + 1, last_error = $2, updated_at = now()
+          WHERE id = $1`, [sub.id, reason]);
     }
+  } else {
+    await pool.query(
+      `UPDATE msteams_subscriptions
+          SET renewal_failures = renewal_failures + 1, last_error = $2, updated_at = now()
+        WHERE id = $1`, [sub.id, `owner connection ${ownerId} not found`]);
   }
 
   // The owner cannot renew. Hand it to somebody else who is watching the same
@@ -369,6 +390,15 @@ async function dueForRecreate(limit = 100) {
        FROM msteams_subscriptions s
        JOIN msteams_conversations v ON v.id = s.conversation_id
       WHERE s.status = 'expired' AND v.is_watched = true
+        -- An expired row is kept for audit after it is replaced. Without this
+        -- it was re-selected every 15 minutes forever, subscribe() returned
+        -- "already", and the sweep logged "0 renewed … 0 recreated" each tick.
+        AND NOT EXISTS (
+          SELECT 1 FROM msteams_subscriptions live
+           WHERE live.org_id   = s.org_id
+             AND live.graph_id = s.graph_id
+             AND live.status IN ('active', 'expiring')
+        )
       ORDER BY s.updated_at
       LIMIT $1`, [limit]);
   return rows;

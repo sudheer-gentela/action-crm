@@ -161,7 +161,11 @@ async function notifyExpiringContracts() {
       const r = await pool.query(
         `SELECT id, title, owner_id, org_id FROM contracts
          WHERE status='active' AND expiry_date IS NOT NULL
-           AND DATE_PART('day', expiry_date - CURRENT_DATE) = $1
+           -- expiry_date is a DATE, and DATE - DATE is already an integer
+           -- day count. DATE_PART('day', ...) only accepts an interval or
+           -- timestamp, so wrapping it raised "function date_part(unknown,
+           -- integer) does not exist" and no expiry warning ever went out.
+           AND (expiry_date - CURRENT_DATE) = $1::int
            AND deleted_at IS NULL`, [days]
       );
       for (const row of r.rows) {

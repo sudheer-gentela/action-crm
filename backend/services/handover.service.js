@@ -4845,13 +4845,20 @@ async function buildHandoverContext(handoverRow) {
   const overdueCommitments = overdueResult.rows;
 
   // Find which required stakeholder roles are present
+  // 2026_79 dropped sales_handover_stakeholders in favour of project_contacts
+  // (context_type='handover'). This query was missed in that cutover, so every
+  // handover failed the nightly sweep with 'relation does not exist'. The role
+  // vocabulary is unchanged (project_contacts_role_chk), so REQUIRED_ROLES
+  // still matches.
   const stakeholderResult = await pool.query(
-    `SELECT DISTINCT handover_role
-     FROM sales_handover_stakeholders
-     WHERE handover_id = $1`,
-    [handoverRow.id]
+    `SELECT DISTINCT role
+     FROM project_contacts
+     WHERE context_type = 'handover'
+       AND context_id   = $1
+       AND org_id       = $2`,
+    [handoverRow.id, handoverRow.org_id]
   );
-  const presentRoles = new Set(stakeholderResult.rows.map(r => r.handover_role));
+  const presentRoles = new Set(stakeholderResult.rows.map(r => r.role));
   const missingRequiredRoles = HandoverRulesEngine.REQUIRED_ROLES.filter(
     role => !presentRoles.has(role)
   );

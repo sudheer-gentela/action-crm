@@ -372,6 +372,10 @@ class ActionsGenerator {
       let totalGenerated = 0;
       let totalUpserted  = 0;
       let totalResolved  = 0;
+      // Collected and reported once at the end. One warn line per ownerless
+      // deal was ~45 error-level lines a night, all the same root cause (CRM
+      // sync could not map the Salesforce owner to a GoWarm user).
+      const ownerlessDeals = [];
 
       for (const deal of deals) {
         if (isTerminalDeal(deal)) continue;
@@ -380,7 +384,7 @@ class ActionsGenerator {
         const orgId  = deal.org_id;
 
         if (!userId) {
-          console.warn(`⚠️  No owner_id on deal ${deal.id} (${deal.name}) — skipping`);
+          ownerlessDeals.push(deal);
           continue;
         }
         if (!orgId) {
@@ -520,6 +524,14 @@ class ActionsGenerator {
         }
       }
 
+      if (ownerlessDeals.length) {
+        const byOrg = {};
+        for (const d of ownerlessDeals) (byOrg[d.org_id] ||= []).push(d.id);
+        const summary = Object.entries(byOrg)
+          .map(([org, ids]) => `org ${org}: ${ids.length} (ids ${ids.slice(0, 10).join(',')}${ids.length > 10 ? ',…' : ''})`)
+          .join('; ');
+        console.warn(`⚠️  Skipped ${ownerlessDeals.length} open deal(s) with no owner_id — ${summary}`);
+      }
       console.log(`✅ generateAll complete — generated: ${totalGenerated}, upserted: ${totalUpserted}, stale resolved: ${totalResolved}`);
 
       // Surface any swallowed persistence failures from this run. A non-zero

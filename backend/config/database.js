@@ -9,8 +9,11 @@ const pool = process.env.DATABASE_URL
       connectionString: process.env.DATABASE_URL,
       ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
       max: 20,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 2000,
+      // 2 minutes: longer than the 1-minute cron cadence, so the SequenceStepFirer
+      // tick reuses a warm client instead of paying a fresh TLS handshake every
+      // minute. Server-side idle drops are still handled by pool.on('error').
+      idleTimeoutMillis: 120000,
+      connectionTimeoutMillis: 5000,
     })
   : new Pool({
       host: process.env.DB_HOST || 'localhost',
@@ -19,11 +22,21 @@ const pool = process.env.DATABASE_URL
       user: process.env.DB_USER || 'postgres',
       password: process.env.DB_PASSWORD,
       max: 20,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 2000,
+      // 2 minutes: longer than the 1-minute cron cadence, so the SequenceStepFirer
+      // tick reuses a warm client instead of paying a fresh TLS handshake every
+      // minute. Server-side idle drops are still handled by pool.on('error').
+      idleTimeoutMillis: 120000,
+      connectionTimeoutMillis: 5000,
     });
 
+// 'connect' fires for EVERY new physical client, not once per process. With a
+// 30s idle timeout and a cron firing every minute the pool drained and refilled
+// constantly, and these two lines were the majority of the production log.
+// Log the first connection only.
+let loggedFirstConnect = false;
 pool.on('connect', () => {
+  if (loggedFirstConnect) return;
+  loggedFirstConnect = true;
   console.log('✅ Database connected successfully');
   console.log('📊 Using:', process.env.DATABASE_URL ? 'DATABASE_URL connection string' : 'Individual DB variables');
 });

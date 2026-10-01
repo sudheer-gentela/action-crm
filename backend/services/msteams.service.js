@@ -42,6 +42,24 @@ const PROVIDER = 'teams';
 // so an unrecognised value must not fail the poll at the CHECK constraint.
 const KNOWN_CHAT_KINDS = new Set(['oneOnOne', 'group', 'meeting']);
 
+/**
+ * Resolve a chat's kind, using the thread id when chatType is not one we know.
+ *
+ * Every unknownFutureValue chat seen in production has an id of the form
+ * 19:meeting_…@thread.v2 — they are meeting chats Graph will not name under
+ * the default enum contract. Defaulting them to 'group' made them show up in
+ * triage (meetings are hidden by default) and logged four errors an hour.
+ * Only a genuinely unrecognisable chat still falls back to 'group' and warns.
+ */
+function classifyChatKind(chat) {
+  const raw = chat.chatType;
+  if (KNOWN_CHAT_KINDS.has(raw)) return { kind: raw, recognised: true };
+  if (typeof chat.id === 'string' && chat.id.startsWith('19:meeting_')) {
+    return { kind: 'meeting', recognised: true };
+  }
+  return { kind: 'group', recognised: false };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Connections
 // ─────────────────────────────────────────────────────────────────────────────
@@ -348,16 +366,17 @@ async function discoverForConnection(conn) {
     for (const chat of chats) {
       if (!chat.id) continue;
 
-      const rawKind = chat.chatType;
-      const kind = KNOWN_CHAT_KINDS.has(rawKind) ? rawKind : 'group';
-      if (kind !== rawKind) {
-        console.warn(`[msteams] unrecognised chatType '${rawKind}' → group (${chat.id})`);
+      const { kind, recognised } = classifyChatKind(chat);
+      if (!recognised) {
+        console.warn(`[msteams] unrecognised chatType '${chat.chatType}' → group (${chat.id})`);
       }
 
       // Members cost a Graph call each. needsMembers encodes when that is
-      // worth it — always for one-to-ones, never for meeting chats.
+      // worth it — always for one-to-ones, never for meeting chats. Judged on
+      // the resolved kind so a meeting reported as unknownFutureValue is not
+      // treated as an untitled group chat and charged a members call.
       let members = null;
-      if (needsMembers(chat)) {
+      if (needsMembers({ ...chat, chatType: kind })) {
         try {
           members = await graph.listChatMembers(accessToken, chat.id);
         } catch (err) {

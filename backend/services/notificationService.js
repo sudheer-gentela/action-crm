@@ -324,7 +324,13 @@ async function processImmediateNotification(orgId, actionId) {
   `, [actionId, orgId]);
 
   if (!action) return { skipped: true, reason: 'action_not_found' };
-  if (action.status !== 'pending') return { skipped: true, reason: 'not_pending' };
+  // Same B18 bug the scan query had, left behind in the processor: 'pending'
+  // is not an actions status, so every immediate alert the scan queued was
+  // dropped here as not_pending and never delivered. Must match the open set
+  // in findActionsForImmediateNotification.
+  if (!['not_started', 'in_progress', 'blocked'].includes(action.status)) {
+    return { skipped: true, reason: 'not_open' };
+  }
   if (action.notification_sent_at) return { skipped: true, reason: 'already_escalated' };
 
   const notifPrefs = typeof action.esc_prefs === 'string'

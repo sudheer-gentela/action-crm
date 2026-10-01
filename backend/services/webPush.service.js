@@ -93,7 +93,8 @@ async function listForUser(userId) {
 /**
  * Deliver one notification to every device a user has registered.
  *
- * Returns { sent, failed, skipped } — a summary, never a throw.
+ * Returns { sent, failed, skipped, reason? } — a summary, never a throw.
+ * reason is set only when the whole delivery was skipped.
  */
 async function sendToUser({ orgId, userId, notificationId = null, title, body, url = '/' }) {
   const lib = isConfigured() ? getWebPush() : null;
@@ -102,7 +103,10 @@ async function sendToUser({ orgId, userId, notificationId = null, title, body, u
       orgId, userId, notificationId, channel: 'push',
       status: 'skipped', reason: 'push_not_configured',
     });
-    return { sent: 0, failed: 0, skipped: 1 };
+    // reason is surfaced so the notification job logs it — without it every
+    // push job logged "skipped: undefined" and the cause was only in the
+    // delivery log table.
+    return { sent: 0, failed: 0, skipped: 1, reason: 'push_not_configured' };
   }
 
   const subs = await listForUser(userId);
@@ -111,7 +115,7 @@ async function sendToUser({ orgId, userId, notificationId = null, title, body, u
       orgId, userId, notificationId, channel: 'push',
       status: 'skipped', reason: 'no_subscriptions',
     });
-    return { sent: 0, failed: 0, skipped: 1 };
+    return { sent: 0, failed: 0, skipped: 1, reason: 'no_subscriptions' };
   }
 
   const payload = JSON.stringify({

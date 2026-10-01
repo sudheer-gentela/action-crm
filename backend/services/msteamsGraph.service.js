@@ -265,11 +265,18 @@ async function listChats(accessToken) {
   return { chats: items, truncated };
 }
 
-/** Members of one chat — used only for a display name when topic is null. */
+/**
+ * Members of one chat — used only for a display name when topic is null.
+ *
+ * No $top. Production logs show this endpoint rejects it on every chat, every
+ * hour: graphGet's strip-and-retry does not remember the rejection, so the
+ * "costs one wasted call the first time" assumption above did not hold — it
+ * was ~60 wasted Graph calls and ~60 error-level log lines per discovery pass.
+ */
 async function listChatMembers(accessToken, chatId) {
   const { items } = await graphGetAll(
     accessToken,
-    `/chats/${encodeURIComponent(chatId)}/members?$top=50`,
+    `/chats/${encodeURIComponent(chatId)}/members`,
     { maxPages: 3 }
   );
   return items;

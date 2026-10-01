@@ -2407,7 +2407,11 @@ const SequenceStepFirer = {
       client.release();
     }
 
-    console.log(`📨 SequenceStepFirer: fired=${fired} drafted=${drafted} stopped=${stopped} errors=${errors}`);
+    // Only when something happened. This runs every minute; an all-zero line
+    // 1,440 times a day buried the real signal in the logs.
+    if (fired || drafted || stopped || errors) {
+      console.log(`📨 SequenceStepFirer: fired=${fired} drafted=${drafted} stopped=${stopped} errors=${errors}`);
+    }
     return { fired, stopped, errors, drafted };
   },
 

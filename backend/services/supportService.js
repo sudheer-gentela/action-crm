@@ -1110,10 +1110,14 @@ async function buildCaseContext(caseRow) {
       `SELECT changed_at
        FROM case_status_history
        WHERE case_id   = $1
-         AND new_status = 'pending_customer'
+         AND org_id    = $2
+         -- The column is to_status (see the INSERT in this file). new_status
+         -- never existed, so every pending_customer case errored out of the
+         -- nightly sweep instead of being evaluated.
+         AND to_status = 'pending_customer'
        ORDER BY changed_at DESC
        LIMIT 1`,
-      [caseRow.id]
+      [caseRow.id, caseRow.org_id]
     );
     if (histResult.rows.length > 0) {
       daysSincePendingCustomer = Math.floor(

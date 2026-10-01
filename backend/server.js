@@ -44,6 +44,13 @@ app.use(helmet({
 const extraCorsOrigins = (process.env.CORS_ORIGIN || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 
+// Origin (scheme + host, no path) of this API, from the same BACKEND_URL the
+// Teams subscription code uses to build its webhook URLs.
+const API_SELF_ORIGIN = (() => {
+  try { return new URL(process.env.BACKEND_URL || 'https://api.gowarmcrm.com').origin; }
+  catch { return 'https://api.gowarmcrm.com'; }
+})();
+
 const corsOptions = {
   origin: (origin, cb) => {
     if (!origin) return cb(null, true);   // Postman / Railway health checks
@@ -51,11 +58,21 @@ const corsOptions = {
       'http://localhost:3000',
       'https://action-crm.vercel.app',
       'https://app.gowarmcrm.com',
+      // The API's own origin. Pages the API serves itself (/help, baseline
+      // report HTML) send an Origin header on same-origin POST/fetch, and
+      // rejecting that broke them — seen in prod as "CORS blocked:
+      // https://api.gowarmcrm.com". Same-origin is never a CORS risk.
+      API_SELF_ORIGIN,
       ...extraCorsOrigins,
     ];
     if (allowed.includes(origin))                 return cb(null, true);
     if (origin.startsWith('chrome-extension://')) return cb(null, true);
-    return cb(new Error(`CORS blocked: ${origin}`));
+    // 403, not the default 500, and tagged so the error handler logs one line
+    // instead of a 16-frame stack for what is routine origin filtering.
+    const err = new Error(`CORS blocked: ${origin}`);
+    err.status = 403;
+    err.isCorsRejection = true;
+    return cb(err);
   },
   credentials:    true,
   methods:        ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
@@ -456,8 +473,13 @@ app.use((req, res) => {
 });
 
 app.use((err, req, res, next) => {
-  // Always log the full detail server-side (Railway logs).
-  console.error('Error:', err.stack || err.message || err);
+  // Always log the full detail server-side (Railway logs) — except routine
+  // CORS origin rejections, where the stack is pure noise.
+  if (err && err.isCorsRejection) {
+    console.warn(`[cors] ${err.message} (${req.method} ${req.originalUrl})`);
+  } else {
+    console.error('Error:', err.stack || err.message || err);
+  }
 
   const isDev = process.env.NODE_ENV === 'development';
   const status = err.status || 500;
