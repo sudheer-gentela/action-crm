@@ -9,6 +9,15 @@
 //   AUTHKIT_DOMAIN         https://welcoming-phrase-84-staging.authkit.app   (NO trailing slash; swap to prod later)
 //   MCP_RESOURCE_URL       https://gowarmcrm.com/mcp                          (must match your WorkOS Resource Indicator)
 //   MCP_SCOPES_SUPPORTED   comma-separated, e.g. "gowarm.read"                (OPTIONAL — see the note below)
+//   MCP_WRITE_SCOPE        e.g. "campaigns:write"                             (OPTIONAL — gates write tools, see below)
+//
+// MCP_WRITE_SCOPE: when SET, every write tool requires that scope in the
+// token's `scope` claim and refuses otherwise. When UNSET, write tools are
+// allowed for any authenticated user who passes the same permission checks
+// the UI applies (module access, org membership). Set it only AFTER the scope
+// exists on the GoWarmCRM resource in WorkOS — otherwise no token carries it
+// and every write is refused. Add the same name to MCP_SCOPES_SUPPORTED so
+// clients know to request it.
 //
 // MCP_SCOPES_SUPPORTED is advertised in the Protected Resource Metadata as
 // `scopes_supported` (RFC 9728 §2). Leave it UNSET until the same scope names
@@ -31,6 +40,13 @@ import { createRequire } from 'module';
 // --- Bridge to the existing CommonJS backend (db helper + hierarchy service) ---
 const require = createRequire(import.meta.url);
 const db = require('./config/database'); // exposes db.query(text, params)
+// Shared with POST /api/prospecting-campaigns so agent-created campaigns pass
+// exactly the same validation as UI-created ones.
+const CampaignCreateService = require('./services/CampaignCreateService');
+// Module gating. The REST routes sit behind requireModule('prospecting'); the
+// MCP path bypasses that middleware, so write tools re-check it explicitly.
+const requireModule = require('./middleware/requireModule.middleware');
+const moduleAccess  = require('./services/moduleAccess.service');
 
 const AUTHKIT_DOMAIN = (process.env.AUTHKIT_DOMAIN || '').replace(/\/$/, '');
 const MCP_RESOURCE_URL = process.env.MCP_RESOURCE_URL || 'https://gowarmcrm.com/mcp';
@@ -53,10 +69,10 @@ const PRM_URL_CANONICAL = `${PUBLIC_ORIGIN}/.well-known/oauth-protected-resource
 const JWKS = createRemoteJWKSet(new URL(`${AUTHKIT_DOMAIN}/oauth2/jwks`));
 
 // Advertised scopes. Empty by default — see the env-var note at the top of this
-// file. Nothing here is enforced per tool: every tool is read-only and gated
-// only on a valid, audience-bound token. Do not add names here as aspiration;
-// an advertised scope that neither WorkOS issues nor this server checks is
-// worse than no list at all.
+// file. This list is advertisement only; enforcement is MCP_WRITE_SCOPE below
+// (read tools need only a valid, audience-bound token). Do not add names here
+// as aspiration; an advertised scope that neither WorkOS issues nor this
+// server checks is worse than no list at all.
 const SCOPES_SUPPORTED = (process.env.MCP_SCOPES_SUPPORTED || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 
@@ -66,6 +82,23 @@ if (!SCOPES_SUPPORTED.length) {
     'the Protected Resource Metadata. Define the scopes on the GoWarmCRM resource ' +
     'in the WorkOS dashboard first, then set this env var to the same names.'
   );
+}
+
+const WRITE_SCOPE = (process.env.MCP_WRITE_SCOPE || '').trim();
+if (!WRITE_SCOPE) {
+  console.warn(
+    '[mcp] MCP_WRITE_SCOPE is unset — write tools are allowed for any authenticated ' +
+    'user who passes the normal permission checks. Set it once the scope exists in WorkOS.'
+  );
+}
+
+// OAuth carries scopes as one space-separated `scope` string (RFC 8693 §4.2);
+// some issuers use an `scp` array instead. Accept either so a WorkOS format
+// change doesn't silently lock every agent out of writes.
+function tokenHasScope(auth, wanted) {
+  if (typeof auth?.scope === 'string' && auth.scope.split(/\s+/).includes(wanted)) return true;
+  if (Array.isArray(auth?.scp) && auth.scp.includes(wanted)) return true;
+  return false;
 }
 
 // RFC 9728 Protected Resource Metadata. One document, served at both paths.
@@ -95,6 +128,29 @@ const CHALLENGE_INVALID = [
 // ── Tool result helpers ──────────────────────────────────────────────────────
 const ok = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj) }], structuredContent: obj });
 const fail = (msg) => ({ content: [{ type: 'text', text: msg }], isError: true });
+
+// loadCampaign returns c.* — 30+ columns including the JSONB config override.
+// An agent needs the identity and the fields it just set, not internals.
+function summariseCampaign(c) {
+  if (!c) return null;
+  return {
+    id: c.id,
+    name: c.name,
+    status: c.status,
+    activity_type: c.activity_type,
+    description: c.description,
+    solution: c.solution,
+    default_sequence_id: c.default_sequence_id,
+    default_sequence_name: c.default_sequence_name,
+    playbook_id: c.playbook_id,
+    playbook_name: c.playbook_name,
+    goal_qualified: c.goal_qualified,
+    start_date: c.start_date,
+    end_date: c.end_date,
+    owner_id: c.owner_id,
+    created_at: c.created_at,
+  };
+}
 
 // ── Identity: resolve the GoWarmCRM user behind the token ──────────────────────
 // The token's `sub` is the GoWarmCRM user id (the bridge passes it through at
@@ -129,6 +185,17 @@ async function safeSubordinates(orgId, userId) {
   }
 }
 
+// Mirrors requireModule('prospecting'): the org must have the module provisioned
+// AND enabled, and this user must have been granted it. Unlike the middleware
+// (which fails OPEN on a DB error so the UI stays usable), this fails CLOSED —
+// getOrgModules returns all-false on error — because it guards writes.
+async function hasProspectingModule(actor) {
+  const mods = await requireModule.getOrgModules(actor.orgId);
+  const p = mods.prospecting || {};
+  if (!(p.allowed && p.enabled)) return false;
+  return moduleAccess.hasModule(actor.orgId, actor.userId, 'prospecting');
+}
+
 // Build the owner filter for the action queue, matching the /unified route.
 // `alias` MUST qualify user_id to the action table (e.g. 'a' or 'pa'); both
 // queries join a second table that also has user_id, so a bare column is ambiguous.
@@ -153,7 +220,13 @@ async function requireAuth(req, res, next) {
     const { payload } = await jwtVerify(token, JWKS, { issuer: AUTHKIT_DOMAIN, audience: MCP_RESOURCE_URL });
     req.auth = payload;
     next();
-  } catch {
+  } catch (err) {
+    // Without this line a misconfigured AUTHKIT_DOMAIN / MCP_RESOURCE_URL looks
+    // identical to "the client never connected". jose's code + message name the
+    // failed check (e.g. ERR_JWT_CLAIM_VALIDATION_FAILED: unexpected "aud" claim
+    // value) and never include the token itself. A request with NO token is not
+    // logged above — that is the normal first step of every OAuth handshake.
+    console.warn('[mcp:auth] token rejected:', err?.code || err?.name || 'unknown', '-', err?.message);
     return res.set('WWW-Authenticate', CHALLENGE_INVALID).status(401).json({ error: 'invalid_token' });
   }
 }
@@ -167,11 +240,30 @@ function setCors(res) {
 
 // ── Build a fresh MCP server per request (stateless), scoped to the actor ──────
 async function buildServer(auth) {
-  const server = new McpServer({ name: 'gowarmcrm', version: '0.2.0' });
+  const server = new McpServer({ name: 'gowarmcrm', version: '0.3.0' });
   const actor = await getActor(auth);
 
+  // One log line per tool call. /mcp traffic is otherwise invisible in
+  // production (morgan only runs in development), so this is the only record
+  // of what agents actually invoked. Arguments are deliberately NOT logged —
+  // they can carry prospect names and campaign content.
+  const tool = (name, config, handler) => server.registerTool(name, config, async (args, extra) => {
+    const started = Date.now();
+    let outcome = 'threw';
+    try {
+      const result = await handler(args, extra);
+      outcome = result?.isError ? 'error' : 'ok';
+      return result;
+    } finally {
+      console.log(
+        `[mcp:call] tool=${name} user=${actor?.userId ?? 'unknown'} org=${actor?.orgId ?? 'unknown'} ` +
+        `result=${outcome} ms=${Date.now() - started}`
+      );
+    }
+  });
+
   // ── whoami (read) ───────────────────────────────────────────────────────────
-  server.registerTool(
+  tool(
     'whoami',
     {
       title: 'Who am I',
@@ -198,7 +290,7 @@ async function buildServer(auth) {
   );
 
   // ── get_action_queue (read) — the centerpiece ────────────────────────────────
-  server.registerTool(
+  tool(
     'get_action_queue',
     {
       title: 'Get action queue',
@@ -299,7 +391,7 @@ async function buildServer(auth) {
   );
 
   // ── list_campaigns (read) ─────────────────────────────────────────────────────
-  server.registerTool(
+  tool(
     'list_campaigns',
     {
       title: 'List prospecting campaigns',
@@ -334,7 +426,9 @@ async function buildServer(auth) {
         const r = await db.query(
           `SELECT c.id, c.name, c.status, c.solution, c.owner_id, c.default_sequence_id,
                   c.goal_qualified, c.start_date, c.end_date, c.created_at,
-                  (SELECT COUNT(*) FROM prospects p WHERE p.campaign_id = c.id AND p.deleted_at IS NULL) AS prospect_count
+                  -- ::int: COUNT(*) is bigint, which node-pg returns as a STRING ("113").
+                  -- get_campaign already casts; this keeps both tools numeric.
+                  (SELECT COUNT(*)::int FROM prospects p WHERE p.campaign_id = c.id AND p.deleted_at IS NULL) AS prospect_count
              FROM prospecting_campaigns c
             WHERE c.org_id = $1 ${ownerFilter} ${statusFilter}
             ORDER BY c.created_at DESC
@@ -350,7 +444,7 @@ async function buildServer(auth) {
   );
 
   // ── get_campaign (read) ───────────────────────────────────────────────────────
-  server.registerTool(
+  tool(
     'get_campaign',
     {
       title: 'Get campaign detail',
@@ -403,7 +497,7 @@ async function buildServer(auth) {
   );
 
   // ── list_sequences (read) ─────────────────────────────────────────────────────
-  server.registerTool(
+  tool(
     'list_sequences',
     {
       title: 'List outreach sequences',
@@ -440,8 +534,132 @@ async function buildServer(auth) {
     },
   );
 
-  // --- WRITE TIER (next pass): create_prospecting_campaign, add_prospects,
-  //     generate_drafts, execute_prospecting_campaign (preview-first). ---
+  // ── create_prospecting_campaign (write) ───────────────────────────────────────
+  // Creates directly (no AgentProposalService round-trip): an empty campaign
+  // sends nothing and is archived in one click, and the proposal framework is
+  // deal-scoped. Approval gating belongs on the tools that actually send.
+  //
+  // Deliberately narrower than POST /: no owner_id (the agent always creates as
+  // the authenticated rep, so there is no admin-impersonation path to secure),
+  // no client_id, schedule overrides, sender selection, share_weight or inline
+  // targeting. Omitted fields inherit org defaults, exactly as in the UI.
+  tool(
+    'create_prospecting_campaign',
+    {
+      title: 'Create prospecting campaign',
+      description:
+        'Creates a new prospecting campaign owned by the authenticated rep. It is created PAUSED by default, so nothing runs until the rep activates it in GoWarmCRM. ' +
+        'Call list_campaigns first; if a non-archived campaign with the same name already exists for this rep, that campaign is returned (already_exists: true) instead of creating a duplicate. ' +
+        'Use list_sequences to pick default_sequence_id.',
+      inputSchema: {
+        name: z.string().trim().min(1).max(200).describe('Campaign name. Must be unique among your non-archived campaigns.'),
+        description: z.string().max(5000).optional().describe('Free-text description.'),
+        solution: z.string().max(2000).optional().describe('The solution or offer this campaign prospects for.'),
+        default_sequence_id: z.number().int().positive().optional()
+          .describe('Outreach sequence prospects are enrolled into (from list_sequences).'),
+        playbook_id: z.number().int().positive().optional()
+          .describe('A prospecting playbook id in this org.'),
+        target_profile_id: z.number().int().positive().optional()
+          .describe('Target Profile to seed targeting from (copied, not linked).'),
+        goal_qualified: z.number().int().min(1).max(100000).optional()
+          .describe('Target number of qualified prospects (SALs).'),
+        start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD').optional(),
+        end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD').optional(),
+        activity_type: z.enum(['outreach', 'field_event', 'digital', 'discovery']).default('outreach'),
+        // Only the two "live" states. An agent has no reason to create a
+        // campaign that is already completed or archived.
+        status: z.enum(['paused', 'active']).default('paused')
+          .describe("'paused' (default — rep activates it in GoWarmCRM) or 'active'."),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        // Same name twice returns the existing campaign rather than a second one.
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (args) => {
+      if (!actor) return fail('No GoWarmCRM user found for this session.');
+
+      if (WRITE_SCOPE && !tokenHasScope(auth, WRITE_SCOPE)) {
+        return fail(`This connection is not authorised to make changes. Reconnect and grant the "${WRITE_SCOPE}" permission.`);
+      }
+
+      // Agents emit dates freely; catch an inverted range here rather than
+      // store a campaign that ends before it starts. (POST / does not check
+      // this either — kept agent-side so UI behaviour is unchanged.)
+      if (args.start_date && args.end_date && args.end_date < args.start_date) {
+        return fail('end_date must be on or after start_date.');
+      }
+
+      try {
+        if (!(await hasProspectingModule(actor))) {
+          return fail('The Prospecting module is not enabled for this user or org.');
+        }
+
+        // Duplicate guard. Agents retry on timeouts; without this a retried call
+        // creates a second identical campaign. Scoped to the rep's own
+        // non-archived campaigns, case-insensitive. Applies to the MCP path only.
+        const dup = await db.query(
+          `SELECT id FROM prospecting_campaigns
+            WHERE org_id = $1 AND owner_id = $2 AND status <> 'archived'
+              AND LOWER(TRIM(name)) = LOWER($3)
+            ORDER BY created_at DESC
+            LIMIT 1`,
+          [actor.orgId, actor.userId, args.name]
+        );
+        if (dup.rows.length) {
+          const existing = await CampaignCreateService.loadCampaign(actor.orgId, dup.rows[0].id);
+          return ok({
+            created: false,
+            already_exists: true,
+            note: 'A campaign with this name already exists for you; returning it instead of creating a duplicate.',
+            campaign: summariseCampaign(existing),
+          });
+        }
+
+        // Whitelist the fields we pass on. Never spread `args` into the service:
+        // it accepts owner_id / client_id / sender ids, which this tool must not.
+        const result = await CampaignCreateService.createCampaign({
+          orgId: actor.orgId,
+          userId: actor.userId,
+          input: {
+            name: args.name,
+            description: args.description,
+            solution: args.solution,
+            default_sequence_id: args.default_sequence_id,
+            playbook_id: args.playbook_id,
+            target_profile_id: args.target_profile_id,
+            goal_qualified: args.goal_qualified,
+            start_date: args.start_date,
+            end_date: args.end_date,
+            activity_type: args.activity_type,
+            status: args.status,
+          },
+          // owner_id is never passed, so the admin branch is unreachable.
+          isAdmin: async () => false,
+        });
+
+        if (!result.ok) return fail(result.message);
+
+        return ok({
+          created: true,
+          already_exists: false,
+          note: result.campaign.status === 'paused'
+            ? 'Campaign created PAUSED. Activate it in GoWarmCRM when ready.'
+            : 'Campaign created ACTIVE.',
+          campaign: summariseCampaign(result.campaign),
+        });
+      } catch (err) {
+        console.error('[mcp:create_prospecting_campaign]', err.message);
+        return fail('Failed to create the campaign.');
+      }
+    },
+  );
+
+  // --- WRITE TIER (next pass): add_prospects, generate_drafts,
+  //     execute_prospecting_campaign (preview/approval-first — these send). ---
 
   return server;
 }
@@ -502,13 +720,19 @@ export function registerMcp(app) {
   app.options('/mcp', (_req, res) => { setCors(res); res.status(204).end(); });
   app.post('/mcp', express.json(), requireAuth, async (req, res) => {
     setCors(res);
-    const server = await buildServer(req.auth);
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    res.on('close', () => { transport.close(); server.close(); });
+    // buildServer runs a DB query (getActor). It must sit INSIDE the try:
+    // Express 4 does not catch rejected promises from async handlers, so a DB
+    // failure here used to leave the request hanging with no response or log.
+    let server;
+    let transport;
+    res.on('close', () => { transport?.close(); server?.close(); });
     try {
+      server = await buildServer(req.auth);
+      transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
-    } catch {
+    } catch (err) {
+      console.error('[mcp:transport]', err?.message || err);
       if (!res.headersSent) {
         res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: null });
       }
