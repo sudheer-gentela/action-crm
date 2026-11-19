@@ -587,6 +587,32 @@ function SequencesView({ prospects, search }) {
     }
   };
 
+  // Publish a draft sequence (draft → active). Agent-created sequences arrive
+  // as drafts: visible to everyone, but every enrollment route requires
+  // status='active', so this click is the human review gate before any
+  // campaign can enroll prospects into it. PUT with only { status } takes the
+  // backend's publish-only path (it doesn't touch name or other fields).
+  const handlePublish = async (seq) => {
+    if (!window.confirm(
+      `Publish "${seq.name}"?\n\n` +
+      `Once published, prospects can be enrolled into this sequence and campaigns using it can run. ` +
+      `Review the steps first — use 👁 to view them.`
+    )) return;
+    try {
+      const r = await apiFetch(`/sequences/${seq.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ status: 'active' }),
+      });
+      // PUT returns the row without steps — merge only the status into an
+      // open view panel so its step list stays intact.
+      const nextStatus = r?.sequence?.status || 'active';
+      setViewingSeq(v => (v && v.id === seq.id ? { ...v, status: nextStatus } : v));
+      loadSequences();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
   const handleStopEnrollment = async (enrollId) => {
     if (!window.confirm('Stop this enrollment? No further steps will fire.')) return;
     try {
@@ -760,6 +786,14 @@ function SequencesView({ prospects, search }) {
                             🔒 Private
                           </span>
                         )}
+                        {seq.status === 'draft' && (
+                          <span
+                            title="Draft — visible to everyone, but prospects can't be enrolled until it is published."
+                            style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, color: '#92400e', background: '#fef3c7', padding: '1px 6px', borderRadius: 4, whiteSpace: 'nowrap' }}
+                          >
+                            📝 Draft
+                          </span>
+                        )}
                       </div>
                       <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
                         <button
@@ -825,16 +859,48 @@ function SequencesView({ prospects, search }) {
                   </div>
 
                   <div style={{ padding: '0 16px 14px', display: 'flex', gap: 8 }}>
-                    <button
-                      onClick={() => openEnroll(seq.id)}
-                      style={{
-                        flex: 1, padding: '7px', borderRadius: 7,
-                        background: '#f0fdf4', border: '1px solid #bbf7d0',
-                        color: '#065f46', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                      }}
-                    >
-                      🚀 Enroll Prospect
-                    </button>
+                    {/* Drafts can't be enrolled into (the backend refuses any
+                        non-active sequence), so the Enroll action would only
+                        ever fail. Editors see Publish instead; everyone else
+                        sees why the action is unavailable. */}
+                    {seq.status === 'draft' ? (
+                      seq.can_edit ? (
+                        <button
+                          onClick={() => handlePublish(seq)}
+                          title="Review the steps, then publish so prospects can be enrolled."
+                          style={{
+                            flex: 1, padding: '7px', borderRadius: 7,
+                            background: '#fef3c7', border: '1px solid #fde68a',
+                            color: '#92400e', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                          }}
+                        >
+                          📝 Publish
+                        </button>
+                      ) : (
+                        <button
+                          disabled
+                          title="This sequence is a draft. Its owner (or an admin) must publish it before prospects can be enrolled."
+                          style={{
+                            flex: 1, padding: '7px', borderRadius: 7,
+                            background: '#f9fafb', border: '1px solid #e5e7eb',
+                            color: '#9ca3af', fontSize: 12, fontWeight: 600, cursor: 'not-allowed',
+                          }}
+                        >
+                          📝 Awaiting publish
+                        </button>
+                      )
+                    ) : (
+                      <button
+                        onClick={() => openEnroll(seq.id)}
+                        style={{
+                          flex: 1, padding: '7px', borderRadius: 7,
+                          background: '#f0fdf4', border: '1px solid #bbf7d0',
+                          color: '#065f46', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                        }}
+                      >
+                        🚀 Enroll Prospect
+                      </button>
+                    )}
                     <button
                       onClick={() => { setSubTab('enrollments'); loadEnrollments(); }}
                       style={{
@@ -1531,6 +1597,11 @@ function SequencesView({ prospects, search }) {
                 <div style={{ fontWeight: 700, fontSize: 16, color: '#111827', lineHeight: 1.3 }}>
                   {viewingSeq.name}
                   <EntityIdHint id={viewingSeq.id} type="sequence" />
+                  {viewingSeq.status === 'draft' && (
+                    <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 600, color: '#92400e', background: '#fef3c7', padding: '2px 7px', borderRadius: 4, whiteSpace: 'nowrap', verticalAlign: 'middle' }}>
+                      📝 Draft — not yet published
+                    </span>
+                  )}
                 </div>
                 {viewingSeq.description && (
                   <div style={{ fontSize: 12, color: '#6b7280', marginTop: 6, lineHeight: 1.5 }}>
@@ -1562,6 +1633,17 @@ function SequencesView({ prospects, search }) {
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                {viewingSeq.status === 'draft' && sequences.find(x => x.id === viewingSeq.id)?.can_edit && (
+                  <button
+                    onClick={() => handlePublish(viewingSeq)}
+                    style={{
+                      padding: '6px 14px', borderRadius: 7, fontSize: 12, fontWeight: 600,
+                      background: '#d97706', color: '#fff', border: 'none', cursor: 'pointer',
+                    }}
+                  >
+                    📝 Publish
+                  </button>
+                )}
                 <button
                   onClick={() => { setViewingSeq(null); openBuilderForEdit(viewingSeq); }}
                   style={{

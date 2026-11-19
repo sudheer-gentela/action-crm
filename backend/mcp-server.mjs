@@ -43,6 +43,10 @@ const db = require('./config/database'); // exposes db.query(text, params)
 // Shared with POST /api/prospecting-campaigns so agent-created campaigns pass
 // exactly the same validation as UI-created ones.
 const CampaignCreateService = require('./services/CampaignCreateService');
+// Shared with POST /api/sequences — same channel validation and transaction.
+const SequenceCreateService = require('./services/SequenceCreateService');
+// Same owner-or-admin rule the UI's campaign PUT enforces (requireCanMutate).
+const CampaignAccess = require('./services/CampaignAccess');
 // Module gating. The REST routes sit behind requireModule('prospecting'); the
 // MCP path bypasses that middleware, so write tools re-check it explicitly.
 const requireModule = require('./middleware/requireModule.middleware');
@@ -128,6 +132,58 @@ const CHALLENGE_INVALID = [
 // ── Tool result helpers ──────────────────────────────────────────────────────
 const ok = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj) }], structuredContent: obj });
 const fail = (msg) => ({ content: [{ type: 'text', text: msg }], isError: true });
+
+// Sequence visibility for agents: shared sequences, plus the caller's own
+// private ones. Deliberately stricter than the UI for managers/admins (who can
+// also see subordinates' private sequences there) — deny-by-default is the
+// safer gap for an agent. Appends its param; pass the params array in use.
+function sequenceVisibleSql(alias, actor, params) {
+  params.push(actor.userId);
+  return `(${alias}.visibility = 'shared' OR ${alias}.created_by = $${params.length})`;
+}
+
+// Merge tokens SequenceStepFirer.renderTemplate fills in. Anything else in
+// {{...}} — a typo, a space inside the braces, an invented field — reaches the
+// prospect verbatim, so agent-written templates are checked before saving.
+function findBadTokens(text) {
+  if (!text) return [];
+  const bad = [];
+  for (const m of String(text).matchAll(/\{\{([^}]*)\}\}/g)) {
+    const inner = m[1];
+    if (!/^\w+$/.test(inner) || !SequenceCreateService.TEMPLATE_TOKENS.includes(inner)) bad.push(m[0]);
+  }
+  return bad;
+}
+
+function summariseSequence(s, steps) {
+  if (!s) return null;
+  return {
+    id: s.id,
+    name: s.name,
+    description: s.description,
+    status: s.status,
+    visibility: s.visibility,
+    ai_enabled: s.ai_enabled,
+    require_approval: s.require_approval,
+    created_by: s.created_by,
+    created_at: s.created_at,
+    steps: (steps || []).map(st => ({
+      id: st.id,
+      step_order: st.step_order,
+      channel: st.channel,
+      delay_days: st.delay_days,
+      delay_hours: st.delay_hours,
+      step_intent: st.step_intent,
+      subject_template: st.subject_template,
+      body_template: st.body_template,
+      task_note: st.task_note,
+    })),
+  };
+}
+
+const DRAFT_NOTE =
+  'This sequence is a DRAFT: your team can see it in Sequences, but no prospect can be enrolled ' +
+  'until someone reviews it and clicks Publish in GoWarmCRM.';
 
 // loadCampaign returns c.* — 30+ columns including the JSONB config override.
 // An agent needs the identity and the fields it just set, not internals.
@@ -240,7 +296,7 @@ function setCors(res) {
 
 // ── Build a fresh MCP server per request (stateless), scoped to the actor ──────
 async function buildServer(auth) {
-  const server = new McpServer({ name: 'gowarmcrm', version: '0.3.0' });
+  const server = new McpServer({ name: 'gowarmcrm', version: '0.4.0' });
   const actor = await getActor(auth);
 
   // One log line per tool call. /mcp traffic is otherwise invisible in
@@ -497,15 +553,19 @@ async function buildServer(auth) {
   );
 
   // ── list_sequences (read) ─────────────────────────────────────────────────────
+  // 0.4.0: now filters by visibility (shared + your own private) — previously it
+  // listed every private sequence in the org, which the UI never shows. Adds a
+  // 'draft' filter so agents can find sequences awaiting publish.
   tool(
     'list_sequences',
     {
       title: 'List outreach sequences',
       description:
-        'Lists the org\'s outreach sequences (the multi-step cadences a campaign enrolls prospects into) with step counts. Use to choose a default_sequence_id when creating a campaign.',
+        'Lists the org\'s outreach sequences (the multi-step cadences a campaign enrolls prospects into) with step counts. ' +
+        "Use to choose a default_sequence_id when creating a campaign. 'active' sequences can be enrolled into; 'draft' ones are awaiting human review and Publish.",
       inputSchema: {
-        status: z.enum(['active', 'all']).default('active')
-          .describe("'active' (default — the ones you can enroll into) or 'all'."),
+        status: z.enum(['active', 'draft', 'all']).default('active')
+          .describe("'active' (default — the ones you can enroll into), 'draft' (awaiting Publish), or 'all' (including archived)."),
         limit: z.number().int().min(1).max(100).default(50),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -515,13 +575,15 @@ async function buildServer(auth) {
       try {
         const params = [actor.orgId];
         let statusFilter = '';
-        if (status === 'active') { statusFilter = `AND s.status = 'active'`; }
+        if (status === 'active') statusFilter = `AND s.status = 'active'`;
+        if (status === 'draft')  statusFilter = `AND s.status = 'draft'`;
+        const vis = sequenceVisibleSql('s', actor, params);
         params.push(limit);
         const r = await db.query(
-          `SELECT s.id, s.name, s.status,
+          `SELECT s.id, s.name, s.status, s.visibility,
                   (SELECT COUNT(*)::int FROM sequence_steps ss WHERE ss.sequence_id = s.id) AS step_count
              FROM sequences s
-            WHERE s.org_id = $1 ${statusFilter}
+            WHERE s.org_id = $1 ${statusFilter} AND ${vis}
             ORDER BY s.name
             LIMIT $${params.length}`,
           params
@@ -530,6 +592,191 @@ async function buildServer(auth) {
       } catch (err) {
         console.error('[mcp:list_sequences]', err.message);
         return fail('Failed to list sequences.');
+      }
+    },
+  );
+
+  // ── get_sequence (read) ───────────────────────────────────────────────────────
+  tool(
+    'get_sequence',
+    {
+      title: 'Get outreach sequence',
+      description:
+        'Returns one sequence with its steps in order (channel, delays, intent, subject/body templates, task notes). ' +
+        'Use to check a sequence you created, or to inspect an existing one before attaching it to a campaign.',
+      inputSchema: {
+        sequence_id: z.number().int().positive().describe('The sequence id (from list_sequences).'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ sequence_id }) => {
+      if (!actor) return fail('No GoWarmCRM user found for this session.');
+      try {
+        const params = [sequence_id, actor.orgId];
+        const vis = sequenceVisibleSql('s', actor, params);
+        const sq = await db.query(
+          `SELECT s.* FROM sequences s WHERE s.id = $1 AND s.org_id = $2 AND ${vis}`,
+          params
+        );
+        // Same message for "missing" and "someone else's private sequence", so
+        // the tool never confirms a private sequence exists.
+        if (!sq.rows.length) return fail(`Sequence ${sequence_id} not found.`);
+        const steps = await db.query(
+          `SELECT * FROM sequence_steps WHERE sequence_id = $1 ORDER BY step_order`,
+          [sequence_id]
+        );
+        const out = summariseSequence(sq.rows[0], steps.rows);
+        if (out.status === 'draft') out.note = DRAFT_NOTE;
+        return ok(out);
+      } catch (err) {
+        console.error('[mcp:get_sequence]', err.message);
+        return fail('Failed to load the sequence.');
+      }
+    },
+  );
+
+  // ── create_sequence (write) ───────────────────────────────────────────────────
+  // Always created as a shared DRAFT with approval forced on:
+  //   • draft  — visible to the whole team, but every enrollment path requires
+  //              status='active', so nothing can run until a person reviews the
+  //              copy and clicks Publish in the UI.
+  //   • require_approval=true, and steps never override it — SequenceStepFirer
+  //     auto-sends email (and, with the org toggle on, LinkedIn connection
+  //     requests) only when effective approval is false. Even once published,
+  //     an agent-written sequence produces drafts for a human to approve.
+  // Threading, per-step personalisation config and manager-edit rights are not
+  // exposed; they keep the builder defaults and can be changed in the UI.
+  tool(
+    'create_sequence',
+    {
+      title: 'Create outreach sequence',
+      description:
+        'Creates a multi-step outreach sequence (email / LinkedIn / call / task steps with delays) as a shared DRAFT that requires approval for every message. ' +
+        'Drafts are visible to the team but cannot be enrolled into until a person reviews and publishes them in GoWarmCRM. ' +
+        'Call list_sequences first: if you already have a non-archived sequence with the same name, it is returned (already_exists: true) instead of creating a duplicate. ' +
+        `Templates may use only these merge tokens: ${SequenceCreateService.TEMPLATE_TOKENS.map(t => `{{${t}}}`).join(', ')}. ` +
+        'Email steps need subject_template and body_template unless ai_enabled is true (then AI writes each message per prospect). ' +
+        'delay_days/delay_hours are the wait after the previous step (for step 1, after enrollment).',
+      inputSchema: {
+        name: z.string().trim().min(1).max(200).describe('Sequence name. Must be unique among your non-archived sequences.'),
+        description: z.string().max(5000).optional().describe('Purpose, tone or goal of the sequence.'),
+        ai_enabled: z.boolean().default(false)
+          .describe('If true, AI personalises each email/LinkedIn step per prospect at activation; templates become optional guidance.'),
+        steps: z.array(z.object({
+          channel: z.enum(['email', 'linkedin', 'call', 'task']),
+          delay_days: z.number().int().min(0).max(90).default(0),
+          delay_hours: z.number().int().min(0).max(23).default(0),
+          subject_template: z.string().max(500).optional().describe('Email subject. Email steps only.'),
+          body_template: z.string().max(10000).optional().describe('Email body or LinkedIn message.'),
+          task_note: z.string().max(2000).optional().describe('Instructions for call/task steps, or a note on any step.'),
+          step_intent: z.enum(['first_touch', 'follow_up', 'breakup', 'connection_request', 'post_accept_message', 'nurture_dm'])
+            .optional()
+            .describe('Optional. Email: first_touch | follow_up | breakup. LinkedIn: connection_request | post_accept_message | nurture_dm. Omit to auto-infer.'),
+        })).min(1).max(15).describe('Steps in send order (1-15).'),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true, // same name twice returns the existing sequence
+        openWorldHint: false,
+      },
+    },
+    async (args) => {
+      if (!actor) return fail('No GoWarmCRM user found for this session.');
+      if (WRITE_SCOPE && !tokenHasScope(auth, WRITE_SCOPE)) {
+        return fail(`This connection is not authorised to make changes. Reconnect and grant the "${WRITE_SCOPE}" permission.`);
+      }
+
+      // Strict, agent-facing checks. The shared service would quietly normalise
+      // a cross-channel intent to "auto"; an agent should be told instead.
+      const problems = [];
+      args.steps.forEach((st, i) => {
+        const n = i + 1;
+        if (st.step_intent && !SequenceCreateService.INTENTS_BY_CHANNEL[st.channel].includes(st.step_intent)) {
+          const allowed = SequenceCreateService.INTENTS_BY_CHANNEL[st.channel];
+          problems.push(`Step ${n} (${st.channel}): step_intent "${st.step_intent}" is not valid` +
+            (allowed.length ? ` — use one of ${allowed.join(', ')} or omit it.` : ` — ${st.channel} steps take no intent; omit it.`));
+        }
+        if (st.channel === 'email' && !args.ai_enabled && (!st.subject_template?.trim() || !st.body_template?.trim())) {
+          problems.push(`Step ${n} (email): subject_template and body_template are required when ai_enabled is false.`);
+        }
+        const bad = [
+          ...findBadTokens(st.subject_template),
+          ...findBadTokens(st.body_template),
+          ...findBadTokens(st.task_note),
+        ];
+        if (bad.length) {
+          problems.push(`Step ${n}: unknown merge token(s) ${[...new Set(bad)].join(', ')} — these would be sent to the prospect as-is.`);
+        }
+      });
+      if (problems.length) {
+        return fail(
+          'The sequence was not created:\n- ' + problems.join('\n- ') +
+          `\nAllowed tokens: ${SequenceCreateService.TEMPLATE_TOKENS.map(t => `{{${t}}}`).join(', ')}`
+        );
+      }
+
+      try {
+        // Duplicate guard — agents retry on timeouts. Your own non-archived
+        // sequences, case-insensitive; MCP path only (the UI is unchanged).
+        const dup = await db.query(
+          `SELECT id FROM sequences
+            WHERE org_id = $1 AND created_by = $2 AND status <> 'archived'
+              AND LOWER(TRIM(name)) = LOWER($3)
+            ORDER BY created_at DESC
+            LIMIT 1`,
+          [actor.orgId, actor.userId, args.name]
+        );
+        if (dup.rows.length) {
+          const seq = await db.query(`SELECT * FROM sequences WHERE id = $1`, [dup.rows[0].id]);
+          const steps = await db.query(
+            `SELECT * FROM sequence_steps WHERE sequence_id = $1 ORDER BY step_order`, [dup.rows[0].id]
+          );
+          const existing = summariseSequence(seq.rows[0], steps.rows);
+          return ok({
+            created: false,
+            already_exists: true,
+            note: 'You already have a sequence with this name; returning it instead of creating a duplicate.' +
+              (existing.status === 'draft' ? ' ' + DRAFT_NOTE : ''),
+            sequence: existing,
+          });
+        }
+
+        const result = await SequenceCreateService.createSequence({
+          orgId: actor.orgId,
+          userId: actor.userId,
+          status: 'draft',
+          // Whitelisted — never spread args into the service.
+          input: {
+            name: args.name,
+            description: args.description,
+            ai_enabled: args.ai_enabled,
+            require_approval: true,
+            visibility: 'shared',
+            steps: args.steps.map(st => ({
+              channel: st.channel,
+              delay_days: st.delay_days,
+              delay_hours: st.delay_hours,
+              subject_template: st.subject_template,
+              body_template: st.body_template,
+              task_note: st.task_note,
+              step_intent: st.step_intent,
+              // require_approval deliberately omitted → NULL → inherits the
+              // sequence's true. A step can never opt itself into auto-send.
+            })),
+          },
+        });
+        if (!result.ok) return fail(result.message);
+
+        return ok({
+          created: true,
+          already_exists: false,
+          note: DRAFT_NOTE,
+          sequence: summariseSequence(result.sequence, result.sequence.steps),
+        });
+      } catch (err) {
+        console.error('[mcp:create_sequence]', err.message);
+        return fail('Failed to create the sequence.');
       }
     },
   );
@@ -654,6 +901,110 @@ async function buildServer(auth) {
       } catch (err) {
         console.error('[mcp:create_prospecting_campaign]', err.message);
         return fail('Failed to create the campaign.');
+      }
+    },
+  );
+
+  // ── set_campaign_sequence (write) ─────────────────────────────────────────────
+  // Attaches (or detaches) a campaign's default sequence. Campaigns may exist
+  // without one for viewing; this is how an agent wires one up afterwards.
+  // Mirrors the UI's campaign PUT: owner or admin only (CampaignAccess), and the
+  // sequence must be in the org. A DRAFT sequence is allowed — activation stays
+  // blocked by the enrollment routes until it is published — and the response
+  // says so. Only future enrollments are affected; existing enrollments keep
+  // the sequence they were enrolled into.
+  tool(
+    'set_campaign_sequence',
+    {
+      title: 'Set campaign sequence',
+      description:
+        "Sets the default outreach sequence a campaign enrolls prospects into (or clears it with sequence_id: null). " +
+        'Only the campaign owner or an admin can change it. Affects future enrollments only; prospects already enrolled stay in their current sequence. ' +
+        'A draft sequence can be attached, but the campaign cannot enroll anyone until that sequence is published in GoWarmCRM.',
+      inputSchema: {
+        campaign_id: z.number().int().positive().describe('The campaign id (from list_campaigns).'),
+        sequence_id: z.number().int().positive().nullable()
+          .describe('The sequence id (from list_sequences), or null to remove the campaign\'s sequence.'),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({ campaign_id, sequence_id }) => {
+      if (!actor) return fail('No GoWarmCRM user found for this session.');
+      if (WRITE_SCOPE && !tokenHasScope(auth, WRITE_SCOPE)) {
+        return fail(`This connection is not authorised to make changes. Reconnect and grant the "${WRITE_SCOPE}" permission.`);
+      }
+      try {
+        if (!(await hasProspectingModule(actor))) {
+          return fail('The Prospecting module is not enabled for this user or org.');
+        }
+
+        const campaign = await CampaignCreateService.loadCampaign(actor.orgId, campaign_id);
+        if (!campaign) return fail(`Campaign ${campaign_id} not found.`);
+        if (campaign.status === 'archived') {
+          return fail(`Campaign ${campaign_id} is archived. Restore it in GoWarmCRM before changing its sequence.`);
+        }
+
+        // Reuse the UI's exact rule. canMutateCampaign reads userId/orgId off a
+        // request-like object (it caches the role lookup on it); subordinateIds
+        // only shapes the refusal wording.
+        const access = await CampaignAccess.canMutateCampaign(
+          { userId: actor.userId, orgId: actor.orgId, subordinateIds: [] },
+          campaign
+        );
+        if (!access.allowed) return fail(access.reason);
+
+        let sequence = null;
+        if (sequence_id !== null) {
+          const params = [sequence_id, actor.orgId];
+          const vis = sequenceVisibleSql('s', actor, params);
+          const sq = await db.query(
+            `SELECT s.id, s.name, s.status FROM sequences s
+              WHERE s.id = $1 AND s.org_id = $2 AND s.status <> 'archived' AND ${vis}`,
+            params
+          );
+          if (!sq.rows.length) return fail(`Sequence ${sequence_id} not found (or archived).`);
+          sequence = sq.rows[0];
+        }
+
+        if ((campaign.default_sequence_id ?? null) === (sequence?.id ?? null)) {
+          return ok({
+            changed: false,
+            campaign_id: campaign.id,
+            campaign_name: campaign.name,
+            sequence: sequence,
+            note: 'No change — the campaign already uses this sequence.' +
+              (sequence?.status === 'draft' ? ' ' + DRAFT_NOTE : ''),
+          });
+        }
+
+        await db.query(
+          `UPDATE prospecting_campaigns
+              SET default_sequence_id = $1, updated_at = NOW()
+            WHERE id = $2 AND org_id = $3`,
+          [sequence?.id ?? null, campaign.id, actor.orgId]
+        );
+
+        let note;
+        if (!sequence) note = 'Sequence removed. The campaign cannot enroll prospects until a sequence is set.';
+        else if (sequence.status === 'draft') note = 'Attached a DRAFT sequence. ' + DRAFT_NOTE;
+        else note = 'Sequence attached. New enrollments will use it.';
+
+        return ok({
+          changed: true,
+          campaign_id: campaign.id,
+          campaign_name: campaign.name,
+          previous_sequence_id: campaign.default_sequence_id ?? null,
+          sequence,
+          note,
+        });
+      } catch (err) {
+        console.error('[mcp:set_campaign_sequence]', err.message);
+        return fail('Failed to update the campaign\'s sequence.');
       }
     },
   );

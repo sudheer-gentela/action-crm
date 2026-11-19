@@ -1,8 +1,8 @@
-﻿--
+--
 -- PostgreSQL database dump
 --
 
-\restrict Mrx63KrYOaJwOSVhMC1t8xuW4RB6DXcejbuakHBLQ1f0h92aUAD4emDlpeYqJQo
+\restrict bASRwSChNJxS1F0BA8ayg8QMskbQeSeZMdf54cuCZbMJ3symowuSfLt0lgZkiT5
 
 -- Dumped from database version 17.11 (Debian 17.11-1.pgdg13+2)
 -- Dumped by pg_dump version 18.1
@@ -316,7 +316,7 @@ CREATE FUNCTION public.prospect_notes_reject_update() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
-  RAISE EXCEPTION 'prospect_notes is append-only ΓÇö entries cannot be modified (id=%)', OLD.id
+  RAISE EXCEPTION 'prospect_notes is append-only — entries cannot be modified (id=%)', OLD.id
     USING ERRCODE = 'raise_exception';
 END;
 $$;
@@ -481,7 +481,7 @@ BEGIN
       NEW.completed := (NEW.status = 'completed');
     END IF;
   ELSE
-    -- UPDATE OF status ΓÇö status is authoritative, unchanged from 2026_70.
+    -- UPDATE OF status — status is authoritative, unchanged from 2026_70.
     NEW.completed := (NEW.status = 'completed');
   END IF;
 
@@ -951,7 +951,7 @@ CREATE TABLE public.account_relationships (
 -- Name: TABLE account_relationships; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.account_relationships IS 'What an org is to us ΓÇö vendor, partner, reseller ΓÇö separate from and additive to accounts.account_type, which is sales lifecycle. Multi-valued: an account can be a customer AND a partner AND a vendor. Approved once per relationship by a named approver, not per project.';
+COMMENT ON TABLE public.account_relationships IS 'What an org is to us — vendor, partner, reseller — separate from and additive to accounts.account_type, which is sales lifecycle. Multi-valued: an account can be a customer AND a partner AND a vendor. Approved once per relationship by a named approver, not per project.';
 
 
 --
@@ -1131,14 +1131,14 @@ COMMENT ON COLUMN public.accounts.research_meta IS 'Metadata about the AI genera
 -- Name: COLUMN accounts.account_type; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.accounts.account_type IS 'Authoritative account classification (D12): none|target|customer|churned. customerΓåÆchurn play, targetΓåÆinbound play. Backfilled from won-deal/client_id, RevOps-overridable.';
+COMMENT ON COLUMN public.accounts.account_type IS 'Authoritative account classification (D12): none|target|customer|churned. customer→churn play, target→inbound play. Backfilled from won-deal/client_id, RevOps-overridable.';
 
 
 --
 -- Name: COLUMN accounts.linkedin_company_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.accounts.linkedin_company_id IS 'Stable LinkedIn numeric company id (e.g. 9261371) ΓÇö the same integer across urn:li:company / fs_salesCompany / fsd_company and /company/<id>. Captured by the Chrome extension. Preferred over linkedin_company_url for capture-time account dedup (slug-change resilient, and the only structured key Sales Navigator exposes for a company). Nullable, non-unique by design; set only when empty, never overwritten.';
+COMMENT ON COLUMN public.accounts.linkedin_company_id IS 'Stable LinkedIn numeric company id (e.g. 9261371) — the same integer across urn:li:company / fs_salesCompany / fsd_company and /company/<id>. Captured by the Chrome extension. Preferred over linkedin_company_url for capture-time account dedup (slug-change resilient, and the only structured key Sales Navigator exposes for a company). Nullable, non-unique by design; set only when empty, never overwritten.';
 
 
 --
@@ -1389,7 +1389,7 @@ COMMENT ON COLUMN public.actions.intended_role_id IS 'org_roles.id that should o
 -- Name: COLUMN actions.assignment_source; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.actions.assignment_source IS 'Which PlayRouteResolver tier produced user_id. project_owner means no holder of intended_role_id was found ΓÇö surface this in the UI. As of 2026_73.';
+COMMENT ON COLUMN public.actions.assignment_source IS 'Which PlayRouteResolver tier produced user_id. project_owner means no holder of intended_role_id was found — surface this in the UI. As of 2026_73.';
 
 
 --
@@ -1683,7 +1683,7 @@ CREATE TABLE public.baseline_reports (
 -- Name: TABLE baseline_reports; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.baseline_reports IS 'Findings reports rendered from frozen baseline_snapshots. Derived + regenerable (no freeze trigger ΓÇö the snapshot is the immutable artifact). findings = deterministic engine output; narrative = AI layer that never produces numbers. share_token grants unauthenticated HTML read. Introduced 2026_62.';
+COMMENT ON TABLE public.baseline_reports IS 'Findings reports rendered from frozen baseline_snapshots. Derived + regenerable (no freeze trigger — the snapshot is the immutable artifact). findings = deterministic engine output; narrative = AI layer that never produces numbers. share_token grants unauthenticated HTML read. Introduced 2026_62.';
 
 
 --
@@ -2438,7 +2438,7 @@ CREATE TABLE public.clients (
 -- Name: COLUMN clients.require_client_sender; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.clients.require_client_sender IS 'Agency Phase 3 (2026_53): when true, email steps for this client''s prospects may ONLY use a client-owned sender (prospecting_sender_accounts.client_id = clients.id). No active client sender ΓåÆ auto-send fails the step visibly (failAndPause) and manual draft-send is blocked, instead of falling back to the rep''s personal mailbox. Default false = legacy fallback behaviour.';
+COMMENT ON COLUMN public.clients.require_client_sender IS 'Agency Phase 3 (2026_53): when true, email steps for this client''s prospects may ONLY use a client-owned sender (prospecting_sender_accounts.client_id = clients.id). No active client sender → auto-send fails the step visibly (failAndPause) and manual draft-send is blocked, instead of falling back to the rep''s personal mailbox. Default false = legacy fallback behaviour.';
 
 
 --
@@ -2488,7 +2488,7 @@ CREATE TABLE public.communication_stewards (
 -- Name: TABLE communication_stewards; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.communication_stewards IS 'Explicit grant to triage unassigned captured messages org-wide. NOT inherited from project membership ΓÇö being on Project A says nothing about whether someone should see the org-wide unassigned pool. Org admins and the user who connected the session hold it implicitly and are not listed here.';
+COMMENT ON TABLE public.communication_stewards IS 'Explicit grant to triage unassigned captured messages org-wide. NOT inherited from project membership — being on Project A says nothing about whether someone should see the org-wide unassigned pool. Org admins and the user who connected the session hold it implicitly and are not listed here.';
 
 
 --
@@ -2591,7 +2591,7 @@ COMMENT ON TABLE public.connection_job_events IS 'Detected job-change log. event
 -- Name: COLUMN connection_job_events.detected_at; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.connection_job_events.detected_at IS 'When GoWarm detected the change (diff time), NOT when the person actually moved ΓÇö the export only shows current role.';
+COMMENT ON COLUMN public.connection_job_events.detected_at IS 'When GoWarm detected the change (diff time), NOT when the person actually moved — the export only shows current role.';
 
 
 --
@@ -2703,7 +2703,7 @@ CREATE TABLE public.connection_snapshots (
 -- Name: TABLE connection_snapshots; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.connection_snapshots IS 'One header per network import. is_complete=false suppresses disconnect firing (large-network export gaps, ┬ºE). prior_snapshot_id is what the diff ran against.';
+COMMENT ON TABLE public.connection_snapshots IS 'One header per network import. is_complete=false suppresses disconnect firing (large-network export gaps, §E). prior_snapshot_id is what the diff ran against.';
 
 
 --
@@ -3237,7 +3237,7 @@ CREATE TABLE public.contract_signatories (
 -- Name: COLUMN contract_signatories.cc_recipients; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.contract_signatories.cc_recipients IS 'Array of {name, email} objects ΓÇö CC recipients on the e-signature request';
+COMMENT ON COLUMN public.contract_signatories.cc_recipients IS 'Array of {name, email} objects — CC recipients on the e-signature request';
 
 
 --
@@ -3284,7 +3284,7 @@ CREATE TABLE public.contract_templates (
 -- Name: TABLE contract_templates; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.contract_templates IS 'Master contract templates per org. Managed via Org Admin ΓåÆ CLM ΓåÆ Templates.';
+COMMENT ON TABLE public.contract_templates IS 'Master contract templates per org. Managed via Org Admin → CLM → Templates.';
 
 
 --
@@ -3410,14 +3410,14 @@ COMMENT ON COLUMN public.contracts.status IS 'State machine: draft | in_review |
 -- Name: COLUMN contracts.legal_assignee_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.contracts.legal_assignee_id IS 'FK to users.id ΓÇö named legal team member currently assigned. NULL = in queue.';
+COMMENT ON COLUMN public.contracts.legal_assignee_id IS 'FK to users.id — named legal team member currently assigned. NULL = in queue.';
 
 
 --
 -- Name: COLUMN contracts.company_entity; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.contracts.company_entity IS 'us | uk | de ΓÇö legal entity of the selling company';
+COMMENT ON COLUMN public.contracts.company_entity IS 'us | uk | de — legal entity of the selling company';
 
 
 --
@@ -3482,7 +3482,7 @@ CREATE TABLE public.conversation_bindings (
 -- Name: TABLE conversation_bindings; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.conversation_bindings IS 'How a conversation is organised: around a project, around an account (a vendor group), or as a pool of projects (an internal group). ABSENCE of a row means legacy behaviour ΓÇö the channel''s own thread project, if any ΓÇö NOT pool. Keyed on the channel''s external thread id so the same machinery serves WhatsApp, Slack, Teams and email.';
+COMMENT ON TABLE public.conversation_bindings IS 'How a conversation is organised: around a project, around an account (a vendor group), or as a pool of projects (an internal group). ABSENCE of a row means legacy behaviour — the channel''s own thread project, if any — NOT pool. Keyed on the channel''s external thread id so the same machinery serves WhatsApp, Slack, Teams and email.';
 
 
 --
@@ -3496,7 +3496,7 @@ COMMENT ON COLUMN public.conversation_bindings.thread_ref IS 'The channel''s own
 -- Name: COLUMN conversation_bindings.binding_mode; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.conversation_bindings.binding_mode IS 'project = fixed project, messages inherit it (today''s behaviour). account = organised around a vendor/partner account; the project is per message and the candidate set is DERIVED. pool = an internal group discussing several projects; candidates are DECLARED by a human at bind time. For account and pool the attribution chain runs reply-context only and then stops ΓÇö an entity-scoped message lands unassigned rather than guessed.';
+COMMENT ON COLUMN public.conversation_bindings.binding_mode IS 'project = fixed project, messages inherit it (today''s behaviour). account = organised around a vendor/partner account; the project is per message and the candidate set is DERIVED. pool = an internal group discussing several projects; candidates are DECLARED by a human at bind time. For account and pool the attribution chain runs reply-context only and then stops — an entity-scoped message lands unassigned rather than guessed.';
 
 
 --
@@ -3539,7 +3539,7 @@ CREATE TABLE public.conversation_project_candidates (
 -- Name: TABLE conversation_project_candidates; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.conversation_project_candidates IS 'The two-to-five projects a message in an entity-scoped thread could plausibly be about. Narrowing from every active project in the org is what makes deterministic mention matching (Phase 4) a primary mechanism rather than a marginal precision play. Phase 1 WRITES this table and reads it nowhere ΓÇö nothing attributes off it until Phase 3.';
+COMMENT ON TABLE public.conversation_project_candidates IS 'The two-to-five projects a message in an entity-scoped thread could plausibly be about. Narrowing from every active project in the org is what makes deterministic mention matching (Phase 4) a primary mechanism rather than a marginal precision play. Phase 1 WRITES this table and reads it nowhere — nothing attributes off it until Phase 3.';
 
 
 --
@@ -3790,7 +3790,7 @@ COMMENT ON TABLE public.daily_activity_types IS 'Org-configurable activity vocab
 -- Name: COLUMN daily_activity_types.status; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.daily_activity_types.status IS 'active: in the shared list, offered by every picker. candidate: proposed by a member via "Other", usable by them while it waits for a manager. merged: folded into merged_into_key; never offered, kept so historical entries still resolve. retired: deliberately taken out of circulation. Never offered in a picker, kept so historical entries still resolve. Reversible ΓÇö see 2026_134.';
+COMMENT ON COLUMN public.daily_activity_types.status IS 'active: in the shared list, offered by every picker. candidate: proposed by a member via "Other", usable by them while it waits for a manager. merged: folded into merged_into_key; never offered, kept so historical entries still resolve. retired: deliberately taken out of circulation. Never offered in a picker, kept so historical entries still resolve. Reversible — see 2026_134.';
 
 
 --
@@ -4466,7 +4466,7 @@ CREATE TABLE public.deal_play_instances (
 -- Name: COLUMN deal_play_instances.owner_user_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.deal_play_instances.owner_user_id IS 'Person accountable for this checklist item on the handover. NULL = unassigned; role/queue routing (playbook_plays.role_id ΓåÆ PlayRouteResolver) still applies.';
+COMMENT ON COLUMN public.deal_play_instances.owner_user_id IS 'Person accountable for this checklist item on the handover. NULL = unassigned; role/queue routing (playbook_plays.role_id → PlayRouteResolver) still applies.';
 
 
 --
@@ -4892,7 +4892,7 @@ COMMENT ON TABLE public.email_delivery_events IS 'Per-message bounce/block event
 -- Name: COLUMN email_delivery_events.event_type; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.email_delivery_events.event_type IS 'hard_bounce = permanent (5.1.x, user unknown) ΓåÆ list-quality cause, may auto-stop enrollment. soft_bounce = transient (4.x.x, mailbox full). block = policy/reputation rejection (5.7.x, spam/blocked) ΓåÆ sender-health cause.';
+COMMENT ON COLUMN public.email_delivery_events.event_type IS 'hard_bounce = permanent (5.1.x, user unknown) → list-quality cause, may auto-stop enrollment. soft_bounce = transient (4.x.x, mailbox full). block = policy/reputation rejection (5.7.x, spam/blocked) → sender-health cause.';
 
 
 --
@@ -4939,7 +4939,7 @@ CREATE TABLE public.email_engagement_events (
 -- Name: TABLE email_engagement_events; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.email_engagement_events IS 'Raw open/click events from the public tracking endpoints. Bot-classified events are flagged, never dropped (D41). Snapshot measures count is_bot=false only. Opens are DIRECTIONAL (Apple MPP auto-fires pixels, Gmail proxies images) ΓÇö labeled as such in the WBR grid.';
+COMMENT ON TABLE public.email_engagement_events IS 'Raw open/click events from the public tracking endpoints. Bot-classified events are flagged, never dropped (D41). Snapshot measures count is_bot=false only. Opens are DIRECTIONAL (Apple MPP auto-fires pixels, Gmail proxies images) — labeled as such in the WBR grid.';
 
 
 --
@@ -5063,7 +5063,7 @@ CREATE TABLE public.email_threads (
 -- Name: TABLE email_threads; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.email_threads IS 'Maps an email conversation to a project. One conversation, one project ΓÇö so a message cannot be inherited into two. Messages arriving later on a mapped conversation are stamped at ingest with tag_source = ''thread''. Tagging a conversation does not move mail; it publishes every mailbox copy to the project team.';
+COMMENT ON TABLE public.email_threads IS 'Maps an email conversation to a project. One conversation, one project — so a message cannot be inherited into two. Messages arriving later on a mapped conversation are stamped at ingest with tag_source = ''thread''. Tagging a conversation does not move mail; it publishes every mailbox copy to the project team.';
 
 
 --
@@ -5153,7 +5153,7 @@ COMMENT ON COLUMN public.emails.external_data IS 'Additional Outlook metadata (c
 -- Name: COLUMN emails.body_quotable; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.emails.body_quotable IS 'The outbound HTML body as it stood immediately before EmailTrackingService decoration ΓÇö signature included, tracking pixel and rewritten links absent. Source for the quoted-history block on threaded replies. Never send this directly; it is quote material only. NULL for rows written before 2026_75 and for inbound mail.';
+COMMENT ON COLUMN public.emails.body_quotable IS 'The outbound HTML body as it stood immediately before EmailTrackingService decoration — signature included, tracking pixel and rewritten links absent. Source for the quoted-history block on threaded replies. Never send this directly; it is quote material only. NULL for rows written before 2026_75 and for inbound mail.';
 
 
 --
@@ -5167,7 +5167,7 @@ COMMENT ON COLUMN public.emails.body_format IS 'Format of body and body_quotable
 -- Name: COLUMN emails.handover_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.emails.handover_id IS 'The one project this message belongs to. Effective value, whether tagged directly or inherited from its conversation ΓÇö see tag_source.';
+COMMENT ON COLUMN public.emails.handover_id IS 'The one project this message belongs to. Effective value, whether tagged directly or inherited from its conversation — see tag_source.';
 
 
 --
@@ -5421,7 +5421,7 @@ COMMENT ON COLUMN public.project_play_instances.due_anchor IS 'created = offset 
 -- Name: COLUMN project_play_instances.depends_on; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.project_play_instances.depends_on IS 'Sibling project_play_instances.id values that must be completed or skipped before this task may start. INSTANCE ids ΓÇö not the play ids in playbook_plays.depends_on. NULL/empty means no prerequisites.';
+COMMENT ON COLUMN public.project_play_instances.depends_on IS 'Sibling project_play_instances.id values that must be completed or skipped before this task may start. INSTANCE ids — not the play ids in playbook_plays.depends_on. NULL/empty means no prerequisites.';
 
 
 --
@@ -5575,7 +5575,7 @@ COMMENT ON TABLE public.sales_handovers IS 'One record per closed_won deal. Crea
 -- Name: COLUMN sales_handovers.playbook_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.sales_handovers.playbook_id IS 'The handover_s2i playbook active at time of creation. Play instances are linked via sales_handover_plays. Nullable ΓÇö handover works without it.';
+COMMENT ON COLUMN public.sales_handovers.playbook_id IS 'The handover_s2i playbook active at time of creation. Play instances are linked via sales_handover_plays. Nullable — handover works without it.';
 
 
 --
@@ -5603,7 +5603,7 @@ COMMENT ON COLUMN public.sales_handovers.project_kind IS 'customer = delivery fo
 -- Name: COLUMN sales_handovers.budget; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.sales_handovers.budget IS 'Planned spend, internal projects only. Not revenue ΓÇö see contract_value.';
+COMMENT ON COLUMN public.sales_handovers.budget IS 'Planned spend, internal projects only. Not revenue — see contract_value.';
 
 
 --
@@ -5631,7 +5631,7 @@ COMMENT ON COLUMN public.sales_handovers.signed_off_by IS 'The internal customer
 -- Name: COLUMN sales_handovers.media_capture_mode; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.sales_handovers.media_capture_mode IS 'always (default) = capture on arrival, no prompt; the team can still Remove. ask = capture, then prompt to Keep/Remove. never = do not capture; the message is marked skipped and stays visible so nothing is lost quietly. Capture is automatic by default because a Cloud API number has no app inbox ΓÇö an attachment GoWarm does not fetch is unreachable by anyone.';
+COMMENT ON COLUMN public.sales_handovers.media_capture_mode IS 'always (default) = capture on arrival, no prompt; the team can still Remove. ask = capture, then prompt to Keep/Remove. never = do not capture; the message is marked skipped and stays visible so nothing is lost quietly. Capture is automatic by default because a Cloud API number has no app inbox — an attachment GoWarm does not fetch is unreachable by anyone.';
 
 
 --
@@ -5673,7 +5673,7 @@ COMMENT ON COLUMN public.sales_handovers.retired_at IS 'Retirement, the standing
 -- Name: COLUMN sales_handovers.retired_by; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.sales_handovers.retired_by IS 'Who retired it. Moves with retired_at ΓÇö never set one alone.';
+COMMENT ON COLUMN public.sales_handovers.retired_by IS 'Who retired it. Moves with retired_at — never set one alone.';
 
 
 --
@@ -5810,7 +5810,7 @@ CREATE TABLE public.linkedin_connections (
 -- Name: TABLE linkedin_connections; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.linkedin_connections IS 'Full 1st-degree LinkedIn network roster per (org, owner). Separate from prospects; promote-on-signal. identity_key (app-computed, URNΓåÆslugΓåÆname+connected_on) is the per-(org,owner) uniqueness anchor.';
+COMMENT ON TABLE public.linkedin_connections IS 'Full 1st-degree LinkedIn network roster per (org, owner). Separate from prospects; promote-on-signal. identity_key (app-computed, URN→slug→name+connected_on) is the per-(org,owner) uniqueness anchor.';
 
 
 --
@@ -5824,7 +5824,7 @@ COMMENT ON COLUMN public.linkedin_connections.identity_key IS 'App-computed iden
 -- Name: COLUMN linkedin_connections.connected_on; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.linkedin_connections.connected_on IS 'LinkedIn "Connected On" date. Immutable across exports ΓÇö survives a company change, so it anchors move detection in the CSV bridge key.';
+COMMENT ON COLUMN public.linkedin_connections.connected_on IS 'LinkedIn "Connected On" date. Immutable across exports — survives a company change, so it anchors move detection in the CSV bridge key.';
 
 
 --
@@ -5877,7 +5877,7 @@ CREATE TABLE public.linkedin_message_events (
 -- Name: TABLE linkedin_message_events; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.linkedin_message_events IS 'Dedup ledger for LinkedIn inbox harvest. message_urn is LinkedIn''s stable backendUrn; counters on prospects bump only when a row inserts AND counted=true (post-acceptance gate, design doc ┬º5.3/F14).';
+COMMENT ON TABLE public.linkedin_message_events IS 'Dedup ledger for LinkedIn inbox harvest. message_urn is LinkedIn''s stable backendUrn; counters on prospects bump only when a row inserts AND counted=true (post-acceptance gate, design doc §5.3/F14).';
 
 
 --
@@ -5971,7 +5971,7 @@ CREATE TABLE public.list_signal_mappings (
 -- Name: TABLE list_signal_mappings; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.list_signal_mappings IS 'Reusable columnΓåÆsignal mapping templates for Motion-1 list ingest (P6). mappings is a jsonb array of {column, signal_key, entity, value_type, confidence?}. Org-shared (D10); created_by ΓçÆ rep-added. Shape-only validated.';
+COMMENT ON TABLE public.list_signal_mappings IS 'Reusable column→signal mapping templates for Motion-1 list ingest (P6). mappings is a jsonb array of {column, signal_key, entity, value_type, confidence?}. Org-shared (D10); created_by ⇒ rep-added. Shape-only validated.';
 
 
 --
@@ -6284,7 +6284,7 @@ COMMENT ON COLUMN public.msteams_connections.capture_enabled IS 'Pauses capture 
 -- Name: COLUMN msteams_connections.last_discovery_at; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.msteams_connections.last_discovery_at IS 'Teams membership changes silently ΓÇö nothing notifies us that a rep joined a channel. Discovery is a poll, and the age of this column is how the UI knows the triage list may be incomplete.';
+COMMENT ON COLUMN public.msteams_connections.last_discovery_at IS 'Teams membership changes silently — nothing notifies us that a rep joined a channel. Discovery is a poll, and the age of this column is how the UI knows the triage list may be incomplete.';
 
 
 --
@@ -6403,21 +6403,21 @@ CREATE TABLE public.msteams_conversations (
 -- Name: TABLE msteams_conversations; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.msteams_conversations IS 'Chats and channels a connected rep belongs to, as found by discovery. One row per (connection, conversation) ΓÇö two reps in the same channel is two rows, because watching is a per-rep decision. Phase 0 WRITES this table and captures nothing; 2026_126 reads is_watched to decide what to subscribe to.';
+COMMENT ON TABLE public.msteams_conversations IS 'Chats and channels a connected rep belongs to, as found by discovery. One row per (connection, conversation) — two reps in the same channel is two rows, because watching is a per-rep decision. Phase 0 WRITES this table and captures nothing; 2026_126 reads is_watched to decide what to subscribe to.';
 
 
 --
 -- Name: COLUMN msteams_conversations.kind; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.msteams_conversations.kind IS 'oneOnOne, group, meeting (auto-created per Teams call), or channel. Meeting chats dominate by volume ΓÇö 405 of 475 in the measured pilot tenant ΓÇö so triage hides them by default and capture ignores them unless somebody deliberately watches one. Graph''s chatType is an open enum; unrecognised values are mapped to ''group'' at ingest rather than failing the poll.';
+COMMENT ON COLUMN public.msteams_conversations.kind IS 'oneOnOne, group, meeting (auto-created per Teams call), or channel. Meeting chats dominate by volume — 405 of 475 in the measured pilot tenant — so triage hides them by default and capture ignores them unless somebody deliberately watches one. Graph''s chatType is an open enum; unrecognised values are mapped to ''group'' at ingest rather than failing the poll.';
 
 
 --
 -- Name: COLUMN msteams_conversations.graph_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.msteams_conversations.graph_id IS 'The chat id for a chat, or the channel id for a channel ΓÇö as Graph returns it, never a local id. This is the value that goes into conversation_bindings.thread_ref.';
+COMMENT ON COLUMN public.msteams_conversations.graph_id IS 'The chat id for a chat, or the channel id for a channel — as Graph returns it, never a local id. This is the value that goes into conversation_bindings.thread_ref.';
 
 
 --
@@ -6466,7 +6466,7 @@ COMMENT ON COLUMN public.msteams_conversations.is_readable IS 'Three states, del
 -- Name: COLUMN msteams_conversations.readability_error; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.msteams_conversations.readability_error IS 'What the probe got back. Surfaced to the rep verbatim-ish, because the remedy ΓÇö ask a channel owner to add you ΓÇö is something only they can action.';
+COMMENT ON COLUMN public.msteams_conversations.readability_error IS 'What the probe got back. Surfaced to the rep verbatim-ish, because the remedy — ask a channel owner to add you — is something only they can action.';
 
 
 --
@@ -6528,7 +6528,7 @@ COMMENT ON TABLE public.msteams_message_attachments IS 'Teams attachments as REF
 -- Name: COLUMN msteams_message_attachments.media_status; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.msteams_message_attachments.media_status IS 'linked = we hold a reference and it last resolved. stored = bytes copied into storage_files (not phase 1). unreachable = the pointer stopped resolving ΓÇö moved, unshared, or the owner left. This replaces WhatsApp''s ''expired'', which existed because Meta reaps media on a schedule; nobody reaps a customer''s SharePoint. skipped = deliberately not captured. removed = a human took it out.';
+COMMENT ON COLUMN public.msteams_message_attachments.media_status IS 'linked = we hold a reference and it last resolved. stored = bytes copied into storage_files (not phase 1). unreachable = the pointer stopped resolving — moved, unshared, or the owner left. This replaces WhatsApp''s ''expired'', which existed because Meta reaps media on a schedule; nobody reaps a customer''s SharePoint. skipped = deliberately not captured. removed = a human took it out.';
 
 
 --
@@ -6606,7 +6606,7 @@ COMMENT ON TABLE public.msteams_messages IS 'Captured Teams messages. Both bodie
 -- Name: COLUMN msteams_messages.from_entra_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.msteams_messages.from_entra_id IS 'The sender''s Entra object id from chatMessage.from.user.id. NULL on system messages, where Graph sends from: null ΓÇö confirmed against the live tenant, not assumed. For those, the actors are inside eventDetail instead.';
+COMMENT ON COLUMN public.msteams_messages.from_entra_id IS 'The sender''s Entra object id from chatMessage.from.user.id. NULL on system messages, where Graph sends from: null — confirmed against the live tenant, not assumed. For those, the actors are inside eventDetail instead.';
 
 
 --
@@ -6620,7 +6620,7 @@ COMMENT ON COLUMN public.msteams_messages.from_user_id IS 'The resolved GoWarmCR
 -- Name: COLUMN msteams_messages.message_type; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.msteams_messages.message_type IS 'Graph''s messageType, stored VERBATIM and deliberately unconstrained. The live tenant returns ''unknownFutureValue'' for call-started and call-ended messages ΓÇö OData''s signal for an open enum ΓÇö so a value list here would turn every future Microsoft addition into a failed write. Classify with is_system_event, not with this.';
+COMMENT ON COLUMN public.msteams_messages.message_type IS 'Graph''s messageType, stored VERBATIM and deliberately unconstrained. The live tenant returns ''unknownFutureValue'' for call-started and call-ended messages — OData''s signal for an open enum — so a value list here would turn every future Microsoft addition into a failed write. Classify with is_system_event, not with this.';
 
 
 --
@@ -6641,7 +6641,7 @@ COMMENT ON COLUMN public.msteams_messages.body_current IS 'Follows changeType=up
 -- Name: COLUMN msteams_messages.mentions; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.msteams_messages.mentions IS 'Graph''s mentions array, stored whole. Carries resolved user and tag ids, which makes mention-based project matching deterministic rather than a regex over free text ΓÇö the main attribution advantage Teams has over WhatsApp.';
+COMMENT ON COLUMN public.msteams_messages.mentions IS 'Graph''s mentions array, stored whole. Carries resolved user and tag ids, which makes mention-based project matching deterministic rather than a regex over free text — the main attribution advantage Teams has over WhatsApp.';
 
 
 --
@@ -6655,7 +6655,7 @@ COMMENT ON COLUMN public.msteams_messages.deleted_at IS 'Set on changeType=delet
 -- Name: COLUMN msteams_messages.is_system_event; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.msteams_messages.is_system_event IS 'True when Graph attached an eventDetail block ΓÇö call started, member added, chat renamed. Derived from the PRESENCE of eventDetail rather than from messageType, which is an open enum and unreliable for this. Excluded from the project timeline by default: a handover does not need call-started for every meeting a rep attended.';
+COMMENT ON COLUMN public.msteams_messages.is_system_event IS 'True when Graph attached an eventDetail block — call started, member added, chat renamed. Derived from the PRESENCE of eventDetail rather than from messageType, which is an open enum and unreliable for this. Excluded from the project timeline by default: a handover does not need call-started for every meeting a rep attended.';
 
 
 --
@@ -6717,7 +6717,7 @@ CREATE TABLE public.msteams_subscriptions (
 -- Name: TABLE msteams_subscriptions; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.msteams_subscriptions IS 'Graph change-notification subscriptions, one per watched conversation. Created empty by 2026_125; written by 2026_126. Mirrored locally rather than listed from Graph because a silently dropped subscription does not appear in a list ΓÇö you find it by noticing messages stopped.';
+COMMENT ON TABLE public.msteams_subscriptions IS 'Graph change-notification subscriptions, one per watched conversation. Created empty by 2026_125; written by 2026_126. Mirrored locally rather than listed from Graph because a silently dropped subscription does not appear in a list — you find it by noticing messages stopped.';
 
 
 --
@@ -6731,7 +6731,7 @@ COMMENT ON COLUMN public.msteams_subscriptions.resource_path IS 'The resource we
 -- Name: COLUMN msteams_subscriptions.client_state; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.msteams_subscriptions.client_state IS 'Secret echoed by Graph on every notification. A notification that does not match it is discarded ΓÇö the only thing protecting the webhook from anyone who learns the URL.';
+COMMENT ON COLUMN public.msteams_subscriptions.client_state IS 'Secret echoed by Graph on every notification. A notification that does not match it is discarded — the only thing protecting the webhook from anyone who learns the URL.';
 
 
 --
@@ -6745,7 +6745,7 @@ COMMENT ON COLUMN public.msteams_subscriptions.status IS 'active = live. expirin
 -- Name: COLUMN msteams_subscriptions.graph_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.msteams_subscriptions.graph_id IS 'Denormalised from msteams_conversations so the uniqueness rule Graph actually enforces ΓÇö one subscription per app-and-conversation ΓÇö can be a unique index. A unique index cannot reach through a join, and the conversation_id key it replaces could not see two reps watching the same channel.';
+COMMENT ON COLUMN public.msteams_subscriptions.graph_id IS 'Denormalised from msteams_conversations so the uniqueness rule Graph actually enforces — one subscription per app-and-conversation — can be a unique index. A unique index cannot reach through a join, and the conversation_id key it replaces could not see two reps watching the same channel.';
 
 
 --
@@ -7029,7 +7029,7 @@ COMMENT ON COLUMN public.org_action_config.network_jobchange IS 'Org-level netwo
 -- Name: COLUMN org_action_config.sales_resolver; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.org_action_config.sales_resolver IS 'Background Sales-Nav URL resolver ORG policy (hard ceiling). Keys (all optional; services/salesResolverPolicy.js supplies defaults): enabled (default false, opt-in), max_per_user_per_day (default 100), min_gap_seconds (default 45), quiet_hours {start,end} local (default 22:00ΓÇô07:00), require_presence (default true). Per-user prefs in user_preferences.preferences->''sales_resolver'' may only tighten these; effective policy = element-wise min(user, org).';
+COMMENT ON COLUMN public.org_action_config.sales_resolver IS 'Background Sales-Nav URL resolver ORG policy (hard ceiling). Keys (all optional; services/salesResolverPolicy.js supplies defaults): enabled (default false, opt-in), max_per_user_per_day (default 100), min_gap_seconds (default 45), quiet_hours {start,end} local (default 22:00–07:00), require_presence (default true). Per-user prefs in user_preferences.preferences->''sales_resolver'' may only tighten these; effective policy = element-wise min(user, org).';
 
 
 --
@@ -7113,7 +7113,7 @@ CREATE TABLE public.org_functions (
 -- Name: TABLE org_functions; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.org_functions IS 'Org deltas over the code-level system function taxonomy (FunctionTaxonomyService.SYSTEM_FUNCTIONS). Row key matching a system key = partial override; new key = org-added function. placeholders is a PARTIAL map {leader|head|team|hire|tool ΓåÆ {label, keywords[]}} merged over the default.';
+COMMENT ON TABLE public.org_functions IS 'Org deltas over the code-level system function taxonomy (FunctionTaxonomyService.SYSTEM_FUNCTIONS). Row key matching a system key = partial override; new key = org-added function. placeholders is a PARTIAL map {leader|head|team|hire|tool → {label, keywords[]}} merged over the default.';
 
 
 --
@@ -7425,7 +7425,7 @@ CREATE TABLE public.org_status_labels (
 -- Name: TABLE org_status_labels; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.org_status_labels IS 'Per-org display labels for the CLOSED canonical status vocabulary. Relabelling only ΓÇö orgs cannot add, remove or merge states. Applied at API serialization; never used in query predicates.';
+COMMENT ON TABLE public.org_status_labels IS 'Per-org display labels for the CLOSED canonical status vocabulary. Relabelling only — orgs cannot add, remove or merge states. Applied at API serialization; never used in query predicates.';
 
 
 --
@@ -7476,7 +7476,7 @@ CREATE TABLE public.org_storage_accounts (
 -- Name: TABLE org_storage_accounts; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.org_storage_accounts IS 'An org-level cloud storage credential used to write WhatsApp attachments into the customer''s own storage. Not a per-user token: the webhook has no signed-in user, and a personal token would stop capture the day that person left. Optional ΓÇö Google orgs using a Shared Drive do not need one, because a Shared Drive already owns its files.';
+COMMENT ON TABLE public.org_storage_accounts IS 'An org-level cloud storage credential used to write WhatsApp attachments into the customer''s own storage. Not a per-user token: the webhook has no signed-in user, and a personal token would stop capture the day that person left. Optional — Google orgs using a Shared Drive do not need one, because a Shared Drive already owns its files.';
 
 
 --
@@ -7597,7 +7597,7 @@ COMMENT ON TABLE public.org_whatsapp_accounts IS 'Per-org WhatsApp Business Acco
 -- Name: COLUMN org_whatsapp_accounts.is_official_business_account; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.org_whatsapp_accounts.is_official_business_account IS 'Meta OBA status. Gates the Groups API ΓÇö without it, group creation returns a permissions error regardless of scopes.';
+COMMENT ON COLUMN public.org_whatsapp_accounts.is_official_business_account IS 'Meta OBA status. Gates the Groups API — without it, group creation returns a permissions error regardless of scopes.';
 
 
 --
@@ -7861,7 +7861,7 @@ CREATE TABLE public.play_evidence (
 -- Name: COLUMN play_evidence.storage_file_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.play_evidence.storage_file_id IS 'The uploaded file accepted as evidence (channel = ''file''), or ΓÇö for channel = ''whatsapp'' ΓÇö the stored copy of that message''s media. Live link only: NULL once the storage_files row is gone. The snapshot_* columns carry what was actually accepted.';
+COMMENT ON COLUMN public.play_evidence.storage_file_id IS 'The uploaded file accepted as evidence (channel = ''file''), or — for channel = ''whatsapp'' — the stored copy of that message''s media. Live link only: NULL once the storage_files row is gone. The snapshot_* columns carry what was actually accepted.';
 
 
 --
@@ -7875,7 +7875,7 @@ COMMENT ON COLUMN public.play_evidence.snapshot_web_url IS 'Provider URL as it s
 -- Name: COLUMN play_evidence.msteams_message_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.play_evidence.msteams_message_id IS 'The Teams message backing this evidence. Resolves to msteams_messages.body_original ΓÇö the body frozen at capture ΓÇö so a later edit in Teams cannot change what a play was built on.';
+COMMENT ON COLUMN public.play_evidence.msteams_message_id IS 'The Teams message backing this evidence. Resolves to msteams_messages.body_original — the body frozen at capture — so a later edit in Teams cannot change what a play was built on.';
 
 
 --
@@ -7978,7 +7978,7 @@ COMMENT ON TABLE public.play_notes IS 'Append-only running commentary on one pro
 -- Name: COLUMN play_notes.is_internal; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.play_notes.is_internal IS 'TRUE = delivery side only. Hidden from project members whose project_members.side is ''internal_customer'' ΓÇö the person who signs the work off. Has no effect on a customer project: external stakeholders have no login and never read this table.';
+COMMENT ON COLUMN public.play_notes.is_internal IS 'TRUE = delivery side only. Hidden from project members whose project_members.side is ''internal_customer'' — the person who signs the work off. Has no effect on a customer project: external stakeholders have no login and never read this table.';
 
 
 --
@@ -8510,7 +8510,7 @@ CREATE TABLE public.project_folders (
 -- Name: TABLE project_folders; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.project_folders IS 'Maps a cloud storage folder to a project. Covers subfolders: resolution matches the folder id anywhere in storage_files.folder_path. Mapping a folder does not import its contents ΓÇö it decides which project a file lands in when someone adds it.';
+COMMENT ON TABLE public.project_folders IS 'Maps a cloud storage folder to a project. Covers subfolders: resolution matches the folder id anywhere in storage_files.folder_path. Mapping a folder does not import its contents — it decides which project a file lands in when someone adds it.';
 
 
 --
@@ -8594,7 +8594,7 @@ COMMENT ON COLUMN public.project_members.side IS 'delivery = doing the work. int
 -- Name: COLUMN project_members.can_manage; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.project_members.can_manage IS 'Grants this member the same per-project authority as the service owner: approve task reviews, change member roles, set review watchers, manage project files. Scoped to this project only ΓÇö it confers nothing anywhere else in the org. Only meaningful while status = ''approved''.';
+COMMENT ON COLUMN public.project_members.can_manage IS 'Grants this member the same per-project authority as the service owner: approve task reviews, change member roles, set review watchers, manage project files. Scoped to this project only — it confers nothing anywhere else in the org. Only meaningful while status = ''approved''.';
 
 
 --
@@ -8737,7 +8737,7 @@ CREATE TABLE public.project_play_watchers (
 -- Name: COLUMN project_play_watchers.self_subscribed; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.project_play_watchers.self_subscribed IS 'TRUE when the person added themselves rather than being added by a manager. setWatchers() must not delete these rows ΓÇö the manager did not put them there and cannot see them in the picker. The person removes their own subscription, and removeMember/leaving the project clears it.';
+COMMENT ON COLUMN public.project_play_watchers.self_subscribed IS 'TRUE when the person added themselves rather than being added by a manager. setWatchers() must not delete these rows — the manager did not put them there and cannot see them in the picker. The person removes their own subscription, and removeMember/leaving the project clears it.';
 
 
 --
@@ -8795,14 +8795,14 @@ CREATE TABLE public.project_stages (
 -- Name: TABLE project_stages; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.project_stages IS 'Per-project stage definitions. Supplies name + ordering for stage_key values that are not in the project playbook. playbook_stages wins on conflict ΓÇö see COALESCE in handover.service._getPlays().';
+COMMENT ON TABLE public.project_stages IS 'Per-project stage definitions. Supplies name + ordering for stage_key values that are not in the project playbook. playbook_stages wins on conflict — see COALESCE in handover.service._getPlays().';
 
 
 --
 -- Name: COLUMN project_stages.source; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.project_stages.source IS 'catalogue = materialized from pipeline_stages at project creation; custom = created directly on this project. Provenance only ΓÇö it does not affect resolution, because this table is authoritative either way.';
+COMMENT ON COLUMN public.project_stages.source IS 'catalogue = materialized from pipeline_stages at project creation; custom = created directly on this project. Provenance only — it does not affect resolution, because this table is authoritative either way.';
 
 
 --
@@ -8970,14 +8970,14 @@ CREATE TABLE public.prospect_notes (
 -- Name: TABLE prospect_notes; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.prospect_notes IS 'Append-only attributed notes log per prospect (extension side panel). Entries are immutable once written ΓÇö API is GET+POST only, and trg_prospect_notes_immutable rejects UPDATEs at the DB level. Anyone in the org who can view the prospect may read/append.';
+COMMENT ON TABLE public.prospect_notes IS 'Append-only attributed notes log per prospect (extension side panel). Entries are immutable once written — API is GET+POST only, and trg_prospect_notes_immutable rejects UPDATEs at the DB level. Anyone in the org who can view the prospect may read/append.';
 
 
 --
 -- Name: COLUMN prospect_notes.user_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.prospect_notes.user_id IS 'Author ΓÇö the user who wrote the entry. Immutable, like the rest of the row.';
+COMMENT ON COLUMN public.prospect_notes.user_id IS 'Author — the user who wrote the entry. Immutable, like the rest of the row.';
 
 
 --
@@ -9042,7 +9042,7 @@ CREATE TABLE public.prospecting_actions (
     id integer NOT NULL,
     org_id integer NOT NULL,
     user_id integer,
-    prospect_id integer NOT NULL,
+    prospect_id integer,
     title character varying(255) NOT NULL,
     description text,
     action_type character varying(50) NOT NULL,
@@ -9077,6 +9077,7 @@ CREATE TABLE public.prospecting_actions (
     escalation_tier smallint DEFAULT 0 NOT NULL,
     auto_completed boolean DEFAULT false NOT NULL,
     CONSTRAINT chk_paction_channel CHECK (((channel IS NULL) OR ((channel)::text = ANY (ARRAY['email'::text, 'linkedin'::text, 'phone'::text, 'sms'::text, 'whatsapp'::text, 'general'::text])))),
+    CONSTRAINT chk_paction_prospect_required CHECK (((prospect_id IS NOT NULL) OR ((action_type)::text = ANY ((ARRAY['campaign_activation_overdue'::character varying, 'campaign_research_overdue'::character varying])::text[])))),
     CONSTRAINT chk_paction_status CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'in_progress'::character varying, 'completed'::character varying, 'skipped'::character varying, 'failed'::character varying, 'snoozed'::character varying])::text[])))
 );
 
@@ -9195,14 +9196,14 @@ CREATE TABLE public.prospecting_campaigns (
 -- Name: COLUMN prospecting_campaigns.tracking_clicks; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.prospecting_campaigns.tracking_clicks IS 'Per-campaign click-tracking toggle (Phase 7, default OFF). Written ONLY via PUT /api/tracking-domains/campaign/:id/toggles ΓÇö isolated from the config-override replace semantics.';
+COMMENT ON COLUMN public.prospecting_campaigns.tracking_clicks IS 'Per-campaign click-tracking toggle (Phase 7, default OFF). Written ONLY via PUT /api/tracking-domains/campaign/:id/toggles — isolated from the config-override replace semantics.';
 
 
 --
 -- Name: COLUMN prospecting_campaigns.activity_type; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.prospecting_campaigns.activity_type IS 'Campaign purpose (D16): outreach | field_event | digital | discovery. Metadata only ΓÇö signal-based targeting is activity-agnostic; this drives which Execution fields the staged New Campaign shows (playbook/sequence/schedule are outreach-only). Existing rows default to outreach.';
+COMMENT ON COLUMN public.prospecting_campaigns.activity_type IS 'Campaign purpose (D16): outreach | field_event | digital | discovery. Metadata only — signal-based targeting is activity-agnostic; this drives which Execution fields the staged New Campaign shows (playbook/sequence/schedule are outreach-only). Existing rows default to outreach.';
 
 
 --
@@ -9223,7 +9224,7 @@ COMMENT ON COLUMN public.prospecting_campaigns.sending_paused IS 'Operational br
 -- Name: COLUMN prospecting_campaigns.client_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.prospecting_campaigns.client_id IS 'Agency module: the client this campaign runs for. NULL = ordinary campaign. Prospects placed into a client campaign inherit client_id (set-if-null) via trg_prospects_inherit_campaign_client ΓÇö see 2026_52_campaign_client_scoping.sql.';
+COMMENT ON COLUMN public.prospecting_campaigns.client_id IS 'Agency module: the client this campaign runs for. NULL = ordinary campaign. Prospects placed into a client campaign inherit client_id (set-if-null) via trg_prospects_inherit_campaign_client — see 2026_52_campaign_client_scoping.sql.';
 
 
 --
@@ -9326,7 +9327,7 @@ COMMENT ON TABLE public.prospecting_insights IS 'Aggregate diagnostic findings f
 -- Name: COLUMN prospecting_insights.evidence; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.prospecting_insights.evidence IS 'Drill-down payload: sampled raw-row IDs (step_log_ids, prospect_ids, delivery_event_ids ΓÇö capped at 50 each) plus the per-segment breakdown table shown at drill level 2. IDs are samples from the current window matching the segment, not exhaustive.';
+COMMENT ON COLUMN public.prospecting_insights.evidence IS 'Drill-down payload: sampled raw-row IDs (step_log_ids, prospect_ids, delivery_event_ids — capped at 50 each) plus the per-segment breakdown table shown at drill level 2. IDs are samples from the current window matching the segment, not exhaustive.';
 
 
 --
@@ -9391,7 +9392,7 @@ CREATE TABLE public.prospecting_metric_daily (
 -- Name: TABLE prospecting_metric_daily; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.prospecting_metric_daily IS 'Daily-grain raw-count snapshot of the outbound motion. Written nightly by MetricSnapshotService (trailing 7 org-local days, DELETE+INSERT). Feeds WBR frames and OutboundInsightEngine. Rates are NEVER stored here ΓÇö always recomputed from summed counts. See docs/INSIGHTS_WBR_DESIGN.md.';
+COMMENT ON TABLE public.prospecting_metric_daily IS 'Daily-grain raw-count snapshot of the outbound motion. Written nightly by MetricSnapshotService (trailing 7 org-local days, DELETE+INSERT). Feeds WBR frames and OutboundInsightEngine. Rates are NEVER stored here — always recomputed from summed counts. See docs/INSIGHTS_WBR_DESIGN.md.';
 
 
 --
@@ -9405,7 +9406,7 @@ COMMENT ON COLUMN public.prospecting_metric_daily.metric_date IS 'Org-local cale
 -- Name: COLUMN prospecting_metric_daily.campaign_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.prospecting_metric_daily.campaign_id IS '0 = unattributed (prospects.campaign_id IS NULL). Never NULL ΓÇö sentinel keeps the unique grain sound.';
+COMMENT ON COLUMN public.prospecting_metric_daily.campaign_id IS '0 = unattributed (prospects.campaign_id IS NULL). Never NULL — sentinel keeps the unique grain sound.';
 
 
 --
@@ -9419,7 +9420,7 @@ COMMENT ON COLUMN public.prospecting_metric_daily.replied_steps IS 'Step logs wh
 -- Name: COLUMN prospecting_metric_daily.replies; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.prospecting_metric_daily.replies IS 'Replies counted on the date RECEIVED (period-based reply attribution, D18). Reply rate for a period = SUM(replies)/SUM(sent) over that period ΓÇö not a per-send cohort rate.';
+COMMENT ON COLUMN public.prospecting_metric_daily.replies IS 'Replies counted on the date RECEIVED (period-based reply attribution, D18). Reply rate for a period = SUM(replies)/SUM(sent) over that period — not a per-send cohort rate.';
 
 
 --
@@ -9440,14 +9441,14 @@ COMMENT ON COLUMN public.prospecting_metric_daily.bounces_hard IS 'email_deliver
 -- Name: COLUMN prospecting_metric_daily.opens; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.prospecting_metric_daily.opens IS 'Human-classified (is_bot=false) opens by occurred date. UNIQUE per (step_log, day) ΓÇö repeat opens of the same send on the same day count once. Directional metric (Apple MPP inflation).';
+COMMENT ON COLUMN public.prospecting_metric_daily.opens IS 'Human-classified (is_bot=false) opens by occurred date. UNIQUE per (step_log, day) — repeat opens of the same send on the same day count once. Directional metric (Apple MPP inflation).';
 
 
 --
 -- Name: COLUMN prospecting_metric_daily.variant_key; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.prospecting_metric_daily.variant_key IS '''-'' = unattributed (no enrollment join, or enrollment not in a test). Never NULL ΓÇö sentinel keeps the unique grain sound, matching campaign_id=0 / fit_band=''unknown''.';
+COMMENT ON COLUMN public.prospecting_metric_daily.variant_key IS '''-'' = unattributed (no enrollment join, or enrollment not in a test). Never NULL — sentinel keeps the unique grain sound, matching campaign_id=0 / fit_band=''unknown''.';
 
 
 --
@@ -9617,14 +9618,14 @@ COMMENT ON COLUMN public.prospects.linkedin_headline IS 'Free-text headline show
 -- Name: COLUMN prospects.member_urn; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.prospects.member_urn IS 'Stable LinkedIn fsd_profile URN (urn:li:fsd_profile:ΓÇª). Captured by the Chrome extension, owner-bound to the profile slug. Preferred over linkedin_url for auto-send targeting and capture-time dedup (slug-change resilient). Nullable, non-unique by design.';
+COMMENT ON COLUMN public.prospects.member_urn IS 'Stable LinkedIn fsd_profile URN (urn:li:fsd_profile:…). Captured by the Chrome extension, owner-bound to the profile slug. Preferred over linkedin_url for auto-send targeting and capture-time dedup (slug-change resilient). Nullable, non-unique by design.';
 
 
 --
 -- Name: COLUMN prospects.sales_profile_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.prospects.sales_profile_id IS 'Stable LinkedIn Sales Navigator fs_salesProfile id (the opaque token in urn:li:fs_salesProfile:(<id>,ΓÇª)). Captured by the Chrome extension from Sales-Nav lists/searches/profiles. The only durable identity a Sales-Nav list row carries. Used for capture-time dedup (member_urn ΓåÆ sales_profile_id ΓåÆ slug). Nullable, non-unique, set only when empty (never overwritten).';
+COMMENT ON COLUMN public.prospects.sales_profile_id IS 'Stable LinkedIn Sales Navigator fs_salesProfile id (the opaque token in urn:li:fs_salesProfile:(<id>,…)). Captured by the Chrome extension from Sales-Nav lists/searches/profiles. The only durable identity a Sales-Nav list row carries. Used for capture-time dedup (member_urn → sales_profile_id → slug). Nullable, non-unique, set only when empty (never overwritten).';
 
 
 --
@@ -9897,7 +9898,7 @@ CREATE TABLE public.sequence_enrollments (
 -- Name: COLUMN sequence_enrollments.variant_key; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.sequence_enrollments.variant_key IS 'A/B arm, sticky for the life of the enrollment. NULL = not in a test (or enrolled before the sequence had variants). Assigned by ExperimentAssigner as a pure hash of (sequence_id, prospect_id) ΓÇö never Math.random().';
+COMMENT ON COLUMN public.sequence_enrollments.variant_key IS 'A/B arm, sticky for the life of the enrollment. NULL = not in a test (or enrolled before the sequence had variants). Assigned by ExperimentAssigner as a pure hash of (sequence_id, prospect_id) — never Math.random().';
 
 
 --
@@ -9911,7 +9912,7 @@ COMMENT ON COLUMN public.sequence_enrollments.experiment_id IS 'The experiment t
 -- Name: COLUMN sequence_enrollments.pinned_sender_account_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.sequence_enrollments.pinned_sender_account_id IS 'The prospecting_sender_accounts.id this enrollment is pinned to once its first email sends (threading or pin_sender). NULL until the first email; after that the firer restricts the sender pool to this id. Soft reference ΓÇö app logic owns integrity.';
+COMMENT ON COLUMN public.sequence_enrollments.pinned_sender_account_id IS 'The prospecting_sender_accounts.id this enrollment is pinned to once its first email sends (threading or pin_sender). NULL until the first email; after that the firer restricts the sender pool to this id. Soft reference — app logic owns integrity.';
 
 
 --
@@ -9996,7 +9997,7 @@ COMMENT ON TABLE public.sequence_experiments IS 'One A/B experiment over one seq
 -- Name: COLUMN sequence_experiments.winning_variant_key; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.sequence_experiments.winning_variant_key IS 'Set at conclude time. Purely a record ΓÇö promoting the winner into sequence_steps is a separate, explicit action (POST /:id/experiments/:expId/conclude with promoteWinner: true).';
+COMMENT ON COLUMN public.sequence_experiments.winning_variant_key IS 'Set at conclude time. Purely a record — promoting the winner into sequence_steps is a separate, explicit action (POST /:id/experiments/:expId/conclude with promoteWinner: true).';
 
 
 --
@@ -10132,21 +10133,21 @@ COMMENT ON TABLE public.sequence_step_variants IS 'Step-level A/B copy. A step i
 -- Name: COLUMN sequence_step_variants.task_note; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.sequence_step_variants.task_note IS 'Present for model uniformity. Never written in v1 ΓÇö call/task steps are not variable (task_note is an instruction to a rep, not content sent to a prospect).';
+COMMENT ON COLUMN public.sequence_step_variants.task_note IS 'Present for model uniformity. Never written in v1 — call/task steps are not variable (task_note is an instruction to a rep, not content sent to a prospect).';
 
 
 --
 -- Name: COLUMN sequence_step_variants.weight; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.sequence_step_variants.weight IS 'Relative split weight, 0-100. Read from the LOWEST step_order varied step only ΓÇö all varied steps in a sequence must declare the same arm set (enforced in routes/sequence-variants.routes.js).';
+COMMENT ON COLUMN public.sequence_step_variants.weight IS 'Relative split weight, 0-100. Read from the LOWEST step_order varied step only — all varied steps in a sequence must declare the same arm set (enforced in routes/sequence-variants.routes.js).';
 
 
 --
 -- Name: COLUMN sequence_step_variants.experiment_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.sequence_step_variants.experiment_id IS 'Scopes the arm. The send-time overlay matches (experiment_id, sequence_step_id, variant_key) ΓÇö never variant_key alone, or a second test would rewrite the copy of enrollments still in flight from the first.';
+COMMENT ON COLUMN public.sequence_step_variants.experiment_id IS 'Scopes the arm. The send-time overlay matches (experiment_id, sequence_step_id, variant_key) — never variant_key alone, or a second test would rewrite the copy of enrollments still in flight from the first.';
 
 
 --
@@ -10273,7 +10274,7 @@ CREATE TABLE public.sequences (
 -- Name: COLUMN sequences.client_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.sequences.client_id IS 'RESERVED ΓÇö not read or written by any code path as of 2026_53. Per-client sequence attribution is DERIVED via enrollments ΓåÆ prospects.client_id (see GET /clients/all/sequences). Kept for a possible future client-private sequence-template feature; do not assume it is populated.';
+COMMENT ON COLUMN public.sequences.client_id IS 'RESERVED — not read or written by any code path as of 2026_53. Per-client sequence attribution is DERIVED via enrollments → prospects.client_id (see GET /clients/all/sequences). Kept for a possible future client-private sequence-template feature; do not assume it is populated.';
 
 
 --
@@ -10287,14 +10288,14 @@ COMMENT ON COLUMN public.sequences.ai_enabled IS 'Whether this sequence uses AI 
 -- Name: COLUMN sequences.stop_on_connection_accept; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.sequences.stop_on_connection_accept IS 'When true, the firer stops active enrollments (status=connected, stop_reason=connection_accepted) once the prospect''s LinkedIn connection is accepted after enrollment, and skips their pending step-log rows. Default false ΓÇö opt-in per sequence from the builder UI.';
+COMMENT ON COLUMN public.sequences.stop_on_connection_accept IS 'When true, the firer stops active enrollments (status=connected, stop_reason=connection_accepted) once the prospect''s LinkedIn connection is accepted after enrollment, and skips their pending step-log rows. Default false — opt-in per sequence from the builder UI.';
 
 
 --
 -- Name: COLUMN sequences.ab_max_varied_steps; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.sequences.ab_max_varied_steps IS 'Per-sequence override for the max number of steps that may carry active variants. NULL = fall back to org settings->prospecting_config->>ab_max_varied_steps, which itself defaults to 1. Raising this above 1 means a reply is no longer attributable to a single step ΓÇö you are testing the whole arm.';
+COMMENT ON COLUMN public.sequences.ab_max_varied_steps IS 'Per-sequence override for the max number of steps that may carry active variants. NULL = fall back to org settings->prospecting_config->>ab_max_varied_steps, which itself defaults to 1. Raising this above 1 means a reply is no longer attributable to a single step — you are testing the whole arm.';
 
 
 --
@@ -10329,7 +10330,7 @@ COMMENT ON COLUMN public.sequences.thread_failover_mode IS 'defer = on pinned-se
 -- Name: COLUMN sequences.body_format; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.sequences.body_format IS 'Wire format for this sequence''s outbound email: html (default) or plain. plain sends text/plain, which disables open and click tracking because the pixel and rewritten hrefs cannot survive it. Cannot be changed while the sequence has active enrollments ΓÇö see PUT /api/sequences/:id. As of 2026_76.';
+COMMENT ON COLUMN public.sequences.body_format IS 'Wire format for this sequence''s outbound email: html (default) or plain. plain sends text/plain, which disables open and click tracking because the pixel and rewritten hrefs cannot survive it. Cannot be changed while the sequence has active enrollments — see PUT /api/sequences/:id. As of 2026_76.';
 
 
 --
@@ -10646,14 +10647,14 @@ CREATE TABLE public.storage_files (
 -- Name: TABLE storage_files; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.storage_files IS 'References to files imported from cloud storage (OneDrive, Google Drive). Files are not duplicated here ΓÇö web_url opens them directly in the provider. Only extracted insights and short evidence snippets are stored.';
+COMMENT ON TABLE public.storage_files IS 'References to files imported from cloud storage (OneDrive, Google Drive). Files are not duplicated here — web_url opens them directly in the provider. Only extracted insights and short evidence snippets are stored.';
 
 
 --
 -- Name: COLUMN storage_files.provider_file_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.storage_files.provider_file_id IS 'Opaque provider-specific file ID (e.g. OneDrive item ID or Google Drive file ID). Used internally for API calls ΓÇö never shown to users. See source_label instead.';
+COMMENT ON COLUMN public.storage_files.provider_file_id IS 'Opaque provider-specific file ID (e.g. OneDrive item ID or Google Drive file ID). Used internally for API calls — never shown to users. See source_label instead.';
 
 
 --
@@ -10681,7 +10682,7 @@ COMMENT ON COLUMN public.storage_files.folder_path IS 'Ancestor folder ids, near
 -- Name: COLUMN storage_files.handover_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.storage_files.handover_id IS 'The one project this file belongs to. Effective value, whether it was tagged directly or inherited from a mapped folder ΓÇö see tag_source.';
+COMMENT ON COLUMN public.storage_files.handover_id IS 'The one project this file belongs to. Effective value, whether it was tagged directly or inherited from a mapped folder — see tag_source.';
 
 
 --
@@ -10832,7 +10833,7 @@ CREATE TABLE public.super_admin_audit_log (
 -- Name: COLUMN super_admin_audit_log.super_admin_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.super_admin_audit_log.super_admin_id IS 'The super admin who performed the action. NULL once that user has been deleted (2026_123): the audit entry is platform history and outlives the account it names ΓÇö what was done and when survives, only the attribution is lost. Readers must treat NULL as "deleted user", not as "no actor".';
+COMMENT ON COLUMN public.super_admin_audit_log.super_admin_id IS 'The super admin who performed the action. NULL once that user has been deleted (2026_123): the audit entry is platform history and outlives the account it names — what was done and when survives, only the attribution is lost. Readers must treat NULL as "deleted user", not as "no actor".';
 
 
 --
@@ -10911,7 +10912,7 @@ CREATE TABLE public.target_profiles (
 -- Name: TABLE target_profiles; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.target_profiles IS 'Reusable, function-tagged Target Criteria sets (D3/D4). A campaign starts from one: criteria are COPIED into the campaign targeting override at creation (template, not live link). Org-shared (D10); created_by ΓçÆ rep-added.';
+COMMENT ON TABLE public.target_profiles IS 'Reusable, function-tagged Target Criteria sets (D3/D4). A campaign starts from one: criteria are COPIED into the campaign targeting override at creation (template, not live link). Org-shared (D10); created_by ⇒ rep-added.';
 
 
 --
@@ -10963,7 +10964,7 @@ COMMENT ON TABLE public.team_dimensions IS 'Org-configurable vocabulary for team
 -- Name: COLUMN team_dimensions.key; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.team_dimensions.key IS 'Stable machine key ΓÇö used in code, never changes after creation.';
+COMMENT ON COLUMN public.team_dimensions.key IS 'Stable machine key — used in code, never changes after creation.';
 
 
 --
@@ -11091,7 +11092,7 @@ CREATE TABLE public.tracking_domains (
 -- Name: TABLE tracking_domains; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.tracking_domains IS 'Per-customer CNAME tracking domains (Phase 7). status=active means DNS verified AND TLS cert issued ΓÇö only then does send-time decoration run. The CNAME target (track.gowarmcrm.com) is the stable customer contract; TLS provider is swappable (D38).';
+COMMENT ON TABLE public.tracking_domains IS 'Per-customer CNAME tracking domains (Phase 7). status=active means DNS verified AND TLS cert issued — only then does send-time decoration run. The CNAME target (track.gowarmcrm.com) is the stable customer contract; TLS provider is swappable (D38).';
 
 
 --
@@ -11317,7 +11318,7 @@ COMMENT ON COLUMN public.users.department IS 'Functional department: sales | leg
 -- Name: COLUMN users.whatsapp_phone; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.users.whatsapp_phone IS 'E.164 digits, no +. SECURITY BOUNDARY: this is what links a user to whatsapp_thread_participants rows and therefore decides which captured groups they may search. Must never be self-editable without verification ΓÇö see whatsapp_phone_source.';
+COMMENT ON COLUMN public.users.whatsapp_phone IS 'E.164 digits, no +. SECURITY BOUNDARY: this is what links a user to whatsapp_thread_participants rows and therefore decides which captured groups they may search. Must never be self-editable without verification — see whatsapp_phone_source.';
 
 
 --
@@ -11547,7 +11548,7 @@ COMMENT ON COLUMN public.whatsapp_messages.media_reviewed_by IS 'Who answered th
 -- Name: COLUMN whatsapp_messages.wa_media_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.whatsapp_messages.wa_media_id IS 'Meta media id from the inbound webhook. Exchange for a short-lived download URL. Valid for roughly 30 days, which is the whole retry window ΓÇö after that the file is gone from Meta and cannot be recovered.';
+COMMENT ON COLUMN public.whatsapp_messages.wa_media_id IS 'Meta media id from the inbound webhook. Exchange for a short-lived download URL. Valid for roughly 30 days, which is the whole retry window — after that the file is gone from Meta and cannot be recovered.';
 
 
 --
@@ -11561,7 +11562,7 @@ COMMENT ON COLUMN public.whatsapp_messages.media_expires_at IS 'Best-effort esti
 -- Name: COLUMN whatsapp_messages.handover_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.whatsapp_messages.handover_id IS 'The project THIS message belongs to. Set from the project it was sent from (outbound) or inherited from the thread (inbound). Distinct from whatsapp_threads.handover_id, which is the project that owns the conversation as a whole ΓÇö one person has exactly one direct thread, but can be on several projects.';
+COMMENT ON COLUMN public.whatsapp_messages.handover_id IS 'The project THIS message belongs to. Set from the project it was sent from (outbound) or inherited from the thread (inbound). Distinct from whatsapp_threads.handover_id, which is the project that owns the conversation as a whole — one person has exactly one direct thread, but can be on several projects.';
 
 
 --
@@ -11617,7 +11618,7 @@ COMMENT ON COLUMN public.whatsapp_messages.media_source IS 'cloud_api = fetch by
 -- Name: COLUMN whatsapp_messages.session_media_ref; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.whatsapp_messages.session_media_ref IS 'Baileys media descriptor: mediaType, mediaKey (base64 ΓÇö a DECRYPTION KEY), directPath, fileEncSha256, fileSha256. Held only until the bytes reach the customer''s storage, then cleared. Never populated for Cloud API media.';
+COMMENT ON COLUMN public.whatsapp_messages.session_media_ref IS 'Baileys media descriptor: mediaType, mediaKey (base64 — a DECRYPTION KEY), directPath, fileEncSha256, fileSha256. Held only until the bytes reach the customer''s storage, then cleared. Never populated for Cloud API media.';
 
 
 --
@@ -11736,7 +11737,7 @@ CREATE TABLE public.whatsapp_session_group_members (
 -- Name: TABLE whatsapp_session_group_members; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.whatsapp_session_group_members IS 'Org users known to be in a DECIDED group. Rows for undecided groups are not written ΓÇö membership in someone''s family chat is not ours to record.';
+COMMENT ON TABLE public.whatsapp_session_group_members IS 'Org users known to be in a DECIDED group. Rows for undecided groups are not written — membership in someone''s family chat is not ours to record.';
 
 
 --
@@ -11799,7 +11800,7 @@ CREATE TABLE public.whatsapp_session_groups (
 -- Name: TABLE whatsapp_session_groups; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.whatsapp_session_groups IS 'Groups a human has DECIDED about ΓÇö watched, or bound to a project. NOT a catalogue of every group the number belongs to. The full list is fetched live from the worker and held in API memory with a short TTL; it is never persisted. Cataloguing everything created a 306-row table of one person''s alumni groups, residents'' associations and birthday threads, retained indefinitely, about people with no relationship to this product.';
+COMMENT ON TABLE public.whatsapp_session_groups IS 'Groups a human has DECIDED about — watched, or bound to a project. NOT a catalogue of every group the number belongs to. The full list is fetched live from the worker and held in API memory with a short TTL; it is never persisted. Cataloguing everything created a 306-row table of one person''s alumni groups, residents'' associations and birthday threads, retained indefinitely, about people with no relationship to this product.';
 
 
 --
@@ -11813,7 +11814,7 @@ COMMENT ON COLUMN public.whatsapp_session_groups.binding_status IS 'unbound = ca
 -- Name: COLUMN whatsapp_session_groups.is_watched; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.whatsapp_session_groups.is_watched IS 'Explicit opt-in to storing message content from this group. In allowlist mode this is the ONLY thing that permits capture ΓÇö binding to a project does not imply it, because someone may want to review a group before its contents are retained.';
+COMMENT ON COLUMN public.whatsapp_session_groups.is_watched IS 'Explicit opt-in to storing message content from this group. In allowlist mode this is the ONLY thing that permits capture — binding to a project does not imply it, because someone may want to review a group before its contents are retained.';
 
 
 --
@@ -11903,7 +11904,7 @@ COMMENT ON TABLE public.whatsapp_sessions IS 'A WhatsApp number observed via a c
 -- Name: COLUMN whatsapp_sessions.phone_last_seen_at; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.whatsapp_sessions.phone_last_seen_at IS 'When the PRIMARY handset was last confirmed opened. Not detectable from the protocol ΓÇö set by a human via the admin UI. WhatsApp unlinks all companion devices at 14 days.';
+COMMENT ON COLUMN public.whatsapp_sessions.phone_last_seen_at IS 'When the PRIMARY handset was last confirmed opened. Not detectable from the protocol — set by a human via the admin UI. WhatsApp unlinks all companion devices at 14 days.';
 
 
 --
@@ -11917,7 +11918,7 @@ COMMENT ON COLUMN public.whatsapp_sessions.heartbeat_at IS 'Written on a timer w
 -- Name: COLUMN whatsapp_sessions.stale_socket_minutes; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.whatsapp_sessions.stale_socket_minutes IS 'Watchdog threshold. Baileys can hold a socket WhatsApp has abandoned ΓÇö connection.update never fires, messages never arrive, and status stays "connected". This is what catches that.';
+COMMENT ON COLUMN public.whatsapp_sessions.stale_socket_minutes IS 'Watchdog threshold. Baileys can hold a socket WhatsApp has abandoned — connection.update never fires, messages never arrive, and status stays "connected". This is what catches that.';
 
 
 --
@@ -11938,7 +11939,7 @@ COMMENT ON COLUMN public.whatsapp_sessions.media_max_bytes IS 'Largest session a
 -- Name: COLUMN whatsapp_sessions.media_retention_days; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.whatsapp_sessions.media_retention_days IS 'Assumed WhatsApp CDN retention for companion-device media, in days. Default 14. Only an estimate: WhatsApp does not document it, and updateMediaMessage ΓÇö the re-upload request that would remove the guesswork ΓÇö is deliberately never called, because it makes the session transmit.';
+COMMENT ON COLUMN public.whatsapp_sessions.media_retention_days IS 'Assumed WhatsApp CDN retention for companion-device media, in days. Default 14. Only an estimate: WhatsApp does not document it, and updateMediaMessage — the re-upload request that would remove the guesswork — is deliberately never called, because it makes the session transmit.';
 
 
 --
@@ -12063,7 +12064,7 @@ CREATE TABLE public.whatsapp_templates (
 -- Name: COLUMN whatsapp_templates.category; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.whatsapp_templates.category IS 'Drives cost. In India (Jan 2026 rate card) UTILITY is ~Rs 0.115 per delivered message vs MARKETING at ~Rs 0.863 ΓÇö roughly 7.5x. Every operational GoWarmCRM notification (milestone due, sign-off request, status change) is legitimately UTILITY. Mis-categorising these as MARKETING is the single most expensive mistake available on this channel.';
+COMMENT ON COLUMN public.whatsapp_templates.category IS 'Drives cost. In India (Jan 2026 rate card) UTILITY is ~Rs 0.115 per delivered message vs MARKETING at ~Rs 0.863 — roughly 7.5x. Every operational GoWarmCRM notification (milestone due, sign-off request, status change) is legitimately UTILITY. Mis-categorising these as MARKETING is the single most expensive mistake available on this channel.';
 
 
 --
@@ -12193,21 +12194,21 @@ CREATE TABLE public.whatsapp_threads (
 -- Name: COLUMN whatsapp_threads.wa_group_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.whatsapp_threads.wa_group_id IS 'Groups API group ID. Only ever set by group creation through our own API call ΓÇö an existing consumer-app group cannot be adopted, and only one Cloud API business may occupy a group.';
+COMMENT ON COLUMN public.whatsapp_threads.wa_group_id IS 'Groups API group ID. Only ever set by group creation through our own API call — an existing consumer-app group cannot be adopted, and only one Cloud API business may occupy a group.';
 
 
 --
 -- Name: COLUMN whatsapp_threads.window_expires_at; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.whatsapp_threads.window_expires_at IS 'last_inbound_at + 24h. While in the future, free-form (non-template) sends are permitted and currently free. Note: Meta has announced service-message pricing changes effective 1 Oct 2026 ΓÇö the permission stays, the "free" part does not. Do not hard-code the assumption that inside-window sends cost nothing.';
+COMMENT ON COLUMN public.whatsapp_threads.window_expires_at IS 'last_inbound_at + 24h. While in the future, free-form (non-template) sends are permitted and currently free. Note: Meta has announced service-message pricing changes effective 1 Oct 2026 — the permission stays, the "free" part does not. Do not hard-code the assumption that inside-window sends cost nothing.';
 
 
 --
 -- Name: COLUMN whatsapp_threads.source; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.whatsapp_threads.source IS 'Which transport owns this thread. cloud_api = Meta Graph, sendable. session = observed via a companion-device client, READ-ONLY ΓÇö wa_group_id holds a JID, not a Meta group id, and any Graph send against it will fail. listSendTargets() must exclude source=''session''.';
+COMMENT ON COLUMN public.whatsapp_threads.source IS 'Which transport owns this thread. cloud_api = Meta Graph, sendable. session = observed via a companion-device client, READ-ONLY — wa_group_id holds a JID, not a Meta group id, and any Graph send against it will fail. listSendTargets() must exclude source=''session''.';
 
 
 --
@@ -21104,7 +21105,7 @@ CREATE UNIQUE INDEX uq_org_whatsapp_accounts_phone_number_id ON public.org_whats
 -- Name: INDEX uq_org_whatsapp_accounts_phone_number_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON INDEX public.uq_org_whatsapp_accounts_phone_number_id IS 'Guarantees webhook attribution by phone_number_id is unambiguous ΓÇö a Meta number belongs to at most one org.';
+COMMENT ON INDEX public.uq_org_whatsapp_accounts_phone_number_id IS 'Guarantees webhook attribution by phone_number_id is unambiguous — a Meta number belongs to at most one org.';
 
 
 --
@@ -21118,7 +21119,7 @@ CREATE UNIQUE INDEX uq_org_whatsapp_accounts_waba_id ON public.org_whatsapp_acco
 -- Name: INDEX uq_org_whatsapp_accounts_waba_id; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON INDEX public.uq_org_whatsapp_accounts_waba_id IS 'Guarantees template-status webhook attribution by waba_id is unambiguous ΓÇö a WABA belongs to at most one org.';
+COMMENT ON INDEX public.uq_org_whatsapp_accounts_waba_id IS 'Guarantees template-status webhook attribution by waba_id is unambiguous — a WABA belongs to at most one org.';
 
 
 --
@@ -24879,7 +24880,7 @@ ALTER TABLE ONLY public.play_evidence
 -- Name: CONSTRAINT play_evidence_instance_fkey ON play_evidence; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON CONSTRAINT play_evidence_instance_fkey ON public.play_evidence IS 'ON DELETE CASCADE, and now actually reachable (2026_121). Scoped to the deleted task: the same message accepted as evidence on another task is a separate row with a different project_play_instance_id and is not touched. The whatsapp_messages row is never affected ΓÇö evidence is a citation, not the thing cited.';
+COMMENT ON CONSTRAINT play_evidence_instance_fkey ON public.play_evidence IS 'ON DELETE CASCADE, and now actually reachable (2026_121). Scoped to the deleted task: the same message accepted as evidence on another task is a separate row with a different project_play_instance_id and is not touched. The whatsapp_messages row is never affected — evidence is a citation, not the thing cited.';
 
 
 --
@@ -27411,5 +27412,5 @@ CREATE POLICY whatsapp_sessions_org_isolation ON public.whatsapp_sessions USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Mrx63KrYOaJwOSVhMC1t8xuW4RB6DXcejbuakHBLQ1f0h92aUAD4emDlpeYqJQo
+\unrestrict bASRwSChNJxS1F0BA8ayg8QMskbQeSeZMdf54cuCZbMJ3symowuSfLt0lgZkiT5
 

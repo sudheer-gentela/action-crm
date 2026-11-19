@@ -57,6 +57,7 @@ const AccessPolicy          = require('../services/AccessPolicy');
 const EnrollmentStepResolver = require('../services/EnrollmentStepResolver'); // identity-cursor + freeze copy-on-write
 const ExperimentAssigner     = require('../services/ExperimentAssigner');     // A/B arm assignment (2026_47)
 const CampaignAccess         = require('../services/CampaignAccess');        // isAdmin gate for A/B arm override
+const SequenceCreateService  = require('../services/SequenceCreateService'); // shared with the MCP create_sequence tool
 
 // ── Auth middleware on all routes ─────────────────────────────────────────────
 router.use(authenticateToken, orgContext);
@@ -211,71 +212,24 @@ router.get('/', async (req, res) => {
 });
 
 // POST /api/sequences  — body: { name, description, require_approval, ai_enabled, steps: [{channel, delay_days, subject_template, body_template, task_note, require_approval}] }
+// Validation + the sequence/steps transaction live in SequenceCreateService
+// (shared with the MCP create_sequence tool). UI-created sequences start
+// 'active' exactly as before; only the agent path creates drafts.
 router.post('/', async (req, res) => {
-  const { name, description, require_approval = true, ai_enabled = false, personalize_config_default = null, steps = [], visibility = 'shared', allow_manager_edit = false, stop_on_connection_accept = false,
-          thread_replies = false, pin_sender = false, thread_subject_mode = 'keep', thread_failover_mode = 'defer',
-          body_format = 'html' } = req.body;
-  if (!name?.trim()) return res.status(400).json({ error: { message: 'name is required' } });
-  const vis = visibility === 'private' ? 'private' : 'shared';
-
-  // Threaded-reply config (2026_71). Clamp enums to the CHECK-constrained values
-  // and enforce the invariant: threading forces sender pinning on.
-  // 2026_76: html unless explicitly plain. Unknown values fall back rather than
-  // hitting the CHECK constraint with a 500.
-  const bodyFormat         = body_format === 'plain' ? 'plain' : 'html';
-  const threadReplies      = thread_replies === true;
-  const pinSender          = threadReplies ? true : (pin_sender === true);
-  const threadSubjectMode  = thread_subject_mode === 're' ? 're' : 'keep';
-  const threadFailoverMode = thread_failover_mode === 'break' ? 'break' : 'defer';
-
-  const client = await pool.connect();
   try {
-    await client.query('BEGIN');
-
-    const seqRes = await client.query(
-      `INSERT INTO sequences (org_id, name, description, created_by, require_approval, ai_enabled, personalize_config_default, visibility, allow_manager_edit, stop_on_connection_accept,
-                             thread_replies, pin_sender, thread_subject_mode, thread_failover_mode,
-                             body_format)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
-      [req.orgId, name.trim(), description || null, req.user.userId, require_approval,
-       ai_enabled === true,
-       personalize_config_default ? JSON.stringify(personalize_config_default) : null,
-       vis, allow_manager_edit === true, stop_on_connection_accept === true,
-       threadReplies, pinSender, threadSubjectMode, threadFailoverMode,
-       bodyFormat]
-    );
-    const seq = seqRes.rows[0];
-
-    const insertedSteps = [];
-    for (let i = 0; i < steps.length; i++) {
-      const s = steps[i];
-      const sr = await client.query(
-        `INSERT INTO sequence_steps
-                     (sequence_id, org_id, step_order, channel, delay_days, delay_hours,
-                      subject_template, body_template, task_note, require_approval,
-                      personalize_config, step_intent, include_signature)
-              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
-        [seq.id, req.orgId, i + 1, s.channel, s.delay_days ?? 0, s.delay_hours ?? 0,
-         s.subject_template || null, s.body_template || null, s.task_note || null,
-         s.require_approval !== undefined ? s.require_approval : null,
-         s.personalize_config ? JSON.stringify(s.personalize_config) : null,
-         // Slice 3: step_intent — null means "auto-infer at dispatch time".
-         s.step_intent || null,
-         // 2026_74: omitted means true, so callers that don't know about the flag
-         // keep the signature.
-         s.include_signature !== false]
-      );
-      insertedSteps.push(sr.rows[0]);
+    const result = await SequenceCreateService.createSequence({
+      orgId:  req.orgId,
+      userId: req.user.userId,
+      input:  req.body,
+      status: 'active',
+    });
+    if (!result.ok) {
+      return res.status(result.status).json({ error: { message: result.message } });
     }
-
-    await client.query('COMMIT');
-    res.status(201).json({ sequence: { ...seq, steps: insertedSteps } });
+    res.status(201).json({ sequence: result.sequence });
   } catch (err) {
-    await client.query('ROLLBACK');
     console.error('sequences POST /', err);
     res.status(500).json({ error: { message: 'Failed to create sequence' } });
-  } finally {
-    client.release();
   }
 });
 
@@ -433,11 +387,29 @@ router.post('/enroll', async (req, res) => {
   const enrolled = [];
   const skipped  = [];
 
+  // Org isolation. prospectIds come straight from the request body, and the
+  // INSERT below stamps req.orgId on the enrollment without ever checking the
+  // prospect's own org — so any signed-in user could enroll another org's
+  // prospect into their sequence (and the firer would then contact them).
+  // Keep only ids that belong to this org and aren't deleted; report the rest
+  // as skipped with the same wording as a missing id, so the response never
+  // confirms that a foreign id exists.
+  const ownedRes = await pool.query(
+    `SELECT id FROM prospects WHERE org_id = $1 AND id = ANY($2::int[]) AND deleted_at IS NULL`,
+    [req.orgId, prospectIds.map(n => parseInt(n, 10)).filter(Number.isInteger)]
+  );
+  const ownedIds = new Set(ownedRes.rows.map(r => r.id));
+  const allowedProspectIds = [];
+  for (const prospectId of prospectIds) {
+    if (ownedIds.has(parseInt(prospectId, 10))) allowedProspectIds.push(prospectId);
+    else skipped.push({ prospectId, reason: 'prospect not found' });
+  }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    for (const prospectId of prospectIds) {
+    for (const prospectId of allowedProspectIds) {
       try {
         const nextDue = calcDueDate(firstDelayDays, firstDelayHours);
 
@@ -2856,18 +2828,50 @@ router.get('/:id', async (req, res) => {
 router.put('/:id', async (req, res) => {
   const { name, description, require_approval, ai_enabled, personalize_config_default, visibility, allow_manager_edit, stop_on_connection_accept,
           thread_replies, pin_sender, thread_subject_mode, thread_failover_mode,
-          body_format } = req.body;
+          body_format, status } = req.body;
   try {
     // Ownership gate — only the owner (or an admin, or a permitted manager) may
     // edit. Peers can view a shared sequence but not change it.
     const ownerRes = await pool.query(
-      `SELECT created_by, allow_manager_edit FROM sequences WHERE id = $1 AND org_id = $2`,
+      `SELECT created_by, allow_manager_edit, status FROM sequences WHERE id = $1 AND org_id = $2`,
       [req.params.id, req.orgId]
     );
     if (!ownerRes.rows.length) return res.status(404).json({ error: { message: 'Not found' } });
     if (!(await AccessPolicy.requireCanEdit(req, res, ownerRes.rows[0].created_by, {
       allowManagerEdit: ownerRes.rows[0].allow_manager_edit,
     }))) return;
+
+    // ── Publish (draft → active) ─────────────────────────────────────────────
+    // The only status change PUT allows. Agent-created sequences start as
+    // 'draft' (visible to all, but no enrollment path accepts them); publishing
+    // is the human review step that makes them usable. Archiving stays on
+    // DELETE /:id, which carries its own active-enrollment safeguards — so
+    // any other target status, or un-publishing an active sequence, is refused.
+    // Re-sending 'active' for an already-active sequence is a no-op, so a
+    // client that PUTs the whole object is never blocked.
+    const currentStatus = ownerRes.rows[0].status;
+    const statusProvided = status !== undefined;
+    if (statusProvided) {
+      if (status !== 'active') {
+        return res.status(400).json({ error: { message: "status can only be set to 'active' (publish). Use DELETE to archive." } });
+      }
+      if (currentStatus !== 'draft' && currentStatus !== 'active') {
+        return res.status(400).json({ error: { message: `Cannot publish a sequence that is ${currentStatus}.` } });
+      }
+    }
+
+    // Publish-only request ({ status: 'active' } with no name): the full
+    // UPDATE below always rewrites name, so running it without one would null
+    // a NOT NULL column. Do the one-column change and stop.
+    if (statusProvided && name === undefined) {
+      const { rows } = await pool.query(
+        `UPDATE sequences SET status = 'active', updated_at = NOW()
+          WHERE id = $1 AND org_id = $2 RETURNING *`,
+        [req.params.id, req.orgId]
+      );
+      if (!rows.length) return res.status(404).json({ error: { message: 'Not found' } });
+      return res.json({ sequence: rows[0] });
+    }
 
     // personalize_config_default semantics:
     //   undefined → don't touch (COALESCE keeps existing)
@@ -2965,6 +2969,9 @@ router.put('/:id', async (req, res) => {
         thread_subject_mode  = CASE WHEN $19::boolean THEN $20 ELSE thread_subject_mode END,
         thread_failover_mode = CASE WHEN $21::boolean THEN $22 ELSE thread_failover_mode END,
         body_format          = CASE WHEN $23::boolean THEN $24 ELSE body_format END,
+        -- Publish alongside a full edit. Validated above: $25 is only ever
+        -- true when the target is 'active' and the row is draft/active.
+        status               = CASE WHEN $25::boolean THEN 'active' ELSE status END,
         updated_at=NOW()
         WHERE id=$13 AND org_id=$14 RETURNING *`,
       [name, description || null,
@@ -2979,7 +2986,8 @@ router.put('/:id', async (req, res) => {
        psProvided, psParam,
        tsmProvided, tsmParam,
        tfmProvided, tfmParam,
-       bfProvided, bfParam]
+       bfProvided, bfParam,
+       statusProvided]
     );
     if (!rows.length) return res.status(404).json({ error: { message: 'Not found' } });
     res.json({ sequence: rows[0] });
