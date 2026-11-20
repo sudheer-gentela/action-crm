@@ -23,7 +23,7 @@ That's it.
 
 ## Sign-off
 
-Rep's name only. No company tagline, no signature block beyond what's already in `org_context.rep.email_signature` (if any).
+Rep's first name only. No company tagline and no signature block — do NOT write out `org_context.rep.email_signature`. The platform appends the sending mailbox's signature at send time.
 
 ## Example breakups
 

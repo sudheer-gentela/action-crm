@@ -14,16 +14,18 @@
  *   - Draft: write step_log status='draft', do NOT send, do NOT advance enrollment
  *   - Send:  existing path unchanged
  *
- * Signature feature (v3):
- *   - At draft creation the sender account is fetched (client sender if the prospect
- *     belongs to a client, otherwise rep's personal sender — least-used active account).
- *   - If sender.signature is set it is appended to the draft body: \n\n${sender.signature}
- *   - sender.display_name is stored in the draft's metadata so the AI
- *     personalisation prompt can reference it as a sign-off name.
- *   - The signature is appended ONLY when creating the draft — the
- *     PATCH /drafts/:logId endpoint operates on whatever the rep saves,
- *     so the signature is already in the body by then.
- *   - In the auto-send branch the signature is likewise appended before dispatch.
+ * Signature feature (v4 — send-time, 2026-11):
+ *   - EMAIL drafts are stored WITHOUT a signature. The sending mailbox is picked
+ *     by rotation only when the draft is sent (Send now) or approved (this
+ *     firer), so the signature is appended then, from that mailbox, after
+ *     stripping any signature already at the end of the body
+ *     (stripTrailingSignatures — cleans pre-v4 drafts and AI-pasted signatures).
+ *   - LINKEDIN drafts still get the signature at draft creation (rep sends by
+ *     hand; connection requests never carry one).
+ *   - At draft creation the sender account is still fetched (client sender if the
+ *     prospect belongs to a client, otherwise the rep's least-used active
+ *     account) for the LinkedIn signature and display name.
+ *   - In the auto-send branch the signature is appended before dispatch, as before.
  *
  * Client sender accounts (v4 — Model B):
  *   - Prospects that belong to a client (prospect.client_id IS NOT NULL) use a
@@ -154,7 +156,7 @@ async function resolveSender(dbClient, orgId, userId, clientId) {
   return r.rows[0] || null;
 }
 
-// ── Capacity-aware sender pick (AUTO-SEND ONLY) ───────────────────────────────
+// ── Capacity-aware sender pick (firer + manual Send now) ───────────────────────────────
 // Used by the auto-send branch to honor two SOFT gates on autopilot:
 //   1. Daily limit — effective per-account = min(daily_limit ?? default, ceiling).
 //      A stale counter (last_reset_at < today) counts as 0 sent.
@@ -164,8 +166,11 @@ async function resolveSender(dbClient, orgId, userId, clientId) {
 // Picks the eligible account (has capacity AND cooled down) with the most
 // headroom. If accounts have capacity but are all still cooling down, returns
 // 'cooling_down'; if all are at their daily limit, 'all_maxed'. Both make the
-// firer DEFER to the next tick. Manual sends (sequences.routes.js draft send)
-// are NOT routed through here — a human sends whenever they choose.
+// firer DEFER to the next tick. Manual Send now (sequences.routes.js
+// POST /drafts/:logId/send) ALSO routes through here since 2026-11: the same
+// pool (campaign sender selection, client rules, pin), the same per-mailbox
+// daily limits and the same min-delay gap apply to a human click — a refusal
+// there tells the rep to retry or Approve (the firer then sends once free).
 //
 // Returns: { sender, status: 'ok' | 'all_maxed' | 'cooling_down' | 'no_accounts' | 'client_sender_required' }
 // 'client_sender_required' (Phase 3, 2026_53): the prospect's client has no
@@ -275,6 +280,10 @@ async function pickEmailSenderWithCapacity(dbClient, orgId, userId, clientId, se
 
   let best = null, bestRemaining = 0;
   let anyCapacityButCooling = false;
+  // Soonest moment a mailbox that HAS capacity leaves its cooldown. Only
+  // consumed by manual Send now (to tell the rep how long to wait); the firer
+  // ignores it and simply retries next tick.
+  let soonestFreeMs = null;
   for (const row of rows) {
     const mb = mbAgg.get((row.email || '').toLowerCase());
     // Fall back to row-local values if the aggregate somehow missed (defensive).
@@ -295,14 +304,26 @@ async function pickEmailSenderWithCapacity(dbClient, orgId, userId, clientId, se
     );
     const cooledDown = effMinDelay <= 0 || !lastSentAt ||
       (now.getTime() - new Date(lastSentAt).getTime()) >= effMinDelay * 60000;
-    if (!cooledDown) { anyCapacityButCooling = true; continue; }
+    if (!cooledDown) {
+      anyCapacityButCooling = true;
+      const waitMs = effMinDelay * 60000 - (now.getTime() - new Date(lastSentAt).getTime());
+      if (soonestFreeMs === null || waitMs < soonestFreeMs) soonestFreeMs = waitMs;
+      continue;
+    }
 
     if (remaining > bestRemaining) { best = row; bestRemaining = remaining; }
   }
   if (best) return { sender: best, status: 'ok' };
   // No eligible account: distinguish "still cooling down" (capacity exists, just
   // too soon) from "all maxed" (no capacity left today). Both defer.
-  if (anyCapacityButCooling) return { sender: null, status: 'cooling_down' };
+  if (anyCapacityButCooling) {
+    return {
+      sender: null,
+      status: 'cooling_down',
+      // Whole minutes, never below 1, so "try again in ~N min" is never "~0".
+      retryAfterMinutes: Math.max(1, Math.ceil((soonestFreeMs ?? 60000) / 60000)),
+    };
+  }
   return { sender: null, status: 'all_maxed' };
 }
 
@@ -445,6 +466,59 @@ function appendSignature(body, signature) {
   if (sigFirstLine && body.includes(sigFirstLine)) return body;
 
   return body + `\n\n${trimmedSig}`;
+}
+
+// ── Send-time signature (2026-11) ─────────────────────────────────────────────
+// Email drafts are now stored WITHOUT a signature: the mailbox is chosen at
+// send time by rotation, so a signature baked in at draft time could belong to
+// a different mailbox than the one that sends (two signatures, or the wrong
+// one). At send we strip any known signature from the END of the body, then
+// append the sending mailbox's own. Stripping also cleans drafts created before
+// this change and bodies where an AI template pasted the signature verbatim.
+//
+// Only the tail is touched, and only on an exact (whitespace-trimmed, CRLF-
+// normalised) match, so a signature quoted mid-body or a hand-edited variant is
+// left alone. Longest-first so a signature that is a suffix of another doesn't
+// leave a remnant; looped so a doubled signature is fully removed.
+function stripTrailingSignatures(body, knownSignatures) {
+  if (!body) return body;
+  const norm = (t) => String(t).replace(/\r\n/g, '\n');
+  const sigs = [...new Set((knownSignatures || [])
+    .map(x => norm(x || '').trim())
+    .filter(Boolean))]
+    .sort((a, b) => b.length - a.length);
+  if (!sigs.length) return body;
+
+  const original = norm(body).replace(/\s+$/, '');
+  let out = original;
+  let changed = true;
+  while (changed && out) {
+    changed = false;
+    for (const sig of sigs) {
+      if (out.endsWith(sig)) {
+        out = out.slice(0, out.length - sig.length).replace(/\s+$/, '');
+        changed = true;
+        break;
+      }
+    }
+  }
+  return out === original ? body : out;
+}
+
+// Every signature that could have been baked into this prospect's drafts: the
+// enroller's own mailboxes plus, for a client prospect, the client's. Inactive
+// rows are included on purpose — a draft written while a since-disconnected
+// mailbox was the pick still carries its signature.
+async function loadKnownSignatures(dbClient, orgId, userId, clientId) {
+  const { rows } = await dbClient.query(
+    `SELECT signature FROM prospecting_sender_accounts
+      WHERE org_id = $1
+        AND signature IS NOT NULL AND btrim(signature) <> ''
+        AND ( (user_id = $2 AND client_id IS NULL)
+           OR ($3::int IS NOT NULL AND client_id = $3) )`,
+    [orgId, userId, clientId || null]
+  );
+  return rows.map(r => r.signature);
 }
 
 // ── Quoted-history helpers (2026_75) ─────────────────────────────────────────
@@ -1760,18 +1834,19 @@ const SequenceStepFirer = {
             const sender = await resolveSender(client, enrollment.org_id, enrollment.enrolled_by, clientId);
 
             // Channel-aware signature:
-            //   email    → sender.signature
+            //   email    → none here; added at send time from the sending mailbox
+            //              (the 2026_74 include_signature opt-out is honoured there)
             //   linkedin → sender.linkedin_signature if set, else sender.signature,
             //              EXCEPT connection requests (short notes, 280-char cap)
             //              which never carry a signature
             //   call/task → no signature
             if (sender) {
-              // 2026_74: per-step opt-out. Read as !== false so jsonb step
-              // snapshots taken before the column existed keep their signature.
-              const wantsSignature = step.include_signature !== false;
-              if (step.channel === 'email' && sender.signature && wantsSignature) {
-                body = appendSignature(body, sender.signature);
-              } else if (step.channel === 'linkedin' && effectiveIntent !== 'connection_request') {
+              // Email: NO signature at draft time (2026-11). The sending mailbox
+              // is picked by rotation when the draft is sent or approved, and its
+              // signature is appended then (stripTrailingSignatures +
+              // appendSignature on both send paths). LinkedIn drafts keep theirs:
+              // the rep sends those by hand from their one LinkedIn account.
+              if (step.channel === 'linkedin' && effectiveIntent !== 'connection_request') {
                 const liSig = sender.linkedin_signature || sender.signature;
                 if (liSig) body = appendSignature(body, liSig);
               }
@@ -2012,9 +2087,14 @@ const SequenceStepFirer = {
           // were attached before this call, that guard would match and silently
           // suppress the new signature on every reply. Signature first, quote
           // afterwards. Do not reorder these.
+          // 2026-11: strip any signature baked into the stored body first (drafts
+          // created before send-time signatures, or an AI-pasted signature), so
+          // the only signature that goes out is the SENDING mailbox's.
+          const knownSigs = await loadKnownSignatures(client, enrollment.org_id, enrollment.enrolled_by, clientId);
+          const sendBodyClean = stripTrailingSignatures(sendBodyRaw, knownSigs);
           const sendBodyPlain = (step.include_signature !== false)
-            ? appendSignature(sendBodyRaw, sender.signature)
-            : sendBodyRaw;
+            ? appendSignature(sendBodyClean, sender.signature)
+            : sendBodyClean;
           // 2026_76: plain sequences go out as text/plain. sendBody is then the
           // raw text, not HTML — plainTextToHtml would escape it and wrap it in
           // markup the recipient would see literally.
@@ -2502,5 +2582,12 @@ const SequenceStepFirer = {
     }
   },
 };
+
+// Shared with routes/sequences.routes.js (manual Send now) so a human click and
+// the firer apply one mailbox-rotation rule and one signature rule.
+SequenceStepFirer.pickEmailSenderWithCapacity = pickEmailSenderWithCapacity;
+SequenceStepFirer.appendSignature            = appendSignature;
+SequenceStepFirer.stripTrailingSignatures    = stripTrailingSignatures;
+SequenceStepFirer.loadKnownSignatures        = loadKnownSignatures;
 
 module.exports = SequenceStepFirer;

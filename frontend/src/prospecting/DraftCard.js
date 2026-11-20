@@ -338,6 +338,13 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
                   rows={8}
                   style={{ width: '100%', padding: '8px 11px', borderRadius: 7, border: '1px solid #e5e7eb', fontSize: 13, boxSizing: 'border-box', fontFamily: 'inherit', color: '#111', resize: 'vertical', lineHeight: 1.6 }}
                 />
+                {/* Email drafts no longer carry a signature: the mailbox is picked by
+                    rotation only at send time, and that mailbox's signature is
+                    appended then. Without this line reps would see an unsigned
+                    body and paste their own signature in. */}
+                <div style={{ marginTop: 4, fontSize: 11, color: '#9ca3af' }}>
+                  Your signature is added automatically when this email sends, from whichever mailbox sends it (unless this step is set to no signature).
+                </div>
                 {/* Phase 3: AI provenance — what LinkedIn data the AI saw when drafting */}
                 {draft.personalizeSources && (
                   <PersonalizeProvenanceFooter sources={draft.personalizeSources} />

@@ -46,6 +46,7 @@ const { resolvePersonalizeConfig } = require('../services/personalizeConfig');
 const PersonalizationDispatcher = require('../services/PersonalizationDispatcher');
 const { buildLinkedInArtifacts }   = require('../services/linkedinSnippets');
 const SendingSchedule              = require('../services/SendingScheduleResolver');
+const SequenceStepFirer            = require('../services/SequenceStepFirer'); // shared mailbox picker + send-time signature (Send now)
 
 // ── AI provider chain (same pattern as ProspectingAIEnhancer) ─────────────────
 const AIClientResolver = require('../services/ai/AIClientResolver');
@@ -1661,7 +1662,7 @@ router.post('/scheduled/:logId/skip', async (req, res) => {
 // Rep approves and sends the draft email via their prospecting sender account.
 // Mirrors the logic in POST /prospecting-actions/outreach-send.
 router.post('/drafts/:logId/send', async (req, res) => {
-  const { senderAccountId } = req.body; // optional — omit for auto-rotation
+  // Mailbox is always chosen by rotation — see section 2.
   const client = await pool.connect();
   try {
     // ── 1. Load draft + enrollment + prospect ──────────────────────────────
@@ -1673,6 +1674,7 @@ router.post('/drafts/:logId/send', async (req, res) => {
               ss.step_order,
               ss.channel  AS step_channel,
               ss.step_intent,
+              ss.include_signature,
               se.enrolled_by, se.sequence_id,
               se.current_step, se.org_id AS enroll_org_id,
               se.pinned_sender_account_id,
@@ -1730,100 +1732,50 @@ router.post('/drafts/:logId/send', async (req, res) => {
       return res.status(400).json({ error: { message: 'Prospect has no email address' } });
     }
 
-    // ── 2. Select sender account ───────────────────────────────────────────
-    // Phase 3 (2026_53): mirrors SequenceStepFirer — a client prospect's
-    // manual send prefers the CLIENT's sender; previously both branches were
-    // hard-scoped to the rep's personal senders, so every manual send for a
-    // client prospect went out from the rep's own mailbox regardless of the
-    // draft-time signature. With require_client_sender set on the client and
-    // no active client sender, the send is blocked with an actionable 400
-    // instead of silently using the wrong identity.
+    // ── 2. Select sender account — mailbox rotation rules (2026-11) ─────────
+    // Send now uses EXACTLY the firer's picker (pickEmailSenderWithCapacity),
+    // so a human click and an approved/scheduled send follow one rule:
+    //   • pool    — the enroller's own mailboxes (client prospects: the
+    //               client's mailboxes first, per require_client_sender),
+    //               narrowed to the campaign's sender selection, and to the
+    //               pinned mailbox for threaded / pin_sender sequences
+    //   • limits  — each mailbox's daily limit, aggregated per address (two
+    //               rows for one Gmail can't double its limit), plus the
+    //               min-delay gap between sends
+    //   • choice  — among eligible mailboxes, the one with the most room left
+    //               today, so mailboxes drain in proportion to their limits
+    // There is no "send anyway": if nothing is eligible the rep is told why and
+    // pointed at Approve, which queues the draft for the firer to send as soon
+    // as a mailbox frees up. (Before this, Send now picked the least-used
+    // mailbox from ALL the rep's senders, ignored the campaign selection and
+    // the gap, and refused on one mailbox's limit even when another had room.)
+    //
+    // Hand-picking a mailbox is NOT accepted here: that belongs to the one-off
+    // Outreach Composer (/prospecting-actions outreach-send). Refused loudly
+    // rather than ignored so an API caller isn't surprised by the choice.
+    if (req.body?.senderAccountId !== undefined && req.body?.senderAccountId !== null) {
+      return res.status(400).json({
+        error: {
+          message: 'Send now always picks the mailbox by rotation (campaign sender selection, daily limits and the gap between sends). senderAccountId is not accepted on this route.',
+          code: 'SENDER_PICK_NOT_ALLOWED',
+        },
+      });
+    }
+
     const prospectClientId = prospect.client_id || null;
-    let requireClientSender = false;
-    if (prospectClientId) {
-      const polRes = await client.query(
-        `SELECT require_client_sender FROM clients WHERE id = $1 AND org_id = $2`,
-        [prospectClientId, req.orgId]
-      );
-      requireClientSender = polRes.rows[0]?.require_client_sender === true;
-    }
-
-    let sender;
-    if (senderAccountId) {
-      // Explicit pick: the rep's own personal sender, OR a sender owned by
-      // THIS prospect's client. Never another client's sender.
-      const r = await client.query(
-        `SELECT * FROM prospecting_sender_accounts
-          WHERE id=$1 AND org_id=$2 AND is_active=true
-            AND ( (user_id=$3 AND client_id IS NULL)
-               OR ($4::int IS NOT NULL AND client_id=$4) )`,
-        [senderAccountId, req.orgId, req.user.userId, prospectClientId]
-      );
-      if (!r.rows.length) return res.status(404).json({ error: { message: 'Sender account not found or inactive' } });
-      sender = r.rows[0];
-      if (requireClientSender && sender.client_id == null) {
-        return res.status(400).json({
-          error: {
-            message: 'This client requires its own sender mailbox — pick one of the client\'s connected accounts (Agency → client → Senders).',
-            code: 'CLIENT_SENDER_REQUIRED',
-          }
-        });
-      }
-    } else {
-      // Auto-rotation: client senders first (least-sent), then — unless the
-      // client forbids it — the rep's personal senders. Same ordering as the
-      // firer's resolveSender().
-      let r = { rows: [] };
-      if (prospectClientId) {
-        r = await client.query(
-          `SELECT * FROM prospecting_sender_accounts
-            WHERE org_id=$1 AND client_id=$2 AND is_active=true
-            ORDER BY
-              (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
-              last_sent_at ASC NULLS FIRST
-            LIMIT 1`,
-          [req.orgId, prospectClientId]
-        );
-        if (!r.rows.length && requireClientSender) {
-          return res.status(400).json({
-            error: {
-              message: 'This client requires its own sender mailbox and none is connected — connect Gmail or Outlook for the client in Agency → client → Senders (or disable "Require client mailbox").',
-              code: 'CLIENT_SENDER_REQUIRED',
-            }
-          });
-        }
-      }
-      if (!r.rows.length) {
-        r = await client.query(
-          `SELECT * FROM prospecting_sender_accounts
-            WHERE org_id=$1 AND user_id=$2 AND client_id IS NULL AND is_active=true
-            ORDER BY
-              (CASE WHEN last_reset_at < CURRENT_DATE THEN 0 ELSE emails_sent_today END) ASC,
-              last_sent_at ASC NULLS FIRST
-            LIMIT 1`,
-          [req.orgId, req.user.userId]
-        );
-      }
-      if (!r.rows.length) {
-        return res.status(400).json({
-          error: { message: 'No active sender accounts. Connect a Gmail or Outlook account in Settings → Outreach.', code: 'NO_SENDER_ACCOUNTS' }
-        });
-      }
-      sender = r.rows[0];
-    }
-
-    // ── Threaded/pinned enrollment: force the pinned mailbox (2026_71) ─────
-    // A threaded (or pin_sender) enrollment must send from the SAME mailbox that
-    // opened the thread. Override whatever step 2 resolved. If that mailbox is
-    // gone/inactive, return the 3 resolution options rather than silently
-    // sending from a different address (which would break the thread).
     const threadingOn = draft.thread_replies === true;
     const pinOn = threadingOn || draft.pin_sender === true;
-    if (pinOn && draft.pinned_sender_account_id &&
-        (!sender || sender.id !== draft.pinned_sender_account_id)) {
+    const pinnedSenderId = pinOn ? (draft.pinned_sender_account_id || null) : null;
+
+    // A threaded (or pin_sender) enrollment must send from the SAME mailbox that
+    // opened the thread. If that mailbox is gone/inactive, return the 3
+    // resolution options rather than silently sending from a different address
+    // (which would break the thread). Checked before the picker, which would
+    // otherwise just report "no mailboxes".
+    if (pinnedSenderId) {
       const pr = await client.query(
-        `SELECT * FROM prospecting_sender_accounts WHERE id=$1 AND org_id=$2`,
-        [draft.pinned_sender_account_id, req.orgId]
+        `SELECT is_active FROM prospecting_sender_accounts WHERE id=$1 AND org_id=$2`,
+        [pinnedSenderId, req.orgId]
       );
       if (!pr.rows.length || pr.rows[0].is_active !== true) {
         return res.status(409).json({
@@ -1834,11 +1786,90 @@ router.post('/drafts/:logId/send', async (req, res) => {
           },
         });
       }
-      sender = pr.rows[0];
+    }
+
+    // Campaign sender selection: NULL/empty array = all of the rep's mailboxes.
+    let allowedSenderIds = null;
+    if (prospect.campaign_id) {
+      const cr = await client.query(
+        `SELECT sender_account_ids FROM prospecting_campaigns WHERE id=$1 AND org_id=$2`,
+        [prospect.campaign_id, req.orgId]
+      );
+      const raw = cr.rows[0]?.sender_account_ids;
+      allowedSenderIds = (Array.isArray(raw) && raw.length) ? raw : null;
+    }
+
+    // Same settings resolution the firer uses (org → campaign → user layers):
+    // defaultDailyLimit, dailyLimitCeiling, defaultMinDelayMinutes, floor.
+    const sendSettings = await SendingSchedule.resolveSettings({
+      orgId: req.orgId, campaignId: prospect.campaign_id || null, userId: draft.enrolled_by,
+    });
+
+    const pick = await SequenceStepFirer.pickEmailSenderWithCapacity(
+      client, req.orgId, draft.enrolled_by, prospectClientId, sendSettings,
+      new Date(), allowedSenderIds, pinnedSenderId
+    );
+
+    if (pick.status !== 'ok') {
+      if (pick.status === 'cooling_down') {
+        const n = pick.retryAfterMinutes || 1;
+        return res.status(429).json({
+          error: {
+            message: `${pinnedSenderId ? 'The mailbox this thread is pinned to' : 'Every mailbox available to this campaign'} sent an email in the last few minutes. ` +
+                     `The next one is free in about ${n} minute${n === 1 ? '' : 's'} — try again then, or click Approve and it will go out automatically as soon as a mailbox is free.`,
+            code: 'SENDER_COOLDOWN',
+            retryAfterMinutes: n,
+          },
+        });
+      }
+      if (pick.status === 'all_maxed') {
+        return res.status(429).json({
+          error: {
+            message: `${pinnedSenderId ? 'The mailbox this thread is pinned to has' : 'Every mailbox available to this campaign has'} reached today's sending limit. ` +
+                     'Click Approve and it will go out automatically once capacity frees up.',
+            code: 'DAILY_LIMIT_REACHED',
+          },
+        });
+      }
+      if (pick.status === 'client_sender_required') {
+        return res.status(400).json({
+          error: {
+            message: 'This client requires its own sender mailbox and none is connected — connect Gmail or Outlook for the client in Agency → client → Senders (or disable "Require client mailbox").',
+            code: 'CLIENT_SENDER_REQUIRED',
+          },
+        });
+      }
+      // no_accounts. If the campaign restricts senders, say so specifically:
+      // the rep may well have active mailboxes, just not the selected ones.
+      if (allowedSenderIds) {
+        return res.status(400).json({
+          error: {
+            message: "None of the mailboxes selected for this campaign are active. Reconnect one of them, or change the campaign's sender selection.",
+            code: 'CAMPAIGN_SENDERS_INACTIVE',
+          },
+        });
+      }
+      return res.status(400).json({
+        error: { message: 'No active sender accounts. Connect a Gmail or Outlook account in Settings → Outreach.', code: 'NO_SENDER_ACCOUNTS' }
+      });
+    }
+
+    // The picker selects a column subset; the provider send below needs the
+    // full row (token metadata etc.), so reload it by id.
+    const fullRes = await client.query(
+      `SELECT * FROM prospecting_sender_accounts WHERE id=$1 AND org_id=$2`,
+      [pick.sender.id, req.orgId]
+    );
+    const sender = fullRes.rows[0];
+    if (!sender) {
+      return res.status(409).json({ error: { message: 'The selected mailbox was just removed. Try again.' } });
     }
 
     // ── 3. Reset daily counter if new day ─────────────────────────────────
-    if (new Date(sender.last_reset_at).toDateString() !== new Date().toDateString()) {
+    // (The picker already treats a stale counter as 0; this persists it so the
+    // +1 after sending starts from today.)
+    if (!sender.last_reset_at ||
+        new Date(sender.last_reset_at).toDateString() !== new Date().toDateString()) {
       await client.query(
         `UPDATE prospecting_sender_accounts
             SET emails_sent_today=0, last_reset_at=CURRENT_DATE, updated_at=CURRENT_TIMESTAMP
@@ -1848,31 +1879,23 @@ router.post('/drafts/:logId/send', async (req, res) => {
       sender.emails_sent_today = 0;
     }
 
-    // ── 4. Enforce daily limit ─────────────────────────────────────────────
-    const limitsRes = await client.query(
-      `SELECT config FROM org_integrations
-        WHERE org_id=$1 AND integration_type='prospecting_email'`,
-      [req.orgId]
+    // ── 4. Daily limit ─────────────────────────────────────────────────────
+    // Enforced by the picker above, per mailbox address. Nothing to do here.
+
+    // ── 5. Signature at send time, then convert to HTML ─────────────────────
+    // Drafts are stored without a signature (2026-11); older drafts, or bodies
+    // where an AI template pasted one, may still end with a signature — strip
+    // any of the rep's/client's known signatures from the END, then append the
+    // SENDING mailbox's own. Honours the step's include_signature opt-out
+    // (2026_74), which Send now previously ignored. bodyToSend stays plain text
+    // so the DB record (step 7) stores the plain version; htmlBody goes over
+    // the wire.
+    const knownSigs = await SequenceStepFirer.loadKnownSignatures(
+      client, req.orgId, draft.enrolled_by, prospectClientId
     );
-    const orgConfig = limitsRes.rows[0]?.config || {};
-    const dailyLimit = Math.min(sender.daily_limit ?? (orgConfig.defaultDailyLimit || 50), orgConfig.dailyLimitCeiling || 100);
-
-    if (sender.emails_sent_today >= dailyLimit) {
-      return res.status(429).json({
-        error: { message: `Daily send limit reached for ${sender.email} (${dailyLimit}/day). Resets tomorrow.`, code: 'DAILY_LIMIT_REACHED' }
-      });
-    }
-
-    // ── 5. Ensure signature is present (safety-net), then convert to HTML ────
-    // bodyToSend stays as plain text until the very last moment so the
-    // DB record (step 7) stores the plain-text version. htmlBody is what
-    // actually goes over the wire to Gmail / Outlook.
-    let bodyToSend = draft.body || '';
-    if (sender.signature) {
-      const trimmedSig = sender.signature.trim();
-      if (trimmedSig && !bodyToSend.includes(trimmedSig)) {
-        bodyToSend = bodyToSend + `\n\n${trimmedSig}`;
-      }
+    let bodyToSend = SequenceStepFirer.stripTrailingSignatures(draft.body || '', knownSigs);
+    if (draft.include_signature !== false) {
+      bodyToSend = SequenceStepFirer.appendSignature(bodyToSend, sender.signature);
     }
     const htmlBody = plainTextToHtml(bodyToSend);
 

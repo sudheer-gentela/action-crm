@@ -40,9 +40,8 @@ Total: 3-4 sentences. Under 75 words.
 
 ## Sign-off
 
-- Use the rep's name from `org_context.rep.name`.
-- If `org_context.rep.email_signature` is provided, use it verbatim.
-- If not, use just the first name on its own line.
+- Sign off with the rep's first name only, from `org_context.rep.name`, on its own line.
+- Do NOT write out `org_context.rep.email_signature` or any signature block (title, company, phone, links). The platform appends the official signature of whichever mailbox sends the email, at send time; a signature written into the body would be duplicated or belong to the wrong mailbox. `email_signature` is reference only.
 - Do NOT sign off with "Best," or "Cheers," or "Warmly," — those add words without meaning. First name alone is fine.
 - Do NOT include "P.S." — it's a marketing tell.
 

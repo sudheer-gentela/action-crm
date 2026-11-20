@@ -4036,6 +4036,38 @@ router.post('/:id/bulk-activate', async (req, res) => {
 //
 // Personalisation is lazy (JIT in the firer), matching bulk-activate's default.
 // Body: { prospectId }
+// Enrollment requires a PUBLISHED sequence. enroll-one / enroll-batch joined
+// the sequence only for its name, so a draft (agent-created, awaiting human
+// review) or an archived sequence could still be enrolled into — the other
+// enrollment paths (enroll-all, bulk-activate, /sequences/enroll, prospect
+// create) already require status='active'. Returns an error body, or null when
+// the campaign's default sequence is usable. `campaign` must carry
+// sequence_status and sequence_name from the campaign+sequence join.
+function sequenceNotActiveError(campaign) {
+  const st = campaign.sequence_status;
+  if (st === 'active') return null;
+  const name = campaign.sequence_name ? `"${campaign.sequence_name}"` : 'This campaign\'s sequence';
+  if (st === 'draft') {
+    return {
+      message: `${name} is still a draft. Review it and click Publish in Sequences before enrolling prospects.`,
+      code: 'SEQUENCE_DRAFT',
+    };
+  }
+  if (st === 'archived') {
+    return {
+      message: `${name} is archived. Set a different default sequence on the campaign before enrolling prospects.`,
+      code: 'SEQUENCE_ARCHIVED',
+    };
+  }
+  // NULL here means the LEFT JOIN found no row: default_sequence_id points at
+  // a sequence that no longer exists. Any other value is a state we don't
+  // enroll into.
+  return {
+    message: `${name} can't be enrolled into (status: ${st || 'missing'}). Set an active default sequence on the campaign first.`,
+    code: 'SEQUENCE_NOT_ACTIVE',
+  };
+}
+
 router.post('/:id/enroll-one', async (req, res) => {
   try {
     const prospectId = parseInt(req.body?.prospectId, 10);
@@ -4045,7 +4077,8 @@ router.post('/:id/enroll-one', async (req, res) => {
 
     // Validate campaign + default sequence + mutate access.
     const campRes = await pool.query(
-      `SELECT c.id, c.default_sequence_id, c.name, c.owner_id, s.name AS sequence_name
+      `SELECT c.id, c.default_sequence_id, c.name, c.owner_id, s.name AS sequence_name,
+              s.status AS sequence_status
          FROM prospecting_campaigns c
     LEFT JOIN sequences s ON s.id = c.default_sequence_id
         WHERE c.id = $1 AND c.org_id = $2 AND c.status IN ('active','paused')`,
@@ -4063,6 +4096,10 @@ router.post('/:id/enroll-one', async (req, res) => {
         message: 'This campaign has no default sequence, so no outreach can be scheduled. Set a default sequence on the campaign first.',
         code: 'NO_DEFAULT_SEQUENCE',
       } });
+    }
+    {
+      const notActive = sequenceNotActiveError(campaign);
+      if (notActive) return res.status(409).json({ error: notActive });
     }
 
     // Validate the prospect (org-scoped, live).
@@ -4273,7 +4310,8 @@ router.post('/:id/enroll-batch', async (req, res) => {
 
     // Campaign + default sequence + mutate access.
     const campRes = await pool.query(
-      `SELECT c.id, c.default_sequence_id, c.name, c.owner_id, s.name AS sequence_name
+      `SELECT c.id, c.default_sequence_id, c.name, c.owner_id, s.name AS sequence_name,
+              s.status AS sequence_status
          FROM prospecting_campaigns c
     LEFT JOIN sequences s ON s.id = c.default_sequence_id
         WHERE c.id = $1 AND c.org_id = $2 AND c.status IN ('active','paused')`,
@@ -4289,6 +4327,10 @@ router.post('/:id/enroll-batch', async (req, res) => {
         message: 'This campaign has no default sequence, so no outreach can be scheduled. Set a default sequence on the campaign first.',
         code: 'NO_DEFAULT_SEQUENCE',
       } });
+    }
+    {
+      const notActive = sequenceNotActiveError(campaign);
+      if (notActive) return res.status(409).json({ error: notActive });
     }
 
     // Candidate set: org-scoped, live, and NOT already active/paused in the
