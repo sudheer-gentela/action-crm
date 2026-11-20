@@ -90,6 +90,8 @@ const {
   VALID_STATUS,
   VALID_ACTIVITY_TYPES,
 } = require('../services/CampaignCreateService');
+// Shared "can't enroll into this sequence" wording (draft / archived / missing).
+const SequenceAvailability = require('../services/SequenceAvailability');
 
 // Stage order used for funnel display. Kept in sync with prospects.routes.js
 // VALID_STAGES; terminal stages (disqualified/nurture) are reported separately.
@@ -2476,6 +2478,13 @@ router.post('/:id/enroll-all', async (req, res) => {
       [sequenceId, req.orgId]
     );
     if (!seqRes.rows.length) {
+      // Draft / archived get a reason and the fix; a truly missing id keeps
+      // the original 404. 'campaign' wording only when it's the campaign's
+      // default — a body-supplied sequenceId is the rep's direct pick.
+      const why = await SequenceAvailability.describeUnavailable(
+        client, req.orgId, sequenceId, bodySeqId ? 'direct' : 'campaign'
+      );
+      if (why) return res.status(409).json({ error: why });
       return res.status(404).json({ error: { message: 'Active sequence not found' } });
     }
     const sequenceName = seqRes.rows[0].name;
@@ -3708,6 +3717,10 @@ router.post('/:id/bulk-activate', async (req, res) => {
       [campaign.default_sequence_id, req.orgId]
     );
     if (!seqRes.rows.length) {
+      const why = await SequenceAvailability.describeUnavailable(
+        pool, req.orgId, campaign.default_sequence_id, 'campaign'
+      );
+      if (why) return res.status(409).json({ error: why });
       return res.status(400).json({ error: {
         message: 'Default sequence not found or inactive.',
       } });
@@ -4036,38 +4049,11 @@ router.post('/:id/bulk-activate', async (req, res) => {
 //
 // Personalisation is lazy (JIT in the firer), matching bulk-activate's default.
 // Body: { prospectId }
-// Enrollment requires a PUBLISHED sequence. enroll-one / enroll-batch joined
-// the sequence only for its name, so a draft (agent-created, awaiting human
-// review) or an archived sequence could still be enrolled into — the other
-// enrollment paths (enroll-all, bulk-activate, /sequences/enroll, prospect
-// create) already require status='active'. Returns an error body, or null when
-// the campaign's default sequence is usable. `campaign` must carry
-// sequence_status and sequence_name from the campaign+sequence join.
-function sequenceNotActiveError(campaign) {
-  const st = campaign.sequence_status;
-  if (st === 'active') return null;
-  const name = campaign.sequence_name ? `"${campaign.sequence_name}"` : 'This campaign\'s sequence';
-  if (st === 'draft') {
-    return {
-      message: `${name} is still a draft. Review it and click Publish in Sequences before enrolling prospects.`,
-      code: 'SEQUENCE_DRAFT',
-    };
-  }
-  if (st === 'archived') {
-    return {
-      message: `${name} is archived. Set a different default sequence on the campaign before enrolling prospects.`,
-      code: 'SEQUENCE_ARCHIVED',
-    };
-  }
-  // NULL here means the LEFT JOIN found no row: default_sequence_id points at
-  // a sequence that no longer exists. Any other value is a state we don't
-  // enroll into.
-  return {
-    message: `${name} can't be enrolled into (status: ${st || 'missing'}). Set an active default sequence on the campaign first.`,
-    code: 'SEQUENCE_NOT_ACTIVE',
-  };
-}
-
+// Enrollment requires a PUBLISHED sequence — see services/SequenceAvailability
+// for the shared wording. enroll-one / enroll-batch already have the sequence's
+// status from their campaign+sequence join, so they call unavailableReason()
+// directly; enroll-all / bulk-activate call describeUnavailable() only when
+// their active-only lookup comes back empty.
 router.post('/:id/enroll-one', async (req, res) => {
   try {
     const prospectId = parseInt(req.body?.prospectId, 10);
@@ -4098,7 +4084,9 @@ router.post('/:id/enroll-one', async (req, res) => {
       } });
     }
     {
-      const notActive = sequenceNotActiveError(campaign);
+      const notActive = SequenceAvailability.unavailableReason(
+        { status: campaign.sequence_status, name: campaign.sequence_name }, 'campaign'
+      );
       if (notActive) return res.status(409).json({ error: notActive });
     }
 
@@ -4329,7 +4317,9 @@ router.post('/:id/enroll-batch', async (req, res) => {
       } });
     }
     {
-      const notActive = sequenceNotActiveError(campaign);
+      const notActive = SequenceAvailability.unavailableReason(
+        { status: campaign.sequence_status, name: campaign.sequence_name }, 'campaign'
+      );
       if (notActive) return res.status(409).json({ error: notActive });
     }
 

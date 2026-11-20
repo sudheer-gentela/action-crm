@@ -251,8 +251,14 @@ function DraftCard({ draft, subject, body, isOpen, sending, sendError, onToggle,
               )}
               {draft.suggestedSender && (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                  <div style={{ fontSize: 11, color: '#6b7280' }}>
-                    Sending from:{' '}
+                  {/* "Likely": the real mailbox is chosen by rotation at the moment
+                      of sending (campaign selection, daily limits, gap between
+                      sends), so this is the current best guess, not a promise. */}
+                  <div
+                    style={{ fontSize: 11, color: '#6b7280' }}
+                    title="The mailbox is picked when the email sends, based on the campaign's sender selection, each mailbox's daily limit and the gap between sends. This is the most likely one right now."
+                  >
+                    Likely from:{' '}
                     <span style={{
                       fontWeight: 600, color: '#374151',
                       background: '#f3f4f6', padding: '2px 8px', borderRadius: 5,

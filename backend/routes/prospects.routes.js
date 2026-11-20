@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
+const SequenceAvailability = require('../services/SequenceAvailability'); // shared draft/archived enrollment wording
 const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext } = require('../middleware/orgContext.middleware');
 const requireModule = require('../middleware/requireModule.middleware');
@@ -109,7 +110,10 @@ async function assignCampaignAndEnroll({ orgId, userId, prospectId, campaignId, 
         [parseInt(sequenceId, 10), orgId]
       );
       if (seq.rows.length === 0) {
-        enrollmentError = 'Sequence not found or not active';
+        // Draft / archived: name the reason and the fix (shared wording with
+        // every other enrollment path). Unknown id keeps the original text.
+        const why = await SequenceAvailability.describeUnavailable(db, orgId, sequenceId, 'direct');
+        enrollmentError = why ? why.message : 'Sequence not found or not active';
       } else {
         const firstStep = await db.query(
           `SELECT delay_days, delay_hours FROM sequence_steps WHERE sequence_id = $1 ORDER BY step_order LIMIT 1`,

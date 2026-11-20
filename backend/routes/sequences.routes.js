@@ -59,6 +59,7 @@ const EnrollmentStepResolver = require('../services/EnrollmentStepResolver'); //
 const ExperimentAssigner     = require('../services/ExperimentAssigner');     // A/B arm assignment (2026_47)
 const CampaignAccess         = require('../services/CampaignAccess');        // isAdmin gate for A/B arm override
 const SequenceCreateService  = require('../services/SequenceCreateService'); // shared with the MCP create_sequence tool
+const SequenceAvailability   = require('../services/SequenceAvailability');  // shared draft/archived enrollment wording
 
 // ── Auth middleware on all routes ─────────────────────────────────────────────
 router.use(authenticateToken, orgContext);
@@ -364,7 +365,13 @@ router.post('/enroll', async (req, res) => {
     `SELECT * FROM sequences WHERE id=$1 AND org_id=$2 AND status='active'`,
     [sequenceId, req.orgId]
   );
-  if (!seqRes.rows.length) return res.status(404).json({ error: { message: 'Sequence not found' } });
+  if (!seqRes.rows.length) {
+    // Draft (awaiting Publish) or archived: say so, with the fix. A sequence
+    // that doesn't exist in this org keeps the original 404.
+    const why = await SequenceAvailability.describeUnavailable(pool, req.orgId, sequenceId, 'direct');
+    if (why) return res.status(409).json({ error: why });
+    return res.status(404).json({ error: { message: 'Sequence not found' } });
+  }
 
   const sequenceName = seqRes.rows[0].name;
 
@@ -3031,6 +3038,44 @@ router.put('/:id', async (req, res) => {
 // The original message "Existing enrollments will not be affected" was
 // factually wrong — they ARE affected (they stall). This change makes the
 // real consequence visible.
+// PATCH /api/sequences/:id — toggle AI personalisation only.
+// The sequence view panel's "AI personalisation: On/Off" control has always
+// called PATCH here, but no PATCH route existed, so every click failed with
+// "Couldn't update AI setting". PUT can't serve it: PUT rewrites the whole row
+// (name included), so a one-field body would null the name.
+//
+// Deliberately narrow — ai_enabled and nothing else — so PATCH can't become an
+// unvalidated side door around PUT's rules (threading invariants, publish
+// guard, visibility). Any other field is refused, not ignored, so a caller
+// expecting it to stick finds out. Same edit permission as PUT.
+router.patch('/:id', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const extra = Object.keys(body).filter(k => k !== 'ai_enabled');
+    if (extra.length) {
+      return res.status(400).json({ error: {
+        message: `PATCH only updates ai_enabled. Use PUT for: ${extra.join(', ')}.`,
+        code: 'PATCH_FIELD_NOT_ALLOWED',
+      } });
+    }
+    if (typeof body.ai_enabled !== 'boolean') {
+      return res.status(400).json({ error: { message: 'ai_enabled must be true or false.' } });
+    }
+    if (!(await gateSequenceEdit(req, res, req.params.id))) return;
+
+    const { rows } = await pool.query(
+      `UPDATE sequences SET ai_enabled = $1, updated_at = NOW()
+        WHERE id = $2 AND org_id = $3 RETURNING *`,
+      [body.ai_enabled, req.params.id, req.orgId]
+    );
+    if (!rows.length) return res.status(404).json({ error: { message: 'Not found' } });
+    res.json({ sequence: rows[0] });
+  } catch (err) {
+    console.error('sequences PATCH /:id', err);
+    res.status(500).json({ error: { message: 'Failed to update sequence' } });
+  }
+});
+
 router.delete('/:id', async (req, res) => {
   try {
     // Ownership gate — only the owner (or admin, or a permitted manager) may
