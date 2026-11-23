@@ -1467,4 +1467,11 @@ module.exports = {
   buildDealSkillContext,
   // Exported for unit tests of the resolution cascade. Not used by route code.
   buildOrgContext,
+  // Shared with the research pipeline (step 1.1b) so the intake fit check and
+  // background research read config and LinkedIn data exactly the way the
+  // outreach skill does — one definition of "fit" and "own post", not two.
+  resolveTitleClassifierConfig,
+  resolveFitRulesConfig,
+  splitLinkedInActivity,
+  pickCurrentRole,
 };

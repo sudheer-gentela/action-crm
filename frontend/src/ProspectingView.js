@@ -606,6 +606,43 @@ export default function ProspectingView() {
     }
   };
 
+  // ── Flag for research (step 1.1b) ─────────────────────────────────────────
+  // Queues the selection for background AI research. The backend skips (with
+  // reasons) anything past Research, already queued, or already waiting for
+  // review; results then appear in Research → Ready for review.
+  const [flaggingResearch, setFlaggingResearch] = useState(false);
+  const handleBulkFlagResearch = async () => {
+    if (selectedIds.size === 0 || flaggingResearch) return;
+    setFlaggingResearch(true);
+    try {
+      const res = await apiFetch('/prospects/bulk-flag-research', {
+        method: 'POST',
+        body: JSON.stringify({ prospectIds: [...selectedIds] }),
+      });
+      const flagged = res.flagged?.length || 0;
+      const skipped = res.skipped || [];
+      const why = {
+        past_research_stage: 'already past Research',
+        already_queued:      'already queued',
+        awaiting_review:     'already waiting for review',
+        not_found:           'not found',
+        changed_meanwhile:   'changed while flagging',
+      };
+      const byReason = {};
+      for (const s of skipped) byReason[s.reason] = (byReason[s.reason] || 0) + 1;
+      const parts = [flagged
+        ? `Flagged ${flagged} for research. Results show up in Research → Ready for review, usually within a few minutes.`
+        : 'Nothing was flagged.'];
+      for (const [reason, n] of Object.entries(byReason)) parts.push(`${n} skipped — ${why[reason] || reason}`);
+      alert(parts.join('\n'));
+      if (flagged) { clearSelection(); fetchProspects(); }
+    } catch (err) {
+      alert(`Flag for research failed: ${err.message}`);
+    } finally {
+      setFlaggingResearch(false);
+    }
+  };
+
   // ── Activation (single + bulk) ────────────────────────────────────────────
   // Both paths POST to the campaign-scoped bulk-activate endpoint with an
   // explicit prospectIds list — the backend validates that each is in the
@@ -1405,6 +1442,21 @@ export default function ProspectingView() {
             </span>
           )}
           <div style={{ flex: 1 }} />
+          {/* Flag for research (step 1.1b) — background AI research, then
+              a person approves or rejects it in the Research Queue. */}
+          <button
+            onClick={handleBulkFlagResearch}
+            disabled={flaggingResearch}
+            title="Queue background AI research for the selection. You'll approve or reject each result in Research → Ready for review."
+            style={{
+              padding: '7px 16px', borderRadius: 7,
+              border: '1px solid #0F9D8E', background: '#fff',
+              color: flaggingResearch ? '#9ca3af' : '#0F766E', fontSize: 13, fontWeight: 600,
+              cursor: flaggingResearch ? 'default' : 'pointer',
+            }}
+          >
+            {flaggingResearch ? '⟳ Flagging…' : '🔎 Flag for research'}
+          </button>
           {/* Activate selected — enrolls the selection into its campaign's
               default sequence. Enabled only for a single-campaign, all-research
               selection (see canActivateSelected). */}

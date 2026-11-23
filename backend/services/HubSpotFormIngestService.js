@@ -529,6 +529,14 @@ async function executeEvent({ orgId, contact, formName, occurredAt, settings }) 
     } finally {
       client.release();
     }
+
+    // Step 1.1b: fit check on the new form lead; flagged for background
+    // research when it passes. After COMMIT (the sweeper must be able to see
+    // the row) and best-effort — onIntake never throws. Lazy require keeps
+    // this service loadable without the research stack.
+    await require('./research/ResearchPipelineService').onIntake({
+      orgId, prospectId, source: 'hubspot_form', userId: ownerId,
+    });
   } else {
     // Existing prospect: stamp the HubSpot ref if missing; adopt into the
     // routed campaign ONLY when campaign_id is NULL (never move someone out

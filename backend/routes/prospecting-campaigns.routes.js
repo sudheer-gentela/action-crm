@@ -3478,6 +3478,10 @@ router.get('/:id/research-queue', async (req, res) => {
               p.title, p.company_name, p.company_industry,
               p.stage, p.stage_changed_at, p.research_notes, p.research_meta,
               p.created_at,
+              -- Step 1.1b research pipeline state, so the card can show the
+              -- AI research, its status and the Reject action.
+              p.research_status, p.research_flag_source, p.research_completed_at,
+              p.research_fit, p.created_via,
               a.research_notes AS account_research,
               a.research_meta  AS account_research_meta,
               -- LinkedIn capture status — joined on slug parsed from
@@ -3499,6 +3503,8 @@ router.get('/:id/research-queue', async (req, res) => {
           AND p.campaign_id = $2
           AND p.stage       = $3
           AND p.deleted_at IS NULL
+          -- Rejected research leaves the queue until someone flags it again.
+          AND p.research_review_outcome IS DISTINCT FROM 'rejected'
      ORDER BY p.created_at ASC
         LIMIT $4 OFFSET $5`,
       [req.orgId, req.params.id, stage, limit, offset]
@@ -3511,7 +3517,8 @@ router.get('/:id/research-queue', async (req, res) => {
         WHERE org_id      = $1
           AND campaign_id = $2
           AND stage       = $3
-          AND deleted_at IS NULL`,
+          AND deleted_at IS NULL
+          AND research_review_outcome IS DISTINCT FROM 'rejected'`,
       [req.orgId, req.params.id, stage]
     );
 
@@ -3535,6 +3542,11 @@ router.get('/:id/research-queue', async (req, res) => {
         createdAt:   r.created_at,
         researchNotes: r.research_notes,
         researchMeta:  r.research_meta,
+        researchStatus:      r.research_status,
+        researchFlagSource:  r.research_flag_source,
+        researchCompletedAt: r.research_completed_at,
+        researchFit:         r.research_fit,
+        createdVia:          r.created_via,
         // Surface the account-level research so the researcher can decide
         // whether they need to type anything at all, or just hit Approve.
         accountResearch:     r.account_research,

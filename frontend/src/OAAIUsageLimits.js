@@ -8,6 +8,8 @@
  *   - Org default daily budget per person ($3 unless changed).
  *   - Per person: today's spend against their limit, a personal override,
  *     the last 7 days, and where the money went by area.
+ *   - Research pipeline (step 1.1b): automatic flagging of new prospects for
+ *     background research, and the cap on the agent's open work per person.
  *
  * Saves immediately per control (no sticky save bar) because each change is
  * a separate policy decision with its own audit trail, unlike the provider
@@ -61,6 +63,10 @@ export default function OAAIUsageLimits({ onFlash }) {
   const [confirmOff, setConfirmOff] = useState(false);
   const [offReason,  setOffReason]  = useState('');
 
+  // Research pipeline settings (step 1.1b).
+  const [research,  setResearch]  = useState(null);   // { research_auto_flag, agent_pending_cap }
+  const [capInput,  setCapInput]  = useState('');
+
   const flash = useCallback((kind, msg) => {
     if (onFlash) onFlash(kind, msg);
   }, [onFlash]);
@@ -69,8 +75,15 @@ export default function OAAIUsageLimits({ onFlash }) {
     setLoading(true);
     setError(null);
     try {
-      const u = await apiFetch('/org/admin/ai/usage?days=7');
+      const [u, rs] = await Promise.all([
+        apiFetch('/org/admin/ai/usage?days=7'),
+        // Research settings are secondary: if they fail to load, the usage
+        // screen still works and the research card just doesn't render.
+        apiFetch('/org/admin/ai/research-settings').catch(() => null),
+      ]);
       setUsage(u);
+      setResearch(rs);
+      if (rs) setCapInput(String(rs.agent_pending_cap));
       setDefaultInput(String(u.default_limit_usd));
       const li = {};
       for (const p of u.users || []) li[p.user_id] = p.has_override ? String(p.limit_usd) : '';
@@ -131,6 +144,23 @@ export default function OAAIUsageLimits({ onFlash }) {
         ? 'AI turned back on for the organization ✓'
         : 'AI turned off for the organization. All AI work stops within about 30 seconds.');
       await load();
+    } catch (e) {
+      flash('error', e.message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function saveResearch(patch, okMsg) {
+    setBusy('research');
+    try {
+      const r = await apiFetch('/org/admin/ai/research-settings', {
+        method: 'PUT',
+        body: JSON.stringify(patch),
+      });
+      setResearch({ research_auto_flag: r.research_auto_flag, agent_pending_cap: r.agent_pending_cap });
+      setCapInput(String(r.agent_pending_cap));
+      flash('success', okMsg);
     } catch (e) {
       flash('error', e.message);
     } finally {
@@ -264,6 +294,50 @@ export default function OAAIUsageLimits({ onFlash }) {
           </div>
         </div>
       </div>
+
+      {/* ── Research pipeline (step 1.1b) ── */}
+      {research && (
+        <div style={cardStyle}>
+          <div style={{ fontWeight: 500, fontSize: 14 }}>🔎 Research pipeline</div>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, marginTop: 10 }}>
+            <div style={{ flex: 1, fontSize: 13, color: '#6b7280', lineHeight: 1.5 }}>
+              <strong style={{ color: '#111827', fontWeight: 500 }}>Flag new prospects for research automatically.</strong>{' '}
+              Extension captures are flagged; manual, CSV and HubSpot form prospects are flagged when they pass
+              the fit check. Research runs in the background on the owner's daily budget, and a person approves
+              or rejects every result. Flagging by hand works either way.
+            </div>
+            <Toggle
+              on={research.research_auto_flag}
+              disabled={busy === 'research'}
+              onChange={() => saveResearch(
+                { research_auto_flag: !research.research_auto_flag },
+                research.research_auto_flag ? 'Automatic research flagging turned off ✓' : 'Automatic research flagging turned on ✓'
+              )}
+            />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, marginTop: 14, flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 260, fontSize: 13, color: '#6b7280', lineHeight: 1.5 }}>
+              <strong style={{ color: '#111827', fontWeight: 500 }}>Agent limit per person.</strong>{' '}
+              The most prospects the agent may have waiting on one person at once (queued, researching or
+              awaiting review). Raise it as the agent's results earn it.
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="number" min="0" max="500" step="1"
+                value={capInput}
+                onChange={e => setCapInput(e.target.value)}
+                style={{ ...inputStyle, width: 80 }}
+              />
+              <button
+                onClick={() => saveResearch({ agent_pending_cap: Number(capInput) }, `Agent limit set to ${capInput} per person ✓`)}
+                disabled={busy === 'research' || capInput === '' || Number(capInput) === research.agent_pending_cap}
+                style={primaryBtnStyle}>
+                {busy === 'research' ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Org summary ── */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>

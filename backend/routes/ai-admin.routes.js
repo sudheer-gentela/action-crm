@@ -20,6 +20,7 @@ const CredentialsStore  = require('../services/ai/CredentialsStore');
 const AIClientResolver  = require('../services/ai/AIClientResolver');
 const ModelDiscoveryService = require('../services/ai/ModelDiscoveryService');
 const AiSpendGuard      = require('../services/ai/AiSpendGuard');
+const ResearchPipeline  = require('../services/research/ResearchPipelineService');
 
 const router = express.Router();
 router.use(authenticateToken, orgContext);
@@ -476,6 +477,35 @@ router.put('/kill-switch', adminOnly, async (req, res) => {
     res.json({ ok: true, ai_enabled: out.enabled, reason: out.reason });
   } catch (err) {
     sendGuardError(res, err, 'Failed to change the AI switch', 'PUT /org/admin/ai/kill-switch error:');
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// GET /api/org/admin/ai/research-settings
+// PUT /api/org/admin/ai/research-settings
+// Body (any subset): { research_auto_flag: boolean, agent_pending_cap: int }
+//   research_auto_flag — flag new prospects for background research at
+//                        intake (fit check) and on extension capture.
+//                        Manual and agent flagging work either way.
+//   agent_pending_cap  — most agent-added/flagged prospects per user that
+//                        may be waiting on a person at once (default 25).
+// Step 1.1b.
+// ─────────────────────────────────────────────────────────────────────────
+router.get('/research-settings', adminOnly, async (req, res) => {
+  try {
+    res.json(await ResearchPipeline.getSettings(req.orgId));
+  } catch (err) {
+    console.error('GET /org/admin/ai/research-settings error:', err);
+    res.status(500).json({ error: { message: 'Failed to load research settings' } });
+  }
+});
+
+router.put('/research-settings', adminOnly, async (req, res) => {
+  try {
+    const out = await ResearchPipeline.saveSettings(req.orgId, req.body || {}, req.userId);
+    res.json({ ok: true, ...out });
+  } catch (err) {
+    sendGuardError(res, err, 'Failed to save research settings', 'PUT /org/admin/ai/research-settings error:');
   }
 });
 

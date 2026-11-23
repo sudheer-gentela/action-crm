@@ -70,7 +70,9 @@ const AREA_LABELS = {
 
 function areaFor(callType) {
   const ct = String(callType || '');
-  if (ct.startsWith('prospecting_research'))                  return 'research';
+  // research_account / research_person: what research was logged as before
+  // step 1.1b — kept so older rows still land under Research.
+  if (ct.startsWith('prospecting_research') || ct.startsWith('research_')) return 'research';
   if (ct === 'prospecting_draft' || ct === 'prospecting_sequence_generate') return 'email_writing';
   if (ct.startsWith('prospecting_'))                          return 'prospecting';
   if (ct.startsWith('strap_'))                                return 'straps';

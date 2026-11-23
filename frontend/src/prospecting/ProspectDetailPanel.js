@@ -18,6 +18,7 @@ import TwilioCallModal from '../TwilioCallModal';
 import ProspectPhonesPanel from './ProspectPhonesPanel';
 import CustomFieldsPanel from '../customfields/CustomFieldsPanel';
 import ProspectHistoryTab from './ProspectHistoryTab';
+import ResearchReviewBar from './ResearchReviewBar';
 
 // ── Migrated-history availability (Mongo migration preview) ─────────────────
 // The History tab surfaces migrated Mongo interaction data, which only exists
@@ -1277,8 +1278,9 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpen
                       do not include the prompt-caching discount (these calls use
                       free-text prompts, not skill bundles, so caching gain is
                       lower than for outreach skills). Cost is logged per-call
-                      in ai_token_usage with call_type ∈ {research_account,
-                      research_person}; ai_token_usage.estimated_cost_usd is the
+                      in ai_token_usage with call_type ∈ {prospecting_research_account,
+                      prospecting_research} (research_account / research_person
+                      before step 1.1b); ai_token_usage.estimated_cost_usd is the
                       authoritative number — the figures here are guidance for
                       the rep, not a billing source. */}
                   <button
@@ -1339,6 +1341,19 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpen
                     rep who hovers can still see it without ever leaving the
                     workflow. */}
 
+                {/* Step 1.1b: research status + sign-off. Research (manual or
+                    background) no longer moves the stage; approve/reject here
+                    or in the Research Queue. */}
+                <ResearchReviewBar
+                  prospect={prospect}
+                  onChanged={async () => {
+                    const detail = await apiFetch(`/prospects/${prospectId}`);
+                    setProspect(detail.prospect);
+                    setResearchResult(null);
+                    onUpdate();
+                  }}
+                />
+
                 {researchError && (
                   <div style={{ padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 13, color: '#dc2626', marginBottom: 12 }}>
                     ⚠️ {researchError}
@@ -1361,7 +1376,9 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpen
                 {/* Structured research result (current run) */}
                 {researchResult && (
                   <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10, padding: 16, marginBottom: 16 }}>
-                    <div style={{ fontWeight: 700, fontSize: 13, color: '#065f46', marginBottom: 10 }}>✅ Research complete</div>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: '#065f46', marginBottom: 10 }}>
+                      ✅ Research complete{researchResult.researchStatus === 'ready_for_review' ? ' — approve or reject it above' : ''}
+                    </div>
 
                     {researchResult.researchBullets?.length > 0 && (
                       <div style={{ marginBottom: 12 }}>

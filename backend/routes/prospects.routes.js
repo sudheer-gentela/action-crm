@@ -33,6 +33,21 @@ const CampaignAccess = require('../services/CampaignAccess');
 const AccessPolicy   = require('../services/AccessPolicy');
 const CampaignSettings = require('../services/campaignSettings.service');
 
+// Step 1.1b: research pipeline. ProspectResearchService is the two-step AI
+// research (shared with the background sweeper); ResearchPipelineService owns
+// flagging, the intake fit check, the agent cap and reject-research.
+const ProspectResearchService = require('../services/research/ProspectResearchService');
+const ResearchPipeline        = require('../services/research/ResearchPipelineService');
+
+// Service validation errors (400/404/409) go back as-is; anything else is a 500.
+function sendResearchError(res, err, fallback, label) {
+  if (err && [400, 404, 409].includes(err.statusCode)) {
+    return res.status(err.statusCode).json({ error: { message: err.message, code: err.code } });
+  }
+  console.error(label, err);
+  return res.status(500).json({ error: { message: fallback } });
+}
+
 
 router.use(authenticateToken);
 router.use(orgContext);
@@ -518,6 +533,8 @@ router.post('/bulk', async (req, res) => {
 
     let imported = 0;
     let updated  = 0;
+    // New rows only (not upserts or moves) — these get the research fit check.
+    const newProspectIds = [];
     let skipped  = 0;
     const errors = [];
 
@@ -933,6 +950,7 @@ router.post('/bulk', async (req, res) => {
 
         await writeRowCustomFields(row, insertRes.rows[0].id, resolvedAccountId);
         await writeRowSignals(row, insertRes.rows[0].id, resolvedAccountId);
+        newProspectIds.push(insertRes.rows[0].id);
         imported++;
       } catch (rowErr) {
         console.error(`Bulk import row ${rowNum} error:`, rowErr.message);
@@ -961,6 +979,19 @@ router.post('/bulk', async (req, res) => {
     }
 
     console.log(`📥 Bulk import (${mode}): ${imported} inserted, ${updated} updated, ${moved} moved, ${skipped} skipped (org ${req.orgId})`);
+
+    // Step 1.1b: fit check + research flag for the new rows. Not awaited: up
+    // to 500 sequential checks would hold the response for seconds, and
+    // flagging is best-effort (failures are logged, never surfaced).
+    if (newProspectIds.length) {
+      ResearchPipeline.onIntakeMany({
+        orgId: req.orgId, prospectIds: newProspectIds, source, userId: req.user.userId,
+      }).then(r => {
+        if (r.flagged || r.notFlagged) {
+          console.log(`🔎 Import research check: ${r.flagged} flagged, ${r.notFlagged} not flagged (org ${req.orgId})`);
+        }
+      }).catch(err => console.warn('Import research check failed:', err.message));
+    }
 
     // ── Signal-Based Campaigns (P6): refresh the queue for entities whose
     // list signals just landed (§6: re-evaluate on fresh capture). Best-effort
@@ -1643,6 +1674,98 @@ router.get('/assignable-owners', async (req, res) => {
   }
 });
 
+// ═════════════════════════════════════════════════════════════════════════
+// RESEARCH PIPELINE (step 1.1b)
+// Registered before GET /:id so '/research-review' isn't read as an id.
+// ═════════════════════════════════════════════════════════════════════════
+
+// ── GET /research-review — research waiting for a person ────────────────────
+// ?scope=mine|all (default mine = prospects I own) &campaignId= &limit= &offset=
+// Returns the ready_for_review rows plus counts by status for the same scope.
+router.get('/research-review', async (req, res) => {
+  try {
+    const out = await ResearchPipeline.listForReview({
+      orgId:      req.orgId,
+      userId:     req.user.userId,
+      scope:      req.query.scope === 'all' ? 'all' : 'mine',
+      campaignId: req.query.campaignId || null,
+      limit:      req.query.limit,
+      offset:     req.query.offset,
+    });
+    res.json(out);
+  } catch (err) {
+    sendResearchError(res, err, 'Failed to load research review', 'GET /prospects/research-review error:');
+  }
+});
+
+// ── POST /bulk-flag-research — flag the selection for background research ──
+// Body: { prospectIds: number[] }. Skips (with reasons) rather than failing.
+router.post('/bulk-flag-research', async (req, res) => {
+  try {
+    const out = await ResearchPipeline.flagForResearch({
+      orgId: req.orgId, prospectIds: req.body?.prospectIds, userId: req.user.userId, source: 'manual',
+    });
+    res.json(out);
+  } catch (err) {
+    sendResearchError(res, err, 'Failed to flag for research', 'POST /prospects/bulk-flag-research error:');
+  }
+});
+
+// ── POST /:id/flag-research — flag one prospect ────────────────────────────
+router.post('/:id/flag-research', async (req, res) => {
+  try {
+    const out = await ResearchPipeline.flagForResearch({
+      orgId: req.orgId, prospectIds: [req.params.id], userId: req.user.userId, source: 'manual',
+    });
+    if (!out.flagged.length) {
+      const reason = out.skipped[0]?.reason;
+      const msg = {
+        not_found:           'Prospect not found',
+        past_research_stage: 'Only prospects in Target or Research can be flagged for research.',
+        already_queued:      'Research is already queued for this prospect.',
+        awaiting_review:     'Research is already waiting for review.',
+        changed_meanwhile:   'This prospect changed while flagging — refresh and try again.',
+      }[reason] || 'Could not flag this prospect.';
+      return res.status(reason === 'not_found' ? 404 : 409).json({ error: { message: msg, code: reason } });
+    }
+    res.json({ ok: true, prospectId: out.flagged[0], researchStatus: 'queued' });
+  } catch (err) {
+    sendResearchError(res, err, 'Failed to flag for research', 'POST /prospects/:id/flag-research error:');
+  }
+});
+
+// ── DELETE /:id/flag-research — un-flag (only while queued or failed) ───────
+router.delete('/:id/flag-research', async (req, res) => {
+  try {
+    const out = await ResearchPipeline.unflagResearch({
+      orgId: req.orgId, prospectIds: [req.params.id], userId: req.user.userId,
+    });
+    if (!out.unflagged.length) {
+      return res.status(409).json({ error: {
+        message: 'Research can only be un-flagged while it is waiting to run or after it failed.',
+      } });
+    }
+    res.json({ ok: true, prospectId: out.unflagged[0], researchStatus: null });
+  } catch (err) {
+    sendResearchError(res, err, 'Failed to remove the research flag', 'DELETE /prospects/:id/flag-research error:');
+  }
+});
+
+// ── POST /:id/reject-research — reject the research, not the prospect ──────
+// Body: { reason } (required). Stage is unchanged. Stored only in the
+// research_review_* fields — never in disqualify or nurture fields.
+router.post('/:id/reject-research', async (req, res) => {
+  try {
+    const out = await ResearchPipeline.rejectResearch({
+      orgId: req.orgId, prospectId: parseInt(req.params.id, 10),
+      userId: req.user.userId, reason: req.body?.reason,
+    });
+    res.json(out);
+  } catch (err) {
+    sendResearchError(res, err, 'Failed to reject research', 'POST /prospects/:id/reject-research error:');
+  }
+});
+
 router.get('/:id', async (req, res) => {
   try {
     const result = await db.query(
@@ -2091,321 +2214,26 @@ router.get('/:id/email-replies', async (req, res) => {
 
 // ── POST /:id/research — AI-powered prospect research ────────────────────────
 router.post('/:id/research', async (req, res) => {
+  // Step 1.1b: the research itself lives in ProspectResearchService so the
+  // background sweeper runs the same code. Research no longer moves the stage:
+  // the result waits for a person to approve (target → research) or reject it.
+  // The clicker's model settings, keys and daily AI budget are used.
   try {
-    const prospectResult = await db.query(
-      `SELECT p.*,
-              acc.name AS account_name, acc.industry AS account_industry
-       FROM prospects p
-       LEFT JOIN accounts acc ON p.account_id = acc.id
-       WHERE p.id = $1 AND p.org_id = $2 AND p.deleted_at IS NULL`,
-      [req.params.id, req.orgId]
-    );
-
-    if (prospectResult.rows.length === 0) {
-      return res.status(404).json({ error: { message: 'Prospect not found' } });
-    }
-
-    const p = prospectResult.rows[0];
-
-    const prospectInfo = [
-      `Name: ${p.first_name} ${p.last_name}`,
-      p.title            ? `Title: ${p.title}`                          : null,
-      p.email            ? `Email: ${p.email}`                          : null,
-      p.linkedin_url     ? `LinkedIn: ${p.linkedin_url}`                : null,
-      p.company_name     ? `Company: ${p.company_name}`                 : null,
-      p.company_domain   ? `Company domain: ${p.company_domain}`        : null,
-      p.company_industry ? `Industry: ${p.company_industry}`            : null,
-      p.company_size     ? `Company size: ${p.company_size}`            : null,
-      p.location         ? `Location: ${p.location}`                    : null,
-      p.account_name     ? `Account: ${p.account_name}`                 : null,
-      p.account_industry ? `Account industry: ${p.account_industry}`    : null,
-      p.tags?.length     ? `Tags: ${JSON.parse(p.tags || '[]').join(', ')}` : null,
-    ].filter(Boolean).join('\n');
-
-    const companyInfo = [
-      p.company_name     ? `Company: ${p.company_name}`                 : null,
-      p.company_domain   ? `Domain: ${p.company_domain}`                : null,
-      p.company_industry ? `Industry: ${p.company_industry}`            : null,
-      p.company_size     ? `Size: ${p.company_size}`                    : null,
-      p.location         ? `HQ location: ${p.location}`                 : null,
-      p.account_name     ? `Account name: ${p.account_name}`            : null,
-    ].filter(Boolean).join('\n');
-
-    const [userPrefRes, orgIntRes, userStage1Res, orgStage1Res, userStage2Res, orgStage2Res] = await Promise.all([
-      db.query(
-        `SELECT preferences FROM user_preferences WHERE user_id = $1 AND org_id = $2`,
-        [req.user.userId, req.orgId]
-      ),
-      db.query(
-        `SELECT config FROM org_integrations WHERE org_id = $1 AND integration_type = 'prospecting'`,
-        [req.orgId]
-      ),
-      db.query(
-        `SELECT template_data FROM user_prompts
-         WHERE user_id = $1 AND org_id = $2 AND template_type = 'prospecting_research_account'`,
-        [req.user.userId, req.orgId]
-      ),
-      db.query(
-        `SELECT id, template FROM prompts
-         WHERE org_id = $1 AND user_id IS NULL AND key = 'prospecting_research_account'`,
-        [req.orgId]
-      ),
-      db.query(
-        `SELECT template_data FROM user_prompts
-         WHERE user_id = $1 AND org_id = $2 AND template_type = 'prospecting_research'`,
-        [req.user.userId, req.orgId]
-      ),
-      db.query(
-        `SELECT id, template FROM prompts
-         WHERE org_id = $1 AND user_id IS NULL AND key = 'prospecting_research'`,
-        [req.orgId]
-      ),
-    ]);
-
-    const userPrefs  = userPrefRes.rows[0]?.preferences || {};
-    const orgConfig  = orgIntRes.rows[0]?.config || {};
-    const prospPrefs = userPrefs.prospecting || {};
-
-    const productCtx = prospPrefs.product_context !== undefined
-                         ? prospPrefs.product_context
-                         : (orgConfig.product_context || '');
-
-    const AI_PROMPTS = require('../config/aiPrompts');
-    const TokenTrackingService = require('../services/TokenTrackingService');
-    const AIClientResolver     = require('../services/ai/AIClientResolver');
-
-    // Resolve provider/model once for this request — used by callAI below and
-    // also stamped onto prospect/account records further down.
-    const _resolved  = await AIClientResolver._resolveProviderAndModel(
-      req.orgId, req.user.userId, 'prospecting_research'
-    );
-    const aiProvider = _resolved.provider;
-    const aiModel    = _resolved.model;
-
-    async function callAI(prompt, maxTokens = 800, callType = 'prospecting_research') {
-      const { adapter, model, provider, keySource } =
-        await AIClientResolver.resolve(req.orgId, req.user.userId, callType);
-
-      const { text, usage } = await adapter.complete({
-        model,
-        prompt,
-        maxTokens,
-      });
-
-      TokenTrackingService.log({
-        orgId: req.orgId, userId: req.user.userId,
-        callType, provider, keySource, model, usage,
-      }).catch(() => {});
-
-      return { text: text || '', usage };
-    }
-
-    let accountResearchText = '';
-    let accountResearchJson = null;
-    const CACHE_DAYS = 30;
-
-    if (p.account_id) {
-      const accountRes = await db.query(
-        `SELECT research_notes, research_updated_at FROM accounts
-         WHERE id = $1 AND org_id = $2`,
-        [p.account_id, req.orgId]
-      );
-      const acct = accountRes.rows[0];
-      const isStale = !acct?.research_updated_at ||
-        (Date.now() - new Date(acct.research_updated_at).getTime()) > CACHE_DAYS * 24 * 60 * 60 * 1000;
-
-      if (acct?.research_notes && !isStale) {
-        accountResearchText = typeof acct.research_notes === 'string'
-          ? acct.research_notes
-          : JSON.stringify(acct.research_notes, null, 2);
-        console.log(`📋 Using cached account research for account ${p.account_id}`);
-      } else {
-        console.log(`🔍 Running Stage 1 account research for ${p.company_name}...`);
-        const stage1Template = userStage1Res.rows[0]?.template_data
-          || orgStage1Res.rows[0]?.template
-          || AI_PROMPTS.prospecting_research_account
-          || '';
-
-        if (stage1Template) {
-          const stage1Prompt = stage1Template
-            .replace('{{companyInfo}}',   companyInfo)
-            .replace('{{productContext}}', productCtx || 'Not specified');
-
-          const { text: stage1Raw } = await callAI(stage1Prompt, 1000, 'research_account');
-
-          try {
-            const cleaned = stage1Raw.replace(/\`\`\`json\n?/gi, '').replace(/\`\`\`\n?/g, '').trim();
-            const start = cleaned.indexOf('{');
-            const end   = cleaned.lastIndexOf('}');
-            accountResearchJson = JSON.parse(cleaned.substring(start, end + 1));
-            accountResearchText = JSON.stringify(accountResearchJson, null, 2);
-          } catch {
-            accountResearchText = stage1Raw;
-          }
-
-          const stage1PromptId     = orgStage1Res.rows[0]?.id     || null;
-          const stage1PromptSource = userStage1Res.rows[0]
-            ? 'user_override'
-            : orgStage1Res.rows[0] ? 'org_default' : 'system_default';
-
-          const accountMeta = {
-            provider:            aiProvider,
-            model:               aiModel,
-            stage1_prompt_id:    stage1PromptId,
-            stage1_prompt_key:   'prospecting_research_account',
-            stage1_prompt_source: stage1PromptSource,
-            generated_by_user_id: req.user.userId,
-            generated_at:        new Date().toISOString(),
-          };
-
-          db.query(
-            `UPDATE accounts
-             SET research_notes       = $1,
-                 research_updated_at  = CURRENT_TIMESTAMP,
-                 research_meta        = $2::jsonb,
-                 updated_at           = CURRENT_TIMESTAMP
-             WHERE id = $3 AND org_id = $4`,
-            [accountResearchText, JSON.stringify(accountMeta), p.account_id, req.orgId]
-          ).catch(err => console.warn('Account research cache save failed:', err.message));
-        }
-      }
-    }
-
-    console.log(`🎯 Running Stage 2 person research for ${p.first_name} ${p.last_name}...`);
-    const stage2Template = userStage2Res.rows[0]?.template_data
-      || orgStage2Res.rows[0]?.template
-      || AI_PROMPTS.prospecting_research
-      || '';
-
-    const stage2SystemDefault = `You are an expert B2B sales researcher. Based on the prospect and account info below, generate research bullets and a crisp pitch.
-
-PERSON:
-{{prospectInfo}}
-
-ACCOUNT RESEARCH:
-{{accountResearch}}
-
-WHAT WE SELL:
-{{productContext}}
-
-Return ONLY valid JSON:
-{
-  "researchBullets": ["bullet 1", "bullet 2", "bullet 3", "bullet 4", "bullet 5"],
-  "pitchAngle": "Single strongest angle for this person",
-  "crispPitch": "3-5 sentence pitch written directly to them",
-  "subjectLine": "Email subject line",
-  "confidence": 0.8
-}`;
-
-    const stage2Prompt = (stage2Template || stage2SystemDefault)
-      .replace('{{prospectInfo}}',   prospectInfo)
-      .replace('{{accountResearch}}', accountResearchText || 'No account research available.')
-      .replace('{{productContext}}',  productCtx || 'Not specified');
-
-    const { text: stage2Raw } = await callAI(stage2Prompt, 900, 'research_person');
-
-    let parsed = null;
-    let researchNotes = '';
-    try {
-      const cleaned = stage2Raw.replace(/\`\`\`json\n?/gi, '').replace(/\`\`\`\n?/g, '').trim();
-      const start = cleaned.indexOf('{');
-      const end   = cleaned.lastIndexOf('}');
-      parsed = JSON.parse(cleaned.substring(start, end + 1));
-
-      const bullets = parsed.researchBullets || [];
-      researchNotes = bullets.map(b => `• ${b}`).join('\n');
-      if (parsed.pitchAngle)  researchNotes += `\n\n💡 Pitch angle: ${parsed.pitchAngle}`;
-      if (parsed.crispPitch)  researchNotes += `\n\n✉️ Crisp pitch:\n${parsed.crispPitch}`;
-      if (parsed.subjectLine) researchNotes += `\n\n📧 Subject: ${parsed.subjectLine}`;
-    } catch {
-      researchNotes = stage2Raw;
-    }
-
-    if (!researchNotes) {
-      return res.status(500).json({ error: { message: 'Research generation returned empty response' } });
-    }
-
-    const stage2PromptId     = orgStage2Res.rows[0]?.id || null;
-    const stage2PromptSource = userStage2Res.rows[0]
-      ? 'user_override'
-      : orgStage2Res.rows[0] ? 'org_default' : 'system_default';
-
-    const prospectMeta = {
-      provider:            aiProvider,
-      model:               aiModel,
-      stage2_prompt_id:    stage2PromptId,
-      stage2_prompt_key:   'prospecting_research',
-      stage2_prompt_source: stage2PromptSource,
-      account_research_used: !!accountResearchText,
-      account_research_cached: !!(p.account_id && accountResearchText),
-      generated_by_user_id: req.user.userId,
-      generated_at:        new Date().toISOString(),
-      confidence:          parsed?.confidence || null,
-    };
-
-    await db.query(
-      `UPDATE prospects
-       SET research_notes = $1,
-           research_meta  = $2::jsonb,
-           updated_at     = CURRENT_TIMESTAMP
-       WHERE id = $3 AND org_id = $4`,
-      [researchNotes, JSON.stringify(prospectMeta), req.params.id, req.orgId]
-    );
-
-    let stageAdvanced = false;
-    if (p.stage === 'target') {
-      // Slice 2 fix: canonical stage value is 'research', not 'researched'.
-      // The pre-Slice-2 migration backfills any legacy 'researched' rows.
-      await db.query(
-        `UPDATE prospects
-         SET stage = 'research', stage_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-         WHERE id = $1 AND org_id = $2`,
-        [req.params.id, req.orgId]
-      );
-      stageAdvanced = true;
-
-      await db.query(
-        `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description)
-         VALUES ($1, $2, $3, 'stage_change', 'Auto-advanced to research after AI research')`,
-        [req.orgId, req.params.id, req.user.userId]
-      );
-    }
-
-    await db.query(
-      `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata)
-       VALUES ($1, $2, $3, 'research_completed', 'AI research notes generated', $4)`,
-      [req.orgId, 
-        req.params.id,
-        req.user.userId,
-        JSON.stringify({ stageAdvanced, model: aiModel, provider: aiProvider }),
-      ]
-    );
-
-    res.json({
-      researchNotes,
-      stageAdvanced,
-      newStage:           stageAdvanced ? 'research' : p.stage,
-      researchBullets:    parsed?.researchBullets    || null,
-      pitchAngle:         parsed?.pitchAngle         || null,
-      crispPitch:         parsed?.crispPitch         || null,
-      suggestedSubject:   parsed?.subjectLine        || null,
-      confidence:         parsed?.confidence         || null,
-      accountResearchCached: !!accountResearchText,
-      accountResearch:    accountResearchJson,
-      meta: {
-        provider:      aiProvider,
-        model:         aiModel,
-        promptSources: {
-          account: userStage1Res.rows[0] ? 'user_override' : orgStage1Res.rows[0] ? 'org_default' : 'system_default',
-          person:  userStage2Res.rows[0] ? 'user_override' : orgStage2Res.rows[0] ? 'org_default' : 'system_default',
-        },
-      },
+    const out = await ProspectResearchService.researchProspect({
+      orgId:       req.orgId,
+      prospectId:  parseInt(req.params.id, 10),
+      actorUserId: req.user.userId,
+      trigger:     'manual',
     });
+    res.json(out);
   } catch (error) {
     if (sendAiGateError(res, error)) return;
+    if (error.statusCode === 404) {
+      return res.status(404).json({ error: { message: 'Prospect not found' } });
+    }
     console.error('Prospect research error:', error);
     if (error.message?.includes('API key')) {
-      return res.status(500).json({ error: { message: 'AI research unavailable — ANTHROPIC_API_KEY not configured' } });
+      return res.status(500).json({ error: { message: 'AI research unavailable — no AI provider key is configured' } });
     }
     res.status(500).json({ error: { message: 'Research failed: ' + error.message } });
   }
@@ -2680,6 +2508,14 @@ router.post('/', async (req, res) => {
        VALUES ($1, $2, $3, 'created', $4)`,
       [req.orgId, result.rows[0].id, req.user.userId, `Prospect created from ${source || 'manual'}`]
     );
+
+    // Step 1.1b: extension captures are flagged for research; other intake
+    // runs the fit check and is flagged when it passes. Best-effort — never
+    // fails the create (onIntake catches its own errors).
+    await ResearchPipeline.onIntake({
+      orgId: req.orgId, prospectId: result.rows[0].id,
+      source: source || 'manual', userId: req.user.userId,
+    });
 
     // v1.8: honour campaign + sequence on creation. Campaign assignment
     // hard-fails (bad campaign id), enrollment soft-fails into enrollmentError
@@ -4457,7 +4293,7 @@ router.post('/:id/approve-research', async (req, res) => {
 
     // Load prospect — enforce org scope.
     const pRes = await db.query(
-      `SELECT id, stage, research_meta FROM prospects
+      `SELECT id, stage, research_meta, research_status FROM prospects
         WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
       [req.params.id, req.orgId]
     );
@@ -4505,15 +4341,33 @@ router.post('/:id/approve-research', async (req, res) => {
     // `stage != $3` (CASE expression), the parser can deduce inconsistent
     // types ("text" in one path, "character varying" in the other) and
     // raise SQLSTATE 42P08. Casts make every parameter's type unambiguous.
+    // Step 1.1b: when the reviewer adds no note of their own, keep the
+    // approved AI research as research_notes (the legacy prompt path reads
+    // it). Before background research existed a blank approval nulled it;
+    // that would now throw away the research the person just approved. The
+    // structured copy stays in research_meta.ai_research either way.
+    const aiNotes = existingMeta.ai_research?.notes_text || null;
+    const notesToSave = trimmedSummary || aiNotes;
+
+    // Step 1.1b: record the sign-off in the research review fields. Any
+    // pipeline status becomes 'reviewed' (so a queued run for this prospect
+    // is cancelled — a person has already approved it); prospects that were
+    // never flagged keep research_status NULL.
     await db.query(
       `UPDATE prospects
           SET research_notes    = $1::text,
               research_meta     = $2::jsonb,
               stage             = $3::varchar,
               stage_changed_at  = CASE WHEN stage != $3::varchar THEN CURRENT_TIMESTAMP ELSE stage_changed_at END,
+              research_status   = CASE WHEN research_status IS NULL THEN NULL ELSE 'reviewed' END,
+              research_next_attempt_at = NULL,
+              research_review_outcome  = 'approved',
+              research_review_reason   = NULL,
+              research_reviewed_by     = $6::int,
+              research_reviewed_at     = LOCALTIMESTAMP,
               updated_at        = CURRENT_TIMESTAMP
         WHERE id = $4::int AND org_id = $5::int`,
-      [trimmedSummary, JSON.stringify(newMeta), nextStage, req.params.id, req.orgId]
+      [notesToSave, JSON.stringify(newMeta), nextStage, req.params.id, req.orgId, req.user.userId]
     );
 
     // Activity row — researcher audit trail. Non-fatal. The description
@@ -4541,6 +4395,9 @@ router.post('/:id/approve-research', async (req, res) => {
             signal_override:   isOverride,
             had_signal:        !!trimmedSummary,
             stageAdvanced,
+            // For agent research-approval rates (step 1.5).
+            had_ai_research:   !!existingMeta.ai_research,
+            research_status_before: p.research_status || null,
           }),
         ]
       );

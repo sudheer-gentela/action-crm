@@ -549,6 +549,8 @@ app.listen(PORT, () => {
     if (backgroundEnabled) {
       require('./jobs/modelDiscoveryScheduler').startScheduler();
       require('./jobs/senderTokenHealthScheduler').startScheduler();
+      // Step 1.1b: background research on flagged prospects (every minute).
+      require('./jobs/researchSweeper').startScheduler();
       require('./jobs/whatsappMediaJob');                    // queue processor
       require('./jobs/whatsappMediaJob').startScheduler();   // expiry sweep
     }
