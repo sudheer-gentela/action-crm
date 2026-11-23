@@ -18,26 +18,12 @@
 
 const db = require('../config/database');
 
-// Anthropic prompt-cache pricing multipliers (applied to base input price):
-//   5-minute cache writes: 1.25x   1-hour cache writes: 2x   cache reads: 0.1x
-const CACHE_WRITE_5M_MULT = 1.25;
-const CACHE_WRITE_1H_MULT = 2.0;
-const CACHE_READ_MULT     = 0.10;
-
-// Approximate cost per token (USD), matched against the lowercased model
-// string IN ORDER — first hit wins, so more specific patterns go first.
-// (The old MODEL_COSTS map priced Haiku at 3.5-era rates and Opus at
-// pre-4.7 rates; corrected here.)
-const MODEL_COST_TABLE = [
-  ['fable',    { input: 0.00001,   output: 0.00005  }],  // Fable 5:    $10 / $50 per MTok
-  ['opus-4-8', { input: 0.000005,  output: 0.000025 }],  // Opus 4.8:   $5 / $25
-  ['opus-4-7', { input: 0.000005,  output: 0.000025 }],  // Opus 4.7:   $5 / $25
-  ['opus',     { input: 0.000015,  output: 0.000075 }],  // older Opus: $15 / $75
-  ['sonnet',   { input: 0.000003,  output: 0.000015 }],  // Sonnet:     $3 / $15
-  ['haiku-3',  { input: 0.0000008, output: 0.000004 }],  // Haiku 3.5:  $0.80 / $4
-  ['haiku',    { input: 0.000001,  output: 0.000005 }],  // Haiku 4.5:  $1 / $5
-];
-const DEFAULT_COSTS = { input: 0.000001, output: 0.000005 }; // unknown → Haiku-class
+// Prices live in ONE place: config/aiProviders.js (estimateCostUSD). This
+// file used to keep its own substring-matched table, which drifted from the
+// registry — it had no 5.x models, so e.g. Opus 5.5 was billed at the old
+// $15/$75 'opus' rate (~4x actual) and Haiku 5.5 at $1/$5 (~10x), and every
+// non-Anthropic model fell to the Haiku default.
+const { estimateCostUSD } = require('../config/aiProviders');
 
 // Map call_type → product module (for module-level rollups)
 const MODULE_MAP = {
@@ -99,7 +85,7 @@ class TokenTrackingService {
     const promptTokens      = uncachedTokens + cacheReadTokens + cacheWriteTokens;
     const completionTokens  = usage.output_tokens  || 0;
     const totalTokens       = promptTokens + completionTokens;
-    const estimatedCost     = this._estimateCostFromUsage(model, usage);
+    const estimatedCost     = estimateCostUSD(provider || null, model, usage);
 
     try {
       await db.query(
@@ -328,16 +314,26 @@ class TokenTrackingService {
   // ── Private ──────────────────────────────────────────────────
 
   /**
-   * Back-compat alias: (model, promptTokens, completionTokens) with no cache
-   * awareness. promptTokens is treated entirely as uncached input. Existing
-   * callers keep working; new callers should prefer estimateCostFromUsage.
+   * Back-compat: (model, promptTokens, completionTokens) — promptTokens is
+   * treated entirely as uncached input.
    *
-   * @returns {number|null}   USD cost, or null if model is missing.
+   * Also accepts (model, usageObject[, provider]): AICostCatalogService has
+   * always called it that way, which under the old signature multiplied an
+   * object by a rate → NaN → shown as $0 on every cost projection. Accepting
+   * both shapes fixes that without breaking positional callers.
+   *
+   * @returns {number|null} USD cost, or null if model is missing.
    */
-  static estimateCost(model, promptTokens, completionTokens) {
-    return this._estimateCostFromUsage(model, {
-      input_tokens:  promptTokens,
-      output_tokens: completionTokens,
+  static estimateCost(model, promptOrUsage, completionOrProvider) {
+    if (promptOrUsage && typeof promptOrUsage === 'object') {
+      return estimateCostUSD(
+        typeof completionOrProvider === 'string' ? completionOrProvider : null,
+        model, promptOrUsage
+      );
+    }
+    return estimateCostUSD(null, model, {
+      input_tokens:  promptOrUsage || 0,
+      output_tokens: completionOrProvider || 0,
     });
   }
 
@@ -348,43 +344,11 @@ class TokenTrackingService {
    * @param {object} usage  { input_tokens, output_tokens,
    *                          cache_read_input_tokens, cache_creation_input_tokens,
    *                          cache_creation? }
+   * @param {string} [provider]  optional; inferred from the model id when absent
    * @returns {number|null} USD cost, or null if model is missing.
    */
-  static estimateCostFromUsage(model, usage) {
-    return this._estimateCostFromUsage(model, usage);
-  }
-
-  static _ratesFor(model) {
-    const modelLower = String(model).toLowerCase();
-    for (const [pattern, rates] of MODEL_COST_TABLE) {
-      if (modelLower.includes(pattern)) return rates;
-    }
-    return DEFAULT_COSTS;
-  }
-
-  static _estimateCostFromUsage(model, usage = {}) {
-    if (!model) return null;
-    const costs = this._ratesFor(model);
-
-    const uncached = usage.input_tokens  || 0;
-    const output   = usage.output_tokens || 0;
-    const read     = usage.cache_read_input_tokens     || 0;
-    const writeAll = usage.cache_creation_input_tokens || 0;
-
-    // Prefer the 5m/1h breakdown when the API provides it (mixed-TTL
-    // requests); otherwise treat all writes as 5-minute writes.
-    const write1h = usage.cache_creation?.ephemeral_1h_input_tokens || 0;
-    const write5m = usage.cache_creation?.ephemeral_5m_input_tokens
-      ?? Math.max(writeAll - write1h, 0);
-
-    const cost =
-      uncached * costs.input +
-      write5m  * costs.input * CACHE_WRITE_5M_MULT +
-      write1h  * costs.input * CACHE_WRITE_1H_MULT +
-      read     * costs.input * CACHE_READ_MULT +
-      output   * costs.output;
-
-    return parseFloat(cost.toFixed(6));
+  static estimateCostFromUsage(model, usage, provider) {
+    return estimateCostUSD(provider || null, model, usage || {});
   }
 }
 

@@ -25,7 +25,7 @@
 
 const db = require('../../config/database');
 const {
-  PROVIDERS, getProvider, getModelCost,
+  PROVIDERS, getProvider, activeModels, hasSpecificPrice,
 } = require('../../config/aiProviders');
 
 const AnthropicAdapter = require('./adapters/AnthropicAdapter');
@@ -196,8 +196,8 @@ class ModelDiscoveryService {
         const models  = await adapter.listModels();
         if (!models.length) {
           // A provider we HAVE a key for returning nothing is a fault, not a
-          // success: this is how Anthropic discovery failed silently (old
-          // SDK → adapter returned []) while every run reported "ok".
+          // success: this is how Anthropic discovery failed silently for
+          // months (old SDK → adapter returned []) while the run said "ok".
           // Recorded as an error so the SuperAdmin screen and logs show it.
           perProvider[providerId] = {
             ok: false,
@@ -302,15 +302,22 @@ class ModelDiscoveryService {
     const def = getProvider(providerId);
     if (!def) return [];
 
-    const registryModels = def.models || [];
-    const registryIds    = new Set(registryModels.map(m => m.id));
+    // Retired registry models are never offered — and because AIClientResolver
+    // validates against THIS list, a saved retired model is skipped at
+    // resolution time. registryIds still includes them so a provider that
+    // keeps listing a retired id can't re-add it as "discovered".
+    const registryModels = activeModels(def);
+    const registryIds    = new Set((def.models || []).map(m => m.id));
 
+    // pricing_pending: true unless a model-specific price exists. A bare-
+    // family fallback (e.g. 'claude-opus' at $15/$75) used to count as
+    // "priced", hiding that new models like Opus 5.5 were costed wrongly.
     const merged = registryModels.map(m => ({
       id:    m.id,
       label: m.label,
       tier:  m.tier || 'balanced',
       source: 'registry',
-      pricing_pending: !getModelCost(providerId, m.id),
+      pricing_pending: !hasSpecificPrice(providerId, m.id),
     }));
 
     // Discovered-only models
@@ -328,7 +335,9 @@ class ModelDiscoveryService {
           label: row.model_id,            // raw id as label until backfilled
           tier:  'balanced',
           source: 'discovered',
-          pricing_pending: true,
+          // A dated id (e.g. claude-opus-5-5-2026…) can already match a
+          // specific price key; only truly unpriced models are pending.
+          pricing_pending: !hasSpecificPrice(providerId, row.model_id),
           first_seen_at: row.first_seen_at,
         });
       }

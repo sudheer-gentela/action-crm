@@ -24,26 +24,68 @@ const PROVIDERS = {
     envKey: 'ANTHROPIC_API_KEY',
     keyHint: 'sk-ant-…',
     models: [
-      { id: 'claude-fable-5',               label: 'Claude Fable 5',          tier: 'flagship' },
-      { id: 'claude-opus-4-8',              label: 'Claude Opus 4.8',         tier: 'flagship' },
-      { id: 'claude-opus-4-7',              label: 'Claude Opus 4.7',         tier: 'flagship' },
-      { id: 'claude-opus-4-6',              label: 'Claude Opus 4.6',         tier: 'flagship' },
-      { id: 'claude-sonnet-4-6',            label: 'Claude Sonnet 4.6',       tier: 'balanced' },
-      { id: 'claude-haiku-4-5-20251001',    label: 'Claude Haiku 4.5',        tier: 'fast'    },
-      { id: 'claude-sonnet-4-20250514',     label: 'Claude Sonnet 4 (legacy)', tier: 'balanced' },
+      // Current generation (Nov 2026). Listed first so they lead the dropdowns.
+      { id: 'claude-fable-5-2',             label: 'Claude Fable 5.2',        tier: 'flagship' },
+      { id: 'claude-opus-5-5',              label: 'Claude Opus 5.5',         tier: 'flagship' },
+      { id: 'claude-sonnet-5-5',            label: 'Claude Sonnet 5.5',       tier: 'balanced' },
+      { id: 'claude-haiku-5-5',             label: 'Claude Haiku 5.5',        tier: 'fast'     },
+      // Previous generations — still callable on the API (all returned by
+      // live discovery on 2026-11-23).
+      { id: 'claude-fable-5-1',             label: 'Claude Fable 5.1 (legacy)', tier: 'flagship' },
+      { id: 'claude-fable-5',               label: 'Claude Fable 5 (legacy)',   tier: 'flagship' },
+      { id: 'claude-opus-5',                label: 'Claude Opus 5 (legacy)',    tier: 'flagship' },
+      { id: 'claude-sonnet-5',              label: 'Claude Sonnet 5 (legacy)',  tier: 'balanced' },
+      { id: 'claude-opus-4-8',              label: 'Claude Opus 4.8 (legacy)',  tier: 'flagship' },
+      { id: 'claude-opus-4-7',              label: 'Claude Opus 4.7 (legacy)',  tier: 'flagship' },
+      { id: 'claude-opus-4-6',              label: 'Claude Opus 4.6 (legacy)',  tier: 'flagship' },
+      { id: 'claude-opus-4-5-20251101',     label: 'Claude Opus 4.5 (legacy)',  tier: 'flagship' },
+      { id: 'claude-sonnet-4-6',            label: 'Claude Sonnet 4.6 (legacy)', tier: 'balanced' },
+      // Deprecated; Anthropic retires it on 2026-11-30. retiresOn makes it drop
+      // out of pickers and validation on that date automatically — no deploy
+      // needed — and the resolver then falls through to the next layer.
+      { id: 'claude-sonnet-4-5-20250929',   label: 'Claude Sonnet 4.5 (retires 30 Nov 2026)', tier: 'balanced', retiresOn: '2026-11-30' },
+      { id: 'claude-haiku-4-5-20251001',    label: 'Claude Haiku 4.5 (legacy)', tier: 'fast'    },
+      // Retired on the Claude API — calls fail. Kept (not deleted) so it is
+      // still RECOGNISED: hidden from every picker, rejected on save, and
+      // skipped by AIClientResolver so an org still pointing at it falls
+      // through to the next configured layer instead of erroring at call time.
+      { id: 'claude-sonnet-4-20250514',     label: 'Claude Sonnet 4 (retired)', tier: 'balanced', retired: true },
     ],
-    // Longest-prefix matched by getModelCost — generation-specific entries
-    // first, bare-family entries as legacy fallbacks (Opus ≤4.1 was $15/$75;
-    // Haiku 3.x was $0.80/$4).
+    // Prices in USD per million tokens. Matched by getModelCost: exact id,
+    // then LONGEST prefix — so generation-specific keys must exist for every
+    // model, otherwise e.g. 'claude-opus-5-5' would fall to the bare
+    // 'claude-opus' family key ($15/$75) and be overstated ~4x.
+    //
+    // Optional fields (defaults in estimateCostUSD):
+    //   cacheRead    absolute $/MTok for cache hits     (default 0.1 x input)
+    //   cacheWrite5m absolute $/MTok, 5-minute writes   (default 1.25 x input)
+    //   cacheWrite1h absolute $/MTok, 1-hour writes     (default 2 x input)
+    //   longContext  { thresholdTokens, input, output } — whole request billed
+    //                at these rates when the prompt exceeds the threshold
+    //   familyFallback  true on bare-family keys: a model priced ONLY through
+    //                one of these is reported as "pricing pending" in the UI.
     costPerMillion: {
-      'claude-fable-5':    { input: 10,   output: 50   },
-      'claude-opus-4-8':   { input:  5,   output: 25   },
-      'claude-opus-4-7':   { input:  5,   output: 25   },
-      'claude-opus-4-6':   { input:  5,   output: 25   },
-      'claude-opus':       { input: 15,   output: 75   },
-      'claude-sonnet':     { input:  3,   output: 15   },
+      'claude-fable-5-2':  { input:  8,   output: 40, cacheRead: 0.20 },
+      'claude-fable-5-1':  { input: 10,   output: 50 },
+      'claude-fable-5':    { input: 10,   output: 50 },
+      'claude-opus-5-5':   { input:  4,   output: 20, cacheRead: 0.20 },
+      'claude-opus-5':     { input:  5,   output: 25 },
+      'claude-opus-4-8':   { input:  5,   output: 25 },
+      'claude-opus-4-7':   { input:  5,   output: 25 },
+      'claude-opus-4-6':   { input:  5,   output: 25 },
+      // Every Opus from 4.5 on is $5/$25; without this key 4.5 would fall to
+      // the bare 'claude-opus' family rate ($15/$75).
+      'claude-opus-4-5':   { input:  5,   output: 25 },
+      'claude-sonnet-5-5': { input:  2,   output: 10, cacheRead: 0.10 },
+      'claude-sonnet-5':   { input:  2,   output: 10, cacheRead: 0.20 },
+      'claude-sonnet-4':   { input:  3,   output: 15 },
+      'claude-haiku-5-5':  { input:  0.10, output: 0.50,
+                             longContext: { thresholdTokens: 100000, input: 0.50, output: 2.50 } },
       'claude-haiku-4-5':  { input:  1,   output:  5   },
-      'claude-haiku':      { input:  0.80, output: 4.00 },
+      // Bare-family fallbacks for older ids (Opus <=4.1 was $15/$75; Haiku 3.x $0.80/$4).
+      'claude-opus':       { input: 15,   output: 75,   familyFallback: true },
+      'claude-sonnet':     { input:  3,   output: 15,   familyFallback: true },
+      'claude-haiku':      { input:  0.80, output: 4.00, familyFallback: true },
     },
   },
 
@@ -218,8 +260,31 @@ function listProviders() {
     keyHint:         p.keyHint,
     requiresEndpoint: !!p.requiresEndpoint,
     allowFreeFormModel: !!p.allowFreeFormModel,
-    models: p.models,
+    models: activeModels(p),
   }));
+}
+
+// Models offered for selection: everything in the registry except entries
+// flagged retired (still recognised by isRetiredModel, never offered).
+function activeModels(p, now = new Date()) {
+  return (p?.models || []).filter(m => !isRetiredEntry(m, now));
+}
+
+// Retired = flagged retired, OR past its scheduled retiresOn date (UTC day,
+// inclusive — on the retirement day the API may already refuse it).
+function isRetiredEntry(m, now = new Date()) {
+  if (!m) return false;
+  if (m.retired) return true;
+  if (m.retiresOn) {
+    const t = Date.parse(`${m.retiresOn}T00:00:00Z`);
+    if (Number.isFinite(t) && now.getTime() >= t) return true;
+  }
+  return false;
+}
+
+function isRetiredModel(providerId, modelId, now = new Date()) {
+  const p = PROVIDERS[providerId];
+  return !!(p && (p.models || []).some(m => m.id === modelId && isRetiredEntry(m, now)));
 }
 
 function getProvider(providerId) {
@@ -234,7 +299,9 @@ function isValidModel(providerId, modelId) {
   const p = PROVIDERS[providerId];
   if (!p) return false;
   if (p.allowFreeFormModel) return typeof modelId === 'string' && modelId.length > 0;
-  return p.models.some(m => m.id === modelId);
+  // Retired models are NOT valid: saving one is refused and the resolver
+  // skips it (see the registry note on retired entries).
+  return activeModels(p).some(m => m.id === modelId);
 }
 
 /**
@@ -254,6 +321,87 @@ function getModelCost(providerId, modelId) {
     if (modelId && modelId.startsWith(k)) return costs[k];
   }
   return costs.default || null;
+}
+
+// True when a model has a real price, not just a bare-family fallback (or
+// nothing). Drives the "pricing pending" flag on discovered/registry models.
+function hasSpecificPrice(providerId, modelId) {
+  const c = getModelCost(providerId, modelId);
+  return !!(c && !c.familyFallback);
+}
+
+// Which provider does a bare model id belong to? Used when a caller logs
+// usage without a provider. Registry ids first, then non-default price keys.
+function inferProvider(modelId) {
+  if (!modelId) return null;
+  for (const [id, p] of Object.entries(PROVIDERS)) {
+    if ((p.models || []).some(m => m.id === modelId)) return id;
+  }
+  for (const [id, p] of Object.entries(PROVIDERS)) {
+    const keys = Object.keys(p.costPerMillion || {}).filter(k => k !== 'default');
+    if (keys.some(k => modelId.startsWith(k))) return id;
+  }
+  return null;
+}
+
+// Used when nothing matches at all — Haiku-class, the long-standing default
+// in TokenTrackingService, so unknown models keep the cost they always had.
+const UNKNOWN_MODEL_COST = { input: 1, output: 5 };
+
+const CACHE_READ_MULT     = 0.10;
+const CACHE_WRITE_5M_MULT = 1.25;
+const CACHE_WRITE_1H_MULT = 2.0;
+
+/**
+ * THE price calculation — TokenTrackingService (billing/usage logging),
+ * SkillRunnerService and AICostCatalogService (projections) all go through
+ * here, so there is one table and one formula.
+ *
+ * @param {string|null} providerId  may be null → inferred from the model id
+ * @param {string} model            bare id, or 'provider/model'
+ * @param {object} usage  { input_tokens (UNCACHED), output_tokens,
+ *                          cache_read_input_tokens, cache_creation_input_tokens,
+ *                          cache_creation?: { ephemeral_5m_input_tokens,
+ *                                             ephemeral_1h_input_tokens } }
+ * @returns {number|null} USD (6 dp), or null when model is missing
+ */
+function estimateCostUSD(providerId, model, usage = {}) {
+  if (!model) return null;
+  let modelId = String(model);
+  let prov = providerId;
+  const slash = modelId.indexOf('/');
+  if (slash > 0 && isValidProvider(modelId.slice(0, slash))) {
+    prov = prov || modelId.slice(0, slash);
+    modelId = modelId.slice(slash + 1);
+  }
+  if (!prov || !PROVIDERS[prov]) prov = inferProvider(modelId);
+  const rates = (prov && getModelCost(prov, modelId)) || UNKNOWN_MODEL_COST;
+
+  const uncached = usage.input_tokens  || 0;
+  const output   = usage.output_tokens || 0;
+  const read     = usage.cache_read_input_tokens     || 0;
+  const writeAll = usage.cache_creation_input_tokens || 0;
+  // Prefer the 5m/1h breakdown when the API provides it (mixed-TTL
+  // requests); otherwise treat all writes as 5-minute writes.
+  const write1h = usage.cache_creation?.ephemeral_1h_input_tokens || 0;
+  const write5m = usage.cache_creation?.ephemeral_5m_input_tokens ?? Math.max(writeAll - write1h, 0);
+
+  // Long-context tier (e.g. Haiku 5.5 above 100K prompt tokens): the whole
+  // request moves to the higher rates, cache multipliers included.
+  const promptTokens = uncached + read + writeAll;
+  const lc = rates.longContext;
+  const useLong = !!(lc && promptTokens > lc.thresholdTokens);
+  const inRate  = useLong ? lc.input  : rates.input;
+  const outRate = useLong ? lc.output : rates.output;
+  // Absolute cache prices only apply at standard rates; in the long tier
+  // they're derived from the long input rate.
+  const readRate = (!useLong && rates.cacheRead    != null) ? rates.cacheRead    : inRate * CACHE_READ_MULT;
+  const w5Rate   = (!useLong && rates.cacheWrite5m != null) ? rates.cacheWrite5m : inRate * CACHE_WRITE_5M_MULT;
+  const w1Rate   = (!useLong && rates.cacheWrite1h != null) ? rates.cacheWrite1h : inRate * CACHE_WRITE_1H_MULT;
+
+  const perMillion =
+    uncached * inRate + write5m * w5Rate + write1h * w1Rate + read * readRate + output * outRate;
+  return parseFloat((perMillion / 1e6).toFixed(6));
 }
 
 // ── Provider-qualified model slots ────────────────────────────────────────
@@ -303,7 +451,12 @@ module.exports = {
   getProvider,
   isValidProvider,
   isValidModel,
+  isRetiredModel,
+  activeModels,
   getModelCost,
+  hasSpecificPrice,
+  inferProvider,
+  estimateCostUSD,
   formatModelSlot,
   parseModelSlot,
 };

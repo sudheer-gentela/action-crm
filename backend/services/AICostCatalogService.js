@@ -198,12 +198,15 @@ class AICostCatalogService {
       // same since the typical_input includes the prefix in the historical
       // case). We deliberately use the simple (input + output) cost here
       // so the number is comparable across cached/non-cached call types.
+      // Usage-object form + provider. (Before the TokenTrackingService fix
+      // this exact call returned NaN — an object passed as promptTokens —
+      // and the `|| 0` turned every projection into $0.)
       const coldCost = TokenTrackingService.estimateCost(model, {
         input_tokens:                is_cached ? typical_input : (typical_input + cached_prefix),
         output_tokens:               typical_output,
         cache_creation_input_tokens: is_cached ? cached_prefix : 0,
         cache_read_input_tokens:     0,
-      }) || 0;
+      }, resolved[ct].provider) || 0;
 
       // Warm cost: only meaningful for cache-eligible call types. The
       // cached prefix bills at the much cheaper cache-read rate; the
@@ -214,7 +217,7 @@ class AICostCatalogService {
             output_tokens:               typical_output,
             cache_creation_input_tokens: 0,
             cache_read_input_tokens:     cached_prefix,
-          }) || 0)
+          }, resolved[ct].provider) || 0)
         : null;
 
       const meta = CALL_TYPE_META[ct] || { label: ct, desc: '' };
