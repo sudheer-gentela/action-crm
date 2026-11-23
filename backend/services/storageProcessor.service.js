@@ -109,7 +109,8 @@ async function runPipeline(pipeline, content, options, userId) {
         from_address: `storage_${category}`,
         sent_at:      new Date().toISOString(),
       };
-      const analysis = await aiProcessor.analyzeEmailSimple(payload);
+      // orgId so the org's AI kill switch applies (platform-key call).
+      const analysis = await aiProcessor.analyzeEmailSimple(payload, { orgId });
       const ctx = buildAiContext(category, content, options);
       return { success: true, ...analysis, analysisType: ctx.analysisType };
     }

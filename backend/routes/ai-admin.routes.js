@@ -19,6 +19,7 @@ const {
 const CredentialsStore  = require('../services/ai/CredentialsStore');
 const AIClientResolver  = require('../services/ai/AIClientResolver');
 const ModelDiscoveryService = require('../services/ai/ModelDiscoveryService');
+const AiSpendGuard      = require('../services/ai/AiSpendGuard');
 
 const router = express.Router();
 router.use(authenticateToken, orgContext);
@@ -381,6 +382,100 @@ router.delete('/credentials/:id', adminOnly, async (req, res) => {
   } catch (err) {
     console.error('DELETE /org/admin/ai/credentials/:id error:', err);
     res.status(500).json({ error: { message: 'Failed to revoke credential' } });
+  }
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// USAGE & LIMITS (step 1.1a)
+//
+// One daily AI budget per person (org default, $3 unless changed, with
+// per-person overrides) and an org-wide kill switch. Enforcement lives in
+// AIClientResolver via services/ai/AiSpendGuard.js; these endpoints are the
+// admin's view and controls. Spend on a person's own API key is shown but
+// never counted.
+// ═════════════════════════════════════════════════════════════════════════
+
+// Service validation errors carry statusCode 400/404 + a readable message.
+function sendGuardError(res, err, fallbackMsg, logLabel) {
+  if (err && (err.statusCode === 400 || err.statusCode === 404)) {
+    return res.status(err.statusCode).json({ error: { message: err.message, code: err.code } });
+  }
+  console.error(logLabel, err);
+  return res.status(500).json({ error: { message: fallbackMsg } });
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// GET /api/org/admin/ai/usage?days=7
+// Per-person spend today and over the window, limits, by-area breakdown,
+// kill-switch state and its recent history. Days are the org's days.
+// ─────────────────────────────────────────────────────────────────────────
+router.get('/usage', adminOnly, async (req, res) => {
+  try {
+    const usage = await AiSpendGuard.getUsage(req.orgId, req.query.days);
+    res.json(usage);
+  } catch (err) {
+    console.error('GET /org/admin/ai/usage error:', err);
+    res.status(500).json({ error: { message: 'Failed to load AI usage' } });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// PUT /api/org/admin/ai/limits
+// Body: { daily_budget_usd }  — the org default for everyone without an
+// override. 0 is allowed (AI off for everyone on the default).
+// ─────────────────────────────────────────────────────────────────────────
+router.put('/limits', adminOnly, async (req, res) => {
+  try {
+    const n = await AiSpendGuard.setDefaultLimit(req.orgId, req.body?.daily_budget_usd, req.userId);
+    res.json({ ok: true, daily_budget_usd: n });
+  } catch (err) {
+    sendGuardError(res, err, 'Failed to save the daily budget', 'PUT /org/admin/ai/limits error:');
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// PUT /api/org/admin/ai/limits/users/:userId
+// Body: { daily_limit_usd }  — a number sets this person's own limit;
+// null clears it so they follow the org default again.
+// ─────────────────────────────────────────────────────────────────────────
+router.put('/limits/users/:userId', adminOnly, async (req, res) => {
+  const userId = parseInt(req.params.userId, 10);
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return res.status(400).json({ error: { message: 'Invalid user id' } });
+  }
+  if (!req.body || !('daily_limit_usd' in req.body)) {
+    return res.status(400).json({ error: { message: 'daily_limit_usd is required (a number, or null to use the org default)' } });
+  }
+  const raw = req.body.daily_limit_usd;
+  try {
+    const n = await AiSpendGuard.setUserLimit(
+      req.orgId, userId, raw === '' ? null : raw, req.userId
+    );
+    res.json({ ok: true, user_id: userId, daily_limit_usd: n, uses_org_default: n === null });
+  } catch (err) {
+    sendGuardError(res, err, 'Failed to save the limit', 'PUT /org/admin/ai/limits/users/:userId error:');
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// PUT /api/org/admin/ai/kill-switch
+// Body: { enabled: boolean, reason? }  — reason required when turning AI
+// off. Every change is written to ai_kill_switch_log. While off, all AI in
+// the org stops (including inbound email analysis); other server processes
+// pick the change up within ~30 seconds.
+// ─────────────────────────────────────────────────────────────────────────
+router.put('/kill-switch', adminOnly, async (req, res) => {
+  try {
+    const out = await AiSpendGuard.setKillSwitch(
+      req.orgId,
+      { enabled: req.body?.enabled, reason: req.body?.reason },
+      req.userId
+    );
+    console.log(`[ai-admin] org=${req.orgId} AI ${out.enabled ? 'ENABLED' : 'DISABLED'} by user=${req.userId}` +
+      (out.reason ? ` reason="${out.reason}"` : ''));
+    res.json({ ok: true, ai_enabled: out.enabled, reason: out.reason });
+  } catch (err) {
+    sendGuardError(res, err, 'Failed to change the AI switch', 'PUT /org/admin/ai/kill-switch error:');
   }
 });
 

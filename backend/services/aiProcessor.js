@@ -24,6 +24,7 @@ const SALES_PLAYBOOK = require('../config/salesPlaybook');
 const AI_PROMPTS = require('../config/aiPrompts');
 
 const AIClientResolver = require('./ai/AIClientResolver');
+const AiSpendGuard     = require('./ai/AiSpendGuard');
 
 const AgentObserver       = require('./AgentObserver');
 const TokenTrackingService = require('./TokenTrackingService');
@@ -32,9 +33,26 @@ class AIProcessor {
 
   /**
    * SIMPLE EMAIL ANALYSIS (used by email queue processor)
-   * No org context needed — purely stateless text analysis.
+   * Stateless text analysis on the PLATFORM key — resolve(null, null) — so
+   * it isn't billed to an org or a person's daily budget.
+   *
+   * opts.orgId: the org whose mail (or file) this is. When that org's admin
+   * has turned AI off, we skip the model call and return the same neutral
+   * shape the error path returns (no action items), with skipped set. The
+   * resolver can't do this check itself because the call carries no org.
    */
-  static async analyzeEmailSimple(emailData) {
+  static async analyzeEmailSimple(emailData, opts = {}) {
+    const orgId = opts.orgId ?? null;
+    if (orgId != null && !(await AiSpendGuard.isOrgAiEnabled(orgId))) {
+      return {
+        action_items: [], key_contacts: [], contacts_mentioned: [],
+        category: 'Information', sentiment: 'neutral', urgency: 'medium', priority: 'medium',
+        summary: emailData.subject || 'Email not analysed (AI turned off for this organization)',
+        requires_response: false, suggested_actions: [], suggested_reply: null,
+        skipped: 'ai_disabled_by_org',
+      };
+    }
+
     const prompt = `You are an AI assistant that analyzes emails and extracts actionable information for a CRM system.
 
 Analyze the following email:

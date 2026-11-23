@@ -7,6 +7,8 @@
  *   - Per-call-type model overrides
  *   - Org API key management (encrypted at rest)
  *   - Policy flags: allow_user_override, allow_user_byok
+ *   - Usage & limits (OAAIUsageLimits): daily AI budget per person, spend
+ *     by area, org-wide AI kill switch
  *
  * Matches the existing OrgAdmin aesthetic: inline styles, ToggleSwitch from
  * the host file, Card-style sections, sticky save bar.
@@ -21,6 +23,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { EffectiveRoutingTable, ModelSlotSelect } from './AIModelRouting';
+import OAAIUsageLimits from './OAAIUsageLimits';
 
 const API = process.env.REACT_APP_API_URL || '';
 
@@ -293,6 +296,15 @@ export default function OAAIProviderSettings() {
         <Flash kind="error" msg="⚠️ Server key storage is not configured (AI_CREDS_KEY missing). Org-level keys cannot be saved. Calls will use the platform fallback." />
       )}
       {flash && <Flash kind={flash.kind} msg={flash.msg} />}
+
+      {/* ── Usage & limits (step 1.1a) ──
+          First on the page because the kill switch is what an admin needs
+          fastest. Self-contained: loads its own data and saves each control
+          immediately, so it never touches this form's dirty state. */}
+      <Section title="Usage & limits"
+               desc="Daily AI budget per person, what's been spent, and an org-wide switch to turn AI off.">
+        <OAAIUsageLimits onFlash={showFlash} />
+      </Section>
 
       {/* ── Model list freshness / refresh ── */}
       <div style={{

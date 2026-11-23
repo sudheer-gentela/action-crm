@@ -37,6 +37,7 @@
 
 const db = require('../../config/database');
 const Entitlements = require('../entitlements.service');
+const AiSpendGuard = require('./AiSpendGuard');
 const CredentialsStore = require('./CredentialsStore');
 const {
   PROVIDERS, SYSTEM_DEFAULT, getProvider, isValidProvider, isValidModel,
@@ -163,6 +164,11 @@ class AIClientResolver {
    *
    * keySource ∈ {'user','org','platform','none'} — for cost attribution.
    * Throws if no usable key can be found (platform env var also missing).
+   *
+   * Gate errors (all carry statusCode + code; see utils/aiGateErrors.js):
+   *   402 ENTITLEMENT_REQUIRED     org plan doesn't include AI
+   *   403 AI_DISABLED_BY_ORG       org kill switch is off
+   *   429 AI_DAILY_BUDGET_REACHED  this person has used today's budget
    */
   static async resolve(orgId, userId, callType = 'default') {
     // ── AI entitlement gate (UNIVERSAL) ──────────────────────────────────
@@ -191,6 +197,14 @@ class AIClientResolver {
       e.entitlement = 'ai';
       throw e;
     }
+
+    // ── Org kill switch (step 1.1a) ──────────────────────────────────────
+    // An admin can turn AI off for the whole org. Checked here, before any
+    // key is read, so nothing org-scoped — agents, skills, enhancers — can
+    // start a call while it's off. Platform calls (orgId null) are handled
+    // by their own callers: aiProcessor.analyzeEmailSimple checks the switch
+    // for the org whose mail it's analysing. Throws 403 AI_DISABLED_BY_ORG.
+    await AiSpendGuard.assertOrgAiEnabled(orgId);
 
     const { provider, model, allowUserBYOK, source } =
       await this._resolveProviderAndModel(orgId, userId, callType);
@@ -242,6 +256,14 @@ class AIClientResolver {
         `Configure one in Admin → AI Settings or set ${def.envKey || '<provider env var>'}.`
       );
     }
+
+    // ── Per-person daily budget (step 1.1a) ───────────────────────────
+    // Has to come after key resolution: spend on the person's own key
+    // (keySource 'user') is theirs and doesn't count against the org's
+    // budget, so we only know whether to check once the key is picked.
+    // No-op when there's no org or no person to charge.
+    // Throws 429 AI_DAILY_BUDGET_REACHED.
+    await AiSpendGuard.assertWithinBudget(orgId, userId, keySource);
 
     // ── Build (or reuse) the adapter ──────────────────────────────────
     const cacheKey = _adapterKey(provider, apiKey, endpointUrl);

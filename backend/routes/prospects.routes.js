@@ -1,4 +1,7 @@
 const express = require('express');
+// 402/403/429 from the AI resolver (plan, org kill switch, daily budget)
+// go back with their real status instead of a generic 500.
+const { sendAiGateError } = require('../utils/aiGateErrors');
 const router = express.Router();
 const db = require('../config/database');
 const SequenceAvailability = require('../services/SequenceAvailability'); // shared draft/archived enrollment wording
@@ -2399,6 +2402,7 @@ Return ONLY valid JSON:
       },
     });
   } catch (error) {
+    if (sendAiGateError(res, error)) return;
     console.error('Prospect research error:', error);
     if (error.message?.includes('API key')) {
       return res.status(500).json({ error: { message: 'AI research unavailable — ANTHROPIC_API_KEY not configured' } });

@@ -94,7 +94,9 @@ emailQueue.process(async (job) => {
 
     // -- AI analysis --
     job.progress(50);
-    const analysis = await AIProcessor.analyzeEmailSimple(email);
+    // orgId lets the analyser honour the org's AI kill switch — the call
+    // itself runs on the platform key, so the resolver can't see the org.
+    const analysis = await AIProcessor.analyzeEmailSimple(email, { orgId });
 
     console.log('Email analysis:', JSON.stringify({
       category: analysis.category,

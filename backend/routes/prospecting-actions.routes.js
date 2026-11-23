@@ -1,4 +1,7 @@
 const express = require('express');
+// 402/403/429 from the AI resolver (plan, org kill switch, daily budget)
+// go back with their real status instead of a generic 500.
+const { sendAiGateError } = require('../utils/aiGateErrors');
 const router = express.Router();
 const db = require('../config/database');
 const authenticateToken = require('../middleware/auth.middleware');
@@ -697,6 +700,7 @@ Write a short personalised outreach email. Return ONLY valid JSON:
     });
 
   } catch (error) {
+    if (sendAiGateError(res, error)) return;
     console.error('Draft email error:', error);
     res.status(500).json({ error: { message: 'Failed to generate email draft: ' + error.message } });
   }

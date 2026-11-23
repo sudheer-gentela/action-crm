@@ -108,6 +108,19 @@ class TokenTrackingService {
     } catch (err) {
       // Non-fatal — don't crash the main flow
       console.error('TokenTrackingService.log error:', err.message);
+      return;
+    }
+
+    // Tell the spend guard straight away so a person mid-burst is stopped on
+    // their next call in this process, not when its cache next refreshes.
+    // Lazy require keeps this file loadable without the AI stack. Only after
+    // a successful insert, so the cache never runs ahead of the table.
+    try {
+      require('./ai/AiSpendGuard').recordSpend({
+        orgId, userId, keySource, costUsd: estimatedCost,
+      });
+    } catch (err) {
+      console.warn('TokenTrackingService: spend guard update skipped:', err.message);
     }
   }
 

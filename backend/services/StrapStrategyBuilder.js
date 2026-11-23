@@ -18,6 +18,7 @@
  */
 
 const AIClientResolver = require('./ai/AIClientResolver');
+const TokenTrackingService = require('./TokenTrackingService');
 
 class StrapStrategyBuilder {
 
@@ -80,13 +81,22 @@ class StrapStrategyBuilder {
   static async _buildWithAI(entityType, hurdle, context, orgId, userId) {
     const prompt = this._buildPrompt(entityType, hurdle, context);
 
-    const { adapter, model } =
+    const { adapter, model, provider, keySource } =
       await AIClientResolver.resolve(orgId, userId, 'strap_generation');
 
     const { text, usage } = await adapter.complete({
       model,
       prompt,
       maxTokens: 1200,
+    });
+
+    // STRAP generation was the one AI path that never recorded its usage,
+    // so its cost was invisible to the usage screens and — since step 1.1a —
+    // to the per-person daily budget. log() is non-throwing and skips calls
+    // with no userId (nightly sweeps without an owner stay unattributed).
+    await TokenTrackingService.log({
+      orgId, userId, callType: 'strap_generation',
+      model, provider, keySource, usage,
     });
 
     const tokensUsed = (usage?.input_tokens || 0) + (usage?.output_tokens || 0);

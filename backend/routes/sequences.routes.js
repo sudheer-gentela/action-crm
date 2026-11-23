@@ -29,6 +29,9 @@
  */
 
 const express = require('express');
+// 402/403/429 from the AI resolver (plan, org kill switch, daily budget)
+// go back with their real status instead of a generic 500.
+const { sendAiGateError } = require('../utils/aiGateErrors');
 const { sendEmail: sendGmailEmail }   = require('../services/googleService');
 const ThreadedSequenceNotifier        = require('../services/ThreadedSequenceNotifier'); // 2026_71
 const { sendEmail: sendOutlookEmail } = require('../services/outlookService');
@@ -3440,6 +3443,7 @@ Return JSON: { "steps": [{ "step_order": 1, "subject": "...", "body": "...", "ta
       })),
     });
   } catch (err) {
+    if (sendAiGateError(res, err)) return;
     console.error('ai-generate error:', err);
     res.status(500).json({ error: { message: 'AI generation failed: ' + err.message } });
   }
@@ -3516,6 +3520,7 @@ Return JSON:
       steps:       (parsed.steps      || []).map((s, i) => ({ ...s, step_order: i + 1 })),
     });
   } catch (err) {
+    if (sendAiGateError(res, err)) return;
     console.error('ai-build error:', err);
     res.status(500).json({ error: { message: 'AI build failed: ' + err.message } });
   }
@@ -3577,6 +3582,7 @@ router.post('/ai-write-step', async (req, res) => {
       task_note:        parsed.task_note        || '',
     });
   } catch (err) {
+    if (sendAiGateError(res, err)) return;
     console.error('ai-write-step error:', err);
     res.status(500).json({ error: { message: 'AI step write failed: ' + err.message } });
   }
