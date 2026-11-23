@@ -751,30 +751,209 @@ function buildAccountEvents(account) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Writer context helpers (steps 1.2 + 1.3).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const EMAIL_SNIPPET_COUNT = 5;     // most recent emails (either direction) that get a snippet
+const EMAIL_SNIPPET_CHARS = 300;
+const ENGAGEMENT_DAYS     = 90;    // comment/reaction window for themes + the verbatim guard
+
+// Plain text of an email body with HTML, quoted history and the signature
+// removed — what the person actually wrote in THIS message. Used for writer
+// snippets and for the "don't resend the same copy" guard.
+function cleanEmailText(body, format) {
+  if (!body || typeof body !== 'string') return '';
+  let t = body;
+  const looksHtml = format === 'html' || /<\/?(p|div|br|html|body|span|table)\b/i.test(t);
+  if (looksHtml) {
+    t = t.replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ')
+         .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, '\n')   // quoted replies
+         .replace(/<br\s*\/?>/gi, '\n')
+         .replace(/<\/(p|div|li|tr|h\d)>/gi, '\n')
+         .replace(/<[^>]+>/g, ' ')
+         .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<')
+         .replace(/&gt;/gi, '>').replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'");
+  }
+  const lines = t.replace(/\r\n?/g, '\n').split('\n');
+  const kept = [];
+  for (const line of lines) {
+    const l = line.trim();
+    // Everything after these markers is earlier mail or a signature.
+    if (/^on .{3,200}wrote:?$/i.test(l)) break;
+    if (/^-{2,}\s*original message\s*-{2,}$/i.test(l)) break;
+    if (/^from:\s.+/i.test(l) && kept.length) break;
+    if (l === '--' || l === '-- ' || /^_{5,}$/.test(l)) break;
+    if (l.startsWith('>')) continue;
+    kept.push(l);
+  }
+  return kept.join(' ').replace(/\s+/g, ' ').trim();
+}
+
+function clipText(s, n) {
+  if (!s) return '';
+  return s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s;
+}
+
+// LinkedIn shows "3d", "2w", "5mo", "1yr" rather than dates, and the extension
+// stamps occurred_at with the CAPTURE time. The label is the better age.
+function activityAgeDays(item) {
+  const rel = String(item?.relative_time || '').trim().toLowerCase();
+  const m = rel.match(/^(\d+)\s*(s|sec|m|min|h|hr|d|w|mo|y|yr)\b/);
+  const capturedAt = item?.occurred_at ? Date.parse(item.occurred_at) : NaN;
+  const sinceCapture = Number.isFinite(capturedAt) ? (Date.now() - capturedAt) / 86400000 : 0;
+  if (m) {
+    const n = parseInt(m[1], 10);
+    const unit = m[2];
+    const days = unit === 'w' ? n * 7
+      : unit === 'mo' ? n * 30
+      : (unit === 'y' || unit === 'yr') ? n * 365
+      : unit === 'd' ? n : 0;
+    return days + sinceCapture;
+  }
+  return Number.isFinite(capturedAt) ? sinceCapture : Infinity;
+}
+
+/**
+ * The prospect's comments and reactions from the last `days` days, as
+ * { id, kind, text } — text is what we hold for that item (for a comment the
+ * extension stores their comment; for a reaction, the post they reacted to).
+ * NEVER put these texts in the writer's payload: they feed the themes call
+ * and the code-side verbatim guard only.
+ */
+function engagementActivityItems(activity, days = ENGAGEMENT_DAYS) {
+  if (!Array.isArray(activity)) return [];
+  const out = [];
+  for (const it of activity) {
+    if (!it || (it.kind !== 'comment' && it.kind !== 'reaction')) continue;
+    if (activityAgeDays(it) > days) continue;
+    const texts = [it.text, it.parent_post_summary, it.commentary]
+      .filter(x => typeof x === 'string' && x.trim());
+    const text = [...new Set(texts.map(x => x.trim()))].join('\n');
+    if (!text) continue;
+    out.push({ id: String(it.id || ''), kind: it.kind, text });
+  }
+  return out;
+}
+
+/**
+ * Approved AI research for the writer (step 1.3). Only once a person has
+ * approved it; unreviewed or rejected research never reaches the writer.
+ */
+function buildResearchBrief(prospect) {
+  if (!prospect || prospect.research_review_outcome !== 'approved') return null;
+  const ai = prospect.research_meta?.ai_research;
+  if (!ai || typeof ai !== 'object') return null;
+  const keyPoints = Array.isArray(ai.bullets)
+    ? ai.bullets.filter(b => typeof b === 'string' && b.trim()).slice(0, 6) : [];
+  if (!ai.pitch_angle && !keyPoints.length) return null;
+  return {
+    pitch_angle:  ai.pitch_angle || null,
+    key_points:   keyPoints,
+    generated_at: ai.generated_at || null,
+    approved_at:  prospect.research_reviewed_at || null,
+    source:       'ai_research_approved',
+  };
+}
+
+/**
+ * Topics the prospect pays attention to, distilled from their LinkedIn
+ * comments and reactions during research (step 1.2). Read from the APPROVED
+ * research so the writer gets exactly what the reviewer saw. Topics only —
+ * the comment/reaction text itself is never sent.
+ */
+function buildEngagementThemes(prospect) {
+  if (!prospect || prospect.research_review_outcome !== 'approved') return null;
+  const th = prospect.research_meta?.ai_research?.engagement_themes;
+  const topics = Array.isArray(th?.topics) ? th.topics.filter(x => typeof x === 'string' && x.trim()) : [];
+  if (!topics.length) return null;
+  return {
+    topics: topics.slice(0, 5),
+    basis: 'linkedin_comments_and_reactions',
+    usage: 'background_only',
+    generated_at: th.generated_at || null,
+  };
+}
+
+/**
+ * What OutreachValidator needs to police a draft, loaded OUTSIDE the writer's
+ * payload (everything in the payload — _meta included — is sent to the model,
+ * so these texts must not ride along there):
+ *   activityTexts      recent comment/reaction texts (5-word verbatim block)
+ *   priorOutboundTexts bodies of emails we already sent (12-word repeat → review)
+ */
+async function loadEngagementGuardTexts({ orgId, prospectId }) {
+  const empty = { activityTexts: [], priorOutboundTexts: [] };
+  if (!orgId || !prospectId) return empty;
+  const pr = await pool.query(
+    `SELECT id, email, linkedin_url FROM prospects WHERE id = $1 AND org_id = $2`,
+    [prospectId, orgId]
+  );
+  const p = pr.rows[0];
+  if (!p) return empty;
+
+  const [liRes, emRes] = await Promise.all([
+    p.linkedin_url
+      ? pool.query(
+          `SELECT activity FROM linkedin_profiles
+            WHERE org_id = $1 AND deleted_at IS NULL
+              AND linkedin_slug = lower(substring($2 from '/in/([^/?#]+)'))
+            LIMIT 1`,
+          [orgId, p.linkedin_url]).catch(() => ({ rows: [] }))
+      : Promise.resolve({ rows: [] }),
+    pool.query(
+      `SELECT body, body_format FROM emails
+        WHERE org_id = $1 AND direction = 'sent' AND deleted_at IS NULL
+          AND (prospect_id = $2
+               OR ($3::text IS NOT NULL AND LOWER(to_address) = LOWER($3::text)))
+        ORDER BY sent_at DESC NULLS LAST
+        LIMIT 10`,
+      [orgId, p.id, p.email || null]).catch(() => ({ rows: [] })),
+  ]);
+
+  return {
+    activityTexts: engagementActivityItems(liRes.rows[0]?.activity).map(x => x.text),
+    priorOutboundTexts: emRes.rows.map(e => cleanEmailText(e.body, e.body_format)).filter(Boolean),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // buildEngagementHistory — emails + prospecting activities, newest-first.
 // ─────────────────────────────────────────────────────────────────────────────
 async function buildEngagementHistory(client, prospect, orgId) {
   if (!prospect) return [];
   const events = [];
 
-  if (prospect.email) {
+  // Step 1.3: emails filed against the prospect count too (not only those
+  // to/from their current address), deleted or hidden emails don't, and the
+  // most recent EMAIL_SNIPPET_COUNT carry a short snippet of what was actually
+  // said — quoted history and signature removed — so a follow-up can refer
+  // to the content and see the prospect's reply, not just a subject line.
+  {
     const emails = await safeQuery(client,
-      `SELECT id, subject, direction, sent_at
+      `SELECT id, subject, direction, sent_at, body, body_format
          FROM emails
         WHERE org_id = $1
-          AND (LOWER(to_address) = LOWER($2) OR LOWER(from_address) = LOWER($2))
+          AND deleted_at IS NULL AND hidden_at IS NULL
+          AND (prospect_id = $3
+               OR ($2::text IS NOT NULL
+                   AND (LOWER(to_address) = LOWER($2::text) OR LOWER(from_address) = LOWER($2::text))))
         ORDER BY sent_at DESC NULLS LAST
         LIMIT 30`,
-      [orgId, prospect.email]
+      [orgId, prospect.email || null, prospect.id]
     );
-    for (const e of emails) {
-      events.push({
+    emails.forEach((e, i) => {
+      const ev = {
         type: e.direction === 'sent' ? 'email_sent' : 'email_received',
         timestamp: e.sent_at,
         summary: e.subject || '(no subject)',
         direction: e.direction === 'sent' ? 'outbound' : 'inbound',
-      });
-    }
+      };
+      if (i < EMAIL_SNIPPET_COUNT) {
+        const snip = clipText(cleanEmailText(e.body, e.body_format), EMAIL_SNIPPET_CHARS);
+        if (snip) ev.snippet = snip;
+      }
+      events.push(ev);
+    });
   }
 
   const activities = await safeQuery(client,
@@ -1213,6 +1392,14 @@ async function buildProspectSkillContext({ prospectId, orgId, asUserId, explain 
         // checks for non-null and acts per the rules in
         // reference/hook-patterns.md → Pattern 7.
         researcher_note: researcherNote,
+        // Step 1.3: the approved AI research (pitch angle + key points).
+        // Background for the angle — not the prospect's words. null until a
+        // person approves research.
+        research_brief: buildResearchBrief(prospect),
+        // Step 1.2: topics from their LinkedIn comments/reactions, from the
+        // approved research. Background only — never mentioned, never quoted;
+        // the comment/reaction text itself is never in this payload.
+        engagement_themes: buildEngagementThemes(prospect),
       },
       engagement_history: engagementHistory,
       prior_steps: priorSteps,
@@ -1474,4 +1661,10 @@ module.exports = {
   resolveFitRulesConfig,
   splitLinkedInActivity,
   pickCurrentRole,
+  // Steps 1.2 + 1.3: themes source (research), the validator's guard texts
+  // (runner) and the email cleaner. Exported, never placed in a payload.
+  engagementActivityItems,
+  loadEngagementGuardTexts,
+  cleanEmailText,
+  ENGAGEMENT_DAYS,
 };

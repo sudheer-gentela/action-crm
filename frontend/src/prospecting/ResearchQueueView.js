@@ -528,6 +528,25 @@ function ProspectCard({ prospect, onApprove, onDisqualify, onRejectResearch }) {
           {ai.subject_line && (
             <div style={{ fontSize: 12, color: '#4b5563' }}><strong>Subject idea:</strong> {ai.subject_line}</div>
           )}
+          {/* Step 1.2: topics from their LinkedIn comments/reactions. Shown
+              so the reviewer signs off on them; once approved the writer may
+              use them to pick an angle but never mentions or quotes them. */}
+          {Array.isArray(ai.engagement_themes?.topics) && ai.engagement_themes.topics.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontSize: 12, color: '#4b5563', marginBottom: 4 }}>
+                <strong>Background themes</strong>
+                <span style={{ color: '#9ca3af' }}>
+                  {' '}— from {ai.engagement_themes.item_count || 'their'} LinkedIn comment{ai.engagement_themes.item_count === 1 ? '' : 's'}/reactions.
+                  The writer may use these to choose an angle; it never mentions or quotes them.
+                </span>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {ai.engagement_themes.topics.map(t => (
+                  <span key={t} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 999, background: '#EEF2FF', color: '#3730A3' }}>{t}</span>
+                ))}
+              </div>
+            </div>
+          )}
           {ai.crisp_pitch && (
             <details style={{ marginTop: 6 }}>
               <summary style={{ cursor: 'pointer', fontSize: 12, color: '#4F46E5' }}>Show draft pitch</summary>

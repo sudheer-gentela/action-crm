@@ -10,8 +10,13 @@
 // the org_context block, it returns a routing decision the caller acts on.
 //
 // Public API:
-//   validateForSkill(skillName, output, orgContext) -> result
-//   validateOutreach(output, { channel, intent, bannedExtra, requiredDisclaimers }) -> result
+//   validateForSkill(skillName, output, orgContext, guard?) -> result
+//   validateOutreach(output, { channel, intent, bannedExtra, requiredDisclaimers, guard }) -> result
+//
+//   guard (steps 1.2 + 1.3, optional — loaded by the runner OUTSIDE the
+//   model payload via SkillContextService.loadEngagementGuardTexts):
+//     { activityTexts: string[],       // the prospect's recent LinkedIn comments/reactions
+//       priorOutboundTexts: string[] } // bodies of emails we already sent them
 //
 // result = {
 //   ok:       boolean,          // true when route === 'send'
@@ -24,9 +29,13 @@
 // }
 //
 // Routing:
-//   reject  -> a hard cap or banned phrasing was hit. Regenerate; never send.
+//   reject  -> a hard cap or banned phrasing was hit, the draft repeats
+//              ACTIVITY_RUN_WORDS+ words in a row from the prospect's LinkedIn
+//              comments/reactions, or it points at their LinkedIn activity
+//              ("you liked", "saw you engaging"). Regenerate; never send.
 //   review  -> output.recommend_skip is true, or output.fit === 'disqualified'
-//              / 'weak'. Send is possible but a human should look first.
+//              / 'weak', or the draft repeats PRIOR_RUN_WORDS+ words in a row
+//              from an email we already sent them. A human should look first.
 //   send    -> clean.
 // blocking always forces 'reject'. review is only chosen when nothing blocks.
 // ============================================================================
@@ -71,6 +80,78 @@ const LINKEDIN_CAPS = {
   nurture_dm:         800,
   default:            280,
 };
+
+// ── Steps 1.2 + 1.3 guards ───────────────────────────────────────────────
+// Comments and reactions are background only: their words never appear in
+// outreach. Five words in a row is long enough to skip common phrases ("in
+// the next few weeks" is four) and short enough to catch lifted wording.
+const ACTIVITY_RUN_WORDS = 5;
+// Re-sending a chunk of an earlier email reads as a template. 12 words is
+// past any natural overlap (sign-offs and the company name are shorter).
+const PRIOR_RUN_WORDS = 12;
+
+// Phrasings that point at the prospect's LinkedIn activity. Banned in every
+// draft regardless of source data — the reactions rule in
+// reference/outreach-principles.md, enforced in code. Kept specific to
+// LinkedIn so a follow-up thanking someone for their email reply ("your
+// comment on pricing") isn't caught.
+const ACTIVITY_SURVEILLANCE = [
+  'you liked', 'you reacted', 'your reaction to', 'liked a post', 'liked your post',
+  'liked the post', 'reacted to a post', 'reacted to your', 'saw you engag',
+  'been engaging with', 'engaging with posts', 'engaging with content',
+  'your linkedin activity', 'your activity on linkedin', 'your recent activity',
+  'commented on a post', 'commented on the post', 'your comment on linkedin',
+  'commented on linkedin', 'your recent comment', 'saw your comment',
+  'noticed your comment', 'noticed you commented', 'saw you commented',
+];
+
+function normWords(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[’‘]/g, "'")
+    .replace(/[^a-z0-9'\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+/** Longest run of ≥ n consecutive words the draft shares with any source. */
+function sharedRun(draft, sources, n) {
+  const d = normWords(draft);
+  if (d.length < n || !Array.isArray(sources) || !sources.length) return null;
+  const grams = new Set();
+  for (const src of sources) {
+    const w = normWords(src);
+    for (let i = 0; i + n <= w.length; i++) grams.add(w.slice(i, i + n).join(' '));
+  }
+  if (!grams.size) return null;
+  // Find the first matching n-gram, then extend it as far as it keeps matching.
+  for (let i = 0; i + n <= d.length; i++) {
+    if (!grams.has(d.slice(i, i + n).join(' '))) continue;
+    let j = i + n;
+    while (j < d.length && grams.has(d.slice(j - n + 1, j + 1).join(' '))) j++;
+    return d.slice(i, j).join(' ');
+  }
+  return null;
+}
+
+function checkGuards(text, guard, blocking, warnings) {
+  const g = guard || {};
+  let repeatReview = false;
+  const lifted = sharedRun(text, g.activityTexts, ACTIVITY_RUN_WORDS);
+  if (lifted) {
+    blocking.push(`repeats the prospect's LinkedIn comment/reaction wording: "${lifted}" (comments and reactions are background only)`);
+  }
+  const pointing = scanBanned(text, ACTIVITY_SURVEILLANCE);
+  if (pointing.length) {
+    blocking.push(`points at the prospect's LinkedIn activity: ${pointing.join('; ')}`);
+  }
+  const repeated = sharedRun(text, g.priorOutboundTexts, PRIOR_RUN_WORDS);
+  if (repeated) {
+    repeatReview = true;
+    warnings.push(`repeats ${repeated.split(' ').length} words from an email already sent: "${repeated}"`);
+  }
+  return repeatReview;
+}
 
 function wordCount(str) {
   if (!str || typeof str !== 'string') return 0;
@@ -121,6 +202,8 @@ function validateOutreach(output, opts = {}) {
     warnings.push(`fit=${out.fit}: route to manual review before sending.`);
   }
 
+  let repeatReview = false;
+
   // ---- Channel-specific length + content checks ----------------------------
   if (channel === 'email') {
     const email = (out.email && typeof out.email === 'object') ? out.email : {};
@@ -153,6 +236,11 @@ function validateOutreach(output, opts = {}) {
         blocking.push(`required disclaimer missing from email.body: "${d}"`);
       }
     }
+
+    repeatReview = checkGuards(
+      [email.subject, email.preview_text, email.body].filter(Boolean).join('\n'),
+      opts.guard, blocking, warnings
+    );
   } else if (channel === 'linkedin') {
     const li  = (out.linkedin && typeof out.linkedin === 'object') ? out.linkedin : {};
     const cap = (capsCfg.linkedin && capsCfg.linkedin[intent])
@@ -178,11 +266,15 @@ function validateOutreach(output, opts = {}) {
         blocking.push(`required disclaimer missing from linkedin.body: "${d}"`);
       }
     }
+
+    // Prior-email repeats don't apply to LinkedIn (different channel, and a
+    // DM legitimately echoes an email's subject matter).
+    checkGuards(body, { activityTexts: (opts.guard || {}).activityTexts }, blocking, warnings);
   } else {
     warnings.push(`unknown channel "${channel}" -- content not length-validated.`);
   }
 
-  const route = blocking.length > 0 ? 'reject' : (fitReview ? 'review' : 'send');
+  const route = blocking.length > 0 ? 'reject' : ((fitReview || repeatReview) ? 'review' : 'send');
   return { ok: route === 'send', route, channel, intent, blocking, warnings, metrics };
 }
 
@@ -191,7 +283,7 @@ function validateOutreach(output, opts = {}) {
 // banned / disclaimers from the skill name and org_context, so the runner can
 // call with a single line. Non-outreach skills pass through as 'send'.
 // ----------------------------------------------------------------------------
-function validateForSkill(skillName, output, orgContext) {
+function validateForSkill(skillName, output, orgContext, guard = null) {
   const oc = orgContext || {};
   let channel = null;
   if (skillName === 'outreach-linkedin') channel = 'linkedin';
@@ -212,12 +304,17 @@ function validateForSkill(skillName, output, orgContext) {
     bannedExtra:         Array.isArray(ge.banned_phrasings) ? ge.banned_phrasings : [],
     requiredDisclaimers: Array.isArray(ge.required_disclaimers) ? ge.required_disclaimers : [],
     caps:                (oc.outreach_caps && typeof oc.outreach_caps === 'object') ? oc.outreach_caps : null,
+    guard,
   });
 }
 
 module.exports = {
   validateForSkill,
   validateOutreach,
+  sharedRun,
+  ACTIVITY_SURVEILLANCE,
+  ACTIVITY_RUN_WORDS,
+  PRIOR_RUN_WORDS,
   UNIVERSAL_BANNED,
   EMAIL_CAPS,
   LINKEDIN_CAPS,

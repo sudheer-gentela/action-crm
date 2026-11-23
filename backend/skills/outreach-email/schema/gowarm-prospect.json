@@ -222,6 +222,27 @@
               }
             }
           }
+        },
+        "research_brief": {
+          "type": ["object", "null"],
+          "description": "AI research a person approved in the Research Queue. Background for the angle and bridge — not the prospect's words; never quoted or attributed to them; never above the hook hierarchy. null until research is approved.",
+          "properties": {
+            "pitch_angle": { "type": ["string", "null"] },
+            "key_points": { "type": "array", "items": { "type": "string" } },
+            "generated_at": { "type": ["string", "null"], "format": "date-time" },
+            "approved_at": { "type": ["string", "null"], "format": "date-time" },
+            "source": { "type": "string", "enum": ["ai_research_approved"] }
+          }
+        },
+        "engagement_themes": {
+          "type": ["object", "null"],
+          "description": "Up to five short topics distilled from the prospect's LinkedIn comments and reactions, from approved research. BACKGROUND ONLY: may inform which angle or value prop to lead with; never mentioned, alluded to, quoted or presented as the prospect's words. The comment/reaction text itself is never in the payload, and drafts repeating 5+ consecutive words of it or pointing at LinkedIn activity are rejected in code.",
+          "properties": {
+            "topics": { "type": "array", "maxItems": 5, "items": { "type": "string" } },
+            "basis": { "type": "string", "enum": ["linkedin_comments_and_reactions"] },
+            "usage": { "type": "string", "enum": ["background_only"] },
+            "generated_at": { "type": ["string", "null"], "format": "date-time" }
+          }
         }
       }
     },
@@ -238,7 +259,8 @@
           },
           "timestamp": { "type": "string", "format": "date-time" },
           "summary": { "type": ["string", "null"] },
-          "direction": { "type": ["string", "null"], "enum": ["inbound", "outbound", null] }
+          "direction": { "type": ["string", "null"], "enum": ["inbound", "outbound", null] },
+          "snippet": { "type": "string", "description": "Present on the five most recent emails (either direction): the opening of what was actually written, up to ~300 characters, with quoted history, signature and HTML removed. Refer to it briefly; never paste it back." }
         }
       }
     },

@@ -40,20 +40,34 @@
  *   6. A non-empty tags array no longer crashes research (the old code ran
  *      JSON.parse on an already-parsed jsonb array).
  *
+ *   7. (Step 1.2) When the extension captured comments or reactions in the
+ *      last 90 days, one small extra call distils them into at most 5 short
+ *      topics ("sales hiring"). They're saved with the research (so the
+ *      reviewer signs off on them and the writer gets exactly what was
+ *      approved) and cached on the LinkedIn profile, keyed by a hash of the
+ *      activity, so unchanged activity is never re-sent to the model. The
+ *      writer receives topics only — never the comment/reaction text — and
+ *      OutreachValidator blocks any draft repeating 5+ words of it. A failed
+ *      themes call never fails the research.
+ *
  * Errors: throws with statusCode 404 when the prospect isn't found, and lets
  * resolver gate errors (402 / 403 / 429, see utils/aiGateErrors.js) through
  * untouched so callers can tell "paused" from "broken".
  */
 
+const crypto = require('crypto');
 const db = require('../../config/database');
 const AI_PROMPTS = require('../../config/aiPrompts');
 const AIClientResolver = require('../ai/AIClientResolver');
 const TokenTrackingService = require('../TokenTrackingService');
-const { splitLinkedInActivity, pickCurrentRole } = require('../SkillContextService');
+const {
+  splitLinkedInActivity, pickCurrentRole, engagementActivityItems,
+} = require('../SkillContextService');
 
 const ROUTING_CALL_TYPE = 'prospecting_research';          // what the admin configures
 const LOG_CALL_TYPE_ACCOUNT = 'prospecting_research_account';
 const LOG_CALL_TYPE_PERSON  = 'prospecting_research';
+const LOG_CALL_TYPE_THEMES  = 'prospecting_research_themes';
 const ACCOUNT_CACHE_DAYS = 30;
 
 // Size limits keep one verbose profile from blowing up the prompt (and the
@@ -62,6 +76,25 @@ const MAX_ABOUT_CHARS = 1200;
 const MAX_ROLES       = 3;
 const MAX_POSTS       = 3;
 const MAX_POST_CHARS  = 400;
+// Themes input: at most 15 recent comments/reactions, 300 chars each.
+const MAX_THEME_ITEMS      = 15;
+const MAX_THEME_ITEM_CHARS = 300;
+const MAX_TOPICS           = 5;
+const MAX_TOPIC_WORDS      = 4;
+
+const THEMES_PROMPT = `You are labelling what a B2B buyer pays attention to on LinkedIn. Below are posts they commented on or reacted to, and their comments.
+
+Return up to ${MAX_TOPICS} short TOPICS they seem to care about professionally.
+Rules:
+- Each topic is 1 to ${MAX_TOPIC_WORDS} words: a generic noun phrase such as "sales hiring", "forecast accuracy", "AI in customer support".
+- No names of people or companies. No quotes, no copied phrases, no opinions.
+- Skip social items (congratulations, birthdays, job-change cheers, condolences) — they are not topics.
+- If nothing professional stands out, return an empty list.
+
+Return ONLY valid JSON, no markdown fences: {"topics": ["...", "..."]}
+
+ACTIVITY:
+{{activity}}`;
 
 const STAGE2_SYSTEM_DEFAULT = `You are an expert B2B sales researcher. Based on the prospect and account info below, generate research bullets and a crisp pitch.
 
@@ -167,6 +200,82 @@ function buildLinkedInBlock(lp) {
   return { text: `\nLINKEDIN (captured by the GoWarm extension):\n${lines.join('\n')}`, used };
 }
 
+/** Keep only short, clean topic labels; drop anything that isn't one. */
+function sanitizeTopics(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const raw of list) {
+    if (typeof raw !== 'string') continue;
+    const t = raw.replace(/["“”'‘’`]/g, '').replace(/\s+/g, ' ').replace(/^[\s\-–—•.,;:]+|[\s\-–—•.,;:]+$/g, '').trim();
+    if (!t || t.length > 40) continue;
+    if (t.split(' ').length > MAX_TOPIC_WORDS) continue;
+    const key = t.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(t);
+    if (out.length >= MAX_TOPICS) break;
+  }
+  return out;
+}
+
+/**
+ * Topics from the prospect's recent comments and reactions (step 1.2).
+ * Returns { topics, item_count, generated_at, model, reused } or null when
+ * there's no recent comment/reaction activity or the call fails.
+ */
+async function buildThemes({ orgId, linkedinUrl, lp, callAI, currentModel }) {
+  const items = engagementActivityItems(lp?.activity).slice(0, MAX_THEME_ITEMS);
+  if (!items.length) return null;
+
+  const sourceHash = crypto.createHash('sha1')
+    .update(items.map(i => `${i.id}|${i.text}`).sort().join('\n'))
+    .digest('hex');
+  const cached = lp?.enrichment_meta?.engagement_themes;
+  if (cached && cached.source_hash === sourceHash && Array.isArray(cached.topics)) {
+    return {
+      topics: cached.topics, item_count: cached.item_count ?? items.length,
+      generated_at: cached.generated_at || null, model: cached.model || null, reused: true,
+    };
+  }
+
+  try {
+    const activity = items
+      .map(i => `- (${i.kind}) ${clip(i.text, MAX_THEME_ITEM_CHARS)}`)
+      .join('\n');
+    const raw = await callAI(fill(THEMES_PROMPT, { activity }), 200, LOG_CALL_TYPE_THEMES);
+    let topics = [];
+    try { topics = sanitizeTopics(parseJsonBlock(raw).topics); } catch { topics = []; }
+
+    const themes = {
+      topics,
+      item_count:   items.length,
+      generated_at: new Date().toISOString(),
+      model:        currentModel(),
+    };
+    // Cache on the profile so other prospects/re-runs with the same activity
+    // reuse it. Merge — enrichment_meta holds other capture metadata.
+    try {
+      await db.query(
+        `UPDATE linkedin_profiles
+            SET enrichment_meta = COALESCE(enrichment_meta, '{}'::jsonb)
+                                  || jsonb_build_object('engagement_themes', $3::jsonb)
+          WHERE org_id = $1 AND deleted_at IS NULL
+            AND linkedin_slug = LOWER(SUBSTRING($2::text FROM '/in/([^/?#]+)'))`,
+        [orgId, linkedinUrl, JSON.stringify({ ...themes, source_hash: sourceHash })]
+      );
+    } catch (err) {
+      console.warn('engagement themes cache save failed:', err.message);
+    }
+    return { ...themes, reused: false };
+  } catch (err) {
+    // Includes budget/kill-switch refusals: the person research that follows
+    // will hit the same gate and pause the whole run properly.
+    console.warn(`engagement themes skipped (org ${orgId}):`, err.message);
+    return null;
+  }
+}
+
 /**
  * Research one prospect.
  *
@@ -236,7 +345,7 @@ async function researchProspect({ orgId, prospectId, actorUserId, trigger = 'man
     // Same slug join the research queue and skill context use.
     p.linkedin_url
       ? db.query(
-          `SELECT headline, about, experience, activity
+          `SELECT headline, about, experience, activity, enrichment_meta
              FROM linkedin_profiles
             WHERE org_id = $1 AND deleted_at IS NULL
               AND linkedin_slug = LOWER(SUBSTRING($2::text FROM '/in/([^/?#]+)'))
@@ -342,6 +451,16 @@ async function researchProspect({ orgId, prospectId, actorUserId, trigger = 'man
     }
   }
 
+  // ── Comment/reaction themes (step 1.2) ─────────────────────────────────
+  // Before stage 2 so ranModel/ranProvider end up describing the person call.
+  const engagementThemes = await buildThemes({
+    orgId,
+    linkedinUrl: p.linkedin_url,
+    lp: liRes.rows[0] || null,
+    callAI,
+    currentModel: () => ranModel,
+  });
+
   // ── Stage 2: the person ────────────────────────────────────────────────
   const stage2Template = userStage2Res.rows[0]?.template_data
     || orgStage2Res.rows[0]?.template
@@ -410,6 +529,9 @@ async function researchProspect({ orgId, prospectId, actorUserId, trigger = 'man
       generated_at: generatedAt,
       account_research_used: !!accountResearchText,
       linkedin_used: linkedIn.used,
+      // Topics only; the reviewer sees these and the writer gets them once
+      // approved. null when there was no recent comment/reaction activity.
+      engagement_themes: engagementThemes,
     },
   };
 
@@ -477,6 +599,7 @@ async function researchProspect({ orgId, prospectId, actorUserId, trigger = 'man
     accountResearchCached: accountCached,
     accountResearch:       accountResearchJson,
     linkedinUsed:          linkedIn.used,
+    engagementThemes:      engagementThemes ? engagementThemes.topics : null,
     meta: {
       provider: ranProvider,
       model:    ranModel,
@@ -485,4 +608,4 @@ async function researchProspect({ orgId, prospectId, actorUserId, trigger = 'man
   };
 }
 
-module.exports = { researchProspect, buildLinkedInBlock, _fill: fill };
+module.exports = { researchProspect, buildLinkedInBlock, sanitizeTopics, _fill: fill };

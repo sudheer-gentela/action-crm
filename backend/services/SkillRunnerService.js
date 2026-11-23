@@ -36,6 +36,7 @@ const ContextLint          = require('./ContextLint');
 const {
   buildProspectSkillContext,
   buildDealSkillContext,
+  loadEngagementGuardTexts,
 } = require('./SkillContextService');
 
 const SKILLS_DIR = path.join(__dirname, '..', 'skills');
@@ -660,8 +661,20 @@ async function runSkill({
     //   'send'   -> ok to send
     //   'review' -> recommend_skip / disqualified -> manual lane
     //   'reject' -> a hard cap or banned phrasing was hit -> regenerate
+    // Steps 1.2 + 1.3: the guard texts (the prospect's LinkedIn comment /
+    // reaction wording and our earlier emails) are loaded here, never put in
+    // contextPayload — the whole payload, _meta included, is sent to the
+    // model. A load failure only loses the guard, never the draft.
+    let guard = null;
+    if (prospectId && (skillName === 'outreach-email' || skillName === 'outreach-linkedin')) {
+      try {
+        guard = await loadEngagementGuardTexts({ orgId, prospectId });
+      } catch (gErr) {
+        console.warn(`[skill-runner] guard texts unavailable for prospect ${prospectId}:`, gErr.message);
+      }
+    }
     const validation = OutreachValidator.validateForSkill(
-      skillName, parseResult.value, contextPayload.org_context || {}
+      skillName, parseResult.value, contextPayload.org_context || {}, guard
     );
 
     return {

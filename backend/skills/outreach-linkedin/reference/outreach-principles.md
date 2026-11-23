@@ -35,7 +35,7 @@ The Deal module's discovery-call-prep skill uses placeholders like `[specific pa
 
 Not all hooks are equal. When multiple are available, prefer in this order:
 
-1. **Prospect's own words (recent post, substantive comment)** — strongest. The prospect cannot argue with what they themselves wrote.
+1. **Prospect's own words (a recent post of their own)** — strongest. The prospect cannot argue with what they themselves wrote. Comments they left on other people's posts are background only (see the background-themes rule) and never hooks.
 2. **Specific account trigger event** — strong. Verifiable, timely, shows research without surveilling.
 3. **Peer social proof (only if case studies are present in org_context)** — strong when real, fatal when fabricated. Skip entirely if `case_study_summaries` is empty.
 4. **Tech stack overlap (concrete)** — moderate. Works when the connection is specific ("you're on Salesforce + Gong, which is the stack we built around").
@@ -50,6 +50,15 @@ LinkedIn reactions (likes, celebrates, insightfuls) are the highest-risk signal 
 **The email and LinkedIn note never reference reactions.** Even indirectly. The line "saw you've been engaging with posts about X" is banned — "engaging" is a thin fig leaf over "liked/reacted," and sounds surveilling regardless of which word is used.
 
 If reactions are the only signal available, treat the payload as if reactions were absent. The email becomes role-curiosity-led.
+
+## The background-themes rule
+
+`signals.engagement_themes` holds up to five topics distilled from the prospect's LinkedIn comments and reactions. Treat them exactly like reactions: they may inform which angle or value prop you choose, and nothing more.
+
+- Never mention or allude to their comments, likes, reactions or "engagement" — directly or indirectly.
+- Never present a topic as something they said, wrote or believe.
+- Never write as though you watch what they interact with ("given your interest in X lately…" is a fig leaf for the same thing).
+- The comment/reaction text itself is never in the payload. Drafts that repeat five or more consecutive words of it, or that point at their LinkedIn activity, are rejected in code and regenerated.
 
 ## Banned phrasings (summary)
 

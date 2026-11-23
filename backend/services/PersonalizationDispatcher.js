@@ -443,6 +443,37 @@ async function personaliseEnrollment({ orgId, userId, sequenceId, prospectId, ho
       continue;
     }
 
+    // OutreachValidator's verdict was computed by the runner but never acted
+    // on, so an over-length draft, a banned phrase or (since steps 1.2/1.3) a
+    // draft that lifts the prospect's LinkedIn comment wording would still
+    // become this step's content — and auto-send steps send it as-is.
+    // 'reject' now means what the validator says: regenerate once; if the
+    // second draft also fails, don't use AI for this step (the firer falls
+    // back to the sequence template, as it does for any skill failure).
+    if (skillResult && skillResult.ok && skillResult.validation && skillResult.validation.route === 'reject') {
+      const firstProblems = skillResult.validation.blocking || [];
+      try {
+        skillResult = await SkillRunnerService.runProspectSkill({
+          orgId, userId, prospectId, skillName,
+          hookPreferences,
+          stepIntent: intent,
+        });
+      } catch (err) {
+        skillResult = null;
+      }
+      if (!skillResult || !skillResult.ok || (skillResult.validation && skillResult.validation.route === 'reject')) {
+        const problems = (skillResult && skillResult.validation && skillResult.validation.blocking) || firstProblems;
+        errors.push({
+          stepOrder: step.step_order,
+          channel,
+          intent,
+          reason: `Draft failed outreach checks twice (${problems.join('; ')}); this step uses the sequence template.`,
+        });
+        errored++;
+        continue;
+      }
+    }
+
     const mapped = mapSkillOutput({ skillName, skillResult, channel });
     if (!mapped) {
       errors.push({
@@ -458,6 +489,15 @@ async function personaliseEnrollment({ orgId, userId, sequenceId, prospectId, ho
     // Stamp intent source on the personalize_sources so the rep can see
     // whether the intent was overridden or inferred.
     mapped.personalize_sources.intentSource = intentSource;
+    // Keep the validator's verdict with the draft (route + warnings such as
+    // "repeats 14 words from an email already sent") so it can be shown on
+    // the draft card. Rejects never get here.
+    if (skillResult.validation) {
+      mapped.personalize_sources.validation = {
+        route:    skillResult.validation.route,
+        warnings: skillResult.validation.warnings || [],
+      };
+    }
 
     personalisedSteps[String(step.step_order)] = mapped;
     personalised++;
