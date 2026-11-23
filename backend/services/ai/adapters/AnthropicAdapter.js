@@ -119,17 +119,52 @@ class AnthropicAdapter extends BaseAdapter {
    * client.models.list(). Falls back gracefully if the installed SDK
    * version predates the models endpoint.
    */
+  /**
+   * List the models this key can use, via the REST endpoint GET /v1/models.
+   *
+   * Why not the SDK: this app pins @anthropic-ai/sdk 0.27.x, which predates
+   * client.models — the previous implementation saw it missing and returned
+   * [] on every run, so discovery reported "ok, 0 models" and never found a
+   * single Anthropic model. Calling the endpoint directly works on any SDK
+   * version, and paginates properly (the SDK's list() returns only the first
+   * page of 20 unless iterated, which would silently truncate after an
+   * upgrade). Upgrading the SDK itself (0.27 → 1.x) is a separate, wider
+   * change: every Anthropic call goes through it.
+   *
+   * Throws on HTTP errors so discovery records a real failure (bad key, no
+   * network) instead of an empty success.
+   */
   async listModels() {
-    if (!this.client.models || typeof this.client.models.list !== 'function') {
-      // Older @anthropic-ai/sdk without the models endpoint — nothing to
-      // discover; the static registry remains the source of truth.
-      return [];
+    // Same base the SDK uses: custom endpoint if configured, else the public
+    // API. Endpoints are stored WITHOUT the /v1 suffix (SDK baseURL form).
+    const base = String(this.endpoint || 'https://api.anthropic.com').replace(/\/+$/, '');
+    const out = [];
+    let afterId = null;
+    // Hard cap on pages: at limit=1000 one page is plenty today; the cap only
+    // guards against a misbehaving has_more loop.
+    for (let page = 0; page < 10; page++) {
+      const url = new URL(`${base}/v1/models`);
+      url.searchParams.set('limit', '1000');
+      if (afterId) url.searchParams.set('after_id', afterId);
+
+      const resp = await fetch(url, {
+        headers: {
+          'x-api-key': this.apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+      });
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => '');
+        throw new Error(`Anthropic listModels failed: HTTP ${resp.status} ${body.slice(0, 300)}`);
+      }
+      const json = await resp.json();
+      for (const m of (json?.data || [])) {
+        if (m && m.id) out.push({ id: m.id, raw: m });
+      }
+      if (!json?.has_more || !json?.last_id) break;
+      afterId = json.last_id;
     }
-    const resp = await this.client.models.list();
-    const data = resp?.data || (Array.isArray(resp) ? resp : []);
-    return data
-      .filter(m => m && m.id)
-      .map(m => ({ id: m.id, raw: m }));
+    return out;
   }
 }
 

@@ -194,6 +194,19 @@ class ModelDiscoveryService {
       try {
         const adapter = _buildAdapter(providerId, key.apiKey, key.endpoint);
         const models  = await adapter.listModels();
+        if (!models.length) {
+          // A provider we HAVE a key for returning nothing is a fault, not a
+          // success: this is how Anthropic discovery failed silently (old
+          // SDK → adapter returned []) while every run reported "ok".
+          // Recorded as an error so the SuperAdmin screen and logs show it.
+          perProvider[providerId] = {
+            ok: false,
+            error: 'Provider returned 0 models — check the adapter, API key permissions or endpoint.',
+          };
+          errCount++;
+          console.warn(`[ModelDiscovery] ${providerId} returned 0 models (key present) — treated as an error.`);
+          continue;
+        }
         await this._storeModels(providerId, models);
         perProvider[providerId] = { ok: true, count: models.length };
         okCount++;
