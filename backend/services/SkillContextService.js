@@ -794,23 +794,24 @@ function clipText(s, n) {
   return s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s;
 }
 
-// LinkedIn shows "3d", "2w", "5mo", "1yr" rather than dates, and the extension
-// stamps occurred_at with the CAPTURE time. The label is the better age.
+// How old an activity item is, in days. linkedin-profiles.routes.js already
+// turns LinkedIn's "2w"-style label into a real occurred_at when it saves a
+// capture (and refreshes it on re-capture), so the stored date is the post
+// date — use it. Only fall back to the label when there's no date at all.
+// (Step 1.2 first added the label ON TOP of the stored date, counting the
+// age twice and dropping comments from 6+ weeks back; fixed in step 1.4.)
 function activityAgeDays(item) {
-  const rel = String(item?.relative_time || '').trim().toLowerCase();
+  const at = item?.occurred_at ? Date.parse(item.occurred_at) : NaN;
+  if (Number.isFinite(at)) return Math.max(0, (Date.now() - at) / 86400000);
+  const rel = String(item?.relative_time || '').replace(/^[•·\s<]+/, '').trim().toLowerCase();
   const m = rel.match(/^(\d+)\s*(s|sec|m|min|h|hr|d|w|mo|y|yr)\b/);
-  const capturedAt = item?.occurred_at ? Date.parse(item.occurred_at) : NaN;
-  const sinceCapture = Number.isFinite(capturedAt) ? (Date.now() - capturedAt) / 86400000 : 0;
-  if (m) {
-    const n = parseInt(m[1], 10);
-    const unit = m[2];
-    const days = unit === 'w' ? n * 7
-      : unit === 'mo' ? n * 30
-      : (unit === 'y' || unit === 'yr') ? n * 365
-      : unit === 'd' ? n : 0;
-    return days + sinceCapture;
-  }
-  return Number.isFinite(capturedAt) ? sinceCapture : Infinity;
+  if (!m) return Infinity;
+  const n = parseInt(m[1], 10);
+  const unit = m[2];
+  return unit === 'w' ? n * 7
+    : unit === 'mo' ? n * 30
+    : (unit === 'y' || unit === 'yr') ? n * 365
+    : unit === 'd' ? n : 0;
 }
 
 /**

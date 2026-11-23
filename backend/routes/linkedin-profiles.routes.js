@@ -36,6 +36,10 @@ const authenticateToken = require('../middleware/auth.middleware');
 const { orgContext }    = require('../middleware/orgContext.middleware');
 const requireModule     = require('../middleware/requireModule.middleware');
 
+// Step 1.4: the LinkedIn capture queue lives with the research pipeline
+// (what's waiting, the hold, the daily limit); these routes are its HTTP face.
+const ResearchPipeline = require('../services/research/ResearchPipelineService');
+
 router.use(authenticateToken);
 router.use(orgContext);
 router.use(requireModule('prospecting'));
@@ -764,11 +768,17 @@ router.post('/upsert', async (req, res) => {
       accountId = accRes.rows[0]?.account_id || null;
     }
 
+    // Step 1.4: research for any prospect queued on this profile can start
+    // now rather than waiting out the capture hold. After COMMIT so the
+    // sweeper sees the capture; best-effort (never fails the save).
+    const wokeProspectIds = await ResearchPipeline.wakeOnCapture({ orgId: req.orgId, linkedinUrl: rawUrl });
+
     return res.json({
       profile_id: profile.id,
       profile,
       linked,
       account_id: accountId,
+      research_woken: wokeProspectIds.length,
     });
 
   } catch (err) {
@@ -777,6 +787,72 @@ router.post('/upsert', async (req, res) => {
     return res.status(500).json({ error: { message: 'Failed to upsert LinkedIn profile' } });
   } finally {
     client.release();
+  }
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// CAPTURE QUEUE (step 1.4)
+// The caller's flagged prospects that are waiting for research and still need
+// a LinkedIn capture. Worked by hand from the extension: these endpoints never
+// navigate anything — the extension opens a profile only when the rep clicks.
+// Registered before GET /:id so the paths aren't read as ids.
+// ═════════════════════════════════════════════════════════════════════════
+
+function sendQueueError(res, err, label) {
+  if (err && [400, 404, 409, 429].includes(err.statusCode)) {
+    return res.status(err.statusCode).json({ error: {
+      message: err.message, code: err.code, resets_at: err.resetsAt || undefined,
+    } });
+  }
+  console.error(label, err);
+  return res.status(500).json({ error: { message: 'Capture queue request failed' } });
+}
+
+// GET /api/linkedin-profiles/capture-queue?limit=10&url=<profile url>
+// → { total, items[], current, opened_today, daily_limit, resets_at, hold_hours }
+//   `current` = the queue item for `url` (the profile the rep is on), or null.
+router.get('/capture-queue', async (req, res) => {
+  try {
+    const out = await ResearchPipeline.captureQueue({
+      orgId: req.orgId, userId: req.user.userId,
+      linkedinUrl: req.query.url || null, limit: req.query.limit,
+    });
+    res.json(out);
+  } catch (err) {
+    sendQueueError(res, err, 'GET /linkedin-profiles/capture-queue error:');
+  }
+});
+
+// POST /api/linkedin-profiles/capture-queue/open-next  { excludeIds?: number[] }
+// Picks the next profile and counts it against today's limit (429
+// CAPTURE_DAILY_LIMIT when reached). Returns { done, item, opened_today,
+// daily_limit, remaining }. The extension navigates; this never does.
+router.post('/capture-queue/open-next', async (req, res) => {
+  try {
+    const out = await ResearchPipeline.openNextCapture({
+      orgId: req.orgId, userId: req.user.userId, excludeIds: req.body?.excludeIds || [],
+    });
+    res.json(out);
+  } catch (err) {
+    sendQueueError(res, err, 'POST /linkedin-profiles/capture-queue/open-next error:');
+  }
+});
+
+// POST /api/linkedin-profiles/capture-queue/:prospectId/skip  { reason }
+// reason ∈ private | wrong_person | not_found | other. Research then runs
+// without LinkedIn data.
+router.post('/capture-queue/:prospectId/skip', async (req, res) => {
+  const prospectId = parseInt(req.params.prospectId, 10);
+  if (!Number.isInteger(prospectId) || prospectId <= 0) {
+    return res.status(400).json({ error: { message: 'Invalid prospect id' } });
+  }
+  try {
+    const out = await ResearchPipeline.skipCapture({
+      orgId: req.orgId, userId: req.user.userId, prospectId, reason: req.body?.reason,
+    });
+    res.json(out);
+  } catch (err) {
+    sendQueueError(res, err, 'POST /linkedin-profiles/capture-queue/:id/skip error:');
   }
 });
 

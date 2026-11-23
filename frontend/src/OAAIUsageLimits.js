@@ -64,8 +64,11 @@ export default function OAAIUsageLimits({ onFlash }) {
   const [offReason,  setOffReason]  = useState('');
 
   // Research pipeline settings (step 1.1b).
-  const [research,  setResearch]  = useState(null);   // { research_auto_flag, agent_pending_cap }
+  const [research,  setResearch]  = useState(null);   // { research_auto_flag, agent_pending_cap, research_capture_hold_hours, capture_daily_limit }
   const [capInput,  setCapInput]  = useState('');
+  // Step 1.4: LinkedIn capture queue settings.
+  const [holdInput,  setHoldInput]  = useState('');
+  const [limitInput, setLimitInput] = useState('');
 
   const flash = useCallback((kind, msg) => {
     if (onFlash) onFlash(kind, msg);
@@ -83,7 +86,11 @@ export default function OAAIUsageLimits({ onFlash }) {
       ]);
       setUsage(u);
       setResearch(rs);
-      if (rs) setCapInput(String(rs.agent_pending_cap));
+      if (rs) {
+        setCapInput(String(rs.agent_pending_cap));
+        setHoldInput(String(rs.research_capture_hold_hours ?? 24));
+        setLimitInput(String(rs.capture_daily_limit ?? 50));
+      }
       setDefaultInput(String(u.default_limit_usd));
       const li = {};
       for (const p of u.users || []) li[p.user_id] = p.has_override ? String(p.limit_usd) : '';
@@ -158,8 +165,15 @@ export default function OAAIUsageLimits({ onFlash }) {
         method: 'PUT',
         body: JSON.stringify(patch),
       });
-      setResearch({ research_auto_flag: r.research_auto_flag, agent_pending_cap: r.agent_pending_cap });
+      setResearch({
+        research_auto_flag:          r.research_auto_flag,
+        agent_pending_cap:           r.agent_pending_cap,
+        research_capture_hold_hours: r.research_capture_hold_hours,
+        capture_daily_limit:         r.capture_daily_limit,
+      });
       setCapInput(String(r.agent_pending_cap));
+      setHoldInput(String(r.research_capture_hold_hours));
+      setLimitInput(String(r.capture_daily_limit));
       flash('success', okMsg);
     } catch (e) {
       flash('error', e.message);
@@ -333,6 +347,54 @@ export default function OAAIUsageLimits({ onFlash }) {
                 disabled={busy === 'research' || capInput === '' || Number(capInput) === research.agent_pending_cap}
                 style={primaryBtnStyle}>
                 {busy === 'research' ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+
+          {/* Step 1.4: LinkedIn capture queue */}
+          <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, marginTop: 14, flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 260, fontSize: 13, color: '#6b7280', lineHeight: 1.5 }}>
+              <strong style={{ color: '#111827', fontWeight: 500 }}>Wait for a LinkedIn capture.</strong>{' '}
+              A flagged prospect with a LinkedIn URL but no capture waits this many hours before research
+              runs, so it can use what the extension captures. 0 = don't wait.
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="number" min="0" max="168" step="1"
+                value={holdInput}
+                onChange={e => setHoldInput(e.target.value)}
+                style={{ ...inputStyle, width: 80 }}
+                aria-label="Hours to wait for a LinkedIn capture"
+              />
+              <span style={{ fontSize: 13, color: '#6b7280' }}>hours</span>
+              <button
+                onClick={() => saveResearch({ research_capture_hold_hours: Number(holdInput) }, `Research now waits up to ${holdInput} hours for a capture ✓`)}
+                disabled={busy === 'research' || holdInput === '' || Number(holdInput) === research.research_capture_hold_hours}
+                style={primaryBtnStyle}>
+                Save
+              </button>
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, marginTop: 14, flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 260, fontSize: 13, color: '#6b7280', lineHeight: 1.5 }}>
+              <strong style={{ color: '#111827', fontWeight: 500 }}>Daily capture limit per person.</strong>{' '}
+              The most LinkedIn profiles one person can open from the capture queue in a day. The extension
+              only opens a profile when they click — never automatically.
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="number" min="1" max="500" step="1"
+                value={limitInput}
+                onChange={e => setLimitInput(e.target.value)}
+                style={{ ...inputStyle, width: 80 }}
+                aria-label="Daily capture limit per person"
+              />
+              <span style={{ fontSize: 13, color: '#6b7280' }}>a day</span>
+              <button
+                onClick={() => saveResearch({ capture_daily_limit: Number(limitInput) }, `Daily capture limit set to ${limitInput} ✓`)}
+                disabled={busy === 'research' || limitInput === '' || Number(limitInput) === research.capture_daily_limit}
+                style={primaryBtnStyle}>
+                Save
               </button>
             </div>
           </div>

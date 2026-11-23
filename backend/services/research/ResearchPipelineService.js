@@ -39,6 +39,19 @@
  *     STUCK_MINUTES.
  *   - Owners get "N prospects ready for review" at most once an hour.
  *
+ * WAITING FOR A LINKEDIN CAPTURE (step 1.4)
+ *   A queued prospect with a LinkedIn URL but no capture in the last
+ *   CAPTURE_FRESH_DAYS is held back from research for up to
+ *   `research_capture_hold_hours` (default 24, admin-editable, 0 = don't
+ *   wait), so research can use what the extension captures. Those prospects
+ *   form the owner's capture queue, worked by hand from the extension:
+ *   "Open next" only ever navigates on a click, and at most
+ *   `capture_daily_limit` (default 50) profiles a day per person are opened
+ *   from it. Saving a capture (linkedin-profiles upsert) wakes the waiting
+ *   prospect so research runs at once; Skip (private profile, wrong person,
+ *   not found) releases it to be researched without LinkedIn data. When the
+ *   hold runs out, research runs without LinkedIn data, as before.
+ *
  * SIGN-OFF
  *   Approve = the existing POST /:id/approve-research (target → research),
  *   which now also records research_review_outcome='approved'.
@@ -65,6 +78,12 @@ const READY_NOTIFY_MINUTES = 60;
 
 const DEFAULT_AGENT_PENDING_CAP = 25;
 const MAX_AGENT_PENDING_CAP     = 500;
+const DEFAULT_CAPTURE_HOLD_HOURS = 24;
+const MAX_CAPTURE_HOLD_HOURS     = 168;   // a week
+const DEFAULT_CAPTURE_DAILY_LIMIT = 50;
+const MAX_CAPTURE_DAILY_LIMIT     = 500;
+const CAPTURE_FRESH_DAYS          = 30;   // an older capture counts as missing
+const CAPTURE_SKIP_REASONS        = ['private', 'wrong_person', 'not_found', 'other'];
 const MAX_FLAG_BATCH            = 500;
 const PRE_OUTREACH_STAGES       = ['target', 'research'];
 const PENDING_STATUSES          = ['queued', 'researching', 'ready_for_review'];
@@ -73,6 +92,37 @@ const PENDING_STATUSES          = ['queued', 'researching', 'ready_for_review'];
 const EXTENSION_SOURCES = new Set([
   'linkedin_extension', 'sales_navigator_extension', 'sales_navigator_list',
 ]);
+
+// A prospect "needs a capture" when it has a /in/ LinkedIn URL, nobody
+// skipped capturing it since it was flagged, and there's no capture of that
+// profile from the last CAPTURE_FRESH_DAYS. `p` is the prospects alias.
+// Same slug rule as linkedin-profiles.routes.js extractSlug().
+// Every term is NULL-safe on purpose: this is used under NOT (…), and a NULL
+// (e.g. no LinkedIn URL) would make NOT (NULL) exclude the row from research
+// entirely instead of letting it through.
+const NEEDS_CAPTURE_SQL = `(
+  COALESCE(p.linkedin_url, '') ~* '/in/[^/?#]+'
+  AND (
+    (p.linkedin_enrichment_meta->>'capture_skipped_at') IS NULL
+    OR (p.linkedin_enrichment_meta->>'capture_skipped_at')::timestamp < COALESCE(p.research_flagged_at, '-infinity'::timestamp)
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM linkedin_profiles lp
+     WHERE lp.org_id = p.org_id AND lp.deleted_at IS NULL
+       AND lp.linkedin_slug = LOWER(SUBSTRING(p.linkedin_url FROM '/in/([^/?#]+)'))
+       AND lp.last_captured_at >= LOCALTIMESTAMP - make_interval(days => ${CAPTURE_FRESH_DAYS})
+  )
+)`;
+
+// The org's hold in hours, read inline from org_action_config (`oac` alias)
+// so the claim query needs no per-org round trip. Non-numeric → default.
+const HOLD_HOURS_SQL = `(CASE WHEN (oac.ai_settings->>'research_capture_hold_hours') ~ '^[0-9]+$'
+  THEN LEAST((oac.ai_settings->>'research_capture_hold_hours')::int, ${MAX_CAPTURE_HOLD_HOURS})
+  ELSE ${DEFAULT_CAPTURE_HOLD_HOURS} END)`;
+
+// Still inside the hold window → don't research yet.
+const WAITING_FOR_CAPTURE_SQL = `(${NEEDS_CAPTURE_SQL}
+  AND COALESCE(p.research_flagged_at, '-infinity'::timestamp) > LOCALTIMESTAMP - make_interval(hours => ${HOLD_HOURS_SQL}))`;
 
 function svcError(statusCode, code, message) {
   const e = new Error(message);
@@ -91,10 +141,15 @@ function toIdList(ids) {
 async function getSettings(orgId) {
   const r = await db.query(`SELECT ai_settings FROM org_action_config WHERE org_id = $1`, [orgId]);
   const ai = r.rows[0]?.ai_settings || {};
-  const cap = parseInt(ai.agent_pending_cap, 10);
+  const intOr = (v, dflt, min, max) => {
+    const n = parseInt(v, 10);
+    return Number.isInteger(n) && n >= min && n <= max ? n : dflt;
+  };
   return {
     research_auto_flag: ai.research_auto_flag !== false,                     // default on
-    agent_pending_cap:  Number.isInteger(cap) && cap >= 0 ? cap : DEFAULT_AGENT_PENDING_CAP,
+    agent_pending_cap:  intOr(ai.agent_pending_cap, DEFAULT_AGENT_PENDING_CAP, 0, MAX_AGENT_PENDING_CAP),
+    research_capture_hold_hours: intOr(ai.research_capture_hold_hours, DEFAULT_CAPTURE_HOLD_HOURS, 0, MAX_CAPTURE_HOLD_HOURS),
+    capture_daily_limit: intOr(ai.capture_daily_limit, DEFAULT_CAPTURE_DAILY_LIMIT, 1, MAX_CAPTURE_DAILY_LIMIT),
   };
 }
 
@@ -112,6 +167,20 @@ async function saveSettings(orgId, input, updatedBy) {
       throw svcError(400, 'INVALID_INPUT', `Agent cap must be a whole number from 0 to ${MAX_AGENT_PENDING_CAP}.`);
     }
     patch.agent_pending_cap = n;
+  }
+  if (input && 'research_capture_hold_hours' in input) {
+    const n = Number(input.research_capture_hold_hours);
+    if (!Number.isInteger(n) || n < 0 || n > MAX_CAPTURE_HOLD_HOURS) {
+      throw svcError(400, 'INVALID_INPUT', `Wait for capture must be a whole number of hours from 0 to ${MAX_CAPTURE_HOLD_HOURS}.`);
+    }
+    patch.research_capture_hold_hours = n;
+  }
+  if (input && 'capture_daily_limit' in input) {
+    const n = Number(input.capture_daily_limit);
+    if (!Number.isInteger(n) || n < 1 || n > MAX_CAPTURE_DAILY_LIMIT) {
+      throw svcError(400, 'INVALID_INPUT', `Daily capture limit must be a whole number from 1 to ${MAX_CAPTURE_DAILY_LIMIT}.`);
+    }
+    patch.capture_daily_limit = n;
   }
   if (!Object.keys(patch).length) throw svcError(400, 'INVALID_INPUT', 'Nothing to save.');
 
@@ -411,8 +480,17 @@ async function listForReview({ orgId, userId, scope = 'mine', campaignId = null,
       GROUP BY 1`,
     params
   );
-  const counts = { queued: 0, researching: 0, ready_for_review: 0, failed: 0 };
+  const counts = { queued: 0, researching: 0, ready_for_review: 0, failed: 0, awaiting_capture: 0 };
   for (const c of countsRes.rows) counts[c.status] = c.n;
+  // Step 1.4: how many of the queued are held waiting for a LinkedIn capture.
+  const waitRes = await db.query(
+    `SELECT COUNT(*)::int AS n
+       FROM prospects p
+       LEFT JOIN org_action_config oac ON oac.org_id = p.org_id
+      WHERE ${where} AND p.research_status = 'queued' AND ${WAITING_FOR_CAPTURE_SQL}`,
+    params
+  );
+  counts.awaiting_capture = waitRes.rows[0].n;
 
   const listParams = [...params, lim, off];
   const rows = (await db.query(
@@ -515,13 +593,16 @@ async function claimDue(limit = 5) {
   const r = await db.query(
     `WITH candidates AS (
        SELECT id FROM (
-         SELECT id, research_next_attempt_at,
-                ROW_NUMBER() OVER (PARTITION BY org_id, owner_id
-                                   ORDER BY research_next_attempt_at, id) AS rn
-           FROM prospects
-          WHERE research_status = 'queued' AND deleted_at IS NULL
-            AND research_next_attempt_at <= LOCALTIMESTAMP
-            AND stage = ANY($3::text[])
+         SELECT p.id, p.research_next_attempt_at,
+                ROW_NUMBER() OVER (PARTITION BY p.org_id, p.owner_id
+                                   ORDER BY p.research_next_attempt_at, p.id) AS rn
+           FROM prospects p
+           LEFT JOIN org_action_config oac ON oac.org_id = p.org_id
+          WHERE p.research_status = 'queued' AND p.deleted_at IS NULL
+            AND p.research_next_attempt_at <= LOCALTIMESTAMP
+            AND p.stage = ANY($3::text[])
+            -- Step 1.4: give the extension a chance to capture LinkedIn first.
+            AND NOT ${WAITING_FOR_CAPTURE_SQL}
        ) x
        WHERE rn <= $2
        ORDER BY research_next_attempt_at, id
@@ -683,6 +764,187 @@ async function runSweep({ limit = 5, researchFn = null } = {}) {
   return tally;
 }
 
+// ── Capture queue (step 1.4) ───────────────────────────────────────────────
+
+/** Org-local midnight (naive UTC) — the daily capture limit resets then. */
+async function _todayStartUtc(orgId) {
+  const { getOrgAiSettings } = require('../ai/AiSpendGuard');
+  let tz = 'UTC';
+  try { tz = (await getOrgAiSettings(orgId)).timezone || 'UTC'; } catch (_) { /* UTC */ }
+  const r = await db.query(
+    `SELECT ((date_trunc('day', now() AT TIME ZONE $1::text) AT TIME ZONE $1::text) AT TIME ZONE 'UTC') AS start,
+            ((date_trunc('day', now() AT TIME ZONE $1::text) + interval '1 day') AT TIME ZONE $1::text) AS resets_at`,
+    [tz]
+  );
+  return { start: r.rows[0].start, resetsAt: r.rows[0].resets_at, timezone: tz };
+}
+
+async function _openedToday(orgId, userId, start) {
+  const r = await db.query(
+    `SELECT COUNT(*)::int AS n FROM prospecting_activities
+      WHERE org_id = $1 AND user_id = $2 AND activity_type = 'capture_queue_opened'
+        AND created_at >= $3`,
+    [orgId, userId, start]
+  );
+  return r.rows[0].n;
+}
+
+/**
+ * The person's capture queue: their flagged prospects waiting for research
+ * that still need a LinkedIn capture, oldest flag first. With `linkedinUrl`,
+ * `current` is the queue item for that profile (null if it isn't queued).
+ */
+async function captureQueue({ orgId, userId, linkedinUrl = null, limit = 10 }) {
+  const lim = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50);
+  const settings = await getSettings(orgId);
+  const day = await _todayStartUtc(orgId);
+
+  const base = `FROM prospects p
+               WHERE p.org_id = $1 AND p.owner_id = $2 AND p.deleted_at IS NULL
+                 AND p.research_status = 'queued' AND ${NEEDS_CAPTURE_SQL}`;
+  const [totalRes, itemsRes, opened] = await Promise.all([
+    db.query(`SELECT COUNT(*)::int AS n ${base}`, [orgId, userId]),
+    db.query(
+      `SELECT p.id, p.first_name, p.last_name, p.title, p.company_name, p.linkedin_url,
+              p.research_flagged_at, p.campaign_id
+         ${base}
+        ORDER BY p.research_flagged_at ASC NULLS LAST, p.id ASC
+        LIMIT $3`,
+      [orgId, userId, lim]),
+    _openedToday(orgId, userId, day.start),
+  ]);
+
+  let current = null;
+  if (linkedinUrl) {
+    const c = await db.query(
+      `SELECT p.id, p.first_name, p.last_name, p.title, p.company_name, p.linkedin_url,
+              p.research_flagged_at, p.campaign_id
+         ${base}
+          AND LOWER(SUBSTRING(p.linkedin_url FROM '/in/([^/?#]+)')) = LOWER(SUBSTRING($3::text FROM '/in/([^/?#]+)'))
+        LIMIT 1`,
+      [orgId, userId, linkedinUrl]);
+    current = c.rows[0] ? _queueItem(c.rows[0]) : null;
+  }
+
+  return {
+    total:        totalRes.rows[0].n,
+    items:        itemsRes.rows.map(_queueItem),
+    current,
+    opened_today: opened,
+    daily_limit:  settings.capture_daily_limit,
+    resets_at:    new Date(day.resetsAt).toISOString(),
+    hold_hours:   settings.research_capture_hold_hours,
+  };
+}
+
+function _queueItem(r) {
+  return {
+    prospectId:  r.id,
+    name:        [r.first_name, r.last_name].filter(Boolean).join(' '),
+    title:       r.title || null,
+    companyName: r.company_name || null,
+    linkedinUrl: r.linkedin_url,
+    flaggedAt:   r.research_flagged_at,
+    campaignId:  r.campaign_id,
+  };
+}
+
+/**
+ * Pick the next profile to open and count it against today's limit. The
+ * caller (the extension, on a click) navigates; this never does. Returns
+ * { done: true } when the queue is empty. Throws 429 CAPTURE_DAILY_LIMIT.
+ */
+async function openNextCapture({ orgId, userId, excludeIds = [] }) {
+  const settings = await getSettings(orgId);
+  const day = await _todayStartUtc(orgId);
+  const opened = await _openedToday(orgId, userId, day.start);
+  if (opened >= settings.capture_daily_limit) {
+    const e = svcError(429, 'CAPTURE_DAILY_LIMIT',
+      `You've opened ${settings.capture_daily_limit} profiles from the capture queue today — the daily limit. ` +
+      `It resets at midnight (${day.timezone}). An admin can change the limit.`);
+    e.resetsAt = new Date(day.resetsAt).toISOString();
+    throw e;
+  }
+  const skip = toIdList(excludeIds);
+  const r = await db.query(
+    `SELECT p.id, p.first_name, p.last_name, p.title, p.company_name, p.linkedin_url,
+            p.research_flagged_at, p.campaign_id
+       FROM prospects p
+      WHERE p.org_id = $1 AND p.owner_id = $2 AND p.deleted_at IS NULL
+        AND p.research_status = 'queued' AND ${NEEDS_CAPTURE_SQL}
+        AND NOT (p.id = ANY($3::int[]))
+      ORDER BY p.research_flagged_at ASC NULLS LAST, p.id ASC
+      LIMIT 1`,
+    [orgId, userId, skip]
+  );
+  if (!r.rows.length) {
+    return { done: true, opened_today: opened, daily_limit: settings.capture_daily_limit, remaining: 0 };
+  }
+  const item = _queueItem(r.rows[0]);
+  await db.query(
+    `INSERT INTO prospecting_activities (org_id, prospect_id, user_id, activity_type, description, metadata)
+     VALUES ($1, $2, $3, 'capture_queue_opened', 'Opened from the LinkedIn capture queue', $4::jsonb)`,
+    [orgId, item.prospectId, userId, JSON.stringify({ linkedin_url: item.linkedinUrl })]
+  );
+  const remaining = (await db.query(
+    `SELECT COUNT(*)::int AS n FROM prospects p
+      WHERE p.org_id = $1 AND p.owner_id = $2 AND p.deleted_at IS NULL
+        AND p.research_status = 'queued' AND ${NEEDS_CAPTURE_SQL}`,
+    [orgId, userId])).rows[0].n;
+  return { done: false, item, opened_today: opened + 1, daily_limit: settings.capture_daily_limit, remaining };
+}
+
+/**
+ * Give up on capturing this profile for the current flag (private profile,
+ * wrong person, not found…). Research runs straight away without LinkedIn
+ * data. Re-flagging later puts it back in the queue (the skip predates it).
+ */
+async function skipCapture({ orgId, userId, prospectId, reason }) {
+  const why = CAPTURE_SKIP_REASONS.includes(reason) ? reason : null;
+  if (!why) throw svcError(400, 'INVALID_INPUT', `reason must be one of: ${CAPTURE_SKIP_REASONS.join(', ')}`);
+  const r = await db.query(
+    `UPDATE prospects
+        SET linkedin_enrichment_meta = COALESCE(linkedin_enrichment_meta, '{}'::jsonb)
+              || jsonb_build_object('capture_skipped_at', LOCALTIMESTAMP::text,
+                                    'capture_skip_reason', $3::text,
+                                    'capture_skipped_by', $4::int),
+            research_next_attempt_at = LEAST(COALESCE(research_next_attempt_at, LOCALTIMESTAMP), LOCALTIMESTAMP),
+            updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL AND research_status = 'queued'
+      RETURNING id`,
+    [prospectId, orgId, why, userId]
+  );
+  if (!r.rows.length) {
+    const ex = await db.query(`SELECT 1 FROM prospects WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`, [prospectId, orgId]);
+    if (!ex.rows.length) throw svcError(404, 'NOT_FOUND', 'Prospect not found');
+    throw svcError(409, 'NOT_QUEUED', 'This prospect is no longer waiting for research.');
+  }
+  await logActivities(orgId, [prospectId], userId, 'capture_skipped', 'LinkedIn capture skipped', { reason: why });
+  return { prospectId, skipped: true, reason: why };
+}
+
+/**
+ * A capture was just saved for this profile: research for any prospect
+ * queued on it can run now instead of waiting out the hold. Best-effort.
+ */
+async function wakeOnCapture({ orgId, linkedinUrl }) {
+  try {
+    const r = await db.query(
+      `UPDATE prospects
+          SET research_next_attempt_at = LOCALTIMESTAMP
+        WHERE org_id = $1 AND deleted_at IS NULL AND research_status = 'queued'
+          AND LOWER(SUBSTRING(linkedin_url FROM '/in/([^/?#]+)')) = LOWER(SUBSTRING($2::text FROM '/in/([^/?#]+)'))
+          AND research_next_attempt_at > LOCALTIMESTAMP
+        RETURNING id`,
+      [orgId, linkedinUrl]
+    );
+    return r.rows.map(x => x.id);
+  } catch (err) {
+    console.warn('[research] wake on capture failed:', err.message);
+    return [];
+  }
+}
+
 // ── helpers ────────────────────────────────────────────────────────────────
 
 async function logActivities(orgId, prospectIds, userId, type, description, metadata) {
@@ -718,4 +980,9 @@ module.exports = {
   processClaimed,
   notifyReady,
   runSweep,
+  captureQueue,
+  openNextCapture,
+  skipCapture,
+  wakeOnCapture,
+  CAPTURE_SKIP_REASONS,
 };

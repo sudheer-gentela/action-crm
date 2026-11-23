@@ -292,7 +292,12 @@ export default function ResearchQueueView() {
 
       {mode === 'review' && counts && (counts.queued + counts.researching + counts.failed) > 0 && (
         <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 10 }}>
-          In the pipeline: {counts.queued} waiting to run · {counts.researching} researching now
+          In the pipeline: {counts.queued} waiting to run
+          {/* Step 1.4: held until the extension captures their LinkedIn profile. */}
+          {counts.awaiting_capture
+            ? <> ({counts.awaiting_capture} waiting for a LinkedIn capture — open the GoWarm extension → Capture queue)</>
+            : null}
+          {' · '}{counts.researching} researching now
           {counts.failed ? <> · <span style={{ color: '#991b1b' }}>{counts.failed} failed</span> (re-flag them from the prospect panel)</> : null}
           {' · '}
           <button onClick={reload} style={{ background: 'none', border: 'none', padding: 0, color: '#4F46E5', cursor: 'pointer', fontSize: 12 }}>
