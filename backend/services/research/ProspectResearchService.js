@@ -40,6 +40,22 @@
  *   6. A non-empty tags array no longer crashes research (the old code ran
  *      JSON.parse on an already-parsed jsonb array).
  *
+ *   8. (Fix after 1.4 testing) Cut-off replies. The old limits (1,000 tokens
+ *      for the company step, 900 for the person step) came from the original
+ *      route; Haiku 5.5 writes past them, so the JSON was cut mid-sentence,
+ *      couldn't be parsed, and the raw text was saved as "research" — and the
+ *      cut-off company reply was cached on the account for 30 days. Now:
+ *        - both steps get STAGE_MAX_TOKENS, and a reply that hits the limit
+ *          is retried once with double (capped at RETRY_MAX_TOKENS);
+ *        - a JSON reply is never saved raw: complete pieces (finished bullets,
+ *          pitch angle…) are salvaged, otherwise the run fails with
+ *          RESEARCH_UNREADABLE so the sweeper retries and the button shows an
+ *          error instead of a broken "ready for review";
+ *        - company research is cached only when it was read cleanly, and a
+ *          cached reply that is broken JSON is ignored (regenerated).
+ *      Plain-text replies (a custom prompt that doesn't ask for JSON) are
+ *      still saved as before, unless they were cut off.
+ *
  *   7. (Step 1.2) When the extension captured comments or reactions in the
  *      last 90 days, one small extra call distils them into at most 5 short
  *      topics ("sales hiring"). They're saved with the research (so the
@@ -69,6 +85,11 @@ const LOG_CALL_TYPE_ACCOUNT = 'prospecting_research_account';
 const LOG_CALL_TYPE_PERSON  = 'prospecting_research';
 const LOG_CALL_TYPE_THEMES  = 'prospecting_research_themes';
 const ACCOUNT_CACHE_DAYS = 30;
+// Output limits per step. 2,000 leaves room for the system prompts' five
+// detailed bullets + pitch + subject on verbose models; a reply that still
+// hits the limit gets one retry at double (never above RETRY_MAX_TOKENS).
+const STAGE_MAX_TOKENS = 2000;
+const RETRY_MAX_TOKENS = 4000;
 
 // Size limits keep one verbose profile from blowing up the prompt (and the
 // person's budget). Roughly: about ≤ 1,200 chars, 3 roles, 3 posts × 400.
@@ -136,6 +157,56 @@ function parseJsonBlock(raw) {
   const end   = cleaned.lastIndexOf('}');
   if (start === -1 || end <= start) throw new Error('no JSON object');
   return JSON.parse(cleaned.substring(start, end + 1));
+}
+
+/** Does this reply look like the JSON the system prompts ask for? */
+function looksLikeJson(raw) {
+  const t = String(raw || '').trim().replace(/^```(?:json)?\s*/i, '');
+  return t.startsWith('{');
+}
+
+/** JSON that parses as a whole, or null. */
+function tryParseJson(raw) {
+  try { return parseJsonBlock(raw); } catch { return null; }
+}
+
+function decodeJsonString(body) {
+  try { return JSON.parse(`"${body}"`); } catch { return null; }
+}
+
+/**
+ * Pull the complete pieces out of a person-research reply that was cut off
+ * mid-JSON: every bullet whose closing quote arrived, and pitchAngle /
+ * crispPitch / subjectLine / confidence if they're whole. A half-written
+ * string is never used. Returns null when nothing usable survived.
+ */
+function salvagePersonJson(raw) {
+  const text = String(raw || '');
+  const STR = '"((?:[^"\\\\]|\\\\.)*)"';   // a CLOSED JSON string
+  const out = { researchBullets: [], pitchAngle: null, crispPitch: null, subjectLine: null, confidence: null };
+
+  const arr = text.match(/"researchBullets"\s*:\s*\[/);
+  if (arr) {
+    // Walk the array one element at a time: skip separators, take a CLOSED
+    // string, stop at "]" or wherever the reply was cut. (Searching for "]"
+    // instead would stop early on a bullet whose text contains "], ".)
+    const item = new RegExp(`\\s*,?\\s*${STR}`, 'y');
+    item.lastIndex = arr.index + arr[0].length;
+    let m;
+    while ((m = item.exec(text)) !== null) {
+      const v = decodeJsonString(m[1]);
+      if (v && v.trim()) out.researchBullets.push(v.trim());
+    }
+  }
+  for (const key of ['pitchAngle', 'crispPitch', 'subjectLine']) {
+    const m = text.match(new RegExp(`"${key}"\\s*:\\s*${STR}`));
+    if (m) out[key] = decodeJsonString(m[1]);
+  }
+  const c = text.match(/"confidence"\s*:\s*([0-9]*\.?[0-9]+)/);
+  if (c) out.confidence = Number(c[1]);
+
+  if (!out.researchBullets.length && !out.pitchAngle) return null;
+  return out;
 }
 
 function tagsList(tags) {
@@ -368,7 +439,10 @@ async function researchProspect({ orgId, prospectId, actorUserId, trigger = 'man
   let ranProvider = null;
   let ranModel    = null;
 
-  async function callAI(prompt, maxTokens, logCallType) {
+  // One model call → { text, truncated }. `truncated` = the reply used the
+  // whole output budget, i.e. it was cut off (adapters don't all expose a
+  // stop reason, but all report output tokens).
+  async function callModel(prompt, maxTokens, logCallType) {
     const { adapter, model, provider, keySource } =
       await AIClientResolver.resolve(orgId, actorUserId, ROUTING_CALL_TYPE);
     ranProvider = provider;
@@ -381,7 +455,21 @@ async function researchProspect({ orgId, prospectId, actorUserId, trigger = 'man
     await TokenTrackingService.log({
       orgId, userId: actorUserId, callType: logCallType, provider, keySource, model, usage,
     });
-    return text || '';
+    const out = Number(usage?.output_tokens) || 0;
+    return { text: text || '', truncated: out >= maxTokens };
+  }
+
+  // A cut-off reply is retried once with double the budget. Both calls are
+  // logged and count toward the budget — the first one was really spent.
+  async function callModelWithRetry(prompt, maxTokens, logCallType) {
+    const first = await callModel(prompt, maxTokens, logCallType);
+    if (!first.truncated || maxTokens >= RETRY_MAX_TOKENS) return first;
+    return callModel(prompt, Math.min(maxTokens * 2, RETRY_MAX_TOKENS), logCallType);
+  }
+
+  // Themes only needs the text (its limit of 200 is far above a 5-topic list).
+  async function callAI(prompt, maxTokens, logCallType) {
+    return (await callModel(prompt, maxTokens, logCallType)).text;
   }
 
   // ── Stage 1: company (cached on the account) ───────────────────────────
@@ -398,7 +486,12 @@ async function researchProspect({ orgId, prospectId, actorUserId, trigger = 'man
     const isStale = !acct?.research_updated_at ||
       (Date.now() - new Date(acct.research_updated_at).getTime()) > ACCOUNT_CACHE_DAYS * 86400000;
 
-    if (acct?.research_notes && !isStale) {
+    // A cached reply that is broken JSON (saved before the cut-off fix) is
+    // worthless as context — regenerate it instead of reusing it for 30 days.
+    const cachedBroken = typeof acct?.research_notes === 'string'
+      && looksLikeJson(acct.research_notes) && !tryParseJson(acct.research_notes);
+
+    if (acct?.research_notes && !isStale && !cachedBroken) {
       accountResearchText = typeof acct.research_notes === 'string'
         ? acct.research_notes
         : JSON.stringify(acct.research_notes, null, 2);
@@ -410,15 +503,23 @@ async function researchProspect({ orgId, prospectId, actorUserId, trigger = 'man
         || '';
 
       if (stage1Template) {
-        const stage1Raw = await callAI(
+        const stage1 = await callModelWithRetry(
           fill(stage1Template, { companyInfo, productContext: productCtx || 'Not specified' }),
-          1000, LOG_CALL_TYPE_ACCOUNT
+          STAGE_MAX_TOKENS, LOG_CALL_TYPE_ACCOUNT
         );
-        try {
-          accountResearchJson = parseJsonBlock(stage1Raw);
+        // Cache only research that was read cleanly. A cut-off JSON reply is
+        // still passed to the person step as context (partial facts help),
+        // but never cached for other prospects at this company.
+        let cacheable;
+        accountResearchJson = tryParseJson(stage1.text);
+        if (accountResearchJson) {
           accountResearchText = JSON.stringify(accountResearchJson, null, 2);
-        } catch {
-          accountResearchText = stage1Raw;
+          cacheable = true;
+        } else {
+          accountResearchText = stage1.text;
+          cacheable = !looksLikeJson(stage1.text) && !stage1.truncated && !!stage1.text.trim();
+          console.warn(`[research] company research for account ${p.account_id} not cached ` +
+            `(${stage1.truncated ? 'cut off' : 'unreadable'})`);
         }
 
         const accountMeta = {
@@ -433,7 +534,7 @@ async function researchProspect({ orgId, prospectId, actorUserId, trigger = 'man
         };
 
         // MERGE under ai_research — never replace research_meta (fix 1).
-        try {
+        if (cacheable) try {
           await db.query(
             `UPDATE accounts
                 SET research_notes      = $1,
@@ -467,26 +568,47 @@ async function researchProspect({ orgId, prospectId, actorUserId, trigger = 'man
     || AI_PROMPTS.prospecting_research
     || STAGE2_SYSTEM_DEFAULT;
 
-  const stage2Raw = await callAI(
+  const stage2 = await callModelWithRetry(
     fill(stage2Template, {
       prospectInfo,
       accountResearch: accountResearchText || 'No account research available.',
       productContext:  productCtx || 'Not specified',
     }),
-    900, LOG_CALL_TYPE_PERSON
+    STAGE_MAX_TOKENS, LOG_CALL_TYPE_PERSON
   );
+  const stage2Raw = stage2.text;
 
-  let parsed = null;
+  let parsed = tryParseJson(stage2Raw);
+  let partial = false;
   let researchNotes = '';
-  try {
-    parsed = parseJsonBlock(stage2Raw);
+  if (!parsed && looksLikeJson(stage2Raw)) {
+    // JSON that didn't parse (cut off even after the retry, or malformed).
+    // Keep only complete pieces; never save the raw JSON as "research".
+    parsed = salvagePersonJson(stage2Raw);
+    partial = true;
+    if (!parsed) {
+      const e = new Error(stage2.truncated
+        ? 'Research reply was cut off before it could be read — try again'
+        : 'Research reply could not be read — try again');
+      e.code = 'RESEARCH_UNREADABLE';
+      throw e;
+    }
+  }
+  if (parsed) {
     const bullets = Array.isArray(parsed.researchBullets) ? parsed.researchBullets : [];
     researchNotes = bullets.map(b => `• ${b}`).join('\n');
     if (parsed.pitchAngle)  researchNotes += `\n\n💡 Pitch angle: ${parsed.pitchAngle}`;
     if (parsed.crispPitch)  researchNotes += `\n\n✉️ Crisp pitch:\n${parsed.crispPitch}`;
     if (parsed.subjectLine) researchNotes += `\n\n📧 Subject: ${parsed.subjectLine}`;
     researchNotes = researchNotes.trim();
-  } catch {
+  } else {
+    // Plain text from a custom prompt that doesn't ask for JSON — kept as
+    // before, unless it was cut off.
+    if (stage2.truncated) {
+      const e = new Error('Research reply was cut off before it finished — try again');
+      e.code = 'RESEARCH_UNREADABLE';
+      throw e;
+    }
     researchNotes = String(stage2Raw || '').trim();
   }
   if (!researchNotes) {
@@ -529,6 +651,8 @@ async function researchProspect({ orgId, prospectId, actorUserId, trigger = 'man
       generated_at: generatedAt,
       account_research_used: !!accountResearchText,
       linkedin_used: linkedIn.used,
+      // true when the reply was cut off and only its complete pieces were kept.
+      partial,
       // Topics only; the reviewer sees these and the writer gets them once
       // approved. null when there was no recent comment/reaction activity.
       engagement_themes: engagementThemes,
@@ -608,4 +732,7 @@ async function researchProspect({ orgId, prospectId, actorUserId, trigger = 'man
   };
 }
 
-module.exports = { researchProspect, buildLinkedInBlock, sanitizeTopics, _fill: fill };
+module.exports = {
+  researchProspect, buildLinkedInBlock, sanitizeTopics, salvagePersonJson, looksLikeJson,
+  _fill: fill,
+};
