@@ -507,6 +507,11 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpen
   };
 
   const handleEditSave = async () => {
+    // The server rejects a blank first name too; checking here saves a trip.
+    if ('first_name' in editForm && !String(editForm.first_name || '').trim()) {
+      setEditError('First name is required');
+      return;
+    }
     setEditSaving(true);
     setEditError(null);
     try {
@@ -1101,6 +1106,8 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpen
                   </>
                 ) : (
                   <button onClick={() => { setEditMode(true); setEditForm({
+                    first_name: prospect.first_name || '', last_name: prospect.last_name || '',
+                    title: prospect.title || '',
                     email: prospect.email || '', phone: prospect.phone || '',
                     linkedin_url: prospect.linkedin_url || '', location: prospect.location || '',
                     company_name: prospect.company_name || '', company_domain: prospect.company_domain || '',
@@ -1114,6 +1121,16 @@ function ProspectDetailPanel({ prospectId, initialTab, onClose, onUpdate, onOpen
               {editError && <div style={{ fontSize: 11, color: '#dc2626', marginBottom: 8 }}>{editError}</div>}
 
               <div className="pv-info-grid">
+                {/* Name and title: edit mode only — the panel header already
+                    shows them. Lets a rep fix a bad capture (e.g. a name saved
+                    with LinkedIn's "(1)" notification prefix, or a missing title). */}
+                {editMode && (
+                  <>
+                    <InfoRow label="First name" value={prospect.first_name} editMode={editMode} editValue={editForm.first_name} onEdit={v => setEditForm(f => ({...f, first_name: v}))} />
+                    <InfoRow label="Last name"  value={prospect.last_name}  editMode={editMode} editValue={editForm.last_name}  onEdit={v => setEditForm(f => ({...f, last_name: v}))} />
+                    <InfoRow label="Title"      value={prospect.title}      editMode={editMode} editValue={editForm.title}      onEdit={v => setEditForm(f => ({...f, title: v}))} />
+                  </>
+                )}
                 <InfoRow label="Email"    value={prospect.email}    editMode={editMode} editValue={editForm.email}    onEdit={v => setEditForm(f => ({...f, email: v}))} />
                 <InfoRow label="Phone"    value={prospect.phone}    editMode={editMode} editValue={editForm.phone}    onEdit={v => setEditForm(f => ({...f, phone: v}))} />
                 <InfoRow label="LinkedIn" value={prospect.linkedin_url ? <a href={prospect.linkedin_url} target="_blank" rel="noreferrer">Profile ↗</a> : null}

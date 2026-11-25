@@ -4071,6 +4071,16 @@ router.patch('/:id', async (req, res) => {
       return res.status(400).json({ error: { message: 'No valid fields to update' } });
     }
 
+    // Names are now editable from the web panel and the extension. Trim them,
+    // and never let an edit blank the first name (every list, draft and
+    // greeting assumes there is one).
+    for (const k of ['first_name', 'last_name', 'title']) {
+      if (typeof updates[k] === 'string') updates[k] = updates[k].trim();
+    }
+    if ('first_name' in updates && !updates.first_name) {
+      return res.status(400).json({ error: { message: 'First name is required' } });
+    }
+
     const setClauses = Object.keys(updates).map((k, i) => `${k} = $${i + 1}`);
     setClauses.push(`updated_at = CURRENT_TIMESTAMP`);
     const values = [...Object.values(updates), req.params.id, req.orgId];
